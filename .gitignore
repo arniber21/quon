@@ -1,0 +1,21 @@
+# Rust
+/target
+
+# bindgen-generated bindings (if not committing generated files)
+# src/bindings.rs
+
+# IntelliJ / JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Environment
+.env
+.env.local

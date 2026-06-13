@@ -1,0 +1,3 @@
+fn cli() {
+    println!("quon");
+}
