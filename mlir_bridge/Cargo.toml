@@ -1,0 +1,16 @@
+[package]
+name    = "mlir_bridge"
+version = "0.1.0"
+edition = "2021"
+build   = "build.rs"
+
+[dependencies]
+melior  = { workspace = true }
+zx      = { path = "../zx" }
+backend = { path = "../backend" }
+anyhow  = { workspace = true }
+
+[build-dependencies]
+# melior's build script handles LLVM/MLIR linking.
+# Set LLVM_SYS_PREFIX (or MLIR_SYS_PREFIX) to your LLVM 19 install prefix
+# if the libraries are not on the default search path.
