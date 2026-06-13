@@ -1,0 +1,15 @@
+[package]
+name    = "quonc"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "quonc"
+path = "src/main.rs"
+
+[dependencies]
+frontend    = { path = "../frontend" }
+mlir_bridge = { path = "../mlir_bridge" }
+backend     = { path = "../backend" }
+clap        = { workspace = true }
+anyhow      = { workspace = true }
