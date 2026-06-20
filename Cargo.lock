@@ -642,7 +642,6 @@ dependencies = [
 name = "mlir_bridge"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "backend",
  "melior",
  "mlir-sys",

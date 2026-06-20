@@ -1,0 +1,35 @@
+id: no-anyhow-in-lib-src
+valid:
+  - |
+    use thiserror::Error;
+
+    #[derive(Error, Debug)]
+    pub enum MyError {
+        #[error("bad")]
+        Bad,
+    }
+
+    pub fn ok() -> Result<(), MyError> {
+        Ok(())
+    }
+  - |
+    pub fn parse(s: &str) -> Result<i32, String> {
+        s.parse().map_err(|e| e.to_string())
+    }
+invalid:
+  - |
+    use anyhow::Result;
+
+    pub fn load() -> Result<String> {
+        Ok(String::new())
+    }
+  - |
+    use anyhow::Error;
+
+    pub fn fail() -> Error {
+        Error::msg("oops")
+    }
+  - |
+    pub fn emit() -> Result<String, anyhow::Error> {
+        todo!()
+    }

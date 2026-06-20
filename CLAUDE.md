@@ -16,6 +16,10 @@ Default label vocabulary: needs-triage, needs-info, ready-for-agent, ready-for-h
 
 Single-context repo — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
+### Code quality
+
+Pre-PR checklist, error-handling conventions, refinement strategy, testing mindset — see `docs/agents/code-quality.md`.
+
 ### Validation
 
 Taskless ast-grep rules and Flux refinement checks — see `docs/agents/validation.md`.

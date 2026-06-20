@@ -1,0 +1,25 @@
+---
+description: Code quality conventions for Rust changes in Quon
+alwaysApply: true
+---
+
+# Code quality
+
+Full guide: `docs/agents/code-quality.md`. Validation commands: `docs/agents/validation.md`.
+
+## Before a PR
+
+Run `cargo fmt --check`, `clippy` (exclude `flux_verify`), `cargo test --workspace --exclude flux_verify`, and `npx @taskless/cli@latest check` on changed files. Run `cargo flux -p flux_verify` when touching refinement specs.
+
+## Defaults
+
+- **Library crates** (`frontend`, `mlir_bridge`, `backend`, `zx`): `thiserror` + `Result`; no `unwrap`/`expect`/`anyhow` in `src/` (see `.taskless/rules/`).
+- **quonc only**: `anyhow::Result` for the CLI driver.
+- **mlir_bridge**: accumulate MLIR errors via `Diagnostics` in `mlir_bridge/src/diagnostics.rs`; do not scatter unsafe `mlirEmitError`.
+- **MLIR builders**: `OperationBuilder` → `build()?` → `verify(&op)?` before returning (`mlir_bridge/src/dialect/quantum_circ.rs`).
+- **JSON wire DTOs**: `#[serde(deny_unknown_fields)]` on Deserialize structs (see `backend/src/descriptor.rs`).
+- **Correctness feedback**: unit tests + proptest/fuzz where inputs vary; typechecker fixtures for language changes; Flux for Rust refinement kernels when appropriate.
+
+## Mindset
+
+Model invariants in types (Rust + Quon typechecker + Flux). Prefer checks that complete in seconds over slow integration-only validation.
