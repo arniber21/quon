@@ -6,12 +6,22 @@ An MLIR-based optimizing compiler for quantum programs. Accepts programs in the 
 
 | Dependency | Version | Notes |
 |---|---|---|
-| Rust | stable | edition 2021+ |
-| LLVM + MLIR | 19 | Build with `-DLLVM_ENABLE_PROJECTS=mlir` and C API enabled |
-| libz3 | any recent | C API; required at link time |
-| Python + Qiskit Aer | 3.10+ | Simulation verification only |
+| Rust | stable | edition 2021+; see `rust-toolchain.toml` |
+| LLVM + MLIR | **22** | Build with `-DLLVM_ENABLE_PROJECTS=mlir` and the C API enabled |
+| Melior | **0.27.x** | Pinned in the workspace `Cargo.toml`; requires LLVM 22 |
+| libz3 | any recent | C API; required at link time by the `z3` crate (`frontend`) |
+| Python + Qiskit Aer | 3.10+ | Simulation verification only (Phase 6+) |
 
-If LLVM 19 is not on your default search path, set `LLVM_SYS_PREFIX=/path/to/llvm19`.
+If LLVM 22 is not on your default search path, set:
+
+```bash
+export MLIR_SYS_220_PREFIX=/path/to/llvm22   # e.g. /usr/lib/llvm-22 or $(brew --prefix llvm@22)
+export PATH="$MLIR_SYS_220_PREFIX/bin:$PATH"
+```
+
+On macOS with Homebrew: `brew install llvm@22 z3`, then point `MLIR_SYS_220_PREFIX` at `$(brew --prefix llvm@22)`.
+
+On Ubuntu/Debian: use [apt.llvm.org](https://apt.llvm.org/) (`./llvm.sh 22`) and `apt install libz3-dev`.
 
 ## Build
 
@@ -35,10 +45,14 @@ cargo build --release
 ## Testing
 
 ```bash
-cargo test          # frontend unit tests
-lit test/lit/       # IR round-trip and emission FileCheck tests
-python test/verify/bell.py      # end-to-end Aer verification (Phase 6+)
+cargo fmt --all -- --check   # formatting (also enforced in CI)
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace       # unit + integration tests across all crates
+lit test/lit/                # IR round-trip and emission FileCheck tests (later phases)
+python test/verify/bell.py   # end-to-end Aer verification (Phase 6+)
 ```
+
+CI (`.github/workflows/ci.yml`) runs `fmt`, `clippy`, `cargo build --release`, and `cargo test --workspace` on every push and pull request.
 
 ## Workspace
 
