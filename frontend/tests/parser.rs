@@ -3,7 +3,7 @@
 
 mod support;
 
-use frontend::ast::{Decl, Expr, Stmt};
+use frontend::ast::{Decl, Expr, Stmt, Type};
 use frontend::lexer::lex;
 use frontend::parser::parse;
 use frontend::pretty::pretty;
@@ -166,6 +166,48 @@ fn par_tensor_syntax() {
     let b = body("par { H @ 0 } * 4");
     assert!(matches!(b, Expr::Par(_, _)), "expected Par, got {b:?}");
     assert_eq!(shape("par { H @ 0 } * 4"), "par { H @ 0 } * 4");
+}
+
+#[test]
+fn par_count_absorbs_multiplicative_chain() {
+    // `par { c } * 4 * 2` binds the whole `* …` chain into the count: `par { c } * (4 * 2)`,
+    // not `(par { c } * 4) * 2`.
+    let b = body("par { x } * 4 * 2");
+    match b {
+        Expr::Par(_, count) => assert!(
+            matches!(
+                count.0,
+                Expr::BinOp {
+                    op: frontend::ast::BinOp::Mul,
+                    ..
+                }
+            ),
+            "expected count to be a multiplication, got {:?}",
+            count.0
+        ),
+        other => panic!("expected Par, got {other:?}"),
+    }
+    assert_eq!(shape("par { x } * 4 * 2"), "par { x } * (4 * 2)");
+}
+
+#[test]
+fn bare_type_name_is_var_parameterized_is_named() {
+    // Bare non-builtin name -> Type::Var; `Name<args>` -> Type::Named.
+    let decls = parse_stripped("fn f(x: Bell): Oracle<n> = ()");
+    let (params, ret) = match &decls[0].0 {
+        Decl::Fn { params, ret, .. } => (params, ret),
+        other => panic!("expected fn, got {other:?}"),
+    };
+    assert!(
+        matches!(&params[0].1 .0, Type::Var(n) if n == "Bell"),
+        "bare Bell should be Type::Var, got {:?}",
+        params[0].1 .0
+    );
+    assert!(
+        matches!(&ret.0, Type::Named { name, .. } if name == "Oracle"),
+        "Oracle<n> should be Type::Named, got {:?}",
+        ret.0
+    );
 }
 
 #[test]

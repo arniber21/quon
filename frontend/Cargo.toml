@@ -11,5 +11,8 @@ ariadne   = { workspace = true }
 anyhow    = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
-insta    = { workspace = true }
+proptest  = { workspace = true }
+insta     = { workspace = true }
+# Shared with the fuzz crate: the proptest roundtrip test drives the same Unstructured-based
+# generator (frontend/fuzz/src/gen.rs) via random bytes.
+arbitrary = { workspace = true }

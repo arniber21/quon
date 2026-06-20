@@ -103,9 +103,11 @@ fn class_str(c: &CliffordClass) -> &'static str {
     match c {
         CliffordClass::Clifford => "Clifford",
         CliffordClass::Universal => "Universal",
-        // Infer has no surface syntax; the generator never produces it. Fall back so this
-        // stays total.
-        CliffordClass::Infer => "Clifford",
+        // `Infer` is an internal placeholder that the type checker must resolve before any type
+        // is serialized. Emit a sentinel that deliberately fails to re-parse (the class grammar
+        // accepts only `Clifford`/`Universal`), so an unresolved class surfaces loudly on
+        // roundtrip instead of silently masquerading as a real classification.
+        CliffordClass::Infer => "<unresolved-class>",
     }
 }
 

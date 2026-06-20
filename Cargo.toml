@@ -24,8 +24,9 @@ serde_json = "1"
 flux-rs = { git = "https://github.com/flux-rs/flux.git" }
 
 # Testing
-proptest = "1"
-insta    = "1"
+proptest  = "1"
+insta     = "1"
+arbitrary = { version = "1", features = ["derive"] }
 
 # Driver
 clap = { version = "4", features = ["derive"] }

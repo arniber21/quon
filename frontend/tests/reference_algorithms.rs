@@ -36,7 +36,9 @@ macro_rules! fixture_test {
                 "{}: expected at least one declaration",
                 $file
             );
-            insta::assert_debug_snapshot!(stringify!($test), decls);
+            // Snapshot the canonical pretty-printed source rather than the raw AST debug:
+            // readable, stable, and easy to review long-term (and it doubles as a printer test).
+            insta::assert_snapshot!(stringify!($test), frontend::pretty::pretty(&decls));
         }
     };
 }

@@ -204,18 +204,21 @@ where
                     .or_not(),
             )
             .map_with(|(name, args), e| {
-                let node = match (name.as_str(), &args) {
-                    ("Qubit", None) => Type::Qubit,
-                    ("Bit", None) => Type::Bit,
-                    ("Bool", None) => Type::Bool,
-                    ("Int", None) => Type::Int,
-                    ("Float", None) => Type::Float,
-                    ("Unit", None) => Type::Unit,
-                    ("Nat", None) => Type::Nat,
-                    _ => Type::Named {
-                        name,
-                        args: args.unwrap_or_default(),
+                let node = match args {
+                    // A bare name is a built-in scalar type, or otherwise a type variable /
+                    // alias reference (`Bell`, `n`). Parameterized names (`Oracle<n>`) are
+                    // `Type::Named`. This keeps `Type::Var` the canonical bare-name form.
+                    None => match name.as_str() {
+                        "Qubit" => Type::Qubit,
+                        "Bit" => Type::Bit,
+                        "Bool" => Type::Bool,
+                        "Int" => Type::Int,
+                        "Float" => Type::Float,
+                        "Unit" => Type::Unit,
+                        "Nat" => Type::Nat,
+                        _ => Type::Var(name),
                     },
+                    Some(args) => Type::Named { name, args },
                 };
                 (node, e.span())
             });
@@ -528,19 +531,12 @@ where
             )
             .map_with(|(name, a), e| Post::Method(name, a, e.span()));
 
-        let postfix = atom.foldl(
-            choice((call_op, index_op, method_op)).repeated(),
-            apply_post,
-        );
-
-        // ---- par { body } * count (uses postfix-level count) ----
-        let par_expr = just(Token::Par)
-            .ignore_then(brace_expr.clone())
-            .then_ignore(just(Token::Star))
-            .then(postfix.clone())
-            .map_with(|(body, count), e| (Expr::Par(Box::new(body), Box::new(count)), e.span()));
-
-        let postfix = choice((par_expr, postfix)).boxed();
+        let postfix = atom
+            .foldl(
+                choice((call_op, index_op, method_op)).repeated(),
+                apply_post,
+            )
+            .boxed();
 
         // ---- juxtaposition application (same line) ----
         let application = postfix
@@ -615,7 +611,7 @@ where
             .boxed();
 
         // ---- multiplicative `* /` (left-assoc) ----
-        let product = pow
+        let mul_chain = pow
             .clone()
             .foldl(
                 choice((
@@ -637,6 +633,18 @@ where
                 },
             )
             .boxed();
+
+        // ---- par { body } * count ----
+        // The count is a full multiplicative chain, so `par { c } * 4 * 2` parses as
+        // `par { c } * (4 * 2)` — the `* …` chain binds entirely into the tensor count.
+        // `par` therefore lives at the multiplicative tier (tighter than `+`, looser than `@`).
+        let par_expr = just(Token::Par)
+            .ignore_then(brace_expr.clone())
+            .then_ignore(just(Token::Star))
+            .then(mul_chain.clone())
+            .map_with(|(body, count), e| (Expr::Par(Box::new(body), Box::new(count)), e.span()));
+
+        let product = choice((par_expr, mul_chain)).boxed();
 
         // ---- additive `+ -` (left-assoc) ----
         let sum = product
