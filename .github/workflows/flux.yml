@@ -25,7 +25,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libz3-dev
 
       - name: Install Flux
-        run: curl -fsSL https://raw.githubusercontent.com/flux-rs/flux/main/install.sh | bash
+        run: |
+          set -euo pipefail
+          BIN="$HOME/.cargo/bin"
+          mkdir -p "$BIN"
+          curl -fsSL "https://github.com/ucsd-progsys/liquid-fixpoint/releases/download/nightly/fixpoint-x86_64-linux-gnu.tar.gz" | tar xz -C "$BIN"
+          chmod +x "$BIN/fixpoint"
+          git clone --depth 1 https://github.com/flux-rs/flux /tmp/flux
+          (cd /tmp/flux && cargo xtask install)
 
       - name: cargo flux (flux_verify)
         run: cargo flux -p flux_verify
