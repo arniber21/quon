@@ -1,6 +1,6 @@
 // Lexer unit tests — issue #5 acceptance criteria.
 
-use frontend::lexer::{lex, Token};
+use frontend::lexer::{Token, lex};
 
 /// Lex `src` and return just the token kinds (spans stripped), panicking on lex error.
 fn toks(src: &str) -> Vec<Token> {

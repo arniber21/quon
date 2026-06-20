@@ -8,7 +8,7 @@
 mod support;
 
 #[path = "../fuzz/src/gen.rs"]
-mod gen;
+mod generator;
 
 use arbitrary::Unstructured;
 use frontend::lexer::lex;
@@ -24,7 +24,7 @@ proptest! {
     #[test]
     fn ast_roundtrips(bytes in prop::collection::vec(any::<u8>(), 64..8192)) {
         let mut u = Unstructured::new(&bytes);
-        if let Ok(decls) = gen::arb_program(&mut u) {
+        if let Ok(decls) = generator::arb_program(&mut u) {
             let printed = pretty(&decls);
             let tokens = lex(&printed)
                 .map_err(|e| TestCaseError::fail(format!("re-lex failed: {e:?}\n---\n{printed}")))?;
@@ -39,7 +39,7 @@ proptest! {
     #[test]
     fn print_is_idempotent(bytes in prop::collection::vec(any::<u8>(), 64..8192)) {
         let mut u = Unstructured::new(&bytes);
-        if let Ok(decls) = gen::arb_program(&mut u) {
+        if let Ok(decls) = generator::arb_program(&mut u) {
             let printed = pretty(&decls);
             let tokens = lex(&printed)
                 .map_err(|e| TestCaseError::fail(format!("re-lex failed: {e:?}")))?;

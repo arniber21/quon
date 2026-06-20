@@ -201,7 +201,7 @@ fn bare_type_name_is_var_parameterized_is_named() {
     assert!(
         matches!(&params[0].1 .0, Type::Var(n) if n == "Bell"),
         "bare Bell should be Type::Var, got {:?}",
-        params[0].1 .0
+        params[0].1.0
     );
     assert!(
         matches!(&ret.0, Type::Named { name, .. } if name == "Oracle"),

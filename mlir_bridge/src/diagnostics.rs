@@ -165,8 +165,8 @@ impl<'c> Diagnostics<'c> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use melior::ir::Location;
     use melior::Context;
+    use melior::ir::Location;
     use std::cell::RefCell;
 
     thread_local! {

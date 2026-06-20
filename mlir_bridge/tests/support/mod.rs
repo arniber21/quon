@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+use melior::Context;
 use melior::ir::attribute::{BoolAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationBuilder;
 use melior::ir::r#type::IntegerType;
@@ -9,7 +10,6 @@ use melior::ir::{
     Attribute, Block, BlockLike, Identifier, Location, Module, Operation, Region, RegionLike, Type,
     Value,
 };
-use melior::Context;
 
 use mlir_bridge::dialect::depth::DepthExpr;
 use mlir_bridge::dialect::quantum_circ as qc;
