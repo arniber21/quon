@@ -1,0 +1,23 @@
+---
+source: frontend/tests/reference_algorithms.rs
+expression: "frontend :: pretty :: pretty(& decls)"
+---
+fn qft(n: Nat): Circuit<n, n, (n) * (n), Universal> = circuit {
+    match n {
+    0 => identity(0),
+    _ => (((H @ 0) |> (controlled_rotations(n))) |> ((on_high(qft(n - 1)))(n))) |> (swap_reverse(n))
+}
+}
+
+fn mod_exp(n: Nat, a: Int, nn: Int): Circuit<(2) * (n), (2) * (n), (n) ^ (3), Universal> = circuit {
+    ((build_controlled_modexp(n))(a))(nn)
+}
+
+fn shor_quantum(n: Nat, a: Int, nn: Int): Q<List<Bit>> = run {
+    ctrl <- (hadamard_all(n)) @ (qreg(n))
+    tgt <- (init_one(())) @ (qreg(n))
+    both <- (((mod_exp(n))(a))(nn)) @ ((tensored(ctrl))(tgt))
+    let (ctrl2, _) = (split(n))(both)
+    est <- adjoint(qft(n)) @ ctrl2
+    measure_all(est)
+}

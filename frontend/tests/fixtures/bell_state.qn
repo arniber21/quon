@@ -1,0 +1,11 @@
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1)
+}
+
+fn hello_bell(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- bell_state() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+    -- Expected: (0,0) and (1,1) each with probability 0.5
+}

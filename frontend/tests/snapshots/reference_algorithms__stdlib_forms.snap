@@ -1,0 +1,32 @@
+---
+source: frontend/tests/reference_algorithms.rs
+expression: "frontend :: pretty :: pretty(& decls)"
+---
+type Bell = Circuit<2, 2, 2, Clifford>
+
+fn bell_gate(): Bell = circuit {
+    (H @ 0) |> (CNOT @ (0, 1))
+}
+
+fn phase_kickback(theta: Float): Circuit<2, 2, 2, Universal> = circuit {
+    ((CNOT @ (0, 1)) |> ((Rz(theta)) @ 1)) |> (CNOT @ (0, 1))
+}
+
+fn basis_measures(q: Qubit): Q<(Bit, Bit)> = run {
+    a <- measure_x(q)
+    b <- measure_y(q)
+    return (a, b)
+}
+
+fn cleanup(q: Qubit): Q<Qubit> = run {
+    r <- reset(q)
+    return r
+}
+
+fn seqs(cs: List<Q<Bit>>): Q<List<Bit>> = sequence_q(cs)
+
+fn series(xs: List<Int>): Q<List<Bit>> = (map_q(fn(k) -> measure_one(k)))(xs)
+
+fn reverse_reg(n: Nat): Circuit<n, n, (n) / (2), Clifford> = swap_reverse(n)
+
+fn tower(n: Nat): Circuit<n, n, n, Clifford> = par { H @ 0 } * n
