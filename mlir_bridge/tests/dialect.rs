@@ -191,6 +191,7 @@ fn gate_verifier_rejections() {
 
     let name = ("gate_name", str_attr(&context, "H"));
     let contribution = ("depth_contribution", i64_attr(&context, 1));
+    let clifford = ("clifford", bool_attr(&context, true));
 
     // Missing gate_name.
     let op = generic_op(
@@ -198,7 +199,7 @@ fn gate_verifier_rejections() {
         qc::op::GATE,
         &[q],
         &[qubit],
-        &[contribution],
+        &[contribution, clifford],
         vec![],
         location,
     );
@@ -216,7 +217,7 @@ fn gate_verifier_rejections() {
         qc::op::GATE,
         &[q],
         &[qubit],
-        &[name],
+        &[name, clifford],
         vec![],
         location,
     );
@@ -228,6 +229,24 @@ fn gate_verifier_rejections() {
         })
     ));
 
+    // Missing clifford.
+    let op = generic_op(
+        &context,
+        qc::op::GATE,
+        &[q],
+        &[qubit],
+        &[name, contribution],
+        vec![],
+        location,
+    );
+    assert!(matches!(
+        qc::verify(&op),
+        Err(qc::VerifyError::MissingAttribute {
+            attr: "clifford",
+            ..
+        })
+    ));
+
     // Negative depth_contribution.
     let neg = ("depth_contribution", i64_attr(&context, -2));
     let op = generic_op(
@@ -235,7 +254,7 @@ fn gate_verifier_rejections() {
         qc::op::GATE,
         &[q],
         &[qubit],
-        &[name, neg],
+        &[name, neg, clifford],
         vec![],
         location,
     );
@@ -250,7 +269,7 @@ fn gate_verifier_rejections() {
         qc::op::GATE,
         &[],
         &[],
-        &[name, contribution],
+        &[name, contribution, clifford],
         vec![],
         location,
     );
@@ -268,7 +287,7 @@ fn gate_verifier_rejections() {
         qc::op::GATE,
         &[q],
         &[qubit, qubit],
-        &[name, contribution],
+        &[name, contribution, clifford],
         vec![],
         location,
     );
@@ -283,7 +302,7 @@ fn gate_verifier_rejections() {
         qc::op::GATE,
         &[c],
         &[qubit],
-        &[name, contribution],
+        &[name, contribution, clifford],
         vec![],
         location,
     );
@@ -301,7 +320,7 @@ fn gate_verifier_rejections() {
         qc::op::GATE,
         &[q],
         &[circuit],
-        &[name, contribution],
+        &[name, contribution, clifford],
         vec![],
         location,
     );

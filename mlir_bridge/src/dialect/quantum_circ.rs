@@ -442,6 +442,7 @@ fn verify_func<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<()
 fn verify_gate<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(), VerifyError> {
     require_string(operation, op::GATE, attr::GATE_NAME)?;
     let contribution = require_integer(operation, op::GATE, attr::DEPTH_CONTRIBUTION)?;
+    require_bool(operation, op::GATE, attr::CLIFFORD)?;
     if contribution < 0 {
         return Err(VerifyError::NegativeCount {
             op: op::GATE,
