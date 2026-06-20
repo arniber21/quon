@@ -5,10 +5,12 @@ edition = "2021"
 build   = "build.rs"
 
 [dependencies]
-melior  = { workspace = true }
-zx      = { path = "../zx" }
-backend = { path = "../backend" }
-anyhow  = { workspace = true }
+melior    = { workspace = true }
+mlir-sys  = "220"           # raw C API — used only at the diagnostics FFI boundary
+zx        = { path = "../zx" }
+backend   = { path = "../backend" }
+anyhow    = { workspace = true }
+thiserror = { workspace = true }
 
 [build-dependencies]
 # melior's build script handles LLVM/MLIR linking.

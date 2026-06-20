@@ -594,6 +594,8 @@ dependencies = [
  "anyhow",
  "backend",
  "melior",
+ "mlir-sys",
+ "thiserror 1.0.69",
  "zx",
 ]
 
