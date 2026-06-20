@@ -231,4 +231,44 @@ mod tests {
             "(+ d 1)"
         );
     }
+
+    #[test]
+    fn mul_round_trips() {
+        let expr = DepthExpr::Mul(
+            Box::new(DepthExpr::Var("n".into())),
+            Box::new(DepthExpr::Nat(4)),
+        );
+        assert_eq!(expr.to_sexpr(), "(* n 4)");
+        assert_eq!(DepthExpr::parse("(* n 4)"), Ok(expr));
+    }
+
+    #[test]
+    fn parsing_is_whitespace_insensitive() {
+        let expected = DepthExpr::Nat(1).plus(DepthExpr::Nat(2));
+        assert_eq!(DepthExpr::parse("(+  1\t2)"), Ok(expected.clone()));
+        assert_eq!(DepthExpr::parse("  (+ 1 2)  "), Ok(expected));
+    }
+
+    #[test]
+    fn parses_deeply_nested() {
+        let expr = DepthExpr::Nat(1)
+            .plus(DepthExpr::Nat(2))
+            .max_with(DepthExpr::Var("k".into()).plus_const(3));
+        assert_eq!(DepthExpr::parse(&expr.to_sexpr()), Ok(expr));
+    }
+
+    #[test]
+    fn rejects_malformed_input() {
+        assert_eq!(DepthExpr::parse(""), Err(DepthParseError::UnexpectedEnd));
+        assert_eq!(DepthExpr::parse("("), Err(DepthParseError::UnexpectedEnd));
+        assert_eq!(
+            DepthExpr::parse(")"),
+            Err(DepthParseError::UnexpectedToken(")".into()))
+        );
+        assert_eq!(
+            DepthExpr::parse("(+ 1)"),
+            Err(DepthParseError::UnexpectedToken(")".into()))
+        );
+        assert!(DepthExpr::parse("(+ 1 2").is_err());
+    }
 }

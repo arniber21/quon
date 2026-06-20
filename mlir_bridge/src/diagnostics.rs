@@ -161,3 +161,97 @@ impl<'c> Diagnostics<'c> {
         self.items.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use melior::ir::Location;
+    use melior::Context;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static CAPTURED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn loc(context: &Context) -> Location<'_> {
+        Location::unknown(context)
+    }
+
+    #[test]
+    fn empty_accumulator_is_ok() {
+        let diagnostics = Diagnostics::new();
+        assert!(diagnostics.is_empty());
+        assert_eq!(diagnostics.len(), 0);
+        assert!(diagnostics.into_result().is_ok());
+    }
+
+    #[test]
+    fn errors_accumulate_in_order() {
+        let context = Context::new();
+        let mut diagnostics = Diagnostics::new();
+        diagnostics.error(loc(&context), "boom");
+        diagnostics.error(loc(&context), "bang");
+
+        assert_eq!(diagnostics.len(), 2);
+        assert!(!diagnostics.is_empty());
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message()).collect();
+        assert_eq!(messages, ["boom", "bang"]);
+        assert!(diagnostics.into_result().is_err());
+    }
+
+    #[test]
+    fn report_folds_err_and_ignores_ok() {
+        let context = Context::new();
+        let mut diagnostics = Diagnostics::new();
+
+        let ok: Result<(), &str> = Ok(());
+        diagnostics.report(loc(&context), ok);
+        assert!(diagnostics.is_empty());
+
+        let err: Result<(), &str> = Err("nope");
+        diagnostics.report(loc(&context), err);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics.iter().next().map(Diagnostic::message),
+            Some("nope")
+        );
+    }
+
+    #[test]
+    fn absorb_concatenates() {
+        let context = Context::new();
+        let mut first = Diagnostics::new();
+        first.error(loc(&context), "one");
+        let mut second = Diagnostics::new();
+        second.error(loc(&context), "two");
+        first.absorb(second);
+        assert_eq!(first.len(), 2);
+    }
+
+    #[test]
+    fn emit_is_true_when_empty() {
+        assert!(Diagnostics::new().emit());
+    }
+
+    #[test]
+    fn emit_reaches_mlir_and_sanitizes_nul() {
+        let context = Context::new();
+        CAPTURED.with(|c| c.borrow_mut().clear());
+
+        let id = context.attach_diagnostic_handler(|diagnostic| {
+            CAPTURED.with(|c| c.borrow_mut().push(diagnostic.to_string()));
+            true // handled — suppresses the default stderr print
+        });
+
+        let mut diagnostics = Diagnostics::new();
+        diagnostics.error(loc(&context), "bad\0message");
+        assert!(!diagnostics.emit());
+
+        context.detach_diagnostic_handler(id);
+
+        let captured = CAPTURED.with(|c| c.borrow().clone());
+        assert_eq!(captured.len(), 1);
+        // The interior NUL byte was replaced rather than truncating the message.
+        assert!(captured[0].contains("bad?message"), "got {:?}", captured[0]);
+    }
+}

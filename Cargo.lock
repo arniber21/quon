@@ -595,6 +595,7 @@ dependencies = [
  "backend",
  "melior",
  "mlir-sys",
+ "proptest",
  "thiserror 1.0.69",
  "zx",
 ]

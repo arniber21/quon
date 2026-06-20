@@ -12,6 +12,9 @@ backend   = { path = "../backend" }
 anyhow    = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 [build-dependencies]
 # melior's build script handles LLVM/MLIR linking.
 # Set MLIR_SYS_220_PREFIX to your LLVM 22 install prefix if not on the default search path.
