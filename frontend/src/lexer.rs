@@ -66,7 +66,6 @@ pub enum Token {
     // Literals
     Int(i64),
     Float(f64),
-    Bool(bool),
 
     // Identifiers
     Ident(String),
@@ -128,7 +127,6 @@ impl std::fmt::Display for Token {
             RAngle => ">",
             Int(n) => return write!(f, "{n}"),
             Float(x) => return write!(f, "{x}"),
-            Bool(b) => return write!(f, "{b}"),
             Ident(name) => return write!(f, "{name}"),
             Newline => "newline",
             Eof => "end of input",

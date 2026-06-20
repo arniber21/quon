@@ -33,6 +33,20 @@ fn shape(expr_src: &str) -> String {
         .to_string()
 }
 
+/// Parse `type_src` as a type alias target and pretty-print it. This exposes type-level
+/// Nat-expression precedence because the printer parenthesizes every Nat operator.
+fn type_shape(type_src: &str) -> String {
+    let src = format!("type T = {type_src}");
+    let decls = parse_stripped(&src);
+    let printed = pretty(&decls);
+    printed
+        .strip_prefix("type T = ")
+        .unwrap_or(&printed)
+        .replace('\n', " ")
+        .trim()
+        .to_string()
+}
+
 #[test]
 fn pipe_is_left_associative() {
     assert_eq!(shape("a |> b |> c"), "(a |> b) |> c");
@@ -45,8 +59,34 @@ fn pipe_binds_looser_than_at() {
 }
 
 #[test]
+fn pipe_bridges_newlines() {
+    assert_eq!(shape("a\n|>\nb"), "a |> b");
+}
+
+#[test]
 fn at_is_left_associative() {
     assert_eq!(shape("X @ 0 @ q"), "(X @ 0) @ q");
+}
+
+#[test]
+fn at_does_not_cross_newline() {
+    let tokens = lex("fn f(): Int = circuit { H\n@ 0 }").expect("lexes fine");
+    assert!(
+        parse(&tokens).is_err(),
+        "gate application must stay on one logical line"
+    );
+}
+
+#[test]
+fn juxtaposition_does_not_cross_newline() {
+    let b = body("circuit { f\nx }");
+    let stmts = match b {
+        Expr::CircuitBlock(stmts) => stmts,
+        other => panic!("expected CircuitBlock, got {other:?}"),
+    };
+    assert_eq!(stmts.len(), 2);
+    assert!(matches!(&stmts[0].0, Stmt::Expr((Expr::Var(name), _)) if name == "f"));
+    assert!(matches!(&stmts[1].0, Stmt::Expr((Expr::Var(name), _)) if name == "x"));
 }
 
 #[test]
@@ -63,6 +103,19 @@ fn additive_is_left_associative() {
 #[test]
 fn unary_minus_binds_tighter_than_multiply() {
     assert_eq!(shape("-a * b"), "(- a) * b");
+}
+
+#[test]
+fn exponent_is_right_associative() {
+    assert_eq!(shape("a ^ b ^ c"), "a ^ (b ^ c)");
+}
+
+#[test]
+fn nat_exponent_is_right_associative() {
+    assert_eq!(
+        type_shape("Circuit<1, 1, n ^ m ^ p, Clifford>"),
+        "Circuit<1, 1, (n) ^ ((m) ^ (p)), Clifford>"
+    );
 }
 
 #[test]
@@ -126,9 +179,13 @@ fn tuple_and_unit() {
 #[test]
 fn parse_error_carries_span() {
     // `=` with no body, then a stray close paren — must be Err with a span, not a panic.
-    let tokens = lex("fn f(): Int = )").expect("lexes fine");
+    let src = "fn f(): Int = )";
+    let tokens = lex(src).expect("lexes fine");
     let errs = parse(&tokens).expect_err("expected a parse error");
-    assert!(!errs.is_empty());
-    let (_, span) = &errs[0];
-    assert!(span.start <= span.end);
+    let close_paren = src.rfind(')').expect("test source contains a close paren");
+    assert!(
+        errs.iter()
+            .any(|(_, span)| span.start == close_paren && span.end == close_paren + 1),
+        "expected an error at byte {close_paren}, got {errs:?}"
+    );
 }

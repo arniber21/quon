@@ -98,9 +98,24 @@ where
 
         let pow = atom
             .clone()
-            .foldl(just(Token::Caret).ignore_then(atom).repeated(), |l, r| {
-                let sp = s2(l.1, r.1);
-                (NatExpr::Exp(Box::new(l), Box::new(r)), sp)
+            .then(
+                just(Token::Caret)
+                    .ignore_then(atom)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(first, rest)| {
+                let mut rest = rest.into_iter().rev();
+                let Some(mut rhs) = rest.next() else {
+                    return first;
+                };
+                for lhs in rest {
+                    let sp = s2(lhs.1, rhs.1);
+                    rhs = (NatExpr::Exp(Box::new(lhs), Box::new(rhs)), sp);
+                }
+                let sp = s2(first.1, rhs.1);
+                rhs = (NatExpr::Exp(Box::new(first), Box::new(rhs)), sp);
+                rhs
             });
 
         let mul = pow.clone().foldl(
@@ -564,16 +579,38 @@ where
         // ---- exponent `^` (right-assoc) ----
         let pow = neg
             .clone()
-            .foldl(just(Token::Caret).ignore_then(neg).repeated(), |l, r| {
-                let sp = s2(l.1, r.1);
-                (
+            .then(
+                just(Token::Caret)
+                    .ignore_then(neg)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(first, rest)| {
+                let mut rest = rest.into_iter().rev();
+                let Some(mut rhs) = rest.next() else {
+                    return first;
+                };
+                for lhs in rest {
+                    let sp = s2(lhs.1, rhs.1);
+                    rhs = (
+                        Expr::BinOp {
+                            op: BinOp::Pow,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
+                        sp,
+                    );
+                }
+                let sp = s2(first.1, rhs.1);
+                rhs = (
                     Expr::BinOp {
                         op: BinOp::Pow,
-                        lhs: Box::new(l),
-                        rhs: Box::new(r),
+                        lhs: Box::new(first),
+                        rhs: Box::new(rhs),
                     },
                     sp,
-                )
+                );
+                rhs
             })
             .boxed();
 
