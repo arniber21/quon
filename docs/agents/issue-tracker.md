@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all issue operations. Open and update pull requests with Graphite (`gt submit`) — see [graphite.md](./graphite.md).
 
 ## Conventions
 

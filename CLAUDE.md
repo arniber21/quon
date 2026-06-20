@@ -1,5 +1,9 @@
 ## Agent skills
 
+### Pull requests (Graphite)
+
+Branch stacking and PRs use the Graphite CLI (`gt`). Trunk is `main`. See `docs/agents/graphite.md`.
+
 ### Issue tracker
 
 Issues live in GitHub Issues (uses the `gh` CLI). See `docs/agents/issue-tracker.md`.
