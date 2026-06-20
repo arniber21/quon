@@ -1,0 +1,26 @@
+id: quantum-circ-builders-must-verify
+valid:
+  - |
+    fn build_op() -> Result<Operation, BuildError> {
+        let operation = OperationBuilder::new("quantum.circ.gate", location)
+            .build()?;
+        verify(&operation)?;
+        Ok(operation)
+    }
+  - |
+    fn other() -> i32 {
+        let x = 1;
+        x
+    }
+invalid:
+  - |
+    fn build_op() -> Result<Operation, BuildError> {
+        let operation = OperationBuilder::new("quantum.circ.gate", location)
+            .build()?;
+        Ok(operation)
+    }
+  - |
+    fn gate() -> Result<Operation, BuildError> {
+        let op = OperationBuilder::new("x", loc).build()?;
+        Ok(op)
+    }

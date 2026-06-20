@@ -1,0 +1,12 @@
+id: quantum-circ-builders-must-verify
+language: Rust
+severity: warning
+message: quantum.circ OperationBuilder helpers must call verify() before returning the op
+note: |
+  Every builder in mlir_bridge/src/dialect/quantum_circ.rs follows build()? then
+  verify(&operation)?. See docs/agents/code-quality.md.
+rule:
+  pattern: Ok($OP)
+  follows:
+    kind: let_declaration
+    pattern: let $OP = OperationBuilder::new($$$).build()?;

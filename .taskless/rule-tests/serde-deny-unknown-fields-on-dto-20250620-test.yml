@@ -1,0 +1,30 @@
+id: serde-deny-unknown-fields-on-dto
+valid:
+  - |
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct TargetDescriptor {
+        pub id: String,
+    }
+  - |
+    #[derive(Debug)]
+    pub struct InternalState {
+        pub n: usize,
+    }
+invalid:
+  - |
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    pub struct TargetDescriptor {
+        pub id: String,
+    }
+  - |
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct WireDto {
+        pub name: String,
+    }

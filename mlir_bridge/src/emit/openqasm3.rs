@@ -6,6 +6,16 @@
 // A quantum.circ.gate with native_gate=false is an emitter error —
 // the native gate decomposition pass must have run first.
 
-pub fn emit(_module: &melior::ir::Module) -> Result<String, anyhow::Error> {
+use thiserror::Error;
+
+/// Errors raised while emitting OpenQASM 3.0 from quantum.dynamic IR.
+#[derive(Debug, Error)]
+pub enum EmitError {
+    /// A gate was not lowered to native form before emission.
+    #[error("gate `{name}` is not native — run native gate decomposition first")]
+    NonNativeGate { name: String },
+}
+
+pub fn emit(_module: &melior::ir::Module) -> Result<String, EmitError> {
     todo!("OpenQASM 3.0 emitter — see issue #27")
 }

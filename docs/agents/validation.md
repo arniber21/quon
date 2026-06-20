@@ -57,6 +57,41 @@ Cursor and Claude Code hold thin stubs (`.cursor/skills/taskless/`, `.claude/ski
 npx @taskless/cli@latest init --no-interactive
 ```
 
+### Rules in this repo
+
+| Rule ID | What it catches |
+| ------- | --------------- |
+| `no-unwrap-expect-in-src` | `unwrap()` / `expect()` in library `src/` (tests and `quonc` excluded) |
+| `no-anyhow-in-lib-src` | `anyhow` imports or types in library crates — use `thiserror` instead |
+| `serde-deny-unknown-fields-on-dto` | `Deserialize` structs missing `#[serde(deny_unknown_fields)]` |
+| `quantum-circ-builders-must-verify` | `OperationBuilder` helpers that return without calling `verify()` |
+
+Authoring conventions and error-handling rationale: [code-quality.md](./code-quality.md).
+
+When adding a rule, always add matching tests under `.taskless/rule-tests/` and run `npx @taskless/cli@latest rule verify <id> --json` before committing.
+
 ## Flux (refinement types)
 
 See [README.md](../../README.md#flux-refinement-types) for installing `cargo-flux` and running refinement checks on the `flux_verify` crate.
+
+### When to run Flux
+
+Run `cargo flux -p flux_verify` locally (or rely on `.github/workflows/flux.yml`) when you:
+
+- Change `flux_verify/src/**` or add new `#[spec(...)]` annotations
+- Touch workspace Flux dependencies or the `flux` feature on a crate
+- Introduce Rust code where a refinement spec is the primary correctness argument
+
+Flux uses **nightly** and **z3**; it is intentionally excluded from the stable `cargo test` / clippy CI job. The stable workspace must still build without Flux installed.
+
+### Testing and static analysis expectations
+
+Agents should treat validation as a **stack of fast feedback loops**, not a single CI gate at the end:
+
+1. **Every PR** — fmt, clippy, `cargo test --workspace --exclude flux_verify`, Taskless on changed files (see [code-quality.md](./code-quality.md#pre-pr-checklist)).
+2. **Language / parser / typechecker work** — add or extend unit tests; keep reference-algorithm fixtures passing (`frontend/tests/reference_algorithms.rs`).
+3. **Algorithms and serializers** — add proptest coverage where an oracle or invariant exists (`backend/tests/props.rs`, `mlir_bridge/tests/depth_props.rs`); consider `cargo fuzz` for byte/text parsers.
+4. **MLIR dialect changes** — unit/integration tests in `mlir_bridge/tests/`; builders must call `verify()` (enforced by Taskless).
+5. **Refinement-heavy Rust** — Flux specs in `flux_verify` when `{v: …}` contracts clarify intent beyond tests.
+
+Slow checks (`lit`, Aer, full fuzz campaigns) are valuable before phase milestones but should not replace the fast layers above for day-to-day development.
