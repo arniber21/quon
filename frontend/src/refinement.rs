@@ -5,8 +5,8 @@
 //   (b) match branches produce circuits of different symbolic depths that must unify.
 // Pure-constant DepthExprs never invoke Z3.
 
-use std::sync::Arc;
 use crate::ast::DepthExpr;
+use std::sync::Arc;
 
 pub struct RefinementCtx {
     z3: Arc<z3::Context>,
@@ -14,12 +14,18 @@ pub struct RefinementCtx {
 
 impl RefinementCtx {
     pub fn new() -> Self {
-        Self { z3: Arc::new(z3::Context::new(&z3::Config::new())) }
+        Self {
+            z3: Arc::new(z3::Context::new(&z3::Config::new())),
+        }
     }
 
     /// Verify that `inferred` equals `annotated` under the given variable bindings.
     /// Returns Ok(()) if the constraint holds, Err with a message otherwise.
-    pub fn verify_equal(&self, _inferred: &DepthExpr, _annotated: &DepthExpr) -> Result<(), String> {
+    pub fn verify_equal(
+        &self,
+        _inferred: &DepthExpr,
+        _annotated: &DepthExpr,
+    ) -> Result<(), String> {
         todo!("Z3 refinement — see issue #13")
     }
 
@@ -48,11 +54,11 @@ impl DepthExpr {
     /// Serialize to S-expression string for MLIR DepthExprAttr.
     pub fn to_sexpr(&self) -> String {
         match self {
-            DepthExpr::Lit(n)     => n.to_string(),
-            DepthExpr::Var(v)     => v.clone(),
-            DepthExpr::Add(a, b)  => format!("(+ {} {})", a.to_sexpr(), b.to_sexpr()),
-            DepthExpr::Mul(a, b)  => format!("(* {} {})", a.to_sexpr(), b.to_sexpr()),
-            DepthExpr::Max(a, b)  => format!("(max {} {})", a.to_sexpr(), b.to_sexpr()),
+            DepthExpr::Lit(n) => n.to_string(),
+            DepthExpr::Var(v) => v.clone(),
+            DepthExpr::Add(a, b) => format!("(+ {} {})", a.to_sexpr(), b.to_sexpr()),
+            DepthExpr::Mul(a, b) => format!("(* {} {})", a.to_sexpr(), b.to_sexpr()),
+            DepthExpr::Max(a, b) => format!("(max {} {})", a.to_sexpr(), b.to_sexpr()),
         }
     }
 

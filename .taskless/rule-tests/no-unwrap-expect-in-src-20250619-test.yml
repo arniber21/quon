@@ -1,0 +1,19 @@
+id: no-unwrap-expect-in-src
+valid:
+  - |
+    fn parse(s: &str) -> Result<i32, String> {
+        s.parse().map_err(|e| e.to_string())
+    }
+  - |
+    fn ok() -> Option<i32> {
+        Some(1)
+    }
+invalid:
+  - |
+    fn bad() -> i32 {
+        "42".parse().unwrap()
+    }
+  - |
+    fn worse() -> i32 {
+        "42".parse().expect("must parse")
+    }

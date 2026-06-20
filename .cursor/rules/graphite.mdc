@@ -1,0 +1,20 @@
+---
+description: Graphite stacked PR workflow for agents
+alwaysApply: true
+---
+
+# Graphite PR workflow
+
+Use the Graphite CLI (`gt`) for branches and pull requests in this repo. Full reference: `docs/agents/graphite.md`.
+
+## Rules
+
+- Trunk is `main`. Never commit or submit PRs directly from local `main`.
+- Start work with `gt sync`, then `gt create <branch> -m "..."` stacked on trunk or an existing branch.
+- Submit with `gt submit --no-interactive --no-edit` (add `--draft` when appropriate). Do not use `gh pr create` or raw `git push` for PRs unless Graphite is unavailable.
+- Keep using `gh` for GitHub Issues (`gh issue view`, `gh issue create`, labels, comments).
+- Do not force-push `main`, skip hooks, or change git config.
+
+## If commits landed on main
+
+Move them to a feature branch, reset local `main` to `origin/main`, `gt track --parent main`, then `gt submit`.

@@ -8,7 +8,11 @@ use crate::target::{BackendTarget, ConnectivityGraph, NoiseModel};
 
 pub fn target(num_qubits: usize) -> BackendTarget {
     let edges: Vec<(usize, usize)> = (0..num_qubits)
-        .flat_map(|i| (0..num_qubits).filter(move |&j| j != i).map(move |j| (i, j)))
+        .flat_map(|i| {
+            (0..num_qubits)
+                .filter(move |&j| j != i)
+                .map(move |j| (i, j))
+        })
         .collect();
 
     BackendTarget {
@@ -16,10 +20,12 @@ pub fn target(num_qubits: usize) -> BackendTarget {
         num_qubits,
         topology: ConnectivityGraph::new(num_qubits, edges),
         native_gates: vec![
-            "h", "x", "y", "z", "s", "sdg", "t", "tdg",
-            "rx", "ry", "rz", "cx", "cy", "cz", "swap",
+            "h", "x", "y", "z", "s", "sdg", "t", "tdg", "rx", "ry", "rz", "cx", "cy", "cz", "swap",
             "ccx", "u1", "u2", "u3",
-        ].into_iter().map(String::from).collect(),
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
         noise: NoiseModel::default(),
         meas_latency_us: 0.0,
         supports_mid_circuit_meas: true,

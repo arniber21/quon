@@ -1,6 +1,8 @@
 # Use Melior for MLIR C API bindings
 
-All MLIR integration goes through [Melior](https://github.com/raviqqe/melior) rather than raw `mlir-sys` bindings or hand-written `extern "C"` declarations. Melior wraps the MLIR C API with safe Rust abstractions for the pass manager, module construction, and IR walking. For custom dialect registration (`quantum.circ`, `quantum.dynamic`), we use Melior's `#[melior::dialect]` proc-macro system.
+All MLIR integration goes through [Melior](https://github.com/raviqqe/melior) (0.27.x, `mlir-sys` 220.x) rather than raw `mlir-sys` bindings or hand-written `extern "C"` declarations. Melior wraps the MLIR C API with safe Rust abstractions for the pass manager, module construction, and IR walking. For custom dialect registration (`quantum.circ`, `quantum.dynamic`), we use Melior's `#[melior::dialect]` proc-macro system.
+
+**Toolchain:** LLVM **22** is required. Set `MLIR_SYS_220_PREFIX` if LLVM 22 is not on the default search path. See `README.md` for install instructions (apt.llvm.org on Linux, `brew install llvm@22` on macOS).
 
 ## Considered Options
 

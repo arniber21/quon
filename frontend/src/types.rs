@@ -17,7 +17,12 @@ pub enum Ty {
     Tuple(Vec<Ty>),
     Fn(Box<Ty>, Box<Ty>),
     Linear(Box<Ty>, Box<Ty>),
-    Circuit { n: u64, m: u64, d: DepthExpr, c: CliffordClass },
+    Circuit {
+        n: u64,
+        m: u64,
+        d: DepthExpr,
+        c: CliffordClass,
+    },
     Q(Box<Ty>),
     Matrix(u64, u64, Box<Ty>),
     Var(Name),
@@ -25,6 +30,9 @@ pub enum Ty {
 
 impl Ty {
     pub fn is_linear(&self) -> bool {
-        matches!(self, Ty::Qubit | Ty::QReg(_) | Ty::Circuit { .. } | Ty::Linear(..))
+        matches!(
+            self,
+            Ty::Qubit | Ty::QReg(_) | Ty::Circuit { .. } | Ty::Linear(..)
+        )
     }
 }

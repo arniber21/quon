@@ -1,5 +1,9 @@
 ## Agent skills
 
+### Pull requests (Graphite)
+
+Branch stacking and PRs use the Graphite CLI (`gt`). Trunk is `main`. See `docs/agents/graphite.md`.
+
 ### Issue tracker
 
 Issues live in GitHub Issues (uses the `gh` CLI). See `docs/agents/issue-tracker.md`.
@@ -11,3 +15,7 @@ Default label vocabulary: needs-triage, needs-info, ready-for-agent, ready-for-h
 ### Domain docs
 
 Single-context repo — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Validation
+
+Taskless ast-grep rules and Flux refinement checks — see `docs/agents/validation.md`.

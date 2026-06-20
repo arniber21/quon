@@ -1283,11 +1283,12 @@ cargo build --release
 ./target/release/quonc program.qn --target generic_openqasm --emit-qasm
 ```
 
-`mlir_bridge/build.rs` locates the pre-built LLVM/MLIR shared libraries and emits the appropriate `cargo:rustc-link-lib` and `cargo:rustc-link-search` directives. Set `LLVM_SYS_PREFIX` (or `MLIR_SYS_PREFIX`) to point at the LLVM/MLIR install prefix if not on the default path.
+`mlir_bridge/build.rs` delegates LLVM/MLIR library discovery to Melior's build script, which emits the appropriate `cargo:rustc-link-lib` and `cargo:rustc-link-search` directives. If LLVM 22 is not on the default search path, set `MLIR_SYS_220_PREFIX` to the LLVM/MLIR install prefix (e.g. `/usr/lib/llvm-22` on Linux, `$(brew --prefix llvm@22)` on macOS).
 
 **Prerequisites:**
-- LLVM/MLIR built from monorepo at a pinned commit, with the C API enabled (`-DLLVM_ENABLE_PROJECTS=mlir`, `-DMLIR_ENABLE_BINDINGS_PYTHON=OFF`)
-- `libz3` (C API) for the refinement checker in `frontend`
+- **LLVM 22 + MLIR** — built from the monorepo or installed via apt.llvm.org (`./llvm.sh 22`) or Homebrew (`brew install llvm@22`), with the C API enabled (`-DLLVM_ENABLE_PROJECTS=mlir`, `-DMLIR_ENABLE_BINDINGS_PYTHON=OFF`)
+- **Melior 0.27.x** — pinned in the workspace `Cargo.toml`; pulls in `mlir-sys` 220.x
+- **`libz3`** (C API) for the refinement checker in `frontend`
 - Rust stable toolchain (edition 2021)
 
 **No C++ compiler required at build time.**
