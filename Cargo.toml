@@ -12,8 +12,8 @@ ariadne  = "0.4"   # span-aware error reporting, pairs with chumsky
 # ZX graph
 petgraph = "0.6"
 
-# MLIR/LLVM (LLVM 19 required — set LLVM_SYS_PREFIX if not on PATH)
-melior = { version = "0.19", features = ["ods-dialects"] }
+# MLIR/LLVM (LLVM 22 required — set MLIR_SYS_220_PREFIX if not on PATH)
+melior = "0.27"
 
 # Backend
 serde      = { version = "1", features = ["derive"] }

@@ -17,14 +17,14 @@
 //     9. sabre_routing
 //    10. depth_scheduling
 
-pub mod gate_cancellation;
-pub mod rotation_merging;
-pub mod compiler_uncomputation;
-pub mod zx_simplification;
-pub mod clifford_t_opt;
-pub mod measurement_deferral;
 pub mod classical_region_fusion;
-pub mod native_gate_decomp;
-pub mod sabre_routing;
+pub mod clifford_t_opt;
+pub mod compiler_uncomputation;
 pub mod depth_scheduling;
+pub mod gate_cancellation;
 pub mod linearity_verifier;
+pub mod measurement_deferral;
+pub mod native_gate_decomp;
+pub mod rotation_merging;
+pub mod sabre_routing;
+pub mod zx_simplification;

@@ -12,5 +12,4 @@ anyhow  = { workspace = true }
 
 [build-dependencies]
 # melior's build script handles LLVM/MLIR linking.
-# Set LLVM_SYS_PREFIX (or MLIR_SYS_PREFIX) to your LLVM 19 install prefix
-# if the libraries are not on the default search path.
+# Set MLIR_SYS_220_PREFIX to your LLVM 22 install prefix if not on the default search path.
