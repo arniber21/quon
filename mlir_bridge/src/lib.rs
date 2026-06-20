@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+pub mod diagnostics;
 pub mod dialect;
 pub mod emit;
 pub mod passes;
