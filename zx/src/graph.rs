@@ -4,7 +4,10 @@
 use petgraph::stable_graph::StableGraph;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SpiderColor { Z, X }
+pub enum SpiderColor {
+    Z,
+    X,
+}
 
 #[derive(Debug, Clone)]
 pub struct Spider {
@@ -23,6 +26,12 @@ pub struct ZXGraph {
     pub graph: StableGraph<Spider, WireKind>,
     pub inputs: Vec<petgraph::stable_graph::NodeIndex>,
     pub outputs: Vec<petgraph::stable_graph::NodeIndex>,
+}
+
+impl Default for ZXGraph {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ZXGraph {

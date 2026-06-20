@@ -92,34 +92,59 @@ pub enum Expr {
     Var(Name),
 
     // Functions
-    Lam { param: Name, param_ty: Sp<Type>, body: Box<Sp<Expr>> },
+    Lam {
+        param: Name,
+        param_ty: Sp<Type>,
+        body: Box<Sp<Expr>>,
+    },
     App(Box<Sp<Expr>>, Box<Sp<Expr>>),
 
     // Let
-    Let { pat: Sp<Pat>, rhs: Box<Sp<Expr>>, body: Box<Sp<Expr>> },
+    Let {
+        pat: Sp<Pat>,
+        rhs: Box<Sp<Expr>>,
+        body: Box<Sp<Expr>>,
+    },
 
     // Control
-    If { cond: Box<Sp<Expr>>, then: Box<Sp<Expr>>, else_: Box<Sp<Expr>> },
-    Match { scrutinee: Box<Sp<Expr>>, arms: Vec<(Sp<Pat>, Sp<Expr>)> },
+    If {
+        cond: Box<Sp<Expr>>,
+        then: Box<Sp<Expr>>,
+        else_: Box<Sp<Expr>>,
+    },
+    Match {
+        scrutinee: Box<Sp<Expr>>,
+        arms: Vec<(Sp<Pat>, Sp<Expr>)>,
+    },
 
     // Tuples
     Tuple(Vec<Sp<Expr>>),
 
     // Circuit forms
     CircuitBlock(Vec<Sp<Stmt>>),
-    Compose(Box<Sp<Expr>>, Box<Sp<Expr>>),  // |>
+    Compose(Box<Sp<Expr>>, Box<Sp<Expr>>), // |>
     Par(Box<Sp<Expr>>, Box<Sp<Expr>>),
     Adjoint(Box<Sp<Expr>>),
     Controlled(Box<Sp<Expr>>),
-    GateApp { gate: Box<Sp<Expr>>, qubits: Box<Sp<Expr>> }, // @
+    GateApp {
+        gate: Box<Sp<Expr>>,
+        qubits: Box<Sp<Expr>>,
+    }, // @
 
     // Monadic (post-desugaring)
-    RunBlock(Vec<Sp<Stmt>>),   // pre-desugaring
-    Bind { rhs: Box<Sp<Expr>>, param: Name, body: Box<Sp<Expr>> }, // post-desugaring
+    RunBlock(Vec<Sp<Stmt>>), // pre-desugaring
+    Bind {
+        rhs: Box<Sp<Expr>>,
+        param: Name,
+        body: Box<Sp<Expr>>,
+    }, // post-desugaring
     Return(Box<Sp<Expr>>),
 
     // Borrow
-    Borrow { name: Name, body: Box<Sp<Expr>> },
+    Borrow {
+        name: Name,
+        body: Box<Sp<Expr>>,
+    },
 
     // Type annotation
     Ascribe(Box<Sp<Expr>>, Sp<Type>),
@@ -127,9 +152,9 @@ pub enum Expr {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-    Bind { name: Name, rhs: Sp<Expr> },          // x <- e
-    Let  { pat: Sp<Pat>, rhs: Sp<Expr> },         // let p = e
-    Expr(Sp<Expr>),                               // e (last statement)
+    Bind { name: Name, rhs: Sp<Expr> },  // x <- e
+    Let { pat: Sp<Pat>, rhs: Sp<Expr> }, // let p = e
+    Expr(Sp<Expr>),                      // e (last statement)
 }
 
 #[derive(Debug, Clone)]

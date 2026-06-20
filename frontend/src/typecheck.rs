@@ -4,12 +4,12 @@
 //   Γ  — unrestricted context: HashMap<Name, Ty>
 //   Δ  — linear context: HashMap<Name, Ty>, physically removed on use
 
-use std::collections::HashMap;
 use crate::ast::{Decl, Expr, Name};
 use crate::lexer::Sp;
 use crate::types::Ty;
+use std::collections::HashMap;
 
-pub type Ctx = HashMap<Name, Ty>;   // unrestricted Γ
+pub type Ctx = HashMap<Name, Ty>; // unrestricted Γ
 pub type LinCtx = HashMap<Name, Ty>; // linear Δ
 
 #[derive(Debug, thiserror::Error)]
@@ -47,7 +47,12 @@ impl TypeChecker {
         todo!()
     }
 
-    pub fn check(&mut self, _delta: &mut LinCtx, _expr: &Sp<Expr>, _ty: &Ty) -> Result<(), TypeError> {
+    pub fn check(
+        &mut self,
+        _delta: &mut LinCtx,
+        _expr: &Sp<Expr>,
+        _ty: &Ty,
+    ) -> Result<(), TypeError> {
         todo!()
     }
 }
