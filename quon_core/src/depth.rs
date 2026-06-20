@@ -1,10 +1,11 @@
-//! `DepthExpr` — the symbolic gate-depth bound carried by `quantum.circ` ops.
+//! `DepthExpr` — the symbolic gate-depth bound of a circuit.
 //!
 //! A circuit's depth index `d` (the third parameter of `Circuit<n, m, d, C>`)
 //! is a symbolic arithmetic expression over static `Nat` literals and runtime
-//! `Int` variables. Per ADR-0002 it is stored as the `depth` op attribute,
-//! serialized as an S-expression string, and reconstructed into this enum by
-//! the optimization passes that combine or check depth bounds.
+//! `Int` variables. The frontend carries it on `Circuit` types; downstream it is
+//! serialized as an S-expression string into the `depth` op attribute of
+//! `quantum.circ` ops (ADR-0002) and reconstructed by the passes that combine or
+//! check depth bounds.
 //!
 //! Grammar (S-expressions):
 //!
@@ -15,8 +16,8 @@
 //!   var     := identifier (first char alphabetic or '_')
 //! ```
 //!
-//! Composition rules (SPEC §6.2): `compose` adds depths, `tensor` takes their
-//! `max`, `controlled` adds one.
+//! Composition rules: sequential composition (`|>`) adds depths, parallel
+//! composition (`par`) takes their `max`, and `controlled` adds one.
 
 use std::fmt;
 
@@ -60,19 +61,24 @@ impl DepthExpr {
         DepthExpr::Nat(0)
     }
 
-    /// Sequential composition: `self + other`, the depth rule for `compose`.
-    pub fn plus(self, other: DepthExpr) -> Self {
+    /// Sequential composition (`|>`): `self + other`. Depths add.
+    pub fn seq(self, other: DepthExpr) -> Self {
         DepthExpr::Add(Box::new(self), Box::new(other))
     }
 
-    /// Parallel composition: `max(self, other)`, the depth rule for `tensor`.
-    pub fn max_with(self, other: DepthExpr) -> Self {
+    /// Parallel composition (`par`): `max(self, other)`. Depth is the max.
+    pub fn par(self, other: DepthExpr) -> Self {
         DepthExpr::Max(Box::new(self), Box::new(other))
     }
 
-    /// Adds a constant, the depth rule for `controlled` (`d + 1`).
-    pub fn plus_const(self, n: u64) -> Self {
-        self.plus(DepthExpr::Nat(n))
+    /// `k`-fold repetition: `k * d`.
+    pub fn repeat(k: DepthExpr, d: DepthExpr) -> Self {
+        DepthExpr::Mul(Box::new(k), Box::new(d))
+    }
+
+    /// Control on a qubit: `self + 1`.
+    pub fn controlled(self) -> Self {
+        self.seq(DepthExpr::Nat(1))
     }
 
     /// Serializes to the canonical S-expression form.
@@ -163,9 +169,9 @@ fn parse_expr(tokens: &[String], cursor: &mut usize) -> Result<DepthExpr, DepthP
             }
             *cursor += 1;
             match op.as_str() {
-                "+" => Ok(lhs.plus(rhs)),
-                "max" => Ok(lhs.max_with(rhs)),
-                "*" => Ok(DepthExpr::Mul(Box::new(lhs), Box::new(rhs))),
+                "+" => Ok(lhs.seq(rhs)),
+                "max" => Ok(lhs.par(rhs)),
+                "*" => Ok(DepthExpr::repeat(lhs, rhs)),
                 other => Err(DepthParseError::UnknownOperator(other.to_string())),
             }
         }
@@ -191,8 +197,8 @@ mod tests {
     #[test]
     fn roundtrips_through_sexpr() {
         let expr = DepthExpr::Nat(2)
-            .plus(DepthExpr::Var("n".into()))
-            .max_with(DepthExpr::Nat(1).plus_const(1));
+            .seq(DepthExpr::Var("n".into()))
+            .par(DepthExpr::Nat(1).controlled());
         let text = expr.to_sexpr();
         assert_eq!(DepthExpr::parse(&text), Ok(expr));
     }
@@ -221,30 +227,27 @@ mod tests {
 
     #[test]
     fn canonical_forms() {
-        assert_eq!(DepthExpr::Nat(0).to_sexpr(), "0");
+        assert_eq!(DepthExpr::zero().to_sexpr(), "0");
         assert_eq!(
-            DepthExpr::Nat(1).plus(DepthExpr::Nat(2)).to_sexpr(),
+            DepthExpr::Nat(1).seq(DepthExpr::Nat(2)).to_sexpr(),
             "(+ 1 2)"
         );
         assert_eq!(
-            DepthExpr::Var("d".into()).plus_const(1).to_sexpr(),
+            DepthExpr::Var("d".into()).controlled().to_sexpr(),
             "(+ d 1)"
         );
     }
 
     #[test]
     fn mul_round_trips() {
-        let expr = DepthExpr::Mul(
-            Box::new(DepthExpr::Var("n".into())),
-            Box::new(DepthExpr::Nat(4)),
-        );
+        let expr = DepthExpr::repeat(DepthExpr::Var("n".into()), DepthExpr::Nat(4));
         assert_eq!(expr.to_sexpr(), "(* n 4)");
         assert_eq!(DepthExpr::parse("(* n 4)"), Ok(expr));
     }
 
     #[test]
     fn parsing_is_whitespace_insensitive() {
-        let expected = DepthExpr::Nat(1).plus(DepthExpr::Nat(2));
+        let expected = DepthExpr::Nat(1).seq(DepthExpr::Nat(2));
         assert_eq!(DepthExpr::parse("(+  1\t2)"), Ok(expected.clone()));
         assert_eq!(DepthExpr::parse("  (+ 1 2)  "), Ok(expected));
     }
@@ -252,8 +255,8 @@ mod tests {
     #[test]
     fn parses_deeply_nested() {
         let expr = DepthExpr::Nat(1)
-            .plus(DepthExpr::Nat(2))
-            .max_with(DepthExpr::Var("k".into()).plus_const(3));
+            .seq(DepthExpr::Nat(2))
+            .par(DepthExpr::Var("k".into()).controlled());
         assert_eq!(DepthExpr::parse(&expr.to_sexpr()), Ok(expr));
     }
 

@@ -1,10 +1,10 @@
 //! Property-based ("fuzzed") tests for `DepthExpr` S-expression ser/de.
 //!
-//! These run under `cargo test`. For continuous fuzzing, see `fuzz/` (nightly
-//! `cargo fuzz`), which exercises the same invariants on raw bytes.
+//! This is the test surface for the depth codec; it lives with the type in
+//! `quon_core` rather than in any crate that consumes it.
 
-use mlir_bridge::dialect::depth::DepthExpr;
 use proptest::prelude::*;
+use quon_core::DepthExpr;
 
 /// A recursive generator for arbitrary depth expressions. Var names are
 /// lowercase identifiers, which never collide with the `+`/`*`/`max` operators
@@ -16,10 +16,9 @@ fn depth_strategy() -> impl Strategy<Value = DepthExpr> {
     ];
     leaf.prop_recursive(6, 64, 2, |inner| {
         prop_oneof![
-            (inner.clone(), inner.clone()).prop_map(|(a, b)| a.plus(b)),
-            (inner.clone(), inner.clone())
-                .prop_map(|(a, b)| DepthExpr::Mul(Box::new(a), Box::new(b))),
-            (inner.clone(), inner.clone()).prop_map(|(a, b)| a.max_with(b)),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| a.seq(b)),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| DepthExpr::repeat(a, b)),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| a.par(b)),
         ]
     })
 }

@@ -21,7 +21,7 @@ _Avoid_: Q type, monadic computation
 **Linear context**: The typing context `Δ` tracking resources that must be consumed exactly once. Distinct from the unrestricted context `Γ` for classical values. Represented as a `HashMap<Name, Type>` with physical removal on use.
 _Avoid_: linear environment, usage context
 
-**DepthExpr**: A symbolic arithmetic expression over static `Nat` literals and runtime `Int` variables representing a circuit's gate depth bound. Operators: addition, multiplication, max. Stored as a Rust enum; serialized as S-expressions in MLIR attributes.
+**DepthExpr**: A symbolic arithmetic expression over static `Nat` literals and runtime `Int` variables representing a circuit's gate depth bound. Operators: addition, multiplication, max. Defined once in the MLIR-free `quon_core` crate and shared by both `frontend` and `mlir_bridge` — the literal variant is `Nat`, the composition algebra is `seq` (sequential, `+`) / `par` (parallel, `max`) / `repeat` (`*`) / `controlled` (`+1`), and it serializes to S-expressions for MLIR attributes. Distinct from the surface `NatExpr` (full `Nat` arithmetic with holes), which the type checker normalizes into a `DepthExpr`.
 _Avoid_: depth expression, depth annotation, depth index
 
 **Clifford classification**: An inferred two-valued label (`Clifford` | `Universal`) on every `Circuit` type. Inferred bottom-up from gate primitives during type checking; never annotated by the user. User-supplied annotations are checked against the inferred value.

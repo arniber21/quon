@@ -11,8 +11,8 @@ use melior::ir::{
     Value,
 };
 
-use mlir_bridge::dialect::depth::DepthExpr;
 use mlir_bridge::dialect::quantum_circ as qc;
+use quon_core::DepthExpr;
 
 /// A context with the `quantum.circ` dialect registered.
 pub fn context() -> Context {

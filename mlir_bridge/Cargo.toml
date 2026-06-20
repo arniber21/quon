@@ -9,6 +9,7 @@ melior    = { workspace = true }
 mlir-sys  = "220"           # raw C API — used only at the diagnostics FFI boundary
 zx        = { path = "../zx" }
 backend   = { path = "../backend" }
+quon_core = { path = "../quon_core" } # shared DepthExpr (MLIR-free)
 thiserror = { workspace = true }
 
 [dev-dependencies]

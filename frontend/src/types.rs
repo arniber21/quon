@@ -1,7 +1,8 @@
 // Type definitions and kind checker — see SPEC.md §3.1–§3.2
 // Canonical runtime representations of Quon types used by the type checker.
 
-use crate::ast::{CliffordClass, DepthExpr, Name};
+use crate::ast::{CliffordClass, Name};
+use quon_core::DepthExpr;
 
 /// Fully resolved Quon type (post kind-checking).
 #[derive(Debug, Clone, PartialEq)]

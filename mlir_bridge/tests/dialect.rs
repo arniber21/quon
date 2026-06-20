@@ -5,8 +5,8 @@ mod support;
 
 use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike, Value};
 
-use mlir_bridge::dialect::depth::DepthExpr;
 use mlir_bridge::dialect::quantum_circ as qc;
+use quon_core::DepthExpr;
 
 use support::{bool_attr, depth_attr, generic_op, i64_attr, str_attr};
 
@@ -172,7 +172,7 @@ fn depth_attribute_serializes_as_sexpr() {
     let c0 = Value::from(block.argument(0).unwrap());
     let c1 = Value::from(block.argument(1).unwrap());
 
-    let depth = DepthExpr::Nat(1).plus(DepthExpr::Var("n".into()));
+    let depth = DepthExpr::Nat(1).seq(DepthExpr::Var("n".into()));
     let compose = qc::compose(&context, c0, c1, &depth, location).unwrap();
     assert!(compose.to_string().contains(r#"depth = "(+ 1 n)""#));
 }

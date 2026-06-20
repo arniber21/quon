@@ -5,7 +5,7 @@
 //   (b) match branches produce circuits of different symbolic depths that must unify.
 // Pure-constant DepthExprs never invoke Z3.
 
-use crate::ast::DepthExpr;
+use quon_core::DepthExpr;
 use std::sync::Arc;
 
 pub struct RefinementCtx {
@@ -35,35 +35,5 @@ impl RefinementCtx {
     }
 }
 
-impl DepthExpr {
-    /// Combine two depths under sequential composition (|>): d1 + d2.
-    pub fn seq(self, rhs: Self) -> Self {
-        DepthExpr::Add(Box::new(self), Box::new(rhs))
-    }
-
-    /// Combine two depths under parallel composition (par): max(d1, d2).
-    pub fn par(self, rhs: Self) -> Self {
-        DepthExpr::Max(Box::new(self), Box::new(rhs))
-    }
-
-    /// Scale a depth by a repeat count k: k * d.
-    pub fn repeat(k: Self, d: Self) -> Self {
-        DepthExpr::Mul(Box::new(k), Box::new(d))
-    }
-
-    /// Serialize to S-expression string for MLIR DepthExprAttr.
-    pub fn to_sexpr(&self) -> String {
-        match self {
-            DepthExpr::Lit(n) => n.to_string(),
-            DepthExpr::Var(v) => v.clone(),
-            DepthExpr::Add(a, b) => format!("(+ {} {})", a.to_sexpr(), b.to_sexpr()),
-            DepthExpr::Mul(a, b) => format!("(* {} {})", a.to_sexpr(), b.to_sexpr()),
-            DepthExpr::Max(a, b) => format!("(max {} {})", a.to_sexpr(), b.to_sexpr()),
-        }
-    }
-
-    /// Deserialize from S-expression string.
-    pub fn from_sexpr(_s: &str) -> Result<Self, String> {
-        todo!("DepthExpr S-expr parser")
-    }
-}
+// The `DepthExpr` algebra (`seq`/`par`/`repeat`/`controlled`) and the S-expr
+// codec (`to_sexpr`/`parse`) live in `quon_core`, shared with `mlir_bridge`.

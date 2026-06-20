@@ -1,0 +1,13 @@
+[package]
+name    = "quon_core"
+version = "0.1.0"
+edition = "2024"
+
+# MLIR-free shared types for the Quon workspace. Depended on by both `frontend`
+# and `mlir_bridge`, so this crate must never pull in `melior`/LLVM — that keeps
+# the frontend build (chumsky + z3 only) from having to link MLIR.
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

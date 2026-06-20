@@ -9,6 +9,7 @@ z3        = { workspace = true }
 thiserror = { workspace = true }
 ariadne   = { workspace = true }
 anyhow    = { workspace = true }
+quon_core = { path = "../quon_core" } # shared DepthExpr (MLIR-free)
 
 [dev-dependencies]
 proptest  = { workspace = true }
