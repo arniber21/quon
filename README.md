@@ -11,6 +11,7 @@ An MLIR-based optimizing compiler for quantum programs. Accepts programs in the 
 | Melior | **0.27.x** | Pinned in the workspace `Cargo.toml`; requires LLVM 22 |
 | libz3 | any recent | C API; required at link time by the `z3` crate (`frontend`) |
 | Python + Qiskit Aer | 3.10+ | Simulation verification only (Phase 6+) |
+| Flux (optional) | nightly + z3 | Refinement types in `flux_verify`; install via [Flux install script](https://flux-rs.github.io/flux/guide/install.html) |
 
 If LLVM 22 is not on your default search path, set:
 
@@ -54,6 +55,34 @@ python test/verify/bell.py   # end-to-end Aer verification (Phase 6+)
 
 CI (`.github/workflows/ci.yml`) runs `fmt`, `clippy`, `cargo build --release`, and `cargo test --workspace` on every push and pull request.
 
+### Taskless validation
+
+Project-specific ast-grep rules live in `.taskless/rules/`. Run locally:
+
+```bash
+npx @taskless/cli@latest check
+```
+
+CI: `.github/workflows/taskless.yml`. See [docs/agents/validation.md](docs/agents/validation.md).
+
+### Flux refinement types
+
+The `flux_verify` crate demonstrates Flux refinement types on a **nightly** toolchain (the rest of the workspace stays on stable).
+
+**Install Flux** (once per machine):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/flux-rs/flux/main/install.sh | bash
+```
+
+**Run checks:**
+
+```bash
+cargo flux -p flux_verify
+```
+
+CI: `.github/workflows/flux.yml` (path-filtered to `flux_verify/`). Requires z3 on PATH.
+
 ## Workspace
 
 | Crate | Role |
@@ -63,6 +92,7 @@ CI (`.github/workflows/ci.yml`) runs `fmt`, `clippy`, `cargo build --release`, a
 | `zx` | ZX-graph data structure (`petgraph::StableGraph`) and rewrite engine |
 | `mlir_bridge` | Melior wrappers, dialect registration, optimization passes, OpenQASM 3.0 emitter |
 | `backend` | `BackendTarget`, noise model, connectivity graph, JSON device loader |
+| `flux_verify` | Flux refinement-type examples (nightly; `cargo flux -p flux_verify`) |
 
 ## Documentation
 

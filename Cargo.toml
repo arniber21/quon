@@ -1,5 +1,5 @@
 [workspace]
-members = ["quonc", "frontend", "zx", "mlir_bridge", "backend"]
+members = ["quonc", "frontend", "zx", "mlir_bridge", "backend", "flux_verify"]
 resolver = "2"
 
 [workspace.dependencies]

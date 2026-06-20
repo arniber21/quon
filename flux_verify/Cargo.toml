@@ -1,0 +1,12 @@
+[package]
+name = "flux_verify"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Flux refinement-type examples and checks for the Quon workspace"
+
+[package.metadata.flux]
+enabled = true
+
+[dependencies]
+flux-rs = { git = "https://github.com/flux-rs/flux.git" }
