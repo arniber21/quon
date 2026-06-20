@@ -47,13 +47,13 @@ cargo build --release
 
 ```bash
 cargo fmt --all -- --check   # formatting (also enforced in CI)
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace       # unit + integration tests across all crates
+cargo clippy --workspace --exclude flux_verify --all-targets -- -D warnings
+cargo test --workspace --exclude flux_verify   # unit + integration tests (stable crates)
 lit test/lit/                # IR round-trip and emission FileCheck tests (later phases)
 python test/verify/bell.py   # end-to-end Aer verification (Phase 6+)
 ```
 
-CI (`.github/workflows/ci.yml`) runs `fmt`, `clippy`, `cargo build --release`, and `cargo test --workspace` on every push and pull request.
+CI (`.github/workflows/ci.yml`) runs the same stable checks on every push and pull request. `flux_verify` is checked separately via `cargo flux` in `.github/workflows/flux.yml`.
 
 ### Taskless validation
 
