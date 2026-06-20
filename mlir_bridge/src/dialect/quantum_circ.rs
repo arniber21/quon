@@ -123,11 +123,17 @@ fn i64_type(context: &Context) -> Type<'_> {
     IntegerType::new(context, 64).into()
 }
 
-fn is_qubit_type(r#type: Type) -> bool {
+/// True if `r#type` is the opaque `!quantum.qubit` type.
+///
+/// The dialect's single source of truth for qubit identity — verifiers and
+/// passes call this rather than re-deriving the printed-form comparison. Per
+/// ADR-0004, identity is by printed form because the dialect is unregistered.
+pub fn is_qubit_type(r#type: Type) -> bool {
     r#type.to_string() == QUBIT_TYPE
 }
 
-fn is_circuit_type(r#type: Type) -> bool {
+/// True if `r#type` is the opaque `!quantum.circ` circuit-value type.
+pub fn is_circuit_type(r#type: Type) -> bool {
     r#type.to_string() == CIRCUIT_TYPE
 }
 
@@ -540,6 +546,23 @@ fn verify_return<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<
 
 // --- Builders --------------------------------------------------------------
 
+/// The `depth` attribute pair carried by every depth-bearing op: a serialized
+/// [`DepthExpr`] S-expression (ADR-0002). One definition for all builders.
+fn depth_attribute<'c>(context: &'c Context, depth: &DepthExpr) -> (Identifier<'c>, Attribute<'c>) {
+    (
+        Identifier::new(context, attr::DEPTH),
+        StringAttribute::new(context, &depth.to_sexpr()).into(),
+    )
+}
+
+/// Builds an op and runs the dialect [`verify`]er on it. The single place the
+/// build→verify→return tail lives, so a malformed op can never escape a builder.
+fn finish(builder: OperationBuilder) -> Result<Operation, BuildError> {
+    let operation = builder.build()?;
+    verify(&operation)?;
+    Ok(operation)
+}
+
 /// Builds a `quantum.circ.func` op from a populated region.
 #[allow(clippy::too_many_arguments)]
 pub fn func<'c>(
@@ -553,33 +576,29 @@ pub fn func<'c>(
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
     let i64_type = i64_type(context);
-    let operation = OperationBuilder::new(op::FUNC, location)
-        .add_attributes(&[
-            (
-                Identifier::new(context, attr::SYM_NAME),
-                StringAttribute::new(context, name).into(),
-            ),
-            (
-                Identifier::new(context, attr::IN_QUBITS),
-                IntegerAttribute::new(i64_type, in_qubits).into(),
-            ),
-            (
-                Identifier::new(context, attr::OUT_QUBITS),
-                IntegerAttribute::new(i64_type, out_qubits).into(),
-            ),
-            (
-                Identifier::new(context, attr::DEPTH),
-                StringAttribute::new(context, &depth.to_sexpr()).into(),
-            ),
-            (
-                Identifier::new(context, attr::CLIFFORD),
-                BoolAttribute::new(context, clifford).into(),
-            ),
-        ])
-        .add_regions([body])
-        .build()?;
-    verify(&operation)?;
-    Ok(operation)
+    finish(
+        OperationBuilder::new(op::FUNC, location)
+            .add_attributes(&[
+                (
+                    Identifier::new(context, attr::SYM_NAME),
+                    StringAttribute::new(context, name).into(),
+                ),
+                (
+                    Identifier::new(context, attr::IN_QUBITS),
+                    IntegerAttribute::new(i64_type, in_qubits).into(),
+                ),
+                (
+                    Identifier::new(context, attr::OUT_QUBITS),
+                    IntegerAttribute::new(i64_type, out_qubits).into(),
+                ),
+                depth_attribute(context, depth),
+                (
+                    Identifier::new(context, attr::CLIFFORD),
+                    BoolAttribute::new(context, clifford).into(),
+                ),
+            ])
+            .add_regions([body]),
+    )
 }
 
 /// Builds a `quantum.circ.gate` op threading `qubits` through a named gate.
@@ -592,26 +611,25 @@ pub fn gate<'c>(
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
     let results = vec![qubit_type(context); qubits.len()];
-    let operation = OperationBuilder::new(op::GATE, location)
-        .add_operands(qubits)
-        .add_results(&results)
-        .add_attributes(&[
-            (
-                Identifier::new(context, attr::GATE_NAME),
-                StringAttribute::new(context, name).into(),
-            ),
-            (
-                Identifier::new(context, attr::DEPTH_CONTRIBUTION),
-                IntegerAttribute::new(i64_type(context), depth_contribution).into(),
-            ),
-            (
-                Identifier::new(context, attr::CLIFFORD),
-                BoolAttribute::new(context, clifford).into(),
-            ),
-        ])
-        .build()?;
-    verify(&operation)?;
-    Ok(operation)
+    finish(
+        OperationBuilder::new(op::GATE, location)
+            .add_operands(qubits)
+            .add_results(&results)
+            .add_attributes(&[
+                (
+                    Identifier::new(context, attr::GATE_NAME),
+                    StringAttribute::new(context, name).into(),
+                ),
+                (
+                    Identifier::new(context, attr::DEPTH_CONTRIBUTION),
+                    IntegerAttribute::new(i64_type(context), depth_contribution).into(),
+                ),
+                (
+                    Identifier::new(context, attr::CLIFFORD),
+                    BoolAttribute::new(context, clifford).into(),
+                ),
+            ]),
+    )
 }
 
 fn binary_circuit<'c>(
@@ -622,16 +640,12 @@ fn binary_circuit<'c>(
     depth: &DepthExpr,
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
-    let operation = OperationBuilder::new(op, location)
-        .add_operands(&[lhs, rhs])
-        .add_results(&[circuit_type(context)])
-        .add_attributes(&[(
-            Identifier::new(context, attr::DEPTH),
-            StringAttribute::new(context, &depth.to_sexpr()).into(),
-        )])
-        .build()?;
-    verify(&operation)?;
-    Ok(operation)
+    finish(
+        OperationBuilder::new(op, location)
+            .add_operands(&[lhs, rhs])
+            .add_results(&[circuit_type(context)])
+            .add_attributes(&[depth_attribute(context, depth)]),
+    )
 }
 
 /// Builds a `quantum.circ.compose` op (sequential composition; depth adds).
@@ -663,16 +677,12 @@ pub fn adjoint<'c>(
     depth: &DepthExpr,
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
-    let operation = OperationBuilder::new(op::ADJOINT, location)
-        .add_operands(&[circuit])
-        .add_results(&[circuit_type(context)])
-        .add_attributes(&[(
-            Identifier::new(context, attr::DEPTH),
-            StringAttribute::new(context, &depth.to_sexpr()).into(),
-        )])
-        .build()?;
-    verify(&operation)?;
-    Ok(operation)
+    finish(
+        OperationBuilder::new(op::ADJOINT, location)
+            .add_operands(&[circuit])
+            .add_results(&[circuit_type(context)])
+            .add_attributes(&[depth_attribute(context, depth)]),
+    )
 }
 
 /// Builds a `quantum.circ.controlled` op (control on a qubit; depth + 1).
@@ -683,16 +693,12 @@ pub fn controlled<'c>(
     depth: &DepthExpr,
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
-    let operation = OperationBuilder::new(op::CONTROLLED, location)
-        .add_operands(&[circuit, control])
-        .add_results(&[circuit_type(context)])
-        .add_attributes(&[(
-            Identifier::new(context, attr::DEPTH),
-            StringAttribute::new(context, &depth.to_sexpr()).into(),
-        )])
-        .build()?;
-    verify(&operation)?;
-    Ok(operation)
+    finish(
+        OperationBuilder::new(op::CONTROLLED, location)
+            .add_operands(&[circuit, control])
+            .add_results(&[circuit_type(context)])
+            .add_attributes(&[depth_attribute(context, depth)]),
+    )
 }
 
 /// Builds a `quantum.circ.borrow` op allocating `count` fresh ancilla qubits.
@@ -704,16 +710,12 @@ pub fn borrow<'c>(
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
     let results = vec![qubit_type(context); count];
-    let operation = OperationBuilder::new(op::BORROW, location)
-        .add_results(&results)
-        .add_attributes(&[(
-            Identifier::new(context, attr::DEPTH),
-            StringAttribute::new(context, &depth.to_sexpr()).into(),
-        )])
-        .add_regions([body])
-        .build()?;
-    verify(&operation)?;
-    Ok(operation)
+    finish(
+        OperationBuilder::new(op::BORROW, location)
+            .add_results(&results)
+            .add_attributes(&[depth_attribute(context, depth)])
+            .add_regions([body]),
+    )
 }
 
 /// Builds the `quantum.circ.return` terminator consuming a region's outputs.
@@ -721,9 +723,5 @@ pub fn r#return<'c>(
     qubits: &[Value<'c, '_>],
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
-    let operation = OperationBuilder::new(op::RETURN, location)
-        .add_operands(qubits)
-        .build()?;
-    verify(&operation)?;
-    Ok(operation)
+    finish(OperationBuilder::new(op::RETURN, location).add_operands(qubits))
 }

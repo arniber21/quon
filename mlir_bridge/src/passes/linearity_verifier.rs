@@ -66,7 +66,7 @@ fn value_key<'c>(value: &impl ValueLike<'c>) -> usize {
 }
 
 fn is_qubit<'c>(value: &impl ValueLike<'c>) -> bool {
-    value.r#type().to_string() == quantum_circ::QUBIT_TYPE
+    quantum_circ::is_qubit_type(value.r#type())
 }
 
 /// Verifies linearity for a single `quantum.circ.func` op, returning the
