@@ -10,6 +10,7 @@ pub mod error;
 pub mod gates;
 pub mod generic_openqasm;
 pub mod json;
+pub mod keys;
 pub mod target;
 
 pub use descriptor::TargetDescriptor;
