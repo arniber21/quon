@@ -1,0 +1,11 @@
+type BVOracle<n> = Circuit<n+1, n+1, _, Universal>
+
+fn bernstein_vazirani(n: Nat, oracle: BVOracle<n>): Q<List<Bit>> = run {
+    q              <- hadamard_all(n) @ qreg(n)
+    anc            <- (H |> X) @ qreg(1)
+    both           <- oracle @ (q `tensored` anc)
+    let (q2, _anc)  = split(n, both)
+    out            <- hadamard_all(n) @ q2
+    measure_all(out)
+    -- Single shot recovers the full secret string s exactly
+}

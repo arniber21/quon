@@ -1,0 +1,9 @@
+fn teleport(msg: Qubit, alice: Qubit, bob: Qubit): Q<Qubit> = run {
+    (a, b)   <- bell_state() @ (alice, bob)
+    (m2, a2) <- adjoint(bell_state()) @ (msg, a)
+    x_bit    <- measure(m2)
+    z_bit    <- measure(a2)
+    let b2    = (if x_bit then X else identity(1)) @ b
+    let b3    = (if z_bit then Z else identity(1)) @ b2
+    return b3
+}

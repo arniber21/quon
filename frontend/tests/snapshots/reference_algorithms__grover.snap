@@ -1,0 +1,517 @@
+---
+source: frontend/tests/reference_algorithms.rs
+expression: decls
+---
+[
+    (
+        TypeAlias {
+            name: "Oracle",
+            params: [
+                "n",
+            ],
+            ty: (
+                Circuit {
+                    n: (
+                        Var(
+                            "n",
+                        ),
+                        0..0,
+                    ),
+                    m: (
+                        Var(
+                            "n",
+                        ),
+                        0..0,
+                    ),
+                    d: (
+                        Hole,
+                        0..0,
+                    ),
+                    c: Universal,
+                },
+                0..0,
+            ),
+        },
+        0..0,
+    ),
+    (
+        Fn {
+            name: "hadamard_all",
+            params: [
+                (
+                    "n",
+                    (
+                        Nat,
+                        0..0,
+                    ),
+                ),
+            ],
+            ret: (
+                Circuit {
+                    n: (
+                        Var(
+                            "n",
+                        ),
+                        0..0,
+                    ),
+                    m: (
+                        Var(
+                            "n",
+                        ),
+                        0..0,
+                    ),
+                    d: (
+                        Lit(
+                            1,
+                        ),
+                        0..0,
+                    ),
+                    c: Clifford,
+                },
+                0..0,
+            ),
+            body: (
+                CircuitBlock(
+                    [
+                        (
+                            Expr(
+                                (
+                                    For {
+                                        pat: (
+                                            Var(
+                                                "q",
+                                            ),
+                                            0..0,
+                                        ),
+                                        iter: (
+                                            App(
+                                                (
+                                                    Var(
+                                                        "qubits",
+                                                    ),
+                                                    0..0,
+                                                ),
+                                                (
+                                                    Var(
+                                                        "n",
+                                                    ),
+                                                    0..0,
+                                                ),
+                                            ),
+                                            0..0,
+                                        ),
+                                        body: (
+                                            App(
+                                                (
+                                                    Var(
+                                                        "H",
+                                                    ),
+                                                    0..0,
+                                                ),
+                                                (
+                                                    Var(
+                                                        "q",
+                                                    ),
+                                                    0..0,
+                                                ),
+                                            ),
+                                            0..0,
+                                        ),
+                                    },
+                                    0..0,
+                                ),
+                            ),
+                            0..0,
+                        ),
+                    ],
+                ),
+                0..0,
+            ),
+        },
+        0..0,
+    ),
+    (
+        Fn {
+            name: "diffusion",
+            params: [
+                (
+                    "n",
+                    (
+                        Nat,
+                        0..0,
+                    ),
+                ),
+            ],
+            ret: (
+                Circuit {
+                    n: (
+                        Var(
+                            "n",
+                        ),
+                        0..0,
+                    ),
+                    m: (
+                        Var(
+                            "n",
+                        ),
+                        0..0,
+                    ),
+                    d: (
+                        Lit(
+                            3,
+                        ),
+                        0..0,
+                    ),
+                    c: Clifford,
+                },
+                0..0,
+            ),
+            body: (
+                CircuitBlock(
+                    [
+                        (
+                            Expr(
+                                (
+                                    Compose(
+                                        (
+                                            Compose(
+                                                (
+                                                    App(
+                                                        (
+                                                            Var(
+                                                                "hadamard_all",
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                        (
+                                                            Var(
+                                                                "n",
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                    ),
+                                                    0..0,
+                                                ),
+                                                (
+                                                    App(
+                                                        (
+                                                            Var(
+                                                                "phase_flip_zero",
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                        (
+                                                            Var(
+                                                                "n",
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                    ),
+                                                    0..0,
+                                                ),
+                                            ),
+                                            0..0,
+                                        ),
+                                        (
+                                            App(
+                                                (
+                                                    Var(
+                                                        "hadamard_all",
+                                                    ),
+                                                    0..0,
+                                                ),
+                                                (
+                                                    Var(
+                                                        "n",
+                                                    ),
+                                                    0..0,
+                                                ),
+                                            ),
+                                            0..0,
+                                        ),
+                                    ),
+                                    0..0,
+                                ),
+                            ),
+                            0..0,
+                        ),
+                    ],
+                ),
+                0..0,
+            ),
+        },
+        0..0,
+    ),
+    (
+        Fn {
+            name: "grover",
+            params: [
+                (
+                    "n",
+                    (
+                        Nat,
+                        0..0,
+                    ),
+                ),
+                (
+                    "oracle",
+                    (
+                        Named {
+                            name: "Oracle",
+                            args: [
+                                (
+                                    Var(
+                                        "n",
+                                    ),
+                                    0..0,
+                                ),
+                            ],
+                        },
+                        0..0,
+                    ),
+                ),
+            ],
+            ret: (
+                Q(
+                    (
+                        List(
+                            (
+                                Bit,
+                                0..0,
+                            ),
+                        ),
+                        0..0,
+                    ),
+                ),
+                0..0,
+            ),
+            body: (
+                RunBlock(
+                    [
+                        (
+                            Let {
+                                pat: (
+                                    Var(
+                                        "iters",
+                                    ),
+                                    0..0,
+                                ),
+                                rhs: (
+                                    App(
+                                        (
+                                            Var(
+                                                "round",
+                                            ),
+                                            0..0,
+                                        ),
+                                        (
+                                            BinOp {
+                                                op: Mul,
+                                                lhs: (
+                                                    BinOp {
+                                                        op: Div,
+                                                        lhs: (
+                                                            Var(
+                                                                "PI",
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                        rhs: (
+                                                            Float(
+                                                                4.0,
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                    },
+                                                    0..0,
+                                                ),
+                                                rhs: (
+                                                    App(
+                                                        (
+                                                            Var(
+                                                                "sqrt",
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                        (
+                                                            BinOp {
+                                                                op: Pow,
+                                                                lhs: (
+                                                                    Float(
+                                                                        2.0,
+                                                                    ),
+                                                                    0..0,
+                                                                ),
+                                                                rhs: (
+                                                                    Var(
+                                                                        "n",
+                                                                    ),
+                                                                    0..0,
+                                                                ),
+                                                            },
+                                                            0..0,
+                                                        ),
+                                                    ),
+                                                    0..0,
+                                                ),
+                                            },
+                                            0..0,
+                                        ),
+                                    ),
+                                    0..0,
+                                ),
+                            },
+                            0..0,
+                        ),
+                        (
+                            Let {
+                                pat: (
+                                    Var(
+                                        "search",
+                                    ),
+                                    0..0,
+                                ),
+                                rhs: (
+                                    Compose(
+                                        (
+                                            App(
+                                                (
+                                                    Var(
+                                                        "hadamard_all",
+                                                    ),
+                                                    0..0,
+                                                ),
+                                                (
+                                                    Var(
+                                                        "n",
+                                                    ),
+                                                    0..0,
+                                                ),
+                                            ),
+                                            0..0,
+                                        ),
+                                        (
+                                            App(
+                                                (
+                                                    App(
+                                                        (
+                                                            Var(
+                                                                "repeat",
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                        (
+                                                            Var(
+                                                                "iters",
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                    ),
+                                                    0..0,
+                                                ),
+                                                (
+                                                    Compose(
+                                                        (
+                                                            Var(
+                                                                "oracle",
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                        (
+                                                            App(
+                                                                (
+                                                                    Var(
+                                                                        "diffusion",
+                                                                    ),
+                                                                    0..0,
+                                                                ),
+                                                                (
+                                                                    Var(
+                                                                        "n",
+                                                                    ),
+                                                                    0..0,
+                                                                ),
+                                                            ),
+                                                            0..0,
+                                                        ),
+                                                    ),
+                                                    0..0,
+                                                ),
+                                            ),
+                                            0..0,
+                                        ),
+                                    ),
+                                    0..0,
+                                ),
+                            },
+                            0..0,
+                        ),
+                        (
+                            Bind {
+                                pat: (
+                                    Var(
+                                        "q",
+                                    ),
+                                    0..0,
+                                ),
+                                rhs: (
+                                    GateApp {
+                                        gate: (
+                                            Var(
+                                                "search",
+                                            ),
+                                            0..0,
+                                        ),
+                                        qubits: (
+                                            App(
+                                                (
+                                                    Var(
+                                                        "qreg",
+                                                    ),
+                                                    0..0,
+                                                ),
+                                                (
+                                                    Var(
+                                                        "n",
+                                                    ),
+                                                    0..0,
+                                                ),
+                                            ),
+                                            0..0,
+                                        ),
+                                    },
+                                    0..0,
+                                ),
+                            },
+                            0..0,
+                        ),
+                        (
+                            Expr(
+                                (
+                                    App(
+                                        (
+                                            Var(
+                                                "measure_all",
+                                            ),
+                                            0..0,
+                                        ),
+                                        (
+                                            Var(
+                                                "q",
+                                            ),
+                                            0..0,
+                                        ),
+                                    ),
+                                    0..0,
+                                ),
+                            ),
+                            0..0,
+                        ),
+                    ],
+                ),
+                0..0,
+            ),
+        },
+        0..0,
+    ),
+]

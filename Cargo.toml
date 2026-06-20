@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.dependencies]
 # Frontend
-chumsky  = "0.9"
+chumsky  = "0.13"
 z3       = "0.12"
 thiserror = "1"
 ariadne  = "0.4"   # span-aware error reporting, pairs with chumsky
@@ -25,6 +25,7 @@ flux-rs = { git = "https://github.com/flux-rs/flux.git" }
 
 # Testing
 proptest = "1"
+insta    = "1"
 
 # Driver
 clap = { version = "4", features = ["derive"] }
