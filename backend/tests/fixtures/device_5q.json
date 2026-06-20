@@ -1,0 +1,18 @@
+{
+  "id": "my_device",
+  "num_qubits": 5,
+  "topology": {
+    "edges": [[0,1],[1,2],[2,3],[3,4],[0,2]]
+  },
+  "native_gates": ["cx", "rz", "sx", "x"],
+  "noise": {
+    "single_qubit_fidelity": {"rz": {"0": 0.999, "1": 0.998}},
+    "two_qubit_fidelity": {"cx": {"0,1": 0.995, "1,2": 0.992}},
+    "t1_us": {"0": 120.0, "1": 115.0},
+    "t2_us": {"0": 80.0,  "1": 75.0},
+    "readout_error": {"0": 0.01, "1": 0.015}
+  },
+  "meas_latency_us": 0.9,
+  "supports_mid_circuit_meas": true,
+  "supports_feed_forward": true
+}

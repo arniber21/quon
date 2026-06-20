@@ -1,0 +1,11 @@
+{
+  "id": "bad_edge_device",
+  "num_qubits": 3,
+  "topology": {
+    "edges": [[0,1],[1,5]]
+  },
+  "native_gates": ["cx"],
+  "meas_latency_us": 0.5,
+  "supports_mid_circuit_meas": false,
+  "supports_feed_forward": false
+}

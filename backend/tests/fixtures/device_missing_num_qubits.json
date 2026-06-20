@@ -1,0 +1,10 @@
+{
+  "id": "broken_device",
+  "topology": {
+    "edges": [[0,1],[1,2]]
+  },
+  "native_gates": ["cx", "rz"],
+  "meas_latency_us": 0.5,
+  "supports_mid_circuit_meas": false,
+  "supports_feed_forward": false
+}

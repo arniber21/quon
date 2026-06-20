@@ -1,0 +1,34 @@
+[package]
+name = "backend-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Detached from the main workspace: fuzzing needs nightly + libfuzzer, which
+# the stable workspace build must not pull in.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.backend]
+path = ".."
+
+[[bin]]
+name = "fuzz_json_loader"
+path = "fuzz_targets/fuzz_json_loader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_connectivity"
+path = "fuzz_targets/fuzz_connectivity.rs"
+test = false
+doc = false
+bench = false
