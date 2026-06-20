@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - "flux_verify/**"
+      - "backend/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/flux.yml"
@@ -26,5 +27,8 @@ jobs:
       - name: Install Flux
         run: curl -fsSL https://raw.githubusercontent.com/flux-rs/flux/main/install.sh | bash
 
-      - name: cargo flux
+      - name: cargo flux (flux_verify)
         run: cargo flux -p flux_verify
+
+      - name: cargo flux (backend)
+        run: cargo flux -p backend --features flux

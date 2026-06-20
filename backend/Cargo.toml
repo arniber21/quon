@@ -3,8 +3,21 @@ name    = "backend"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Opt-in Flux refinement-type checking. Off by default so the stable
+# workspace build never compiles `flux-rs`; enabled by `cargo flux -p backend
+# --features flux` (nightly) in the Flux CI workflow.
+flux = ["dep:flux-rs"]
+
 [dependencies]
 serde      = { workspace = true }
 serde_json = { workspace = true }
 thiserror  = { workspace = true }
-anyhow     = { workspace = true }
+flux-rs    = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+petgraph = { workspace = true } # independent shortest-path oracle for differential tests
+
+[package.metadata.flux]
+enabled = true
