@@ -197,8 +197,7 @@ fn strip_expr(e: &mut Expr) {
 
 /// Parse source into a span-stripped AST, panicking with diagnostics on failure.
 pub fn parse_stripped(src: &str) -> Vec<Sp<Decl>> {
-    let tokens = frontend::lexer::lex(src).expect("lex failed");
-    let mut decls = frontend::parser::parse(&tokens).expect("parse failed");
+    let mut decls = frontend::parse_program(src).expect("parse failed");
     strip_decls(&mut decls);
     decls
 }

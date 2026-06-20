@@ -11,8 +11,6 @@ mod support;
 mod generator;
 
 use arbitrary::Unstructured;
-use frontend::lexer::lex;
-use frontend::parser::parse;
 use frontend::pretty::pretty;
 use proptest::prelude::*;
 use support::strip_decls;
@@ -20,15 +18,13 @@ use support::strip_decls;
 proptest! {
     #![proptest_config(ProptestConfig { cases: 400, ..ProptestConfig::default() })]
 
-    /// pretty → lex → parse → strip equals the generated AST.
+    /// pretty → parse_program → strip equals the generated AST.
     #[test]
     fn ast_roundtrips(bytes in prop::collection::vec(any::<u8>(), 64..8192)) {
         let mut u = Unstructured::new(&bytes);
         if let Ok(decls) = generator::arb_program(&mut u) {
             let printed = pretty(&decls);
-            let tokens = lex(&printed)
-                .map_err(|e| TestCaseError::fail(format!("re-lex failed: {e:?}\n---\n{printed}")))?;
-            let mut reparsed = parse(&tokens)
+            let mut reparsed = frontend::parse_program(&printed)
                 .map_err(|e| TestCaseError::fail(format!("re-parse failed: {e:?}\n---\n{printed}")))?;
             strip_decls(&mut reparsed);
             prop_assert_eq!(reparsed, decls, "roundtrip mismatch\n--- printed ---\n{}", printed);
@@ -41,9 +37,7 @@ proptest! {
         let mut u = Unstructured::new(&bytes);
         if let Ok(decls) = generator::arb_program(&mut u) {
             let printed = pretty(&decls);
-            let tokens = lex(&printed)
-                .map_err(|e| TestCaseError::fail(format!("re-lex failed: {e:?}")))?;
-            let reparsed = parse(&tokens)
+            let reparsed = frontend::parse_program(&printed)
                 .map_err(|e| TestCaseError::fail(format!("re-parse failed: {e:?}")))?;
             let printed2 = pretty(&reparsed);
             prop_assert_eq!(printed, printed2);
