@@ -52,6 +52,11 @@ pub fn f64_attr(context: &Context, value: f64) -> Attribute<'_> {
     FloatAttribute::new(context, float_type, value).into()
 }
 
+pub fn f32_attr(context: &Context, value: f64) -> Attribute<'_> {
+    let float_type = Type::parse(context, "f32").unwrap_or_else(|| Type::none(context));
+    FloatAttribute::new(context, float_type, value).into()
+}
+
 /// A serialized depth attribute (a string, per ADR-0002).
 pub fn depth_attr<'c>(context: &'c Context, depth: &DepthExpr) -> Attribute<'c> {
     str_attr(context, &depth.to_sexpr())

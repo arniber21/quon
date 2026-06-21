@@ -4,9 +4,15 @@
 //! Measurement consumes a qubit permanently — a value used by both `measure` and
 //! another op is reported as reuse-after-measure when applicable.
 //!
-//! `unitary_region` inner blocks use the circ linearity rules via
-//! [`super::linearity_verifier::check_linearity`] on a synthetic walk; inner
-//! ops are not folded into the outer dynamic scope.
+//! `unitary_region` inner blocks reuse the circ linearity rules via
+//! [`super::linearity_verifier::check_region_linearity`]; inner ops are not
+//! folded into the outer dynamic scope.
+//!
+//! Note: this pass does not forbid stray `quantum.circ` ops appearing directly
+//! in a dynamic scope (outside a `unitary_region`) — it treats them as ordinary
+//! qubit consumers for linearity purposes. Enforcing that unitary work lives
+//! only inside `unitary_region` is a separate structural rule, tracked apart
+//! from linearity.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -111,7 +117,10 @@ fn collect_dynamic_scope<'c>(
                     }
                 }
                 quantum_dynamic::op::IF => {
-                    record_qubit_operands_skip_bit(&op, uses);
+                    // The condition operand is a `!quantum.bit`, not a qubit, so
+                    // the type filter in `record_qubit_operands` excludes it; no
+                    // need to special-case operand index 0.
+                    record_qubit_operands(&op, uses);
                     record_qubit_results(&op, defs);
                     for region_index in 0..op.region_count() {
                         if let Ok(branch) = op.region(region_index) {
@@ -152,12 +161,16 @@ fn check_scope<'c>(
         if let Some(violation) = linearity::classify_use_count(count, has_measure, has_other) {
             let message = match violation {
                 UseCountViolation::ReuseAfterMeasure => {
+                    // SSA use sites are unordered, so phrase this symmetrically
+                    // rather than implying the measure came first: a measured
+                    // qubit must not appear at any other use site.
                     let measure = use_list.iter().find(|u| u.is_measure);
-                    let reuse = use_list.iter().find(|u| !u.is_measure);
+                    let other = use_list.iter().find(|u| !u.is_measure);
                     format!(
-                        "!qubit value consumed by `{}` cannot be reused by `{}` (SPEC §6.3)",
+                        "!qubit value is both measured by `{}` and used by `{}`; \
+                         a measured qubit must not appear at any other use site (SPEC §6.3)",
                         measure.map(|u| u.user_name.as_str()).unwrap_or("measure"),
-                        reuse.map(|u| u.user_name.as_str()).unwrap_or("consumer")
+                        other.map(|u| u.user_name.as_str()).unwrap_or("consumer")
                     )
                 }
                 UseCountViolation::Unused | UseCountViolation::MultiUse { .. } => format!(
@@ -186,25 +199,6 @@ fn record_qubit_operands<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     }
 }
 
-fn record_qubit_operands_skip_bit<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
-    operation: &O,
-    uses: &mut HashMap<usize, Vec<QubitUse<'c>>>,
-) {
-    let name = op_name(operation);
-    for (index, operand) in operation.operands().enumerate() {
-        if index == 0 {
-            continue;
-        }
-        if is_qubit(&operand) {
-            uses.entry(value_key(&operand)).or_default().push(QubitUse {
-                user_name: name.clone(),
-                location: operand.location(),
-                is_measure: false,
-            });
-        }
-    }
-}
-
 fn record_qubit_results<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
     defs: &mut Vec<QubitDef<'c>>,
@@ -220,71 +214,11 @@ fn record_qubit_results<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     }
 }
 
-/// Linearity inside a `unitary_region` body (circ rules on block args + circ ops).
+/// Linearity inside a `unitary_region` body: the inner ops obey `quantum.circ`
+/// rules, so delegate to the circ linearity checker rather than duplicating the
+/// collection walk.
 fn check_unitary_region_inner<'c>(region: RegionRef<'c, '_>) -> Diagnostics<'c> {
-    let mut diagnostics = Diagnostics::new();
-    let mut defs = Vec::new();
-    let mut uses: HashMap<usize, usize> = HashMap::new();
-    collect_circ_scope(region, &mut defs, &mut uses);
-
-    for def in defs {
-        let count = uses.get(&def.key).copied().unwrap_or(0);
-        if !linearity::is_linear_use_count(count) {
-            diagnostics.error(
-                def.location,
-                format!(
-                    "{} qubit value has {} use(s); linearity requires exactly 1 (SPEC §6.2)",
-                    def.kind, count
-                ),
-            );
-        }
-    }
-    diagnostics
-}
-
-fn collect_circ_scope<'c>(
-    region: RegionRef<'c, '_>,
-    defs: &mut Vec<QubitDef<'c>>,
-    uses: &mut HashMap<usize, usize>,
-) {
-    let mut block = region.first_block();
-    while let Some(current) = block {
-        for index in 0..current.argument_count() {
-            if let Ok(argument) = current.argument(index)
-                && is_qubit(&argument)
-            {
-                defs.push(QubitDef {
-                    key: value_key(&argument),
-                    location: argument.location(),
-                    kind: DefKind::BlockArgument,
-                });
-            }
-        }
-
-        let mut operation = current.first_operation();
-        while let Some(op) = operation {
-            for operand in op.operands() {
-                if is_qubit(&operand) {
-                    *uses.entry(value_key(&operand)).or_insert(0) += 1;
-                }
-            }
-            for result in op.results() {
-                if is_qubit(&result) {
-                    defs.push(QubitDef {
-                        key: value_key(&result),
-                        location: result.location(),
-                        kind: DefKind::Result,
-                    });
-                }
-            }
-            for nested in op.regions() {
-                collect_circ_scope(nested, defs, uses);
-            }
-            operation = op.next_in_block();
-        }
-
-        block = current.next_in_region();
-    }
+    crate::passes::linearity_verifier::check_region_linearity(region)
 }
 
 fn verify_module<'c>(operation: OperationRef<'c, '_>, diagnostics: &mut Diagnostics<'c>) {

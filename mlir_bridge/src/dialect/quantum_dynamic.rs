@@ -194,6 +194,16 @@ pub enum VerifyError {
         /// Actual region count.
         found: usize,
     },
+    /// A `unitary_region` body lacks its required `quantum.circ.return` terminator.
+    #[error("{op}: unitary_region body must end with quantum.circ.return")]
+    MissingReturnTerminator {
+        /// Op name.
+        op: &'static str,
+    },
+    /// A nested `quantum.circ` op inside a `unitary_region` failed its own
+    /// verifier. The circ error is carried verbatim rather than re-mapped.
+    #[error("{0}")]
+    Circ(#[from] quantum_circ::VerifyError),
 }
 
 /// An error constructing a `quantum.dynamic` op.
@@ -237,23 +247,6 @@ fn require_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
         .map_err(|_| VerifyError::MissingAttribute { op, attr })
 }
 
-fn require_string<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
-    operation: &O,
-    op: &'static str,
-    attr: &'static str,
-) -> Result<(), VerifyError> {
-    let value = require_attr(operation, op, attr)?;
-    if value.is_string() {
-        Ok(())
-    } else {
-        Err(VerifyError::WrongAttributeType {
-            op,
-            attr,
-            expected: "string",
-        })
-    }
-}
-
 fn require_bool<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
     op: &'static str,
@@ -271,17 +264,42 @@ fn require_bool<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     }
 }
 
+fn require_depth<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
+    operation: &O,
+    op: &'static str,
+) -> Result<(), VerifyError> {
+    let value = require_attr(operation, op, attr::DEPTH)?;
+    let wrong = || VerifyError::WrongAttributeType {
+        op,
+        attr: attr::DEPTH,
+        expected: "depth s-expression",
+    };
+    // `depth` is a serialized `DepthExpr` (ADR-0002). Require not just *a* string
+    // but a *parseable* one, so a malformed hand-written module is rejected here
+    // rather than silently surviving to a downstream pass.
+    let string = StringAttribute::try_from(value).map_err(|_| wrong())?;
+    DepthExpr::parse(string.value()).map_err(|_| wrong())?;
+    Ok(())
+}
+
 fn verify_optional_i32<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
     op: &'static str,
     attr: &'static str,
 ) -> Result<(), VerifyError> {
     if let Ok(value) = operation.attribute(attr) {
-        IntegerAttribute::try_from(value).map_err(|_| VerifyError::WrongAttributeType {
+        let wrong = || VerifyError::WrongAttributeType {
             op,
             attr,
             expected: "i32",
-        })?;
+        };
+        let integer = IntegerAttribute::try_from(value).map_err(|_| wrong())?;
+        // `IntegerAttribute` accepts any width; the physical attrs are I32Attr
+        // specifically, so reject e.g. an i64 that would otherwise pass. Identity
+        // is by printed form, consistent with the unregistered-dialect model.
+        if integer.r#type().to_string() != "i32" {
+            return Err(wrong());
+        }
     }
     Ok(())
 }
@@ -309,11 +327,17 @@ fn verify_optional_f64<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     attr: &'static str,
 ) -> Result<(), VerifyError> {
     if let Ok(value) = operation.attribute(attr) {
-        FloatAttribute::try_from(value).map_err(|_| VerifyError::WrongAttributeType {
+        let wrong = || VerifyError::WrongAttributeType {
             op,
             attr,
             expected: "f64",
-        })?;
+        };
+        let float = FloatAttribute::try_from(value).map_err(|_| wrong())?;
+        // `FloatAttribute` accepts any precision; `fidelity` is F64Attr, so reject
+        // e.g. an f32 that would otherwise pass.
+        if float.r#type().to_string() != "f64" {
+            return Err(wrong());
+        }
     }
     Ok(())
 }
@@ -410,6 +434,13 @@ fn qubit_operand_count<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> u
         .count()
 }
 
+fn qubit_result_count<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> usize {
+    operation
+        .results()
+        .filter(|result| quantum_circ::is_qubit_type(result.r#type()))
+        .count()
+}
+
 fn verify_measure<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(), VerifyError> {
     expect_counts(operation, op::MEASURE, 1, 1)?;
     expect_operand_type(
@@ -484,6 +515,28 @@ fn is_quantum_circ_op_name(name: &str) -> bool {
     name.starts_with("quantum.circ.")
 }
 
+/// Verifies one op found inside a `unitary_region`: it must belong to the
+/// `quantum.circ` dialect, must not be a `func` (which defines a new circuit and
+/// is never legal inside a unitary island, at any depth), and must pass the circ
+/// dialect's own verifier.
+///
+/// Shared by the `unitary_region` body walk and its recursive descent so the
+/// "circ-only" rule lives in exactly one place. Circ verifier errors propagate
+/// via [`VerifyError::Circ`] (see the `?`), not a hand-written re-mapping.
+fn verify_circ_member<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
+    inner: &O,
+    name: &str,
+) -> Result<(), VerifyError> {
+    if !is_quantum_circ_op_name(name) || name == quantum_circ::op::FUNC {
+        return Err(VerifyError::ForbiddenOpInUnitaryRegion {
+            op: op::UNITARY_REGION,
+            found: name.to_string(),
+        });
+    }
+    quantum_circ::verify(inner)?;
+    Ok(())
+}
+
 fn verify_unitary_region<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
 ) -> Result<(), VerifyError> {
@@ -513,7 +566,7 @@ fn verify_unitary_region<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
         )?;
     }
 
-    require_string(operation, op::UNITARY_REGION, attr::DEPTH)?;
+    require_depth(operation, op::UNITARY_REGION)?;
     require_bool(operation, op::UNITARY_REGION, attr::CLIFFORD)?;
 
     let region = operation
@@ -553,71 +606,9 @@ fn verify_unitary_region<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     let mut return_operands = None;
     let mut operation_ref = block.first_operation();
     while let Some(inner) = operation_ref {
-        let name = inner
-            .name()
-            .as_string_ref()
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        if !is_quantum_circ_op_name(&name) {
-            return Err(VerifyError::ForbiddenOpInUnitaryRegion {
-                op: op::UNITARY_REGION,
-                found: name,
-            });
-        }
-        if name == quantum_circ::op::FUNC {
-            return Err(VerifyError::ForbiddenOpInUnitaryRegion {
-                op: op::UNITARY_REGION,
-                found: name,
-            });
-        }
-        quantum_circ::verify(&inner).map_err(|error| match error {
-            quantum_circ::VerifyError::MissingAttribute { op, attr } => {
-                VerifyError::MissingAttribute { op, attr }
-            }
-            quantum_circ::VerifyError::WrongAttributeType { op, attr, expected } => {
-                VerifyError::WrongAttributeType { op, attr, expected }
-            }
-            quantum_circ::VerifyError::Arity {
-                op,
-                role,
-                expected,
-                found,
-            } => VerifyError::Arity {
-                op,
-                role,
-                expected,
-                found,
-            },
-            quantum_circ::VerifyError::WrongValueType {
-                op,
-                role,
-                index,
-                expected,
-            } => VerifyError::WrongValueType {
-                op,
-                role,
-                index,
-                expected,
-            },
-            quantum_circ::VerifyError::NegativeCount { op, attr, value: _ } => {
-                VerifyError::WrongAttributeType {
-                    op,
-                    attr,
-                    expected: "non-negative integer",
-                }
-            }
-            quantum_circ::VerifyError::MissingRegion { op } => VerifyError::MissingRegion { op },
-            quantum_circ::VerifyError::ArgCountMismatch {
-                op,
-                expected,
-                found,
-            } => VerifyError::ArgCountMismatch {
-                op,
-                expected: expected as usize,
-                found,
-            },
-        })?;
+        let identifier = inner.name();
+        let name = identifier.as_string_ref().as_str().unwrap_or("");
+        verify_circ_member(&inner, name)?;
 
         if name == quantum_circ::op::RETURN {
             return_operands = Some(inner.operand_count());
@@ -630,7 +621,7 @@ fn verify_unitary_region<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
         operation_ref = inner.next_in_block();
     }
 
-    let return_count = return_operands.ok_or(VerifyError::MissingRegion {
+    let return_count = return_operands.ok_or(VerifyError::MissingReturnTerminator {
         op: op::UNITARY_REGION,
     })?;
     if !linearity::unitary_region_boundary_ok(operands, arguments, return_count, operands) {
@@ -650,67 +641,9 @@ fn verify_circ_only_region<'c>(region: RegionRef<'c, '_>) -> Result<(), VerifyEr
     while let Some(current) = block {
         let mut operation = current.first_operation();
         while let Some(inner) = operation {
-            let name = inner
-                .name()
-                .as_string_ref()
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            if !is_quantum_circ_op_name(&name) {
-                return Err(VerifyError::ForbiddenOpInUnitaryRegion {
-                    op: op::UNITARY_REGION,
-                    found: name,
-                });
-            }
-            quantum_circ::verify(&inner).map_err(|error| match error {
-                quantum_circ::VerifyError::MissingAttribute { op, attr } => {
-                    VerifyError::MissingAttribute { op, attr }
-                }
-                quantum_circ::VerifyError::WrongAttributeType { op, attr, expected } => {
-                    VerifyError::WrongAttributeType { op, attr, expected }
-                }
-                quantum_circ::VerifyError::Arity {
-                    op,
-                    role,
-                    expected,
-                    found,
-                } => VerifyError::Arity {
-                    op,
-                    role,
-                    expected,
-                    found,
-                },
-                quantum_circ::VerifyError::WrongValueType {
-                    op,
-                    role,
-                    index,
-                    expected,
-                } => VerifyError::WrongValueType {
-                    op,
-                    role,
-                    index,
-                    expected,
-                },
-                quantum_circ::VerifyError::NegativeCount { op, attr, value: _ } => {
-                    VerifyError::WrongAttributeType {
-                        op,
-                        attr,
-                        expected: "non-negative integer",
-                    }
-                }
-                quantum_circ::VerifyError::MissingRegion { op } => {
-                    VerifyError::MissingRegion { op }
-                }
-                quantum_circ::VerifyError::ArgCountMismatch {
-                    op,
-                    expected,
-                    found,
-                } => VerifyError::ArgCountMismatch {
-                    op,
-                    expected: expected as usize,
-                    found,
-                },
-            })?;
+            let identifier = inner.name();
+            let name = identifier.as_string_ref().as_str().unwrap_or("");
+            verify_circ_member(&inner, name)?;
             for nested in inner.regions() {
                 verify_circ_only_region(nested)?;
             }
@@ -733,12 +666,16 @@ fn verify_if<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(), 
     expect_operand_type(operation, op::IF, 0, is_bit_type, BIT_TYPE)?;
 
     let qubit_operands = qubit_operand_count(operation);
-    if !linearity::if_qubit_threading_ok(qubit_operands, operation.result_count()) {
+    // Compare qubit results, not all results: `if` threads qubits through, and
+    // conflating the two would silently mis-verify if a non-qubit result is ever
+    // added (the kernel's own parameter is `qubit_results`).
+    let qubit_results = qubit_result_count(operation);
+    if !linearity::if_qubit_threading_ok(qubit_operands, qubit_results) {
         return Err(VerifyError::Arity {
             op: op::IF,
             role: "result",
             expected: qubit_operands.to_string(),
-            found: operation.result_count(),
+            found: qubit_results,
         });
     }
     for index in 0..qubit_operands {

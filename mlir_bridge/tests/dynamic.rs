@@ -29,6 +29,23 @@ fn type_helpers_print_canonically() {
     assert_eq!(qc::qubit_type(&context).to_string(), qc::QUBIT_TYPE);
 }
 
+#[test]
+fn every_registered_op_is_dispatched_by_verify() {
+    let context = dynamic_context();
+    let location = Location::unknown(&context);
+    // A structurally-empty op for each registered name must be *rejected* —
+    // proving `verify` routes it to a real op verifier rather than the
+    // foreign-op catch-all (which returns Ok). Guards against `OPS` and the
+    // `verify` dispatch silently drifting apart.
+    for name in qd::OPS {
+        let op = generic_op(&context, name, &[], &[], &[], vec![], location);
+        assert!(
+            qd::verify(&op).is_err(),
+            "{name} should be recognized and rejected when empty"
+        );
+    }
+}
+
 // --- Builders --------------------------------------------------------------
 
 #[test]
@@ -277,6 +294,43 @@ fn measure_verifier_rejections() {
             ..
         })
     ));
+
+    // phys_qubit is I32Attr specifically: an i64 of the right *kind* but wrong
+    // *width* must still be rejected.
+    let op = generic_op(
+        &context,
+        qd::op::MEASURE,
+        &[q],
+        &[bit],
+        &[("phys_qubit", support::i64_attr(&context, 0))],
+        vec![],
+        location,
+    );
+    assert!(matches!(
+        qd::verify(&op),
+        Err(qd::VerifyError::WrongAttributeType {
+            attr: "phys_qubit",
+            ..
+        })
+    ));
+
+    // fidelity is F64Attr: an f32 must be rejected.
+    let op = generic_op(
+        &context,
+        qd::op::MEASURE,
+        &[q],
+        &[bit],
+        &[("fidelity", support::f32_attr(&context, 0.5))],
+        vec![],
+        location,
+    );
+    assert!(matches!(
+        qd::verify(&op),
+        Err(qd::VerifyError::WrongAttributeType {
+            attr: "fidelity",
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -363,7 +417,34 @@ fn unitary_region_verifier_rejections() {
     );
     assert!(matches!(
         qd::verify(&op),
-        Err(qd::VerifyError::MissingRegion { .. })
+        Err(qd::VerifyError::MissingReturnTerminator { .. })
+    ));
+}
+
+#[test]
+fn unitary_region_rejects_unparseable_depth() {
+    let context = dynamic_context();
+    let location = Location::unknown(&context);
+    let qubit = qc::qubit_type(&context);
+    let block = support::scratch_block(&[qubit], location);
+    let q = Value::from(block.argument(0).unwrap());
+
+    // `depth` must be a *parseable* DepthExpr s-expression, not merely a string.
+    let op = generic_op(
+        &context,
+        qd::op::UNITARY_REGION,
+        &[q],
+        &[qubit],
+        &[
+            ("depth", support::str_attr(&context, "(((")),
+            ("clifford", bool_attr(&context, true)),
+        ],
+        vec![],
+        location,
+    );
+    assert!(matches!(
+        qd::verify(&op),
+        Err(qd::VerifyError::WrongAttributeType { attr: "depth", .. })
     ));
 }
 
