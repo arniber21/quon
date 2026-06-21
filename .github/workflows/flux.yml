@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - "flux_verify/**"
+      - "quon_core/**"
       - "backend/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -38,6 +39,9 @@ jobs:
 
       - name: cargo flux (flux_verify)
         run: cargo flux -p flux_verify
+
+      - name: cargo flux (quon_core)
+        run: cargo flux -p quon_core --features flux
 
       - name: cargo flux (backend)
         run: cargo flux -p backend --features flux

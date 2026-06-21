@@ -5,6 +5,7 @@ Run:
     lit test/lit/
     lit test/lit/emit/        # emission tests only
     lit test/lit/circ/        # quantum.circ pass tests only
+    lit test/lit/dynamic/     # quantum.dynamic pass tests only
 """
 
 import lit.formats
@@ -16,8 +17,10 @@ config.suffixes = [".qn", ".mlir"]
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(os.environ.get("QUON_BUILD_DIR", "."), "test")
 
-# Require quonc, the quantum.circ round-trip oracle, and FileCheck on PATH.
+# Require quonc, the round-trip oracles, and FileCheck on PATH.
 # %circ-roundtrip is mlir_bridge's `circ_roundtrip` example (issue #4).
+# %dynamic-roundtrip is mlir_bridge's `dynamic_roundtrip` example (issue #6).
 config.substitutions.append(("%quonc", "quonc"))
 config.substitutions.append(("%circ-roundtrip", "circ_roundtrip"))
+config.substitutions.append(("%dynamic-roundtrip", "dynamic_roundtrip"))
 config.substitutions.append(("%FileCheck", "FileCheck"))

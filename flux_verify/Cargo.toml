@@ -10,3 +10,4 @@ enabled = true
 
 [dependencies]
 flux-rs = { git = "https://github.com/flux-rs/flux.git" }
+quon_core = { path = "../quon_core" }

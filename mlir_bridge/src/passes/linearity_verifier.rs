@@ -27,6 +27,7 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 
 use crate::diagnostics::Diagnostics;
 use crate::dialect::quantum_circ;
+use quon_core::linearity;
 
 /// How a qubit value entered scope — used only for diagnostic phrasing.
 #[derive(Clone, Copy, Debug)]
@@ -72,19 +73,26 @@ fn is_qubit<'c>(value: &impl ValueLike<'c>) -> bool {
 /// Verifies linearity for a single `quantum.circ.func` op, returning the
 /// diagnostics it produced (empty when the region is linear).
 pub fn check_linearity<'c: 'a, 'a, O: OperationLike<'c, 'a>>(func: &O) -> Diagnostics<'c> {
-    let mut diagnostics = Diagnostics::new();
-    let region = match func.region(0) {
-        Ok(region) => region,
-        Err(_) => return diagnostics,
-    };
+    match func.region(0) {
+        Ok(region) => check_region_linearity(region),
+        Err(_) => Diagnostics::new(),
+    }
+}
 
+/// Checks `quantum.circ` linearity over an already-resolved region.
+///
+/// The region-level core of [`check_linearity`]. Exposed within the crate so the
+/// dynamic linearity verifier can reuse these exact circ rules for
+/// `unitary_region` bodies rather than re-implementing the collection walk.
+pub(crate) fn check_region_linearity<'c>(region: RegionRef<'c, '_>) -> Diagnostics<'c> {
+    let mut diagnostics = Diagnostics::new();
     let mut defs: Vec<QubitDef<'c>> = Vec::new();
     let mut uses: HashMap<usize, usize> = HashMap::new();
     collect_region(region, &mut defs, &mut uses);
 
     for def in defs {
         let count = uses.get(&def.key).copied().unwrap_or(0);
-        if count != 1 {
+        if !linearity::is_linear_use_count(count) {
             diagnostics.error(
                 def.location,
                 format!(

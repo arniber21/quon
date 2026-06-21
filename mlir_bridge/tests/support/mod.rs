@@ -3,8 +3,9 @@
 #![allow(dead_code)]
 
 use melior::Context;
-use melior::ir::attribute::{BoolAttribute, IntegerAttribute, StringAttribute};
+use melior::ir::attribute::{BoolAttribute, FloatAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationBuilder;
+use melior::ir::operation::OperationLike;
 use melior::ir::r#type::IntegerType;
 use melior::ir::{
     Attribute, Block, BlockLike, Identifier, Location, Module, Operation, Region, RegionLike, Type,
@@ -12,12 +13,21 @@ use melior::ir::{
 };
 
 use mlir_bridge::dialect::quantum_circ as qc;
+use mlir_bridge::dialect::quantum_dynamic as qd;
 use quon_core::DepthExpr;
 
 /// A context with the `quantum.circ` dialect registered.
 pub fn context() -> Context {
     let context = Context::new();
     qc::register_dialect(&context);
+    context
+}
+
+/// A context with both `quantum.circ` and `quantum.dynamic` registered.
+pub fn dynamic_context() -> Context {
+    let context = Context::new();
+    qc::register_dialect(&context);
+    qd::register_dialect(&context);
     context
 }
 
@@ -33,6 +43,20 @@ pub fn bool_attr(context: &Context, value: bool) -> Attribute<'_> {
     BoolAttribute::new(context, value).into()
 }
 
+pub fn i32_attr(context: &Context, value: i32) -> Attribute<'_> {
+    IntegerAttribute::new(IntegerType::new(context, 32).into(), i64::from(value)).into()
+}
+
+pub fn f64_attr(context: &Context, value: f64) -> Attribute<'_> {
+    let float_type = Type::parse(context, "f64").unwrap_or_else(|| Type::none(context));
+    FloatAttribute::new(context, float_type, value).into()
+}
+
+pub fn f32_attr(context: &Context, value: f64) -> Attribute<'_> {
+    let float_type = Type::parse(context, "f32").unwrap_or_else(|| Type::none(context));
+    FloatAttribute::new(context, float_type, value).into()
+}
+
 /// A serialized depth attribute (a string, per ADR-0002).
 pub fn depth_attr<'c>(context: &'c Context, depth: &DepthExpr) -> Attribute<'c> {
     str_attr(context, &depth.to_sexpr())
@@ -43,6 +67,32 @@ pub fn depth_attr<'c>(context: &'c Context, depth: &DepthExpr) -> Attribute<'c> 
 pub fn scratch_block<'c>(types: &[Type<'c>], location: Location<'c>) -> Block<'c> {
     let args: Vec<(Type, Location)> = types.iter().map(|t| (*t, location)).collect();
     Block::new(&args)
+}
+
+/// Appends a foreign op to `body` that produces one `!quantum.qubit`.
+pub fn append_foreign_qubit<'c: 'a, 'a, B: BlockLike<'c, 'a>>(
+    context: &'c Context,
+    body: &B,
+    location: Location<'c>,
+) -> Value<'c, 'a> {
+    Value::from(
+        body.append_operation(generic_op(
+            context,
+            "test.qubit",
+            &[],
+            &[qc::qubit_type(context)],
+            &[],
+            vec![],
+            location,
+        ))
+        .result(0)
+        .expect("foreign qubit result"),
+    )
+}
+
+/// The module's top-level region — the linearity scope for dynamic tests.
+pub fn module_region<'c>(module: &'c Module<'c>) -> melior::ir::RegionRef<'c, 'c> {
+    module.as_operation().region(0).expect("module region")
 }
 
 /// Builds an op in MLIR's generic form **without** running the dialect verifier.
