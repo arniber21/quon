@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::BackendError;
 use crate::gates;
-use crate::target::{BackendTarget, ConnectivityGraph, NoiseModel, qubit_in_range};
+use crate::keys;
+use crate::target::{BackendTarget, ConnectivityGraph, NoiseModel};
 
 /// The §8.3 JSON shape. Fields without `#[serde(default)]` are required, so a
 /// missing `num_qubits` or `native_gates` is rejected by serde with an error
@@ -54,66 +55,36 @@ pub struct NoiseDescriptor {
     pub readout_error: HashMap<String, f64>,
 }
 
-/// Parse a qubit-index key, validating it lies in `0..num_qubits`.
-fn parse_qubit(key: &str, num_qubits: usize) -> Result<usize, BackendError> {
-    let q: usize = key
-        .parse()
-        .map_err(|_| BackendError::BadQubitKey(key.to_string()))?;
-    if qubit_in_range(q, num_qubits) {
-        Ok(q)
-    } else {
-        Err(BackendError::QubitOutOfRange { got: q, num_qubits })
-    }
-}
-
-/// Parse a `"u,v"` two-qubit key into validated indices.
-fn parse_qubit_pair(key: &str, num_qubits: usize) -> Result<(usize, usize), BackendError> {
-    let (u, v) = key
-        .split_once(',')
-        .ok_or_else(|| BackendError::BadTwoQubitKey(key.to_string()))?;
-    let u = u
-        .trim()
-        .parse::<usize>()
-        .map_err(|_| BackendError::BadTwoQubitKey(key.to_string()))?;
-    let v = v
-        .trim()
-        .parse::<usize>()
-        .map_err(|_| BackendError::BadTwoQubitKey(key.to_string()))?;
-    if !qubit_in_range(u, num_qubits) {
-        return Err(BackendError::QubitOutOfRange { got: u, num_qubits });
-    }
-    if !qubit_in_range(v, num_qubits) {
-        return Err(BackendError::QubitOutOfRange { got: v, num_qubits });
-    }
-    Ok((u, v))
-}
-
 impl NoiseDescriptor {
     fn into_model(self, num_qubits: usize) -> Result<NoiseModel, BackendError> {
         let mut model = NoiseModel::default();
 
         for (gate, per_qubit) in self.single_qubit_fidelity {
             for (q_key, fid) in per_qubit {
-                let q = parse_qubit(&q_key, num_qubits)?;
+                let q = keys::decode_qubit(&q_key, num_qubits)?;
                 model.single_qubit_fidelity.insert((gate.clone(), q), fid);
             }
         }
         for (gate, per_pair) in self.two_qubit_fidelity {
             for (pair_key, fid) in per_pair {
-                let (u, v) = parse_qubit_pair(&pair_key, num_qubits)?;
+                let (u, v) = keys::decode_pair(&pair_key, num_qubits)?;
                 model.two_qubit_fidelity.insert((gate.clone(), u, v), fid);
             }
         }
         for (q_key, t1) in self.t1_us {
-            model.t1_us.insert(parse_qubit(&q_key, num_qubits)?, t1);
+            model
+                .t1_us
+                .insert(keys::decode_qubit(&q_key, num_qubits)?, t1);
         }
         for (q_key, t2) in self.t2_us {
-            model.t2_us.insert(parse_qubit(&q_key, num_qubits)?, t2);
+            model
+                .t2_us
+                .insert(keys::decode_qubit(&q_key, num_qubits)?, t2);
         }
         for (q_key, err) in self.readout_error {
             model
                 .readout_error
-                .insert(parse_qubit(&q_key, num_qubits)?, err);
+                .insert(keys::decode_qubit(&q_key, num_qubits)?, err);
         }
         Ok(model)
     }
@@ -153,32 +124,32 @@ impl BackendTarget {
                 .single_qubit_fidelity
                 .entry(gate.clone())
                 .or_default()
-                .insert(q.to_string(), *fid);
+                .insert(keys::encode_qubit(*q), *fid);
         }
         for ((gate, u, v), fid) in &self.noise.two_qubit_fidelity {
             noise
                 .two_qubit_fidelity
                 .entry(gate.clone())
                 .or_default()
-                .insert(format!("{u},{v}"), *fid);
+                .insert(keys::encode_pair(*u, *v), *fid);
         }
         noise.t1_us = self
             .noise
             .t1_us
             .iter()
-            .map(|(q, t)| (q.to_string(), *t))
+            .map(|(q, t)| (keys::encode_qubit(*q), *t))
             .collect();
         noise.t2_us = self
             .noise
             .t2_us
             .iter()
-            .map(|(q, t)| (q.to_string(), *t))
+            .map(|(q, t)| (keys::encode_qubit(*q), *t))
             .collect();
         noise.readout_error = self
             .noise
             .readout_error
             .iter()
-            .map(|(q, e)| (q.to_string(), *e))
+            .map(|(q, e)| (keys::encode_qubit(*q), *e))
             .collect();
 
         TargetDescriptor {
