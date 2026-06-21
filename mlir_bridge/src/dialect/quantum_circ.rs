@@ -30,6 +30,7 @@
 //! ops, not on a parameterized type (ADR-0002). `depth` carries a serialized
 //! [`DepthExpr`] S-expression.
 
+use melior::Context;
 use melior::ir::attribute::{AttributeLike, BoolAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::{OperationBuilder, OperationLike};
 use melior::ir::r#type::IntegerType;
@@ -37,7 +38,6 @@ use melior::ir::{
     Attribute, BlockLike, Identifier, Location, Operation, Region, RegionLike, Type, Value,
     ValueLike,
 };
-use melior::Context;
 use thiserror::Error;
 
 use crate::dialect::depth::DepthExpr;

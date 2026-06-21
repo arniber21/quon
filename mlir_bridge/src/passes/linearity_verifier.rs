@@ -19,11 +19,11 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use melior::ContextRef;
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
 use melior::ir::{BlockLike, Location, OperationRef, RegionLike, RegionRef, ValueLike};
-use melior::pass::{create_external, ExternalPass, Pass, RunExternalPass};
-use melior::ContextRef;
+use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 
 use crate::diagnostics::Diagnostics;
 use crate::dialect::quantum_circ;
@@ -107,14 +107,14 @@ fn collect_region<'c>(
     let mut block = region.first_block();
     while let Some(current) = block {
         for index in 0..current.argument_count() {
-            if let Ok(argument) = current.argument(index) {
-                if is_qubit(&argument) {
-                    defs.push(QubitDef {
-                        key: value_key(&argument),
-                        location: argument.location(),
-                        kind: DefKind::BlockArgument,
-                    });
-                }
+            if let Ok(argument) = current.argument(index)
+                && is_qubit(&argument)
+            {
+                defs.push(QubitDef {
+                    key: value_key(&argument),
+                    location: argument.location(),
+                    kind: DefKind::BlockArgument,
+                });
             }
         }
 

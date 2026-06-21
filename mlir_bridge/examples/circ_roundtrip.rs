@@ -15,8 +15,8 @@
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
-use melior::ir::Module;
 use melior::Context;
+use melior::ir::Module;
 
 use mlir_bridge::dialect::quantum_circ;
 

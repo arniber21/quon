@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::BackendError;
 use crate::gates;
-use crate::target::{qubit_in_range, BackendTarget, ConnectivityGraph, NoiseModel};
+use crate::target::{BackendTarget, ConnectivityGraph, NoiseModel, qubit_in_range};
 
 /// The §8.3 JSON shape. Fields without `#[serde(default)]` are required, so a
 /// missing `num_qubits` or `native_gates` is rejected by serde with an error
