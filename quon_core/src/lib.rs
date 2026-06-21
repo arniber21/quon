@@ -7,5 +7,10 @@
 //! op attributes downstream.
 
 pub mod depth;
+pub mod linearity;
 
 pub use depth::{DepthExpr, DepthParseError};
+pub use linearity::{
+    LINEAR_USE_COUNT, UseCountViolation, barrier_identity_ok, classify_use_count,
+    if_qubit_threading_ok, is_linear_use_count, is_reuse_after_measure, unitary_region_boundary_ok,
+};

@@ -27,6 +27,7 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 
 use crate::diagnostics::Diagnostics;
 use crate::dialect::quantum_circ;
+use quon_core::linearity;
 
 /// How a qubit value entered scope — used only for diagnostic phrasing.
 #[derive(Clone, Copy, Debug)]
@@ -84,7 +85,7 @@ pub fn check_linearity<'c: 'a, 'a, O: OperationLike<'c, 'a>>(func: &O) -> Diagno
 
     for def in defs {
         let count = uses.get(&def.key).copied().unwrap_or(0);
-        if count != 1 {
+        if !linearity::is_linear_use_count(count) {
             diagnostics.error(
                 def.location,
                 format!(

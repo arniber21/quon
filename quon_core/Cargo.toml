@@ -2,12 +2,20 @@
 name    = "quon_core"
 version = "0.1.0"
 edition = "2024"
+description = "MLIR-free shared types and invariant kernels for the Quon workspace"
 
-# MLIR-free shared types for the Quon workspace. Depended on by both `frontend`
-# and `mlir_bridge`, so this crate must never pull in `melior`/LLVM — that keeps
-# the frontend build (chumsky + z3 only) from having to link MLIR.
+[features]
+# Opt-in Flux refinement-type checking. Off by default so the stable workspace
+# build never compiles `flux-rs`; enabled by `cargo flux -p quon_core --features
+# flux` (nightly) in the Flux CI workflow.
+flux = ["dep:flux-rs"]
+
 [dependencies]
 thiserror = { workspace = true }
+flux-rs   = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[package.metadata.flux]
+enabled = true

@@ -21,6 +21,7 @@ pub mod classical_region_fusion;
 pub mod clifford_t_opt;
 pub mod compiler_uncomputation;
 pub mod depth_scheduling;
+pub mod dynamic_linearity_verifier;
 pub mod gate_cancellation;
 pub mod linearity_verifier;
 pub mod measurement_deferral;
