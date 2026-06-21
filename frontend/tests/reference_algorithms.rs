@@ -3,21 +3,18 @@
 
 mod support;
 
-use frontend::lexer::lex;
-use frontend::parser::parse;
 use support::strip_decls;
 
 fn parse_src(name: &str, src: &str) -> Vec<frontend::lexer::Sp<frontend::ast::Decl>> {
-    let tokens = lex(src).unwrap_or_else(|errs| {
-        for (msg, span) in &errs {
-            eprintln!("{name}: lex error at {span}: {msg}");
-        }
-        panic!("{name}: lexing failed");
-    });
-    let mut decls = parse(&tokens).unwrap_or_else(|errs| {
-        for (msg, span) in &errs {
-            let around = src.get(span.start..span.end.min(src.len())).unwrap_or("");
-            eprintln!("{name}: parse error at {span} (near {around:?}): {msg}");
+    let mut decls = frontend::parse_program(src).unwrap_or_else(|errs| {
+        for d in &errs {
+            let around = src
+                .get(d.span.start..d.span.end.min(src.len()))
+                .unwrap_or("");
+            eprintln!(
+                "{name}: error at {} (near {around:?}): {}",
+                d.span, d.message
+            );
         }
         panic!("{name}: parsing failed");
     });

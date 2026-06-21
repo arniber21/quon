@@ -3,18 +3,13 @@
 
 mod support;
 
-use frontend::lexer::lex;
-use frontend::parser::parse;
 use frontend::pretty::pretty;
 use support::{parse_stripped, strip_decls};
 
 fn roundtrip(name: &str, src: &str) {
     let original = parse_stripped(src);
     let printed = pretty(&original);
-    let tokens = lex(&printed).unwrap_or_else(|e| {
-        panic!("{name}: re-lex of printed output failed: {e:?}\n---\n{printed}")
-    });
-    let mut reparsed = parse(&tokens).unwrap_or_else(|e| {
+    let mut reparsed = frontend::parse_program(&printed).unwrap_or_else(|e| {
         panic!("{name}: re-parse of printed output failed: {e:?}\n---\n{printed}")
     });
     strip_decls(&mut reparsed);
