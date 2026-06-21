@@ -72,7 +72,7 @@ pub enum CliffordClass {
     Infer, // placeholder during parsing; resolved by type checker
 }
 
-// ── Nat / Depth expressions ───────────────────────────────────────────────────
+// ── Nat expressions ───────────────────────────────────────────────────────────
 
 /// Type-level natural number expression (appears in QReg<n>, Circuit<n,...>).
 #[derive(Debug, Clone, PartialEq)]
@@ -86,17 +86,6 @@ pub enum NatExpr {
     Exp(Box<Sp<NatExpr>>, Box<Sp<NatExpr>>),
     /// `_` placeholder in a depth position (`Circuit<n, m, _, C>`); resolved by the type checker.
     Hole,
-}
-
-/// Symbolic depth expression stored as `DepthExprAttr` in MLIR.
-/// Serialized as S-expressions for the MLIR text format.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DepthExpr {
-    Lit(u64),
-    Var(Name),
-    Add(Box<DepthExpr>, Box<DepthExpr>),
-    Mul(Box<DepthExpr>, Box<DepthExpr>),
-    Max(Box<DepthExpr>, Box<DepthExpr>),
 }
 
 // ── Expressions ──────────────────────────────────────────────────────────────

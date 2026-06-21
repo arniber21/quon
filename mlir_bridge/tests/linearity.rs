@@ -5,9 +5,9 @@ mod support;
 
 use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike, Value};
 
-use mlir_bridge::dialect::depth::DepthExpr;
 use mlir_bridge::dialect::quantum_circ as qc;
 use mlir_bridge::passes::linearity_verifier::check_linearity;
+use quon_core::DepthExpr;
 
 /// Builds `func @main` with one qubit input, fills the body via `build`, runs
 /// the linearity check, and asserts the diagnostic count.

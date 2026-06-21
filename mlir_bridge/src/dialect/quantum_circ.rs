@@ -40,7 +40,7 @@ use melior::ir::{
 };
 use thiserror::Error;
 
-use crate::dialect::depth::DepthExpr;
+use quon_core::DepthExpr;
 
 /// The dialect namespace.
 pub const NAMESPACE: &str = "quantum.circ";
