@@ -42,3 +42,10 @@ path = "fuzz_targets/fuzz_roundtrip.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_typecheck"
+path = "fuzz_targets/fuzz_typecheck.rs"
+test = false
+doc = false
+bench = false

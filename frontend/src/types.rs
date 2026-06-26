@@ -3,8 +3,14 @@
 
 use crate::ast::{CliffordClass, Name};
 use quon_core::DepthExpr;
+use std::fmt;
 
 /// Fully resolved Quon type (post kind-checking).
+///
+/// `Var` is a *rigid* type-level name (a quantified variable in a builtin scheme,
+/// before instantiation). `Meta` is a *flexible* unification variable created by the
+/// type checker during inference; every `Meta` is solved (or defaulted) and zonked
+/// away before a type leaves the checker, so well-typed output never contains one.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
     Qubit,
@@ -26,7 +32,10 @@ pub enum Ty {
     },
     Q(Box<Ty>),
     Matrix(u64, u64, Box<Ty>),
+    /// Rigid type-level variable (e.g. a quantified `A` in a prelude scheme).
     Var(Name),
+    /// Flexible unification variable, keyed into the checker's substitution.
+    Meta(u32),
 }
 
 impl Ty {
@@ -35,5 +44,64 @@ impl Ty {
             self,
             Ty::Qubit | Ty::QReg(_) | Ty::Circuit { .. } | Ty::Linear(..)
         )
+    }
+
+    /// Convenience constructor for an unrestricted function type `a -> b`.
+    pub fn func(a: Ty, b: Ty) -> Ty {
+        Ty::Fn(Box::new(a), Box::new(b))
+    }
+
+    /// Convenience constructor for `List<τ>`.
+    pub fn list(t: Ty) -> Ty {
+        Ty::List(Box::new(t))
+    }
+}
+
+/// Surface syntax for types, matching how a programmer would write them. Used in
+/// error messages so the user sees `(Int, Bool) -> List<Int>` rather than the raw
+/// `Tuple([Int, Bool])` debug form.
+impl fmt::Display for Ty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Ty::Qubit => f.write_str("Qubit"),
+            Ty::QReg(n) => write!(f, "QReg<{n}>"),
+            Ty::Bit => f.write_str("Bit"),
+            Ty::Bool => f.write_str("Bool"),
+            Ty::Int => f.write_str("Int"),
+            Ty::Float => f.write_str("Float"),
+            Ty::Unit => f.write_str("Unit"),
+            Ty::List(t) => write!(f, "List<{t}>"),
+            Ty::Tuple(ts) => {
+                f.write_str("(")?;
+                for (i, t) in ts.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{t}")?;
+                }
+                f.write_str(")")
+            }
+            // Parenthesize the domain of a function so `(A -> B) -> C` is unambiguous.
+            Ty::Fn(a, b) => write!(f, "{} -> {b}", ArrowDomain(a)),
+            Ty::Linear(a, b) => write!(f, "{} -o {b}", ArrowDomain(a)),
+            Ty::Circuit { n, m, d, c } => write!(f, "Circuit<{n}, {m}, {d}, {c:?}>"),
+            Ty::Q(t) => write!(f, "Q<{t}>"),
+            Ty::Matrix(n, m, t) => write!(f, "Matrix<{n}, {m}, {t}>"),
+            Ty::Var(name) => f.write_str(name),
+            Ty::Meta(id) => write!(f, "?{id}"),
+        }
+    }
+}
+
+/// Wraps a function's domain type, adding parentheses only when the domain is itself
+/// a function (which would otherwise re-associate ambiguously).
+struct ArrowDomain<'a>(&'a Ty);
+
+impl fmt::Display for ArrowDomain<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Ty::Fn(..) | Ty::Linear(..) => write!(f, "({})", self.0),
+            other => write!(f, "{other}"),
+        }
     }
 }
