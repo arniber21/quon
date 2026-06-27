@@ -72,6 +72,20 @@ pub enum CliffordClass {
     Infer, // placeholder during parsing; resolved by type checker
 }
 
+impl CliffordClass {
+    /// The classification lattice join (`⊔`, SPEC §3.3): `Universal` absorbs `Clifford`.
+    /// Used to propagate the class through composition (`|>`, `par`, `controlled`, …).
+    /// `Infer` is treated as the `Clifford` identity so it never poisons a join.
+    pub fn join(&self, other: &CliffordClass) -> CliffordClass {
+        match (self, other) {
+            (CliffordClass::Universal, _) | (_, CliffordClass::Universal) => {
+                CliffordClass::Universal
+            }
+            _ => CliffordClass::Clifford,
+        }
+    }
+}
+
 // ── Nat expressions ───────────────────────────────────────────────────────────
 
 /// Type-level natural number expression (appears in QReg<n>, Circuit<n,...>).

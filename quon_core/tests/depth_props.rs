@@ -23,6 +23,23 @@ fn depth_strategy() -> impl Strategy<Value = DepthExpr> {
     })
 }
 
+/// Like [`depth_strategy`] but with literals in a realistic range for qubit counts and gate
+/// depths. Normalisation folds literals with *saturating* arithmetic, so idempotence is only
+/// meaningful below the saturation ceiling — circuit indices never approach `u64::MAX`.
+fn small_depth_strategy() -> impl Strategy<Value = DepthExpr> {
+    let leaf = prop_oneof![
+        (0u64..256).prop_map(DepthExpr::Nat),
+        "[a-z][a-z0-9_]*".prop_map(DepthExpr::Var),
+    ];
+    leaf.prop_recursive(6, 64, 2, |inner| {
+        prop_oneof![
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| a.seq(b)),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| DepthExpr::repeat(a, b)),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| a.par(b)),
+        ]
+    })
+}
+
 proptest! {
     /// `parse ∘ to_sexpr` is the identity on every depth expression.
     #[test]
@@ -49,5 +66,41 @@ proptest! {
         if let Ok(expr) = DepthExpr::parse(&source) {
             prop_assert_eq!(DepthExpr::parse(&expr.to_sexpr()), Ok(expr));
         }
+    }
+
+    /// `normalize` is idempotent: a canonical form is a fixed point.
+    #[test]
+    fn normalize_is_idempotent(expr in small_depth_strategy()) {
+        let once = expr.normalize();
+        prop_assert_eq!(once.normalize(), once);
+    }
+
+    /// Normalisation respects the algebra: re-associating an operator does not change the
+    /// canonical form (so `equiv` is reflexive across associativity).
+    #[test]
+    fn normalize_is_associativity_stable(
+        a in small_depth_strategy(),
+        b in small_depth_strategy(),
+        c in small_depth_strategy(),
+    ) {
+        prop_assert!(a.clone().seq(b.clone()).seq(c.clone()).equiv(&a.clone().seq(b.clone().seq(c.clone()))));
+        prop_assert!(a.clone().par(b.clone()).par(c.clone()).equiv(&a.clone().par(b.clone().par(c.clone()))));
+        prop_assert!(DepthExpr::repeat(DepthExpr::repeat(a.clone(), b.clone()), c.clone())
+            .equiv(&DepthExpr::repeat(a, DepthExpr::repeat(b, c))));
+    }
+
+    /// Normalisation respects commutativity of every AC operator.
+    #[test]
+    fn normalize_is_commutative(a in small_depth_strategy(), b in small_depth_strategy()) {
+        prop_assert!(a.clone().seq(b.clone()).equiv(&b.clone().seq(a.clone())));
+        prop_assert!(a.clone().par(b.clone()).equiv(&b.clone().par(a.clone())));
+        prop_assert!(DepthExpr::repeat(a.clone(), b.clone()).equiv(&DepthExpr::repeat(b, a)));
+    }
+
+    /// A normalised expression still round-trips through the S-expression codec.
+    #[test]
+    fn normalized_form_round_trips(expr in small_depth_strategy()) {
+        let norm = expr.normalize();
+        prop_assert_eq!(DepthExpr::parse(&norm.to_sexpr()), Ok(norm));
     }
 }

@@ -77,7 +77,7 @@ impl Table {
             | (Ty::Int, Ty::Int)
             | (Ty::Float, Ty::Float)
             | (Ty::Unit, Ty::Unit) => Ok(()),
-            (Ty::QReg(n), Ty::QReg(m)) if n == m => Ok(()),
+            (Ty::QReg(n), Ty::QReg(m)) if n.equiv(m) => Ok(()),
             (Ty::Var(x), Ty::Var(y)) if x == y => Ok(()),
 
             (Ty::List(x), Ty::List(y)) | (Ty::Q(x), Ty::Q(y)) => self.unify(x, y, span),
@@ -107,7 +107,7 @@ impl Table {
                     d: d2,
                     c: c2,
                 },
-            ) if n1 == n2 && m1 == m2 && d1 == d2 && c1 == c2 => Ok(()),
+            ) if n1.equiv(n2) && m1.equiv(m2) && d1.equiv(d2) && c1 == c2 => Ok(()),
 
             _ => Err(TypeError::Mismatch {
                 expected: self.zonk(&a),
