@@ -38,6 +38,16 @@ pub fn parse_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
     parser::parse(&tokens).map_err(diagnostics::from_stage)
 }
 
+/// Parse `src` and run the `run { }` desugaring pass (issue #8), folding lexer,
+/// parser, and desugaring errors into one [`Diagnostic`] stream. Desugaring runs
+/// *before* the type checker, so the declarations this returns have every `run`
+/// block already lowered to `Bind`/`Return` nodes — this is the seam the checker
+/// and later lowering stages build on.
+pub fn desugar_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
+    let decls = parse_program(src)?;
+    desugar::desugar_decls(decls)
+}
+
 /// Parse and type-check a program through the classical (unrestricted) fragment
 /// (issue #9). Lexer/parser errors and type errors are folded into the one
 /// [`Diagnostic`] stream. `run { }` desugaring is not required here — the classical

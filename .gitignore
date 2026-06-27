@@ -22,4 +22,3 @@ out/
 # Environment
 .env
 .env.local
-frontend/tests/desugar.rs
