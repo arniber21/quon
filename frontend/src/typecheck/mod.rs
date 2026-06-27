@@ -460,6 +460,11 @@ impl TypeChecker {
                     return self.synth_on_sub(env, delta, args[0], args[1]);
                 }
                 ("fold", 3) => return self.synth_fold(env, delta, args[0], args[1], args[2], span),
+                // A single-qubit rotation applied to its angle (issue #12): the Clifford
+                // classification is specialised from a static multiple of π/2.
+                (rot, 1) if circuit::is_specialisable_rotation(rot) => {
+                    return self.synth_rotation(env, delta, args[0]);
+                }
                 _ => {}
             }
         }
@@ -679,6 +684,29 @@ impl TypeChecker {
         })
     }
 
+    /// A single-qubit rotation `Rx`/`Ry`/`Rz` applied to its angle (issue #12, SPEC §3.7,
+    /// §5.4): the result is `Circuit<1,1,1,C>` where `C` is `Clifford` exactly when the angle
+    /// is a *static* multiple of `π/2` (`0, π/2, π, 3π/2, …`) and `Universal` otherwise.
+    fn synth_rotation(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        angle: &Sp<Expr>,
+    ) -> Result<Ty, TypeError> {
+        self.check(env, delta, angle, &Ty::Float)?;
+        let class = if is_clifford_angle(angle) {
+            CliffordClass::Clifford
+        } else {
+            CliffordClass::Universal
+        };
+        Ok(Ty::Circuit {
+            n: DepthExpr::Nat(1),
+            m: DepthExpr::Nat(1),
+            d: DepthExpr::Nat(1),
+            c: class,
+        })
+    }
+
     /// A circuit-producing `for` loop (SPEC §5.8). The body is a circuit placed once per
     /// iteration; whether the iterations run in parallel (depth = body depth) or in sequence
     /// (depth = count × body depth) follows the iterator: `qubits`/`diag` are parallel,
@@ -857,11 +885,22 @@ impl TypeChecker {
         expected: &Ty,
         span: SimpleSpan,
     ) -> Result<(), TypeError> {
-        let (n, ..) = self.as_circuit(expected, span)?;
+        let (n, _, _, expected_c) = self.as_circuit(expected, span)?;
         self.circuit_width.push(n);
         let result = self.synth_block_body(env, delta, stmts, span);
         self.circuit_width.pop();
         let inferred = result?;
+        // Classification is always inferred; a user annotation is *checked* against it, with a
+        // span-accurate error (issue #12). Done before the dimension/depth unification so the
+        // diagnostic names the class disagreement specifically.
+        let (.., inferred_c) = self.as_circuit(&inferred, span)?;
+        if expected_c != inferred_c {
+            return Err(TypeError::CliffordMismatch {
+                expected: expected_c,
+                found: inferred_c,
+                span,
+            });
+        }
         self.table.unify(expected, &inferred, span)
     }
 
@@ -1628,6 +1667,47 @@ fn flatten_app<'a>(f: &'a Sp<Expr>, x: &'a Sp<Expr>) -> (&'a Sp<Expr>, Vec<&'a S
 fn literal_index(e: &Sp<Expr>) -> Option<u64> {
     match &e.0 {
         Expr::Int(k) if *k >= 0 => Some(*k as u64),
+        _ => None,
+    }
+}
+
+/// Whether a rotation angle is a *static* multiple of `π/2` — the condition under which
+/// `Rx`/`Ry`/`Rz` specialise to `Clifford` (SPEC §3.7). A runtime angle (or one this small
+/// evaluator cannot fold) is conservatively treated as non-Clifford.
+fn is_clifford_angle(e: &Sp<Expr>) -> bool {
+    match eval_angle(e) {
+        Some(v) => {
+            let quarters = v / std::f64::consts::FRAC_PI_2;
+            (quarters - quarters.round()).abs() < 1e-9
+        }
+        None => false,
+    }
+}
+
+/// Constant-fold a `Float` angle expression, resolving the physics constants `PI`/`TAU`/`E`.
+/// Returns `None` for anything not statically computable (e.g. a runtime variable).
+fn eval_angle(e: &Sp<Expr>) -> Option<f64> {
+    match &e.0 {
+        Expr::Float(x) => Some(*x),
+        Expr::Int(k) => Some(*k as f64),
+        Expr::Var(name) => match name.as_str() {
+            "PI" => Some(std::f64::consts::PI),
+            "TAU" => Some(std::f64::consts::TAU),
+            "E" => Some(std::f64::consts::E),
+            _ => None,
+        },
+        Expr::Neg(a) => Some(-eval_angle(a)?),
+        Expr::BinOp { op, lhs, rhs } => {
+            let (a, b) = (eval_angle(lhs)?, eval_angle(rhs)?);
+            Some(match op {
+                BinOp::Add => a + b,
+                BinOp::Sub => a - b,
+                BinOp::Mul => a * b,
+                BinOp::Div if b != 0.0 => a / b,
+                BinOp::Div => return None,
+                BinOp::Pow => a.powf(b),
+            })
+        }
         _ => None,
     }
 }

@@ -701,3 +701,89 @@ fn classical_fold_still_threads_its_accumulator() {
         Ty::Int
     );
 }
+
+// ── Clifford classification inference (issue #12, §3.7) ──────────────────────────
+
+/// A single-qubit gate placed in a 1-qubit circuit, checked against `class`.
+fn single(gate: &str, class: &str) -> String {
+    format!("fn f(): Circuit<1, 1, 1, {class}> = circuit {{ {gate} @0 }}")
+}
+
+#[test]
+fn clifford_single_qubit_gates_are_inferred_clifford() {
+    for g in ["I", "X", "Y", "Z", "H", "S", "S_dag", "SX", "SX_dag"] {
+        accepts(&single(g, "Clifford"));
+        // Annotating an inferred-Clifford gate as Universal is rejected.
+        rejects(&single(g, "Universal"));
+    }
+}
+
+#[test]
+fn universal_single_qubit_gates_are_inferred_universal() {
+    for g in ["T", "T_dag"] {
+        accepts(&single(g, "Universal"));
+        let err = reject_err(&single(g, "Clifford"));
+        assert!(
+            matches!(err, TypeError::CliffordMismatch { .. }),
+            "got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn clifford_two_qubit_gates_are_inferred_clifford() {
+    for g in ["CNOT", "CX", "CY", "CZ", "SWAP", "iSWAP", "ECR"] {
+        accepts(&format!(
+            "fn f(): Circuit<2, 2, 1, Clifford> = circuit {{ {g} @(0, 1) }}"
+        ));
+    }
+}
+
+#[test]
+fn universal_two_qubit_gates_are_inferred_universal() {
+    for g in ["Rzz", "Rxx", "Ryy", "CRz", "CRx", "CP"] {
+        accepts(&format!(
+            "fn f(): Circuit<2, 2, 1, Universal> = circuit {{ {g}(0.5) @(0, 1) }}"
+        ));
+        rejects(&format!(
+            "fn f(): Circuit<2, 2, 1, Clifford> = circuit {{ {g}(0.5) @(0, 1) }}"
+        ));
+    }
+}
+
+#[test]
+fn composition_joins_classes_universal_absorbs_clifford() {
+    // Acceptance criterion: `H @0 |> T @0` is Universal (join rule).
+    accepts("fn f(): Circuit<1, 1, 2, Universal> = circuit { H @0 |> T @0 }");
+    let err = reject_err("fn f(): Circuit<1, 1, 2, Clifford> = circuit { H @0 |> T @0 }");
+    assert!(
+        matches!(err, TypeError::CliffordMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn rotation_at_quarter_turn_is_clifford() {
+    // Acceptance criterion: `Rz(PI/2)` is Clifford.
+    accepts("fn f(): Circuit<1, 1, 1, Clifford> = circuit { Rz(PI / 2.0) @0 }");
+    accepts("fn f(): Circuit<1, 1, 1, Clifford> = circuit { Rx(PI) @0 }");
+    accepts("fn f(): Circuit<1, 1, 1, Clifford> = circuit { Ry(0.0) @0 }");
+}
+
+#[test]
+fn rotation_at_generic_angle_is_universal() {
+    // Acceptance criterion: `Rz(0.3)` is Universal.
+    accepts("fn f(): Circuit<1, 1, 1, Universal> = circuit { Rz(0.3) @0 }");
+    let err = reject_err("fn f(): Circuit<1, 1, 1, Clifford> = circuit { Rz(0.3) @0 }");
+    assert!(
+        matches!(err, TypeError::CliffordMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn rotation_at_runtime_angle_is_universal() {
+    // A runtime angle cannot be proved a multiple of π/2, so it stays Universal.
+    accepts("fn f(beta: Float): Circuit<1, 1, 1, Universal> = circuit { Rz(beta) @0 }");
+    rejects("fn f(beta: Float): Circuit<1, 1, 1, Clifford> = circuit { Rz(beta) @0 }");
+}
