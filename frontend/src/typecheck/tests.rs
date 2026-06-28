@@ -961,6 +961,72 @@ fn match_over_circuits_joins_depth_by_max() {
     );
 }
 
+// ── Value-dependent application: call-site substitution (issue #57, SPEC §3.9) ───
+
+#[test]
+fn dependent_call_specializes_a_nat_parameter_in_the_result_type() {
+    // 57a: `dbl(n): Circuit<n, 2*n, 0, Clifford>` applied to `k + 1` yields
+    // `Circuit<k+1, 2*(k+1), 0, Clifford>` — the `Nat` parameter `n` is replaced by the lowered
+    // call-site argument *everywhere* it appears (both the `n` and the `2*n` position).
+    let kp1 = || DepthExpr::Var("k".into()).seq(DepthExpr::Nat(1));
+    assert_eq!(
+        ty("fn dbl(n: Nat): Circuit<n, 2 * n, 0, Clifford> = identity(n)\n\
+            fn caller(k: Nat): Int = dbl(k + 1)"),
+        Ty::Circuit {
+            n: kp1(),
+            m: DepthExpr::repeat(DepthExpr::Nat(2), kp1()),
+            d: DepthExpr::Nat(0),
+            c: CliffordClass::Clifford,
+        }
+    );
+}
+
+#[test]
+fn dependent_call_substitutes_into_a_register_width() {
+    // 57b: `g(m): QReg<m>` applied to `n - 1` yields `QReg<n-1>` — the argument, not the formal.
+    assert_eq!(
+        ty("fn g(m: Nat): QReg<m> = qreg(m)\n\
+            fn caller(n: Nat): Int = g(n - 1)"),
+        Ty::QReg(DepthExpr::Var("n".into()).minus(DepthExpr::Nat(1)))
+    );
+}
+
+#[test]
+fn dependent_substitution_reaches_nested_type_positions() {
+    // 57c: substitution recurses through `Q<…>` and `Matrix<…>` to the depth/width leaves.
+    assert_eq!(
+        ty("fn h(n: Nat): Q<QReg<n>> = qreg(n)\n\
+            fn caller(k: Nat): Int = h(k + 2)"),
+        Ty::Q(Box::new(Ty::QReg(
+            DepthExpr::Var("k".into()).seq(DepthExpr::Nat(2))
+        )))
+    );
+    assert_eq!(
+        ty("fn mat(n: Nat): Matrix<n, n, Int> = identity(n)\n\
+            fn caller(k: Nat): Int = mat(k + 2)"),
+        Ty::Matrix(
+            DepthExpr::Var("k".into()).seq(DepthExpr::Nat(2)),
+            DepthExpr::Var("k".into()).seq(DepthExpr::Nat(2)),
+            Box::new(Ty::Int),
+        )
+    );
+}
+
+#[test]
+fn non_lowerable_nat_argument_is_a_non_dependent_arg_error() {
+    // 57d: a `Nat` argument that is not a static depth expression (here a nested *application*)
+    // cannot specialize the dependent parameter, and is reported specifically.
+    let err = reject_err(
+        "fn qft(n: Nat): Circuit<n, n, n, Universal> = identity(n)\n\
+         fn foo(x: Int): Int = x\n\
+         fn caller(x: Int): Int = qft(foo(x))",
+    );
+    assert!(
+        matches!(err, TypeError::NonDependentArg { .. }),
+        "got {err:?}"
+    );
+}
+
 // ── Quantum monad: Q<τ>, run { } bind chains (issue #14, SPEC §3.5) ──────────────
 
 #[test]

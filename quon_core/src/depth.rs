@@ -19,6 +19,7 @@
 //! Composition rules: sequential composition (`|>`) adds depths, parallel
 //! composition (`par`) takes their `max`, and `controlled` adds one.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use thiserror::Error;
@@ -199,6 +200,39 @@ impl DepthExpr {
     /// Whether this depth is a hole wildcard.
     pub fn is_hole(&self) -> bool {
         matches!(self, DepthExpr::Hole)
+    }
+
+    /// Simultaneously substitute each `Var(name)` for which `env` has an entry by the
+    /// corresponding depth expression (issue #57). `DepthExpr` has no binders, so a single
+    /// recursive pass is a capture-free simultaneous substitution: a variable introduced *by* the
+    /// substitution (e.g. the caller's `n` in `{m ↦ n-1}`) is never itself rewritten.
+    ///
+    /// This is how a `Nat` value parameter appearing in a callee's result type is specialized to
+    /// the call-site argument: `qft`'s `Circuit<n, n, n*n, …>` under `{n ↦ n-1}` becomes
+    /// `Circuit<n-1, n-1, (n-1)*(n-1), …>`.
+    pub fn subst(&self, env: &HashMap<String, DepthExpr>) -> DepthExpr {
+        match self {
+            DepthExpr::Var(name) => env.get(name).cloned().unwrap_or_else(|| self.clone()),
+            DepthExpr::Nat(_) | DepthExpr::Hole => self.clone(),
+            DepthExpr::Add(l, r) => {
+                DepthExpr::Add(Box::new(l.subst(env)), Box::new(r.subst(env)))
+            }
+            DepthExpr::Mul(l, r) => {
+                DepthExpr::Mul(Box::new(l.subst(env)), Box::new(r.subst(env)))
+            }
+            DepthExpr::Max(l, r) => {
+                DepthExpr::Max(Box::new(l.subst(env)), Box::new(r.subst(env)))
+            }
+            DepthExpr::Sub(l, r) => {
+                DepthExpr::Sub(Box::new(l.subst(env)), Box::new(r.subst(env)))
+            }
+            DepthExpr::Div(l, r) => {
+                DepthExpr::Div(Box::new(l.subst(env)), Box::new(r.subst(env)))
+            }
+            DepthExpr::Exp(l, r) => {
+                DepthExpr::Exp(Box::new(l.subst(env)), Box::new(r.subst(env)))
+            }
+        }
     }
 
     /// Parses a [`DepthExpr`] from its S-expression form.
@@ -406,6 +440,35 @@ mod tests {
             .par(DepthExpr::Nat(1).controlled());
         let text = expr.to_sexpr();
         assert_eq!(DepthExpr::parse(&text), Ok(expr));
+    }
+
+    #[test]
+    fn subst_specializes_a_callees_depth_to_the_call_site_argument() {
+        // qft's `n*n` under {n ↦ n-1} becomes `(n-1)*(n-1)`.
+        let n = || DepthExpr::Var("n".into());
+        let body = DepthExpr::repeat(n(), n());
+        let mut env = HashMap::new();
+        env.insert("n".to_string(), n().minus(DepthExpr::Nat(1)));
+        let pred = n().minus(DepthExpr::Nat(1));
+        assert_eq!(body.subst(&env), DepthExpr::repeat(pred.clone(), pred));
+    }
+
+    #[test]
+    fn subst_is_simultaneous_and_capture_free() {
+        // A variable introduced *by* the substitution must not itself be rewritten.
+        let body = DepthExpr::Var("m".into());
+        let mut env = HashMap::new();
+        env.insert("m".to_string(), DepthExpr::Var("n".into()));
+        env.insert("n".to_string(), DepthExpr::Nat(7));
+        // {m ↦ n} applied to `m` yields `n`, not `7`.
+        assert_eq!(body.subst(&env), DepthExpr::Var("n".into()));
+    }
+
+    #[test]
+    fn subst_leaves_unmapped_vars_and_constants_untouched() {
+        let body = DepthExpr::Var("k".into()).seq(DepthExpr::Nat(3));
+        let env: HashMap<String, DepthExpr> = HashMap::new();
+        assert_eq!(body.subst(&env), body);
     }
 
     #[test]
