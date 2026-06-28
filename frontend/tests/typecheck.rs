@@ -116,12 +116,13 @@ fn each_broken_function_yields_its_own_diagnostic() {
 }
 
 #[test]
-fn unimplemented_monadic_fragment_is_reported_as_unsupported() {
-    // Measurement / the `Q` monad land with issue #14; until then they are reported cleanly
-    // rather than mishandled. (The circuit fragment now type-checks.)
+fn measurement_synthesizes_the_quantum_monad() {
+    // Issue #14: `measure(q) : Q<Bit>`. Used where the return type is `Q<Bit>` it checks; the
+    // old `: Bit` form is now a `Q<Bit>` vs `Bit` mismatch, not an "unsupported" report.
+    assert!(check_program("fn f(q: Qubit): Q<Bit> = measure(q)").is_ok());
     let diag = only_error("fn f(q: Qubit): Bit = measure(q)");
     assert!(
-        diag.message.contains("not yet type-checked"),
+        diag.message.contains("Q<Bit>"),
         "message was: {}",
         diag.message
     );
@@ -136,6 +137,21 @@ fn a_circuit_used_where_a_scalar_is_expected_is_a_circuit_error() {
         diag.message.contains("expected a circuit"),
         "message was: {}",
         diag.message
+    );
+}
+
+#[test]
+fn bell_state_fixture_type_checks() {
+    // The real reference fixture (not an inline copy) checks end-to-end through the full
+    // parse → desugar → type-check pipeline (issue #14). `bell_state.qn` defines both
+    // `bell_state` and `hello_bell`, so it is self-contained; `teleport.qn` references
+    // `bell_state` from this file, so its end-to-end check is the inline test in the unit
+    // suite (with `bell_state` in scope).
+    let src = include_str!("fixtures/bell_state.qn");
+    assert!(
+        check_program(src).is_ok(),
+        "got {:?}",
+        check_program(src).err()
     );
 }
 

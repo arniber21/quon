@@ -41,6 +41,25 @@ fn reject_err(src: &str) -> TypeError {
     errs.swap_remove(0)
 }
 
+/// Whole-program check through the desugaring pass (issue #8) first — the pipeline used for
+/// `run { }` blocks, so monadic forms are checked on the desugared `Bind`/`Return` tree.
+fn check_run(src: &str) -> Result<(), Vec<TypeError>> {
+    let decls = crate::desugar::desugar_decls(parse_program(src).expect("parse failed"))
+        .expect("desugar reported errors");
+    TypeChecker::new().check_decls(&decls)
+}
+
+fn accepts_run(src: &str) {
+    if let Err(e) = check_run(src) {
+        panic!("expected `{src}` to type-check, got {e:?}");
+    }
+}
+
+fn reject_run_err(src: &str) -> TypeError {
+    let mut errs = check_run(src).expect_err("expected rejection");
+    errs.swap_remove(0)
+}
+
 // ── Literal synthesis ──────────────────────────────────────────────────────────
 
 #[test]
@@ -864,5 +883,89 @@ fn match_over_circuits_joins_depth_by_max() {
             d: DepthExpr::Nat(1),
             c: CliffordClass::Clifford,
         }
+    );
+}
+
+// ── Quantum monad: Q<τ>, run { } bind chains (issue #14, SPEC §3.5) ──────────────
+
+#[test]
+fn bind_measure_then_return_is_q_bit() {
+    // AC: `run { x <- measure(q); return x }` type-checks with `q` consumed, result `Q<Bit>`.
+    accepts_run("fn f(q: Qubit): Q<Bit> = run {\n  x <- measure(q)\n  return x\n}");
+}
+
+#[test]
+fn using_a_qubit_after_measuring_it_is_rejected() {
+    // AC: a second use of `q` after `measure(q)` is a no-cloning violation.
+    let err = reject_run_err(
+        "fn f(q: Qubit): Q<Bit> = run {\n  x <- measure(q)\n  y <- measure(q)\n  return x\n}",
+    );
+    assert!(
+        matches!(err, TypeError::LinearUsedTwice { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn binding_a_classical_value_with_arrow_is_rejected() {
+    // AC: a `<-` whose right-hand side is not `Q<_>` (here a bare `Int`) is an error — the
+    // monad is entered by measurement/allocation, not by classical values. Use `let`.
+    let err = reject_run_err("fn f(): Q<Int> = run {\n  x <- 5\n  return x\n}");
+    assert!(
+        matches!(err, TypeError::ExpectedMonad { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn return_lifts_a_value_into_the_monad() {
+    accepts_run("fn f(): Q<Int> = run {\n  return 7\n}");
+}
+
+#[test]
+fn measure_consumes_its_qubit_so_dropping_is_an_error() {
+    // `measure` takes the qubit linearly; a function that measures nothing must still consume
+    // its qubit parameter. Here `q` is never used, a no-dropping violation.
+    let err = reject_run_err("fn f(q: Qubit): Q<Int> = run {\n  return 0\n}");
+    assert!(
+        matches!(err, TypeError::LinearUnconsumed { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn hello_bell_type_checks_end_to_end() {
+    // AC: the `hello_bell` reference algorithm (SPEC §12) type-checks.
+    accepts_run(
+        "fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {\n\
+         \x20   H @0 |> CNOT @(0, 1)\n\
+         }\n\
+         fn hello_bell(): Q<(Bit, Bit)> = run {\n\
+         \x20   (q0, q1) <- bell_state() @ qreg(2)\n\
+         \x20   b0       <- measure(q0)\n\
+         \x20   b1       <- measure(q1)\n\
+         \x20   return (b0, b1)\n\
+         }",
+    );
+}
+
+#[test]
+fn teleport_type_checks_end_to_end() {
+    // AC: the `teleport` reference algorithm (SPEC §12) type-checks end-to-end. Exercises
+    // pure circuit application (`X @ b : Qubit`), monadic register binds, `Bit`-driven `if`,
+    // and branch depth join (`if x_bit then X else identity(1)`).
+    accepts_run(
+        "fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {\n\
+         \x20   H @0 |> CNOT @(0, 1)\n\
+         }\n\
+         fn teleport(msg: Qubit, alice: Qubit, bob: Qubit): Q<Qubit> = run {\n\
+         \x20   (a, b)   <- bell_state() @ (alice, bob)\n\
+         \x20   (m2, a2) <- adjoint(bell_state()) @ (msg, a)\n\
+         \x20   x_bit    <- measure(m2)\n\
+         \x20   z_bit    <- measure(a2)\n\
+         \x20   let b2    = (if x_bit then X else identity(1)) @ b\n\
+         \x20   let b3    = (if z_bit then Z else identity(1)) @ b2\n\
+         \x20   return b3\n\
+         }",
     );
 }

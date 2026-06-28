@@ -73,6 +73,9 @@ fn list(t: Ty) -> Ty {
 fn tuple(ts: Vec<Ty>) -> Ty {
     Ty::Tuple(ts)
 }
+fn q(t: Ty) -> Ty {
+    Ty::Q(Box::new(t))
+}
 /// Right-fold a curried function type: `curry([T1, T2], R) = T1 -> T2 -> R`.
 fn curry(args: Vec<Ty>, ret: Ty) -> Ty {
     args.into_iter().rev().fold(ret, |acc, a| func(a, acc))
@@ -122,6 +125,21 @@ pub fn lookup(name: &str) -> Option<Scheme> {
         "sqrt" => Scheme::mono(func(Ty::Float, Ty::Float)),
         // log2(x) : Float -> Float
         "log2" => Scheme::mono(func(Ty::Float, Ty::Float)),
+
+        // ── §5.9 Quantum monad prelude (issue #14) ──────────────────────────
+        // Measurement consumes a qubit and yields a classical bit in `Q`. The qubit
+        // argument is consumed by the ordinary application rule (it is a linear resource),
+        // so `measure` itself is a reusable function living in Γ.
+        // measure(q) : Qubit -> Q<Bit>   (also the x/y-basis variants)
+        "measure" | "measure_x" | "measure_y" => Scheme::mono(func(Ty::Qubit, q(Ty::Bit))),
+        // reset(q) : Qubit -> Q<Qubit>   (measure and reprepare to |0⟩)
+        "reset" => Scheme::mono(func(Ty::Qubit, q(Ty::Qubit))),
+        // discard(q) : Qubit -> Q<Unit>  (measure and drop — ancilla cleanup)
+        "discard" => Scheme::mono(func(Ty::Qubit, q(Ty::Unit))),
+        // Single-qubit allocation in `Q`. `qubit()`/`init_one()`/`init_plus()` are nullary,
+        // so the call passes `Unit` (see `fn_type`). Register allocation `qreg(n)` is
+        // size-dependent and handled in the checker, not here.
+        "qubit" | "init_one" | "init_plus" => Scheme::mono(func(Ty::Unit, q(Ty::Qubit))),
 
         // ── §5.11 Physics constants ─────────────────────────────────────────
         "PI" | "TAU" | "E" => Scheme::mono(Ty::Float),
