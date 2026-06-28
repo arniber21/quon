@@ -99,6 +99,17 @@ pub enum TypeError {
         found: crate::ast::CliffordClass,
         span: SimpleSpan,
     },
+    /// A user-supplied depth annotation could not be shown equal to the inferred symbolic
+    /// depth (issue #13). `expected`/`found` are the two depth expressions, rendered for the
+    /// message; Z3 found them unequal (or the constant fast-path did).
+    DepthMismatch {
+        expected: String,
+        found: String,
+        span: SimpleSpan,
+    },
+    /// A symbolic depth constraint was beyond what the refinement solver could decide
+    /// (issue #13) — e.g. an intractable nonlinear term. The user must supply a static bound.
+    DepthIntractable { expr: String, span: SimpleSpan },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -131,6 +142,8 @@ impl TypeError {
             | TypeError::GateTargetArity { span, .. }
             | TypeError::IndexOutOfBounds { span, .. }
             | TypeError::CliffordMismatch { span, .. }
+            | TypeError::DepthMismatch { span, .. }
+            | TypeError::DepthIntractable { span, .. }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -220,6 +233,17 @@ impl fmt::Display for TypeError {
             } => write!(
                 f,
                 "Clifford classification mismatch: annotated `{expected:?}`, inferred `{found:?}`"
+            ),
+            TypeError::DepthMismatch {
+                expected, found, ..
+            } => write!(
+                f,
+                "circuit depth mismatch: annotated `{expected}`, inferred `{found}`"
+            ),
+            TypeError::DepthIntractable { expr, .. } => write!(
+                f,
+                "depth constraint `{expr}` is too complex for the solver to verify; \
+                 supply a static depth bound"
             ),
             TypeError::Unsupported { construct, .. } => write!(
                 f,
