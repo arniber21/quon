@@ -84,6 +84,23 @@ impl CliffordClass {
             _ => CliffordClass::Clifford,
         }
     }
+
+    /// The classification lattice order (`⊑`, SPEC §3.3/§3.7): `Clifford ⊑ Universal`, with
+    /// `Universal` the top. This is the *subsumption* used when checking an inferred class
+    /// against an expected one — a `Clifford` circuit is acceptable wherever a `Universal`
+    /// circuit is expected, but not the reverse. Distinct from [`Self::join`] (inference):
+    /// `join` is the least upper bound used to *propagate* a class through composition, `leq`
+    /// is the order used to *check* one against an annotation. `Infer` is the `Clifford`
+    /// bottom, so it is below everything.
+    pub fn leq(&self, other: &CliffordClass) -> bool {
+        match (self, other) {
+            // Universal is only ⊑ Universal.
+            (CliffordClass::Universal, CliffordClass::Universal) => true,
+            (CliffordClass::Universal, _) => false,
+            // Clifford (and the Infer bottom) are ⊑ anything.
+            _ => true,
+        }
+    }
 }
 
 // ── Nat expressions ───────────────────────────────────────────────────────────
