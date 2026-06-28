@@ -1029,6 +1029,49 @@ fn non_lowerable_nat_argument_is_a_non_dependent_arg_error() {
     );
 }
 
+// ── Dependent match refinement: per-arm assumptions (issue #59, SPEC §3.6) ───────
+
+#[test]
+fn literal_match_arm_refines_the_scrutinee_for_width_obligations() {
+    // 59a: in the `0 =>` arm of `match n`, the assumption `n = 0` lets `identity(0)` (width 0)
+    // satisfy the function's `Circuit<n, n, …>` result — the width obligation `0 = n` is provable
+    // *only* under that refinement. The `_` arm gets `n ≠ 0` and uses the full-width `identity(n)`.
+    accepts(
+        "fn f(n: Nat): Circuit<n, n, 0, Clifford> = \
+         match n { 0 => identity(0), _ => identity(n) }",
+    );
+}
+
+#[test]
+fn match_refinement_does_not_leak_into_sibling_arms() {
+    // 59b: the `n = 0` assumption from the first arm must not persist into the `_` arm. If it did,
+    // `identity(0)` (width 0) would wrongly satisfy `Circuit<n, n, …>` there too. Under the correct
+    // scoping the `_` arm only knows `n ≠ 0`, so the width obligation `0 = n` fails — a rejection.
+    let err = reject_err(
+        "fn f(n: Nat): Circuit<n, n, 0, Clifford> = \
+         match n { 0 => identity(0), _ => identity(0) }",
+    );
+    assert!(
+        matches!(err, TypeError::QubitCountMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn if_guard_introduces_no_nat_refinement() {
+    // Documented boundary (SPEC §3.6): only `match` refines a `Nat` scrutinee; a `Bool` `if`-guard
+    // does not. So `identity(0)` cannot satisfy `Circuit<n, n, …>` in an `if` branch — `0 = n` is
+    // unprovable without the `n = 0` a `match { 0 => … }` arm would supply.
+    let err = reject_err(
+        "fn f(n: Nat, b: Bool): Circuit<n, n, 0, Clifford> = \
+         if b then identity(0) else identity(n)",
+    );
+    assert!(
+        matches!(err, TypeError::QubitCountMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
 // ── Quantum monad: Q<τ>, run { } bind chains (issue #14, SPEC §3.5) ──────────────
 
 #[test]
