@@ -1,20 +1,50 @@
-fn qft(n: Nat): Circuit<n, n, n*n, Universal> = circuit {
-    match n {
-        0 => identity(0),
-        _ => (H @0 |> controlled_rotations(n))
-             |> (qft(n-1) `on_high` n)
-             |> swap_reverse(n)
-    }
+-- Shor's algorithm: order-finding via the quantum Fourier transform.
+-- The recursive `qft` kernel is the headline value-dependent program (issues #57–#60):
+--   * its result width/depth are functions of the `Nat` parameter `n` (#57),
+--   * the `match n { 0 => …, _ => … }` base case is discharged under refinement `n = 0` (#59),
+--   * the self-call `qft(n-1)` terminates on the decreasing measure `n` under `n ≥ 1` (#60),
+--   * its `2*n*n` depth is an *upper bound* (#58 + depth-as-bound), proven by Z3 at each step.
+
+-- A single Hadamard on the lead qubit of an n-register (the head of one QFT layer).
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+-- Hadamard on every qubit of an n-register (uniform superposition of the control register).
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit { for q in qubits(n) { H q } }
+
+-- The cascade of controlled phase rotations from the lead qubit onto the rest: n-1 of them in
+-- sequence, each a controlled rotation (depth 2), so depth 2*(n-1). Universal (π/4 is non-Clifford).
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / 4.0)) @(0, i + 1) }
 }
 
-fn mod_exp(n: Nat, a: Int, nn: Int): Circuit<2*n, 2*n, n^3, Universal> = circuit {
-    build_controlled_modexp(n, a, nn)
+-- Recursive QFT (SPEC §12). One layer = Hadamard + controlled rotations on the lead qubit, then
+-- the QFT of the remaining n-1 qubits (embedded high), then the bit-reversal swap network.
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+-- Modular multiplication by `a` (mod nn), schematically: a sequence of n controlled rotations on
+-- the 2n-qubit work register. Depth 2*n; Universal.
+fn modmul(n: Nat, a: Int, nn: Int): Circuit<2 * n, 2 * n, 2 * n, Universal> = circuit {
+    for i in range(n) { controlled(Rz(PI / 4.0)) @(0, n + i) }
 }
+
+-- Modular exponentiation: n repetitions of modular multiplication (repeated squaring), depth 2*n².
+fn mod_exp(n: Nat, a: Int, nn: Int): Circuit<2 * n, 2 * n, 2 * n * n, Universal> =
+    repeat(n, modmul(n, a, nn))
+
+-- Prepare |0…01⟩ in the n-qubit target register.
+fn init_one(n: Nat): Circuit<n, n, 1, Clifford> = circuit { X @0 }
 
 -- Classical post-processing (continued fractions, GCD) lives in host code.
 fn shor_quantum(n: Nat, a: Int, nn: Int): Q<List<Bit>> = run {
     ctrl          <- hadamard_all(n) @ qreg(n)
-    tgt           <- init_one() @ qreg(n)
+    tgt           <- init_one(n) @ qreg(n)
     both          <- mod_exp(n, a, nn) @ (ctrl `tensored` tgt)
     let (ctrl2, _) = split(n, both)
     est           <- adjoint(qft(n)) @ ctrl2

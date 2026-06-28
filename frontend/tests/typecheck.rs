@@ -170,8 +170,9 @@ fn reference_algorithm_fixtures_type_check_via_facade() {
     for (file, src) in [
         ("bell_state", include_str!("fixtures/bell_state.qn")),
         ("grover", include_str!("fixtures/grover.qn")),
-        // `shor.qn` excluded: its recursive `qft` kernel is a known gap (see SPEC §12
-        // "Known gap"). It still lexes/parses in the `reference_algorithms` snapshot suite.
+        // `shor.qn` type-checks end-to-end (issues #57–#60): the recursive `qft` kernel drives the
+        // value-dependent machinery, with its `2*n*n` depth verified as an upper bound.
+        ("shor", include_str!("fixtures/shor.qn")),
         (
             "error_correction",
             include_str!("fixtures/error_correction.qn"),

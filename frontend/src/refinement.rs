@@ -352,20 +352,25 @@ mod tests {
 
     #[test]
     fn qft_step_depth_bound_is_provable_under_n_ge_1() {
-        // The Z3-tractability gate for the recursive `qft` (#60): the step arm's synthesized depth
-        //   1(H) + (n-1)(controlled_rotations) + (n-1)²(IH) + n/2(swap_reverse)
-        // must be ≤ the annotation n*n under the successor-arm assumption n ≥ 1. This exercises
+        // The Z3-tractability gate for the recursive `qft` (#60), matching `shor.qn`: the step arm's
+        // synthesized depth
+        //   1(H) + 2(n-1)(controlled_rotations) + 2(n-1)²(IH) + n/2(swap_reverse)
+        // must be ≤ the annotation 2*n*n under the successor-arm assumption n ≥ 1. This exercises
         // nonlinear arithmetic + Euclidean division; assert Z3 *decides* it (not Intractable).
         let ctx = RefinementCtx::new();
         let n = var("n");
         let one = DepthExpr::Nat(1);
+        let two = DepthExpr::Nat(2);
         let pred = n.clone().minus(one.clone()); // n - 1
         let step = one
             .clone()
-            .seq(pred.clone()) // 1 + (n-1)
-            .seq(pred.clone().power(DepthExpr::Nat(2))) // + (n-1)²
+            .seq(DepthExpr::repeat(two.clone(), pred.clone())) // 1 + 2(n-1)
+            .seq(DepthExpr::repeat(
+                two.clone(),
+                pred.power(DepthExpr::Nat(2)),
+            )) // + 2(n-1)²
             .seq(n.clone().quot(DepthExpr::Nat(2))); // + n/2
-        let annot = DepthExpr::repeat(n.clone(), n.clone()); // n*n
+        let annot = DepthExpr::repeat(two, DepthExpr::repeat(n.clone(), n.clone())); // 2*n*n
         let asm = [Assumption::Ge(n.clone(), one)];
         assert_eq!(ctx.prove_le(&asm, &step, &annot), Ok(()));
     }

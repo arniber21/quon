@@ -56,6 +56,17 @@ struct AliasDef {
     body: Sp<Type>,
 }
 
+/// A captured self-recursive call site (issue #60): the value substitution it applies to the
+/// current function's `Nat` parameters (keyed by parameter name), and the refinement assumptions
+/// in force there. Collected while checking a body, then replayed after to verify a well-founded
+/// decreasing measure exists — some `Nat` parameter `p` whose argument is provably `< p` (and
+/// `≥ 0`) at *every* recursive call.
+#[derive(Clone)]
+struct RecCall {
+    sigma: HashMap<String, DepthExpr>,
+    assumptions: Vec<Assumption>,
+}
+
 /// A top-level function's value-dependency signature (issue #57). Records each parameter's
 /// name and whether it is a `Nat` value parameter (so its call-site argument can be lowered to
 /// a [`DepthExpr`] and substituted into the result type), together with the resolved return
@@ -110,6 +121,13 @@ pub struct TypeChecker {
     /// [`expect_type`] discharge under them (e.g. `identity(0)`'s width `0 = n` when `n = 0` is
     /// known) without leaking into sibling arms or the enclosing scope.
     assumptions: Vec<Assumption>,
+    /// The function whose body is currently being checked, as `(name, Nat-parameter names)`
+    /// (issue #60). A fully-applied call to this name is a self-recursive call: its value
+    /// substitution and the assumptions in force are captured into [`rec_calls`] for the
+    /// well-founded-measure check run after the body.
+    current_fn: Option<(Name, Vec<Name>)>,
+    /// Self-recursive call sites captured while checking the current body (issue #60).
+    rec_calls: Vec<RecCall>,
 }
 
 impl TypeChecker {
@@ -125,6 +143,8 @@ impl TypeChecker {
             circuit_width_cap: Vec::new(),
             refine: RefinementCtx::new(),
             assumptions: Vec::new(),
+            current_fn: None,
+            rec_calls: Vec::new(),
         }
     }
 
@@ -257,12 +277,20 @@ impl TypeChecker {
             }
         }
 
+        // Pass 2.5: reject mutual recursion among functions (issue #60). Direct self-recursion is
+        // checked for a decreasing measure per-body; a cycle through ≥ 2 distinct functions has no
+        // such per-body witness, so it is rejected up front rather than silently accepted.
+        self.check_no_mutual_recursion(decls, &mut errors);
+
         // Pass 3: check each body.
         for (decl, _) in decls {
             if let Decl::Fn {
-                params, ret, body, ..
+                name,
+                params,
+                ret,
+                body,
             } = decl
-                && let Err(e) = self.check_fn_body(params, ret, body)
+                && let Err(e) = self.check_fn_body(name, params, ret, body)
             {
                 errors.push(e);
             }
@@ -381,17 +409,135 @@ impl TypeChecker {
 
     fn check_fn_body(
         &mut self,
+        name: &Name,
         params: &[(Name, Sp<Type>)],
         ret: &Sp<Type>,
         body: &Sp<Expr>,
     ) -> Result<(), TypeError> {
+        // Track the current function and its `Nat` parameters so self-recursive calls in the body
+        // can be captured for the well-founded-measure check (issue #60).
+        let nat_params: Vec<Name> = params
+            .iter()
+            .filter(|(_, t)| matches!(t.0, Type::Nat))
+            .map(|(n, _)| n.clone())
+            .collect();
+        self.current_fn = Some((name.clone(), nat_params));
+        self.rec_calls.clear();
+
         let mut env = self.globals.clone();
         let mut delta = Delta::new();
         let introduced = self.bind_fn_params(params, &mut env, &mut delta)?;
         let ret_ty = self.resolve_type(ret)?;
         self.check(&env, &mut delta, body, &ret_ty)?;
         self.finalize_numeric()?;
-        self.ensure_consumed(&delta, &introduced)
+        self.ensure_consumed(&delta, &introduced)?;
+        self.check_termination(name, body.1)
+    }
+
+    /// Verify that the recursive calls captured while checking the current body admit a
+    /// well-founded decreasing measure (issue #60, SPEC §3.3 "Recursive circuit functions"): a
+    /// `Nat` parameter `p` whose call-site argument is provably `< p` *and* `≥ 0` at every
+    /// recursive call, under that call's refinement assumptions. The `≥ 0` half is what forces a
+    /// base case — without the `n ≥ 1` a `match { 0 => … }` arm supplies, `n − 1 ≥ 0` is not
+    /// provable at `n = 0`, so the unguarded `f(n) = f(n−1)` is correctly rejected. A function
+    /// with no captured recursive call is non-recursive here and trivially passes.
+    fn check_termination(&self, name: &Name, span: SimpleSpan) -> Result<(), TypeError> {
+        if self.rec_calls.is_empty() {
+            return Ok(());
+        }
+        let Some((_, nat_params)) = &self.current_fn else {
+            return Ok(());
+        };
+        for p in nat_params {
+            let param_var = DepthExpr::Var(p.clone());
+            let decreases = self.rec_calls.iter().all(|call| {
+                let Some(arg) = call.sigma.get(p) else {
+                    return false;
+                };
+                let strictly_less = arg.clone().seq(DepthExpr::Nat(1));
+                // `arg + 1 ≤ p`  (strict decrease)  and  `0 ≤ arg`  (stays in ℕ).
+                self.refine
+                    .prove_le(&call.assumptions, &strictly_less, &param_var)
+                    .is_ok()
+                    && self
+                        .refine
+                        .prove_le(&call.assumptions, &DepthExpr::Nat(0), arg)
+                        .is_ok()
+            });
+            if decreases {
+                return Ok(());
+            }
+        }
+        Err(TypeError::IllFoundedRecursion {
+            name: name.clone(),
+            span,
+        })
+    }
+
+    /// Reject mutual recursion among *circuit* functions (issue #60). Builds the static call graph
+    /// (application-head references between functions) and flags any circuit-returning function on
+    /// a cycle through at least one *other* circuit function — i.e. some circuit function `v ≠ self`
+    /// reachable from `self` that can reach `self` back. Pure self-loops are direct recursion and
+    /// handled by [`check_termination`]; classical mutual recursion (e.g. `even`/`odd` over `Bool`)
+    /// builds no circuit and is unaffected. Only genuine circuit cycles are reported here.
+    fn check_no_mutual_recursion(&self, decls: &[Sp<Decl>], errors: &mut Vec<TypeError>) {
+        use std::collections::HashSet;
+        let fn_names: HashSet<&str> = decls
+            .iter()
+            .filter_map(|(d, _)| match d {
+                Decl::Fn { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        // Whether a function's declared result is a circuit (the kind whose recursion must
+        // terminate to bound depth). Reads the resolved return type recorded in `fn_sigs`.
+        let returns_circuit = |name: &str| -> bool {
+            self.fn_sigs
+                .get(name)
+                .map(|sig| matches!(sig.ret, Ty::Circuit { .. }))
+                .unwrap_or(false)
+        };
+        let mut adj: HashMap<&str, HashSet<String>> = HashMap::new();
+        for (d, _) in decls {
+            if let Decl::Fn { name, body, .. } = d {
+                let mut callees = HashSet::new();
+                collect_called_fns(body, &fn_names, &mut callees);
+                adj.insert(name.as_str(), callees);
+            }
+        }
+        // The set of functions reachable from `start` over ≥ 1 call edge.
+        let reaches = |start: &str| -> HashSet<String> {
+            let mut seen = HashSet::new();
+            let mut stack: Vec<String> = adj.get(start).into_iter().flatten().cloned().collect();
+            while let Some(n) = stack.pop() {
+                if seen.insert(n.clone())
+                    && let Some(next) = adj.get(n.as_str())
+                {
+                    for m in next {
+                        if !seen.contains(m) {
+                            stack.push(m.clone());
+                        }
+                    }
+                }
+            }
+            seen
+        };
+        for (d, span) in decls {
+            if let Decl::Fn { name, .. } = d
+                && returns_circuit(name)
+            {
+                let forward = reaches(name);
+                let mutual = forward.iter().any(|v| {
+                    v.as_str() != name && returns_circuit(v) && reaches(v).contains(name.as_str())
+                });
+                if mutual {
+                    errors.push(TypeError::MutualRecursion {
+                        name: name.clone(),
+                        span: *span,
+                    });
+                }
+            }
+        }
     }
 
     /// Scope-exit check: every linear name a scope introduced must have been consumed by the
@@ -816,6 +962,18 @@ impl TypeChecker {
                     })?;
                     sigma.insert(pname.clone(), d);
                 }
+            }
+            // A fully-applied call to the function we are currently checking is a self-recursive
+            // call (issue #60): record its value substitution and the assumptions in force so the
+            // post-body measure check can verify a well-founded decrease. The signature stands in
+            // as the inductive hypothesis — the body is never inlined, so this cannot loop.
+            if let Some((cur, _)) = &self.current_fn
+                && cur == name
+            {
+                self.rec_calls.push(RecCall {
+                    sigma: sigma.clone(),
+                    assumptions: self.assumptions.clone(),
+                });
             }
             // Run the ordinary application to check arguments and consume the linear context.
             let f_ty = self.synth(env, delta, f)?;
@@ -2489,6 +2647,88 @@ fn flatten_app<'a>(f: &'a Sp<Expr>, x: &'a Sp<Expr>) -> (&'a Sp<Expr>, Vec<&'a S
     args.reverse();
     args.push(x);
     (cur, args)
+}
+
+/// Collect, into `out`, the names of top-level functions (those in `fns`) that appear in
+/// *application-head* position anywhere in `e` — the static call edges out of a function body
+/// (issue #60). A bare reference that is not applied is not a call; everything reachable is walked
+/// (circuit/run blocks, `for`/`borrow` bodies, match arms, lambda bodies, …) so a recursive call
+/// buried in a `circuit { }` block or a `|>` chain is still seen.
+fn collect_called_fns(
+    e: &Sp<Expr>,
+    fns: &std::collections::HashSet<&str>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match &e.0 {
+        Expr::App(f, x) => {
+            let (head, args) = flatten_app(f, x);
+            if let Expr::Var(n) = &head.0
+                && fns.contains(n.as_str())
+            {
+                out.insert(n.clone());
+            }
+            collect_called_fns(head, fns, out);
+            for a in args {
+                collect_called_fns(a, fns, out);
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(_) => {}
+        Expr::Lam { body, .. } => collect_called_fns(body, fns, out),
+        Expr::BinOp { lhs, rhs, .. } => {
+            collect_called_fns(lhs, fns, out);
+            collect_called_fns(rhs, fns, out);
+        }
+        Expr::Neg(a)
+        | Expr::Adjoint(a)
+        | Expr::Controlled(a)
+        | Expr::Return(a)
+        | Expr::Ascribe(a, _) => collect_called_fns(a, fns, out),
+        Expr::Compose(a, b) | Expr::Par(a, b) | Expr::GateApp { gate: a, qubits: b } => {
+            collect_called_fns(a, fns, out);
+            collect_called_fns(b, fns, out);
+        }
+        Expr::Let { rhs, body, .. } | Expr::Bind { rhs, body, .. } => {
+            collect_called_fns(rhs, fns, out);
+            collect_called_fns(body, fns, out);
+        }
+        Expr::If { cond, then, else_ } => {
+            collect_called_fns(cond, fns, out);
+            collect_called_fns(then, fns, out);
+            collect_called_fns(else_, fns, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_called_fns(scrutinee, fns, out);
+            for (_, b) in arms {
+                collect_called_fns(b, fns, out);
+            }
+        }
+        Expr::For { iter, body, .. } => {
+            collect_called_fns(iter, fns, out);
+            collect_called_fns(body, fns, out);
+        }
+        Expr::Tuple(es) | Expr::List(es) => {
+            for e in es {
+                collect_called_fns(e, fns, out);
+            }
+        }
+        Expr::CircuitBlock(stmts) | Expr::RunBlock(stmts) | Expr::Borrow { body: stmts, .. } => {
+            for s in stmts {
+                collect_called_fns_stmt(s, fns, out);
+            }
+        }
+    }
+}
+
+/// `collect_called_fns` for a statement (`pat <- e`, `let p = e`, or a trailing expression).
+fn collect_called_fns_stmt(
+    s: &Sp<Stmt>,
+    fns: &std::collections::HashSet<&str>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match &s.0 {
+        Stmt::Bind { rhs, .. } | Stmt::Let { rhs, .. } => collect_called_fns(rhs, fns, out),
+        Stmt::Expr(e) => collect_called_fns(e, fns, out),
+    }
 }
 
 /// Walk a folded monadic block looking for a borrowed ancilla escaping in a `return`. The
