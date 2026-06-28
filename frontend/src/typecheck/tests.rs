@@ -633,7 +633,9 @@ fn bell_gate_synthesizes_its_annotated_type() {
 
 #[test]
 fn bell_gate_with_wrong_depth_is_rejected() {
-    rejects("fn bell(): Circuit<2, 2, 3, Clifford> = circuit { H @0 |> CNOT @(0, 1) }");
+    // Depth is an upper bound (SPEC §3.3): the rejection direction is an annotation *below* the
+    // real depth. The bell circuit has depth 2; annotating depth 1 is rejected.
+    rejects("fn bell(): Circuit<2, 2, 1, Clifford> = circuit { H @0 |> CNOT @(0, 1) }");
 }
 
 #[test]
@@ -704,7 +706,9 @@ fn repeat_multiplies_depth_by_the_count() {
 
 #[test]
 fn repeat_with_wrong_depth_is_rejected() {
-    rejects("fn f(k: Nat, c: Circuit<2,2,3,Clifford>): Circuit<2,2,k*4,Clifford> = repeat(k, c)");
+    // `repeat(k, c)` over a depth-3 `c` synthesizes depth `k*3`; annotating `k*2` is below that
+    // bound (false for any `k ≥ 1`), so it is rejected.
+    rejects("fn f(k: Nat, c: Circuit<2,2,3,Clifford>): Circuit<2,2,k*2,Clifford> = repeat(k, c)");
 }
 
 // ── for-loops in circuit context (§5.8) ─────────────────────────────────────────
@@ -876,10 +880,13 @@ fn symbolic_depth_annotation_matching_inferred_var_is_accepted() {
 }
 
 #[test]
-fn symbolic_depth_off_by_one_is_a_depth_mismatch() {
-    // Body depth is `n`; the annotation claims `n + 1`. Z3 finds a counterexample (any n),
-    // so this is a depth mismatch, reported specifically (not a generic unification failure).
-    let err = reject_err("fn f(c: Circuit<1, 1, n, Clifford>): Circuit<1, 1, n + 1, Clifford> = c");
+fn symbolic_depth_exceeding_the_bound_is_a_depth_mismatch() {
+    // Depth is an *upper bound* (SPEC §3.3): a synthesized depth larger than the annotation is
+    // the rejection direction. Body depth is `n + 1`; the annotation claims only `n`. Z3 finds a
+    // counterexample (any n), so this is a depth mismatch — reported specifically, not as a
+    // generic unification failure. (The reverse — body `n`, annotation `n + 1` — is now *accepted*
+    // as a valid looser bound; see `looser_depth_annotation_is_accepted_as_a_bound`.)
+    let err = reject_err("fn f(c: Circuit<1, 1, n + 1, Clifford>): Circuit<1, 1, n, Clifford> = c");
     assert!(
         matches!(err, TypeError::DepthMismatch { .. }),
         "got {err:?}"
@@ -887,15 +894,24 @@ fn symbolic_depth_off_by_one_is_a_depth_mismatch() {
 }
 
 #[test]
-fn constant_depth_mismatch_is_a_depth_mismatch() {
-    // AC: an incorrect concrete annotation (depth 3 where the circuit has depth 2) is rejected
-    // with a depth-specific error — via the constant fast path, no solver needed.
+fn constant_depth_below_the_synthesized_depth_is_a_depth_mismatch() {
+    // AC: a concrete annotation *below* the real depth (annotated 1 where the circuit has depth 2)
+    // is rejected with a depth-specific error — via the constant fast path, no solver needed.
     let err =
-        reject_err("fn bell(): Circuit<2, 2, 3, Clifford> = circuit { H @0 |> CNOT @(0, 1) }");
+        reject_err("fn bell(): Circuit<2, 2, 1, Clifford> = circuit { H @0 |> CNOT @(0, 1) }");
     assert!(
         matches!(err, TypeError::DepthMismatch { .. }),
         "got {err:?}"
     );
+}
+
+#[test]
+fn looser_depth_annotation_is_accepted_as_a_bound() {
+    // The dual of the two rejections above: depth is "bounded above by d", so an annotation
+    // *looser* than the synthesized depth is a valid bound and accepted — constant (depth 2 bell
+    // annotated 5) and symbolic (`n` annotated `n + 1`) alike.
+    accepts("fn bell(): Circuit<2, 2, 5, Clifford> = circuit { H @0 |> CNOT @(0, 1) }");
+    accepts("fn f(c: Circuit<1, 1, n, Clifford>): Circuit<1, 1, n + 1, Clifford> = c");
 }
 
 #[test]

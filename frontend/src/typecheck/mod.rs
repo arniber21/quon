@@ -37,7 +37,7 @@ pub use error::TypeError;
 
 use crate::ast::{BinOp, CliffordClass, Decl, Expr, Name, NatExpr, Pat, Stmt, Type};
 use crate::lexer::{SimpleSpan, Sp};
-use crate::refinement::{DepthError, RefinementCtx};
+use crate::refinement::{Assumption, DepthError, RefinementCtx};
 use crate::types::Ty;
 use builtins::Scheme;
 use linear::Delta;
@@ -87,6 +87,12 @@ pub struct TypeChecker {
     /// `match` branches — when structural equality (`DepthExpr::equiv`) is not enough.
     /// Pure-constant depths never reach it.
     refine: RefinementCtx,
+    /// The refinement assumptions in force at the current point — the equalities/disequalities a
+    /// `match` arm's pattern implies about its `Nat` scrutinee (issue #59), plus any measure
+    /// facts. Pushed on entering a refined arm and popped on exit, so width/depth obligations in
+    /// [`expect_type`] discharge under them (e.g. `identity(0)`'s width `0 = n` when `n = 0` is
+    /// known) without leaking into sibling arms or the enclosing scope.
+    assumptions: Vec<Assumption>,
 }
 
 impl TypeChecker {
@@ -100,6 +106,7 @@ impl TypeChecker {
             circuit_width: Vec::new(),
             circuit_width_cap: Vec::new(),
             refine: RefinementCtx::new(),
+            assumptions: Vec::new(),
         }
     }
 
@@ -126,10 +133,12 @@ impl TypeChecker {
             },
         ) = (self.table.resolve(expected), self.table.resolve(got))
         {
-            // Class first, so a class disagreement is named specifically (issue #12). Checked by
-            // *subsumption*, not equality (issue #58, SPEC §3.3/§3.7): a `Clifford` value (`gc`)
-            // satisfies a `Universal` expectation (`ec`) since `Clifford ⊑ Universal`, but a
-            // `Universal` value never satisfies a `Clifford` annotation. Class *inference* (the
+            // Circuit subtyping (SPEC §3.3): width invariant (`=`), depth covariant (`≤`), class
+            // covariant (`⊑`). Class first, so a class disagreement is named specifically (#12).
+            //
+            // Class is checked by *subsumption*, not equality (issue #58): a `Clifford` value
+            // (`gc`) satisfies a `Universal` expectation (`ec`) since `Clifford ⊑ Universal`, but
+            // a `Universal` value never satisfies a `Clifford` annotation. Class *inference* (the
             // `join`) is unchanged — this only relaxes the checking direction.
             if !gc.leq(&ec) {
                 return Err(TypeError::CliffordMismatch {
@@ -138,41 +147,25 @@ impl TypeChecker {
                     span,
                 });
             }
-            if !en.equiv(&gn) {
-                return Err(TypeError::QubitCountMismatch {
-                    expected: en.to_string(),
-                    found: gn.to_string(),
-                    span,
-                });
-            }
-            if !em.equiv(&gm) {
-                return Err(TypeError::QubitCountMismatch {
-                    expected: em.to_string(),
-                    found: gm.to_string(),
-                    span,
-                });
-            }
+            self.verify_width(&en, &gn, span)?;
+            self.verify_width(&em, &gm, span)?;
             return self.verify_depth(&ed, &gd, span);
         }
         self.table.unify(expected, got, span)
     }
 
-    /// Verify an inferred symbolic depth against a user-supplied annotation (issue #13).
-    /// Structural equality is the fast path; only genuinely symbolic, non-`equiv` depths are
-    /// handed to Z3. Maps a [`DepthError`] to a span-accurate [`TypeError`].
+    /// Verify an inferred symbolic depth against a user-supplied annotation (issue #13). Depth is
+    /// an **upper bound** (SPEC §3.3): the obligation is `inferred ≤ annotated`, discharged under
+    /// the active refinement assumptions (issue #59). `prove_le` short-circuits on holes,
+    /// structural equivalence, and (assumption-free) constants; only genuinely symbolic
+    /// obligations reach Z3. Maps a [`DepthError`] to a span-accurate [`TypeError`].
     fn verify_depth(
         &self,
         annotated: &DepthExpr,
         inferred: &DepthExpr,
         span: SimpleSpan,
     ) -> Result<(), TypeError> {
-        if annotated.is_hole() {
-            return Ok(());
-        }
-        if annotated.equiv(inferred) {
-            return Ok(());
-        }
-        match self.refine.verify_equal(inferred, annotated) {
+        match self.refine.prove_le(&self.assumptions, inferred, annotated) {
             Ok(()) => Ok(()),
             Err(DepthError::Mismatch) => Err(TypeError::DepthMismatch {
                 expected: annotated.to_string(),
@@ -180,7 +173,30 @@ impl TypeChecker {
                 span,
             }),
             Err(DepthError::Intractable) => Err(TypeError::DepthIntractable {
-                expr: format!("{inferred} = {annotated}"),
+                expr: format!("{inferred} <= {annotated}"),
+                span,
+            }),
+        }
+    }
+
+    /// Verify a circuit width (qubit count) is exactly the expected one (SPEC §3.3: width is the
+    /// invariant physical interface — no subtyping). Equality is discharged under the active
+    /// refinement assumptions, so e.g. an arm producing width `0` satisfies an expected `n` when
+    /// `n = 0` is assumed. Structural/constant fast paths inside `prove_eq` keep the common case
+    /// solver-free.
+    fn verify_width(
+        &self,
+        expected: &DepthExpr,
+        got: &DepthExpr,
+        span: SimpleSpan,
+    ) -> Result<(), TypeError> {
+        match self.refine.prove_eq(&self.assumptions, expected, got) {
+            Ok(()) => Ok(()),
+            // A genuine mismatch *or* an intractable obligation both surface as a width error:
+            // an undecidable width equality is, for the user, an unmet qubit-count requirement.
+            Err(_) => Err(TypeError::QubitCountMismatch {
+                expected: expected.to_string(),
+                found: got.to_string(),
                 span,
             }),
         }
@@ -922,7 +938,11 @@ impl TypeChecker {
         found: &DepthExpr,
         span: SimpleSpan,
     ) -> Result<(), TypeError> {
-        if expected.equiv(found) || self.refine.verify_equal(found, expected).is_ok() {
+        if self
+            .refine
+            .prove_eq(&self.assumptions, expected, found)
+            .is_ok()
+        {
             Ok(())
         } else {
             Err(TypeError::QubitCountMismatch {
@@ -1062,7 +1082,7 @@ impl TypeChecker {
         let rt = self.synth(env, delta, r)?;
         let (ln, lm, ld, lc) = self.as_circuit(&lt, l.1)?;
         let (rn, rm, rd, rc) = self.as_circuit(&rt, r.1)?;
-        if !lm.equiv(&rn) && self.refine.verify_equal(&lm, &rn).is_err() {
+        if self.refine.prove_eq(&self.assumptions, &lm, &rn).is_err() {
             return Err(TypeError::QubitCountMismatch {
                 expected: lm.to_string(),
                 found: rn.to_string(),
