@@ -185,6 +185,42 @@ When `d` contains a runtime variable (e.g. `p * (n*n + 1)` where `p : Int`), the
 
 This eliminates the need for `DynCircuit` in most variational algorithms: `fold` over `p` layers of depth `d` produces `Circuit<n, n, p*d, C>` with a symbolic but well-typed depth.
 
+#### Circuit subtyping
+
+Composition (the table above) and the Clifford join are *inference* rules: they synthesize the **tight** indices of an expression bottom-up. *Checking* an expression against an expected/annotated circuit type instead uses a single subtyping rule:
+
+```
+Circuit<n₁,m₁,d₁,C₁>  <:  Circuit<n₂,m₂,d₂,C₂>
+   iff   n₁ = n₂  ∧  m₁ = m₂      (WIDTH invariant — the physical qubit interface)
+       ∧ d₁ ≤ d₂                  (DEPTH covariant — "bounded above by d")
+       ∧ C₁ ⊑ C₂                  (CLASS covariant — Clifford ⊑ Universal, §3.7)
+```
+
+Width is an exact interface — a `Circuit<n,…>` consumes and produces exactly that many qubits, so there is no subtyping on `n`/`m` (checked by `=` under the active refinement assumptions, §3.6). Depth and class are covariant up their respective orders. A *looser* depth annotation than the synthesized depth is therefore accepted as a valid bound; a *tighter* one is a depth mismatch.
+
+#### The dual nature of depth
+
+Depth has two readings, kept distinct by the checker:
+
+- **Synthesized depth `δ_syn(e)`** — the tight compositional depth, from the inference arithmetic above. Used wherever depth is *produced* (composition, branch `max`, a `let`-bound circuit value).
+- **Declared depth `δ_ann`** — the bound written in a `Circuit<…, δ_ann, …>` annotation. Checking `e ⇐ Circuit<…, δ_ann, …>` discharges `δ_syn(e) ≤ δ_ann` (§3.6). **Across a function-call boundary only `δ_ann` is visible** — a caller composing `f` uses `f`'s declared bound, never its internal `δ_syn`.
+
+**Monotonicity Lemma (soundness of the bound).** Every depth-composition operator that appears in a depth-operand position — `+` (seq), `max` (par), `k·` (repeat, `k ≥ 0`), `·+1` (controlled), `÷c`/`^c` (constant) — is monotone non-decreasing in each depth operand. Natural subtraction never appears in a depth-of-subcircuit position (composing circuits cannot *reduce* depth; `Sub` arises only in width/count expressions such as `n-1`). Hence replacing any sub-circuit's exact depth by an upper bound yields an upper bound for the whole composite. Two corollaries:
+
+1. **Cross-function soundness.** `real(f) ≤ δ_syn(body_f) ≤ δ_ann(f)`; a caller using `δ_ann(f)` in a monotone context preserves "≤ true bound", so a looser annotation stays sound when composed.
+2. **Inductive soundness (recursion).** The inductive hypothesis supplies a recursive call's depth as the *declared* bound `δ_ann(n-1)`, used monotonically in the step; proving `δ_syn(step) ≤ δ_ann(n)` for the step therefore extends to all `n` by well-founded induction (see "Recursive circuit functions" below).
+
+All reference algorithms annotate tight depths, so `δ_syn = δ_ann` and `≤` holds with equality; the relaxation only *adds* acceptance of valid looser bounds.
+
+#### Recursive circuit functions
+
+A recursive circuit function `f(n: Nat): Circuit<φ(n), ψ(n), δ(n), C>` is checked with its own signature in scope as the **inductive hypothesis**: a call `f(e)` is typed `Circuit<φ(e), ψ(e), δ(e), C>` by value-substitution (§3.9). The checker reads the signature and never inlines the body, so it cannot loop; soundness rests on two obligations instead:
+
+1. **Well-foundedness.** A `Circuit<…>` denotes a finite, statically elaborated unitary, so a recursive circuit function must terminate for every input. The checker requires a **decreasing `Nat` measure**: some parameter `p` such that at every recursive call site, under that site's refinement assumptions (§3.6), the argument supplied for `p` is provably `< p` **and** `≥ 0` (discharged as `arg + 1 ≤ p` and `0 ≤ arg`). The measure is inferred by trying each `Nat` parameter; if none decreases on all recursive calls, the function is rejected with an *ill-founded recursion* error (reported, never looped). The `0 ≤ arg` half forces a base case: without the `n ≥ 1` a `match { 0 => … }` arm supplies, `n − 1 ≥ 0` is not provable at `n = 0`.
+2. **Inductive depth/width/class.** The base arm discharges under refinement (`n = 0 ⟹` width `0 = n`, depth `0 ≤ δ(0)`); the step arm discharges `δ_syn(step) ≤ δ(n)` under `n ≥ 1` via the Monotonicity Lemma. `match` exhaustiveness guarantees every `n` is covered.
+
+**Scope.** v1 supports direct self-recursion with a single inferred decreasing measure. *Mutual* recursion among circuit functions is rejected (no per-body termination witness); classical mutual recursion (e.g. `even`/`odd`) is unaffected. The measure check is conservative: a recursive call guarded by a statically-unrefined branch is rejected, with the documented workaround to restructure under a `match`.
+
 ### 3.4 Linearity
 
 Quon enforces a standard linear type discipline via a **split context** bidirectional type checker.
@@ -307,8 +343,21 @@ assert(n_steps * n + d₂ == total_depth)
 If `total_depth` is a type annotation on the enclosing function, Z3 verifies the equality. If it is inferred, Z3 is not needed — the expression is simply carried forward symbolically.
 
 Z3 is invoked only when:
-1. A symbolic depth expression must be shown equal to a concrete bound, or
-2. A branch (e.g. `match`) produces circuits of different symbolic depths that must unify.
+1. A symbolic depth expression must be shown **within** a concrete bound (`δ_syn ≤ δ_ann`, §3.3), or a symbolic width shown **equal** to an expected one, and structural equivalence does not already settle it, or
+2. A branch (e.g. `match`) produces circuits of different symbolic depths that must reconcile.
+
+#### Refinement assumptions
+
+Obligations are discharged under a context of **refinement assumptions** — facts the checker knows at the current point:
+
+- A `match` over a `Nat` scrutinee refines it per arm. A literal arm `k =>` assumes `scrut = k`; a wildcard/variable arm assumes `scrut ≠ kᵢ` for every sibling literal `kᵢ`. These assumptions scope to the arm body and never leak to siblings or the enclosing scope. (A `Bool`/`Bit` `if`-guard introduces no `Nat` refinement.)
+- Every width/depth/count variable is a natural number, so the solver asserts a **global domain `v ≥ 0`** for each. Combined with a `{0, _}` match this yields `scrut ≥ 1` in the `_` arm — exactly what licenses `scrut − 1` as a predecessor.
+
+Refinement is **obligation-level**, not environment specialization: the `0 =>` arm of `match n` proves `identity(0)`'s width `0 = n` under `n = 0`, but `n` is *not* rewritten to `0` elsewhere in the arm (a dependent destructure whose arity depends on the refined scrutinee is out of scope).
+
+#### Subtraction semantics
+
+Natural subtraction in a depth/width expression (`n − 1`, `n/2`) is interpreted as **signed** integer subtraction over the `≥ 0` domain. Every such subtraction in Quon occurs within its valid domain — a `match n ≥ 1` arm, or an algorithm's stated range — where signed and saturating subtraction coincide, and the Monotonicity Lemma (§3.3) keeps the resulting bound sound. (Saturating subtraction was rejected: it makes `(n−1)+1 = 1 > 0` at `n = 0`, spuriously failing a depth bound that holds throughout its real `n ≥ 1` domain.)
 
 ### 3.7 Clifford Classification Inference
 
@@ -326,7 +375,7 @@ T, Rz(θ) for θ ∉ {0, π/2, π, 3π/2}, Rx(θ), Ry(θ) for arbitrary θ,
 Rzz(θ), and any circuit containing the above
 ```
 
-Classification is propagated through `|>`, `par`, `adjoint`, and `controlled` using the join rule in §3.3. Users never annotate `Clifford` or `Universal` manually — it is always inferred. User-supplied annotations are checked against the inferred class and rejected if inconsistent.
+Classification is propagated through `|>`, `par`, `adjoint`, and `controlled` using the join rule (`⊔`) in §3.3 — this is *inference*. A user-supplied annotation is checked by **subsumption** against the classification order `Clifford ⊑ Universal` (§3.3 circuit subtyping): an inferred `Clifford` circuit satisfies a `Universal` annotation (a Clifford circuit *is* a universal one), but an inferred `Universal` circuit never satisfies a `Clifford` annotation. The join is the least upper bound used to propagate a class; `⊑` is the order used to check one against an annotation.
 
 ### 3.8 Type Checking Algorithm
 
@@ -339,6 +388,18 @@ Synthesis is used for: literals, variables, function application, `circuit { }` 
 Checking is used for: function bodies against their declared return type, `run { }` blocks against `Q<τ>`, `match` branches against a shared type.
 
 Circuit depth indices are synthesized at each composition point and compared symbolically. The Z3 oracle is called only as described in §3.6.
+
+### 3.9 Value-Dependent Types
+
+A `Nat` value parameter may appear in a type position (`fn qft(n: Nat): Circuit<n, n, 2*n*n, Universal>`). At a **fully-applied** call site, that parameter is specialized to the call-site argument throughout the result type:
+
+```
+qft(n-1)  :  Circuit<n-1, n-1, 2*(n-1)*(n-1), Universal>
+```
+
+The substitution lowers each `Nat` argument to a symbolic depth expression and applies it simultaneously to every embedded index of the result — register widths, circuit `n`/`m`/`d`, matrix dimensions, recursively through `Q`, `List`, `Tuple`, and function arrows. A `Nat` argument that is not a static depth expression (an `Int` literal, a variable, or `+ − * / ^` over them) is rejected: it cannot specialize the parameter. Under-applied calls fall back to the non-substituted signature.
+
+Functions keep an ordinary value arrow (`τ₁ -> … -> R`); there is no dependent function type in the surface syntax. Value-dependency is realized entirely by call-site substitution into the result, which is what the recursive-circuit inductive hypothesis (§3.3) and the dependent `match` refinement (§3.6) build on.
 
 ---
 
@@ -1394,26 +1455,40 @@ fn grover(n: Nat, oracle: Oracle<n>): Q<List<Bit>> = run {
 
 ### Shor's Algorithm (Quantum Kernel)
 
-Tests: recursive circuit construction, `adjoint`, `split`, `on_high`, depth `O(n³)`.
+Tests: recursive circuit construction (value-dependent types, §3.9), the well-founded `n` measure (§3.3), the dependent-match base case (§3.6), `adjoint`, `split`, `on_high`, and a `2*n*n` depth bound proven by Z3.
 
 ```kotlin
-fn qft(n: Nat): Circuit<n, n, n*n, Universal> = circuit {
-    match n {
-        0 => identity(0),
-        _ => (H @0 |> controlled_rotations(n))
-             |> (qft(n-1) `on_high` n)
-             |> swap_reverse(n)
-    }
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / 4.0)) @(0, i + 1) }
 }
 
-fn mod_exp(n: Nat, a: Int, nn: Int): Circuit<2*n, 2*n, n^3, Universal> = circuit {
-    build_controlled_modexp(n, a, nn)
+-- One QFT layer (Hadamard + controlled rotations on the lead qubit), then the QFT of the
+-- remaining n-1 qubits embedded high, then the bit-reversal swaps. The `match` base case is
+-- discharged under `n = 0`; the self-call `qft(n-1)` decreases the measure `n` under `n ≥ 1`.
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+fn modmul(n: Nat, a: Int, nn: Int): Circuit<2*n, 2*n, 2*n, Universal> = circuit {
+    for i in range(n) { controlled(Rz(PI / 4.0)) @(0, n + i) }
 }
+
+fn mod_exp(n: Nat, a: Int, nn: Int): Circuit<2*n, 2*n, 2*n*n, Universal> =
+    repeat(n, modmul(n, a, nn))
+
+fn init_one(n: Nat): Circuit<n, n, 1, Clifford> = circuit { X @0 }
 
 -- Classical post-processing (continued fractions, GCD) lives in host code.
 fn shor_quantum(n: Nat, a: Int, nn: Int): Q<List<Bit>> = run {
     ctrl          <- hadamard_all(n) @ qreg(n)
-    tgt           <- init_one() @ qreg(n)
+    tgt           <- init_one(n) @ qreg(n)
     both          <- mod_exp(n, a, nn) @ (ctrl `tensored` tgt)
     let (ctrl2, _) = split(n, both)
     est           <- adjoint(qft(n)) @ ctrl2
@@ -1421,11 +1496,7 @@ fn shor_quantum(n: Nat, a: Int, nn: Int): Q<List<Bit>> = run {
 }
 ```
 
-> **Known gap.** The recursive `qft` kernel above does **not** yet type-check: its `match`
-> base case `identity(0)` has width `0` while the function is declared `Circuit<n, n, …>`, so a
-> sound check requires refining `n` to `0` inside the `0 =>` arm (dependent reasoning on the
-> match scrutinee), and `qft` is self-recursive. Recursive circuit definitions are tracked as a
-> follow-up; the other seven §12 algorithms type-check today.
+The recursive `qft` depth `2*n*n` is an **upper bound** (§3.3): the step arm synthesizes `1 + 2(n-1) + 2(n-1)² + n/2`, which Z3 proves `≤ 2n²` under `n ≥ 1`. All eight §12 algorithms type-check.
 
 ### 3-Qubit Bit-Flip Error Correction
 
