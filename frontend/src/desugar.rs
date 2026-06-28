@@ -200,15 +200,8 @@ fn desugar_run_block(
 
         current_expr = match stmt {
             Stmt::Bind { pat, rhs } => {
-                let param = bind_param(pat, errors);
-                (
-                    Expr::Bind {
-                        rhs: Box::new(desugar_expr_acc(rhs, errors)),
-                        param,
-                        body: Box::new(current_expr),
-                    },
-                    current_span,
-                )
+                let rhs = Box::new(desugar_expr_acc(rhs, errors));
+                desugar_bind(pat, rhs, current_expr, current_span, errors)
             }
             Stmt::Let { pat, rhs } => (
                 Expr::Let {
@@ -234,31 +227,54 @@ fn desugar_run_block(
     current_expr
 }
 
-/// A monadic `<-` bind threads a single value into its continuation, so its
-/// pattern must be one variable (or `_`). Tuple/literal patterns can't be a
-/// `Bind` parameter; report them and recover with `_`.
-fn bind_param(pat: Sp<Pat>, errors: &mut Vec<Diagnostic>) -> String {
-    match pat.0 {
-        Pat::Var(name) => name,
-        Pat::Wildcard => "_".to_string(),
-        other => {
-            errors.push(Diagnostic::new(
-                format!(
-                    "a `<-` bind in a `run` block must bind a single variable or `_`, not {}",
-                    pat_kind(&other)
-                ),
-                pat.1,
-            ));
-            "_".to_string()
+/// Desugar a `pat <- rhs` bind continuing into `body` (`bind(rhs, fn(pat) -> body)`).
+///
+/// The [`Expr::Bind`] node carries a single `Name`, not a pattern, so:
+/// * a variable (or `_`) pattern becomes the bind parameter directly;
+/// * a **tuple** pattern binds a fresh variable and immediately destructures it with a `let`,
+///   `(a, b) <- e; k` ⟶ `bind(e, fn($t) -> let (a, b) = $t in k)`. The reference algorithms
+///   (`hello_bell`, `teleport`, `syndrome_measure`) all rely on this form. The fresh name is
+///   `$`-prefixed so it cannot collide with a lexable identifier, and span-keyed so distinct
+///   binds never clash.
+/// * a **literal** pattern is refutable — not a valid irrefutable bind — so it is reported and
+///   recovered as `_`.
+fn desugar_bind(
+    pat: Sp<Pat>,
+    rhs: Box<Sp<Expr>>,
+    body: Sp<Expr>,
+    span: SimpleSpan,
+    errors: &mut Vec<Diagnostic>,
+) -> Sp<Expr> {
+    let pat_span = pat.1;
+    let (param, body) = match &pat.0 {
+        Pat::Var(name) => (name.clone(), body),
+        Pat::Wildcard => ("_".to_string(), body),
+        Pat::Tuple(_) => {
+            let tmp = format!("$bind{}", pat_span.start);
+            let destructured = (
+                Expr::Let {
+                    pat: pat.clone(),
+                    rhs: Box::new((Expr::Var(tmp.clone()), pat_span)),
+                    body: Box::new(body),
+                },
+                span,
+            );
+            (tmp, destructured)
         }
-    }
-}
-
-fn pat_kind(pat: &Pat) -> &'static str {
-    match pat {
-        Pat::Tuple(_) => "a tuple pattern",
-        Pat::Lit(_) => "a literal pattern",
-        Pat::Var(_) => "a variable",
-        Pat::Wildcard => "a wildcard",
-    }
+        Pat::Lit(_) => {
+            errors.push(Diagnostic::new(
+                "a `<-` bind in a `run` block cannot bind a literal pattern",
+                pat_span,
+            ));
+            ("_".to_string(), body)
+        }
+    };
+    (
+        Expr::Bind {
+            rhs,
+            param,
+            body: Box::new(body),
+        },
+        span,
+    )
 }

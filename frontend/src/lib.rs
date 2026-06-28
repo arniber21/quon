@@ -52,12 +52,12 @@ pub fn desugar_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
     desugar::desugar_decls(decls)
 }
 
-/// Parse and type-check a program through the classical (unrestricted) fragment
-/// (issue #9). Lexer/parser errors and type errors are folded into the one
-/// [`Diagnostic`] stream. `run { }` desugaring is not required here — the classical
-/// fragment contains no monadic blocks — so this skips straight from parse to check.
+/// Parse, desugar, and type-check a program (issues #9–#14). `run { }` blocks are lowered to
+/// `Bind`/`Return` nodes by [`desugar_program`] *before* the checker runs, so the quantum
+/// monad fragment is type-checked on the desugared tree. Lexer, parser, desugaring, and type
+/// errors are folded into the one [`Diagnostic`] stream.
 pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
-    let decls = parse_program(src)?;
+    let decls = desugar_program(src)?;
     TypeChecker::new()
         .check_decls(&decls)
         .map_err(|errs| errs.iter().map(|e| e.to_diagnostic()).collect())

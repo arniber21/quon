@@ -148,21 +148,37 @@ fn run_block_ending_in_bind_is_a_diagnostic_not_a_panic() {
 }
 
 #[test]
-fn tuple_bind_pattern_is_a_diagnostic_not_a_panic() {
-    // `(a, b) <- e` can't be a monadic Bind parameter: report with the pattern span.
-    let src = "fn f(): Int = run {\n  (a, b) <- e\n  return a\n}";
-    let decls = frontend::parse_program(src).expect("parse failed");
-    let errs = desugar_decls(decls).expect_err("tuple bind pattern should be rejected");
-    assert_eq!(errs.len(), 1);
+fn tuple_bind_pattern_destructures_via_a_fresh_let() {
+    // `(a, b) <- e; return a` ⟶ Bind(e, $t, let (a, b) = $t in Return(a)).
+    // The Bind node holds one name, so a tuple pattern binds a fresh variable that is
+    // immediately destructured with a `let` — the form `hello_bell`/`teleport` rely on.
+    let body = desugar_body("run {\n  (a, b) <- e\n  return a\n}");
+
+    let Expr::Bind { rhs, param, body } = body else {
+        panic!("expected Bind, got {body:?}");
+    };
+    assert_eq!(rhs.0, var("e"));
     assert!(
-        errs[0].message.contains("single variable"),
-        "got: {}",
-        errs[0].message
+        param.starts_with('$'),
+        "tuple bind introduces a fresh, non-collidable name, got {param:?}"
     );
-    let pat_at = src.find("(a, b)").unwrap();
+
+    let Expr::Let { pat, rhs, body } = body.0 else {
+        panic!("expected destructuring Let, got {:?}", body.0);
+    };
+    assert!(
+        matches!(pat.0, Pat::Tuple(_)),
+        "the original tuple pattern is preserved in the let, got {:?}",
+        pat.0
+    );
     assert_eq!(
-        errs[0].span.start, pat_at,
-        "diagnostic points at the pattern"
+        rhs.0,
+        var(&param),
+        "the let destructures the bind's fresh var"
+    );
+    assert!(
+        matches!(body.0, Expr::Return(_)),
+        "continuation is preserved"
     );
 }
 
