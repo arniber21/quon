@@ -51,6 +51,26 @@ pub enum TypeError {
         found: usize,
         span: SimpleSpan,
     },
+    /// A linear resource (`Qubit`/`QReg`/`Circuit` value) was used more than once —
+    /// contraction is absent from the linear context, so no-cloning is a type error.
+    /// `first` is the consuming use; `span` (== the second use) is where the caret lands.
+    LinearUsedTwice {
+        name: String,
+        first: SimpleSpan,
+        span: SimpleSpan,
+    },
+    /// A linear resource went out of scope without being consumed — weakening is absent,
+    /// so no-dropping is a type error. `span` points at the binding that introduced it.
+    LinearUnconsumed { name: String, span: SimpleSpan },
+    /// The branches of an `if`/`match` disagree on which linear resources they consume:
+    /// `name` is spent on one path but not all. `span` points at the offending branch.
+    LinearBranchMismatch { name: String, span: SimpleSpan },
+    /// A linear resource was bound to a wildcard `_`, i.e. silently discarded. Permitted
+    /// discards (a measured qubit, a borrow-reset qubit) arrive with issues #14/#15.
+    LinearDiscard { name: String, span: SimpleSpan },
+    /// A lambda body referred to a linear resource from the enclosing scope. A function
+    /// value may run zero or many times, so it cannot consume a resource exactly once.
+    LinearCapture { name: String, span: SimpleSpan },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -73,6 +93,11 @@ impl TypeError {
             | TypeError::AmbiguousLambda { span }
             | TypeError::OccursCheck { span }
             | TypeError::AliasArity { span, .. }
+            | TypeError::LinearUsedTwice { span, .. }
+            | TypeError::LinearUnconsumed { span, .. }
+            | TypeError::LinearBranchMismatch { span, .. }
+            | TypeError::LinearDiscard { span, .. }
+            | TypeError::LinearCapture { span, .. }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -119,6 +144,24 @@ impl fmt::Display for TypeError {
                 f,
                 "type alias `{name}` expects {expected} argument(s), found {found}"
             ),
+            TypeError::LinearUsedTwice { name, .. } => write!(
+                f,
+                "linear resource `{name}` is used more than once (no-cloning)"
+            ),
+            TypeError::LinearUnconsumed { name, .. } => write!(
+                f,
+                "linear resource `{name}` is never consumed (no-dropping)"
+            ),
+            TypeError::LinearBranchMismatch { name, .. } => write!(
+                f,
+                "linear resource `{name}` is consumed in some branches but not all"
+            ),
+            TypeError::LinearDiscard { name, .. } => {
+                write!(f, "cannot discard linear resource `{name}` with `_`")
+            }
+            TypeError::LinearCapture { name, .. } => {
+                write!(f, "cannot capture linear resource `{name}` in a closure")
+            }
             TypeError::Unsupported { construct, .. } => write!(
                 f,
                 "`{construct}` is part of the linear/quantum fragment and is not yet type-checked"

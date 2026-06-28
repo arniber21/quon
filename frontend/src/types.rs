@@ -39,11 +39,22 @@ pub enum Ty {
 }
 
 impl Ty {
-    pub fn is_linear(&self) -> bool {
-        matches!(
-            self,
-            Ty::Qubit | Ty::QReg(_) | Ty::Circuit { .. } | Ty::Linear(..)
-        )
+    /// Whether a value of this type is a **linear resource** — one that must be consumed
+    /// exactly once and lives in the linear context `Δ` (SPEC §3.4). These are the quantum
+    /// values: a `Qubit`, a `QReg<n>`, a `Circuit{..}` value, and any aggregate (`Tuple`,
+    /// `List`) that carries one.
+    ///
+    /// Note what is *excluded*: a `Ty::Linear(a, b)` (a `-o` function) is a reusable
+    /// function value — the linearity is a promise about its *argument*, not about the
+    /// function itself, so `measure : Qubit -o Q<Bit>` may be called freely. Likewise `Q<τ>`
+    /// is an unrestricted monadic computation. Both stay in the unrestricted context `Γ`.
+    pub fn is_linear_resource(&self) -> bool {
+        match self {
+            Ty::Qubit | Ty::QReg(_) | Ty::Circuit { .. } => true,
+            Ty::List(t) => t.is_linear_resource(),
+            Ty::Tuple(ts) => ts.iter().any(Ty::is_linear_resource),
+            _ => false,
+        }
     }
 
     /// Convenience constructor for an unrestricted function type `a -> b`.

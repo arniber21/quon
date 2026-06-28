@@ -35,6 +35,12 @@ fn rejects(src: &str) {
     assert!(check(src).is_err(), "expected `{src}` to be rejected");
 }
 
+/// Reject `src` and return its first type error, for asserting the *kind* of failure.
+fn reject_err(src: &str) -> TypeError {
+    let mut errs = check(src).expect_err("expected rejection");
+    errs.swap_remove(0)
+}
+
 // ── Literal synthesis ──────────────────────────────────────────────────────────
 
 #[test]
@@ -379,4 +385,187 @@ fn mutual_recursion_resolves_signatures() {
         "fn even(n: Int): Bool = odd(n)\n\
          fn odd(n: Int): Bool = even(n)",
     );
+}
+
+// ── Linearity: no-cloning (contraction is absent) ───────────────────────────────
+
+#[test]
+fn using_a_qubit_once_is_accepted() {
+    accepts("fn f(q: Qubit): Qubit = q");
+}
+
+#[test]
+fn using_a_qubit_twice_is_rejected() {
+    let err = reject_err("fn f(q: Qubit): QReg<2> = (q, q)");
+    assert!(
+        matches!(err, TypeError::LinearUsedTwice { ref name, .. } if name == "q"),
+        "expected LinearUsedTwice on `q`, got {err:?}"
+    );
+}
+
+#[test]
+fn cloning_via_let_tuple_is_rejected() {
+    // The SPEC's canonical no-cloning counterexample (§3.4).
+    rejects("fn clone(q: Qubit): (Qubit, Qubit) = let p = (q, q) in p");
+}
+
+#[test]
+fn a_qubit_threaded_through_a_let_is_used_once() {
+    accepts("fn f(q: Qubit): Qubit = let r = q in r");
+}
+
+// ── Linearity: no-dropping (weakening is absent) ────────────────────────────────
+
+#[test]
+fn dropping_a_qubit_at_scope_exit_is_rejected() {
+    let err = reject_err("fn f(q: Qubit): Int = 0");
+    assert!(
+        matches!(err, TypeError::LinearUnconsumed { ref name, .. } if name == "q"),
+        "expected LinearUnconsumed on `q`, got {err:?}"
+    );
+}
+
+#[test]
+fn dropping_a_let_bound_qubit_is_rejected() {
+    let err = reject_err("fn f(q: QReg<2>): Int = let (a, b) = destructure(q) in 0");
+    assert!(
+        matches!(err, TypeError::LinearUnconsumed { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn discarding_a_qubit_with_wildcard_is_rejected() {
+    let err = reject_err("fn f(q: Qubit): Int = let _ = q in 0");
+    assert!(
+        matches!(err, TypeError::LinearDiscard { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn discarding_a_destructured_qubit_with_wildcard_is_rejected() {
+    // `let (a, _) = destructure(q)` abandons the second qubit — rejected (SPEC §3.4).
+    let err = reject_err("fn f(q: QReg<2>): Qubit = let (a, _) = destructure(q) in a");
+    assert!(
+        matches!(err, TypeError::LinearDiscard { .. }),
+        "got {err:?}"
+    );
+}
+
+// ── Tensor introduction / elimination (QReg) ────────────────────────────────────
+
+#[test]
+fn a_pair_of_qubits_synthesizes_to_a_register() {
+    assert_eq!(
+        ty("fn f(a: Qubit, b: Qubit): QReg<2> = (a, b)"),
+        Ty::QReg(2)
+    );
+}
+
+#[test]
+fn destructure_consumes_a_register_and_rebinds_its_qubits() {
+    accepts("fn f(q: QReg<2>): QReg<2> = let (a, b) = destructure(q) in (a, b)");
+}
+
+#[test]
+fn destructure_arity_follows_the_register_size() {
+    accepts("fn f(q: QReg<3>): QReg<3> = let (a, b, c) = destructure(q) in (a, b, c)");
+    // A 3-register cannot be split into a 2-tuple pattern.
+    rejects("fn f(q: QReg<3>): QReg<2> = let (a, b) = destructure(q) in (a, b)");
+}
+
+#[test]
+fn destructure_of_a_non_register_is_rejected() {
+    rejects("fn f(x: Int): Int = let (a, b) = destructure(x) in 0");
+}
+
+#[test]
+fn reusing_a_destructured_qubit_is_rejected() {
+    let err = reject_err("fn f(q: QReg<2>): QReg<2> = let (a, b) = destructure(q) in (a, a)");
+    assert!(
+        matches!(err, TypeError::LinearUsedTwice { ref name, .. } if name == "a"),
+        "got {err:?}"
+    );
+}
+
+// ── Branching: residuals must agree (if / match) ────────────────────────────────
+
+#[test]
+fn if_consuming_the_same_resource_in_both_branches_is_accepted() {
+    accepts("fn f(c: Bool, q: Qubit): Qubit = if c then q else q");
+}
+
+#[test]
+fn if_consuming_a_resource_in_one_branch_only_is_rejected() {
+    // `then` spends `q`, `else` spends `q2`: their residuals disagree.
+    let err = reject_err("fn f(c: Bool, q: Qubit, q2: Qubit): Qubit = if c then q else q2");
+    assert!(
+        matches!(err, TypeError::LinearBranchMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn match_consuming_the_same_resource_in_every_arm_is_accepted() {
+    accepts("fn f(s: Bool, q: Qubit): Qubit = match s { true => q, false => q }");
+}
+
+#[test]
+fn match_arm_with_a_different_residual_is_rejected() {
+    let err = reject_err(
+        "fn f(s: Bool, q: Qubit, q2: Qubit): Qubit = match s { true => q, false => q2 }",
+    );
+    assert!(
+        matches!(err, TypeError::LinearBranchMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn match_arm_dropping_a_pattern_bound_resource_is_rejected() {
+    // The arm binds the whole register as `p` but never consumes it.
+    let err = reject_err("fn f(q: QReg<2>): Int = match q { p => 0 }");
+    assert!(
+        matches!(err, TypeError::LinearUnconsumed { ref name, .. } if name == "p"),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn a_resource_may_survive_a_branch_and_be_consumed_after() {
+    // `q2` is consumed by neither arm (equal residuals), then consumed after the match.
+    accepts(
+        "fn f(s: Bool, q: Qubit, q2: Qubit): (Qubit, Qubit) = \
+         let r = match s { true => q, false => q } in (r, q2)",
+    );
+}
+
+// ── Closures may not capture linear resources ───────────────────────────────────
+
+#[test]
+fn capturing_a_qubit_in_a_closure_is_rejected() {
+    let err = reject_err("fn f(q: Qubit): Int -> Qubit = fn(x: Int) -> q");
+    assert!(
+        matches!(err, TypeError::LinearCapture { ref name, .. } if name == "q"),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn a_closure_consuming_its_own_linear_parameter_is_fine() {
+    accepts("fn f(): Qubit -o Qubit = fn(q: Qubit) -> q");
+}
+
+#[test]
+fn a_closure_dropping_its_own_linear_parameter_is_rejected() {
+    rejects("fn f(): Qubit -o Int = fn(q: Qubit) -> 0");
+}
+
+// ── Classical programs are unaffected by the linear context ─────────────────────
+
+#[test]
+fn classical_functions_keep_an_empty_linear_context() {
+    accepts("fn f(x: Int, y: Bool): Int = if y then x else x + 1");
+    accepts("fn f(xs: List<Int>): List<Int> = map(fn(p) -> p + p, xs)");
 }

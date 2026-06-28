@@ -56,6 +56,27 @@ proptest! {
             prop_assert_eq!(synthed, ty, "source: {}", src);
         }
     }
+
+    /// Linearity invariant: a `Qubit` parameter spliced into a straight-line body exactly
+    /// `k` times is accepted **iff** `k == 1`. `k = 0` drops it (no-dropping); `k ≥ 2` clones
+    /// it (no-cloning). This is the "consumed exactly once" law stated as a property.
+    #[test]
+    fn a_linear_resource_is_consumed_exactly_once(k in 0usize..=6) {
+        let (ret, body) = match k {
+            0 => ("Int".to_string(), "0".to_string()),
+            1 => ("Qubit".to_string(), "q".to_string()),
+            n => (format!("QReg<{n}>"), format!("({})", vec!["q"; n].join(", "))),
+        };
+        let src = format!("fn f(q: Qubit): {ret} = {body}");
+        let decls = frontend::parse_program(&src)
+            .map_err(|e| TestCaseError::fail(format!("did not parse: {e:?}\n{src}")))?;
+        let result = TypeChecker::new().check_decls(&decls);
+        if k == 1 {
+            prop_assert!(result.is_ok(), "k=1 must be accepted: {} -> {:?}", src, result);
+        } else {
+            prop_assert!(result.is_err(), "k={} must be rejected: {}", k, src);
+        }
+    }
 }
 
 // ── Type-directed generator ─────────────────────────────────────────────────────
