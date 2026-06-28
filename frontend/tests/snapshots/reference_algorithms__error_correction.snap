@@ -21,16 +21,28 @@ fn syndrome_measure(q: QReg<3>): Q<(QReg<3>, Bit, Bit)> = run {
 }
 }
 
+fn x_at_0(): Circuit<3, 3, 1, Clifford> = circuit {
+    X @ 0
+}
+
+fn x_at_1(): Circuit<3, 3, 1, Clifford> = circuit {
+    X @ 1
+}
+
+fn x_at_2(): Circuit<3, 3, 1, Clifford> = circuit {
+    X @ 2
+}
+
 fn correct(q: QReg<3>, s1: Bit, s2: Bit): Q<QReg<3>> = run {
     return match (s1, s2) {
     (0, 0) => q,
-    (1, 0) => (X @ 0) @ q,
-    (1, 1) => (X @ 1) @ q,
-    (0, 1) => (X @ 2) @ q
+    (1, 0) => (x_at_0(())) @ q,
+    (1, 1) => (x_at_1(())) @ q,
+    (0, 1) => (x_at_2(())) @ q
 }
 }
 
-fn bit_flip_round(logical: Qubit): Q<Qubit> = run {
+fn bit_flip_round(logical: Qubit): Q<QReg<1>> = run {
     encoded <- (encode(())) @ logical
     (data, s1, s2) <- syndrome_measure(encoded)
     corrected <- ((correct(data))(s1))(s2)

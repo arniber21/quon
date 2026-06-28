@@ -35,7 +35,7 @@ pub enum Ty {
         c: CliffordClass,
     },
     Q(Box<Ty>),
-    Matrix(u64, u64, Box<Ty>),
+    Matrix(DepthExpr, DepthExpr, Box<Ty>),
     /// Rigid type-level variable (e.g. a quantified `A` in a prelude scheme).
     Var(Name),
     /// Flexible unification variable, keyed into the checker's substitution.

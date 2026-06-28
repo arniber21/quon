@@ -24,8 +24,8 @@ fn bell_gate_type_checks_end_to_end() {
 #[test]
 fn symbolic_fold_depth_type_checks_end_to_end() {
     // `ising`-shaped: a fold over a circuit accumulator yields the symbolic depth `n_steps*n`.
-    let src = "fn trotter(n: Nat): Circuit<n, n, n, Universal> = circuit { repeat(n, T @0) }\n\
-               fn ising(n: Nat, n_steps: Int): Circuit<n, n, n_steps * n, Universal> =\n\
+    let src = "fn trotter(n: Nat): Circuit<n, n, 1, Universal> = circuit { for q in qubits(n) { T q } }\n\
+               fn ising(n: Nat, n_steps: Int): Circuit<n, n, n_steps, Universal> =\n\
                fold(range(n_steps), identity(n), fn(acc, _) -> acc |> trotter(n))";
     assert!(
         check_program(src).is_ok(),

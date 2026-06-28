@@ -164,3 +164,40 @@ fn type_alias_to_classical_type_resolves() {
         check_program(src).err()
     );
 }
+
+#[test]
+fn reference_algorithm_fixtures_type_check_via_facade() {
+    for (file, src) in [
+        ("bell_state", include_str!("fixtures/bell_state.qn")),
+        ("grover", include_str!("fixtures/grover.qn")),
+        // `shor.qn` excluded: its recursive `qft` kernel is a known gap (see SPEC §12
+        // "Known gap"). It still lexes/parses in the `reference_algorithms` snapshot suite.
+        (
+            "error_correction",
+            include_str!("fixtures/error_correction.qn"),
+        ),
+        ("qaoa", include_str!("fixtures/qaoa.qn")),
+        (
+            "bernstein_vazirani",
+            include_str!("fixtures/bernstein_vazirani.qn"),
+        ),
+        ("ising", include_str!("fixtures/ising.qn")),
+        ("stdlib_forms", include_str!("fixtures/stdlib_forms.qn")),
+    ] {
+        assert!(
+            check_program(src).is_ok(),
+            "{file}: {:?}",
+            check_program(src).err()
+        );
+    }
+    let teleport = concat!(
+        include_str!("fixtures/bell_state.qn"),
+        "\n",
+        include_str!("fixtures/teleport.qn"),
+    );
+    assert!(
+        check_program(teleport).is_ok(),
+        "teleport: {:?}",
+        check_program(teleport).err()
+    );
+}

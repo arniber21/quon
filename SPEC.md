@@ -765,7 +765,7 @@ fn bell_gate(): Bell = circuit {
 }
 
 -- Parameterized gate family (Universal inferred)
-fn phase_kickback(theta: Float): Circuit<2, 2, 2, Universal> = circuit {
+fn phase_kickback(theta: Float): Circuit<2, 2, 3, Universal> = circuit {
     CNOT @(0,1) |> Rz(theta) @1 |> CNOT @(0,1)
 }
 ```
@@ -1380,6 +1380,10 @@ fn diffusion(n: Nat): Circuit<n, n, 3, Clifford> = circuit {
     hadamard_all(n) |> phase_flip_zero(n) |> hadamard_all(n)
 }
 
+fn phase_flip_zero(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { Z q }
+}
+
 fn grover(n: Nat, oracle: Oracle<n>): Q<List<Bit>> = run {
     let iters  = round(PI / 4.0 * sqrt(2.0 ^ n))
     let search = hadamard_all(n) |> repeat(iters, oracle |> diffusion(n))
@@ -1417,6 +1421,12 @@ fn shor_quantum(n: Nat, a: Int, nn: Int): Q<List<Bit>> = run {
 }
 ```
 
+> **Known gap.** The recursive `qft` kernel above does **not** yet type-check: its `match`
+> base case `identity(0)` has width `0` while the function is declared `Circuit<n, n, …>`, so a
+> sound check requires refining `n` to `0` inside the `0 =>` arm (dependent reasoning on the
+> match scrutinee), and `qft` is self-recursive. Recursive circuit definitions are tracked as a
+> follow-up; the other seven §12 algorithms type-check today.
+
 ### 3-Qubit Bit-Flip Error Correction
 
 Tests: `borrow`, syndrome measurement, `match` on tuples, `adjoint` for decoding.
@@ -1441,16 +1451,20 @@ fn syndrome_measure(q: QReg<3>): Q<(QReg<3>, Bit, Bit)> = run {
     }
 }
 
+fn x_at_0(): Circuit<3, 3, 1, Clifford> = circuit { X @0 }
+fn x_at_1(): Circuit<3, 3, 1, Clifford> = circuit { X @1 }
+fn x_at_2(): Circuit<3, 3, 1, Clifford> = circuit { X @2 }
+
 fn correct(q: QReg<3>, s1: Bit, s2: Bit): Q<QReg<3>> = run {
     return match (s1, s2) {
         (0, 0) => q,
-        (1, 0) => X @0 @ q,
-        (1, 1) => X @1 @ q,
-        (0, 1) => X @2 @ q,
+        (1, 0) => x_at_0() @ q,
+        (1, 1) => x_at_1() @ q,
+        (0, 1) => x_at_2() @ q,
     }
 }
 
-fn bit_flip_round(logical: Qubit): Q<Qubit> = run {
+fn bit_flip_round(logical: Qubit): Q<QReg<1>> = run {
     encoded            <- encode() @ logical
     (data, s1, s2)    <- syndrome_measure(encoded)
     corrected         <- correct(data, s1, s2)
@@ -1465,7 +1479,11 @@ fn bit_flip_round(logical: Qubit): Q<Qubit> = run {
 Tests: symbolic runtime depth (`n_steps * n`), `fold`, `DynCircuit`-free variational circuit.
 
 ```kotlin
-fn cost_layer(n: Nat, gamma: Float, q: Matrix<n, n, Float>): Circuit<n, n, n*n, Universal> = circuit {
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn cost_layer(n: Nat, gamma: Float, q: Matrix<n, n, Float>): Circuit<n, n, n*n + 1, Universal> = circuit {
     for (i, j) in pairs(n) { Rzz(gamma * q[i][j]) @(i,j) }
     |> for i in diag(n)    { Rz(gamma * q[i][i]) @i }
 }
@@ -1475,13 +1493,13 @@ fn mixer_layer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
 }
 
 fn qaoa_layer(n: Nat, gamma: Float, beta: Float, q: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 1, Universal> = circuit {
+    : Circuit<n, n, n*n + 2, Universal> = circuit {
     cost_layer(n, gamma, q) |> mixer_layer(n, beta)
 }
 
 fn qaoa_circuit(n: Nat, p: Int, params: List<(Float, Float)>, q: Matrix<n, n, Float>)
-    : Circuit<n, n, p * (n*n + 1), Universal> =
-    fold(params.take(p), identity(n), fn(acc, (gamma, beta)) ->
+    : Circuit<n, n, p * (n*n + 2), Universal> =
+    fold(take(p, params), identity(n), fn(acc, (gamma, beta)) ->
         acc |> qaoa_layer(n, gamma, beta, q)
     )
 
@@ -1499,6 +1517,10 @@ Tests: `Oracle` type alias, `split` with `_` discard, single-shot exact recovery
 
 ```kotlin
 type BVOracle<n> = Circuit<n+1, n+1, _, Universal>
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
 
 fn bernstein_vazirani(n: Nat, oracle: BVOracle<n>): Q<List<Bit>> = run {
     q              <- hadamard_all(n) @ qreg(n)
@@ -1549,7 +1571,7 @@ fn simulate_ising(n: Nat, j: Float, h: Float, t: Float, n_steps: Int): Q<List<Bi
 -- map_q is monadic map: (A -> Q<B>, List<A>) -> Q<List<B>>
 fn ising_time_series(n: Nat, j: Float, h: Float, dt: Float, steps: Int, n_trott: Int)
     : Q<List<List<Bit>>> =
-    map_q(fn(k) -> simulate_ising(n, j, h, float(k) * dt, n_trott), range(steps + 1))
+    map_q(fn(k: Int) -> simulate_ising(n, j, h, float(k) * dt, n_trott), range(steps + 1))
 ```
 
 ---
