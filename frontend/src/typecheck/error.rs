@@ -113,6 +113,11 @@ pub enum TypeError {
     /// The right-hand side of a monadic `<-` bind was expected to be a quantum computation
     /// `Q<_>` (or a pure value, auto-lifted) but was something else (issue #14).
     ExpectedMonad { found: Ty, span: SimpleSpan },
+    /// A borrowed ancilla (`borrow q: Qubit in { … }`) appears in the block's result value, so
+    /// it would escape the borrow scope (issue #15, SPEC §3.4). An ancilla must be cleaned up
+    /// (measured, `reset`, or `discard`ed) inside the block, never returned. `span` points at
+    /// the returned value that mentions it.
+    BorrowEscape { name: String, span: SimpleSpan },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -148,6 +153,7 @@ impl TypeError {
             | TypeError::DepthMismatch { span, .. }
             | TypeError::DepthIntractable { span, .. }
             | TypeError::ExpectedMonad { span, .. }
+            | TypeError::BorrowEscape { span, .. }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -252,6 +258,11 @@ impl fmt::Display for TypeError {
             TypeError::ExpectedMonad { found, .. } => write!(
                 f,
                 "the right-hand side of `<-` must be a quantum computation `Q<_>`, found `{found}`"
+            ),
+            TypeError::BorrowEscape { name, .. } => write!(
+                f,
+                "borrowed ancilla `{name}` escapes its borrow scope; it must be measured, \
+                 `reset`, or `discard`ed inside the block, not returned"
             ),
             TypeError::Unsupported { construct, .. } => write!(
                 f,

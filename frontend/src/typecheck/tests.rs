@@ -969,3 +969,132 @@ fn teleport_type_checks_end_to_end() {
          }",
     );
 }
+
+// ── Register concatenation: `tensored` (issue #15, SPEC §5) ──────────────────────
+
+#[test]
+fn tensored_two_qubits_is_a_two_qubit_register() {
+    // `q0 `tensored` q1 : QReg<2>` — tensor introduction over two qubit handles, each
+    // consumed exactly once.
+    assert_eq!(
+        ty("fn f(q0: Qubit, q1: Qubit): QReg<2> = q0 `tensored` q1"),
+        Ty::QReg(DepthExpr::Nat(2))
+    );
+}
+
+#[test]
+fn tensored_register_and_qubit_grows_the_register() {
+    // `QReg<2> `tensored` Qubit : QReg<3>` — a qubit counts as a width-1 register.
+    assert_eq!(
+        ty("fn f(r: QReg<2>, q: Qubit): QReg<3> = r `tensored` q"),
+        Ty::QReg(DepthExpr::Nat(3))
+    );
+}
+
+#[test]
+fn tensored_reusing_an_operand_is_no_cloning() {
+    let err = reject_err("fn f(q: Qubit): QReg<2> = q `tensored` q");
+    assert!(
+        matches!(err, TypeError::LinearUsedTwice { .. }),
+        "got {err:?}"
+    );
+}
+
+// ── Borrow blocks: scoped ancilla allocation (issue #15, SPEC §3.4) ───────────────
+
+#[test]
+fn borrow_discard_terminator_is_accepted() {
+    // AC: `discard(a)` is a valid terminal — measure-and-drop cleans up the ancilla.
+    accepts_run("fn f(): Q<Unit> = run {\n  borrow a: Qubit in {\n    discard(a)\n  }\n}");
+}
+
+#[test]
+fn borrow_reset_terminator_is_accepted() {
+    // AC: `reset(a)` (measure and reprepare to |0⟩) is a valid terminal, result `Q<Qubit>`.
+    accepts_run("fn f(): Q<Qubit> = run {\n  borrow a: Qubit in {\n    reset(a)\n  }\n}");
+}
+
+#[test]
+fn borrow_gate_on_ancilla_then_cleanup_is_accepted() {
+    // AC: an ancilla may be operated on (a gate placed on its handle) so long as the borrow
+    // is ultimately cleaned up; here `H @ a` then `discard`.
+    accepts_run(
+        "fn f(): Q<Unit> = run {\n\
+         \x20 borrow a: Qubit in {\n\
+         \x20   a1 <- H @ a\n\
+         \x20   discard(a1)\n\
+         \x20 }\n\
+         }",
+    );
+}
+
+#[test]
+fn borrow_returning_the_ancilla_is_an_escape() {
+    // AC: `return a` lets the borrowed qubit escape the borrow scope — rejected.
+    let err =
+        reject_run_err("fn f(): Q<Qubit> = run {\n  borrow a: Qubit in {\n    return a\n  }\n}");
+    assert!(matches!(err, TypeError::BorrowEscape { .. }), "got {err:?}");
+}
+
+#[test]
+fn borrow_ancilla_in_a_returned_register_is_an_escape() {
+    // The escape check sees through tensor introduction: `(q, a)` puts the ancilla into the
+    // returned register, so it escapes even though it is no longer the bare name returned.
+    let err = reject_run_err(
+        "fn f(q: Qubit): Q<QReg<2>> = run {\n\
+         \x20 borrow a: Qubit in {\n\
+         \x20   return (q `tensored` a)\n\
+         \x20 }\n\
+         }",
+    );
+    assert!(matches!(err, TypeError::BorrowEscape { .. }), "got {err:?}");
+}
+
+#[test]
+fn borrow_unconsumed_ancilla_is_rejected() {
+    // AC: an ancilla that is never consumed (cleaned up) is a no-dropping violation.
+    let err =
+        reject_run_err("fn f(): Q<Int> = run {\n  borrow a: Qubit in {\n    return 0\n  }\n}");
+    assert!(
+        matches!(err, TypeError::LinearUnconsumed { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn borrow_using_the_ancilla_twice_is_no_cloning() {
+    let err = reject_run_err(
+        "fn f(): Q<Bit> = run {\n\
+         \x20 borrow a: Qubit in {\n\
+         \x20   x <- measure(a)\n\
+         \x20   y <- measure(a)\n\
+         \x20   return x\n\
+         \x20 }\n\
+         }",
+    );
+    assert!(
+        matches!(err, TypeError::LinearUsedTwice { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn syndrome_measure_type_checks_end_to_end() {
+    // AC: the `syndrome_measure` function from the 3-qubit bit-flip QEC reference algorithm
+    // (SPEC §12) type-checks end-to-end. Exercises `destructure`, a two-ancilla `borrow`,
+    // `tensored`, circuit application, mid-circuit `measure`, and the escape check (the data
+    // qubits are returned, the ancillas are measured away and never escape).
+    accepts_run(
+        "fn parity(): Circuit<2, 2, 1, Clifford> = circuit { CNOT @(0, 1) }\n\
+         fn syndrome_measure(q: QReg<3>): Q<(QReg<3>, Bit, Bit)> = run {\n\
+         \x20 let (q0, q1, q2) = destructure(q)\n\
+         \x20 borrow a1: Qubit, a2: Qubit in {\n\
+         \x20   (q0a, a1b) <- parity() @ (q0 `tensored` a1)\n\
+         \x20   (q1a, a2b) <- parity() @ (q1 `tensored` a2)\n\
+         \x20   s1         <- measure(a1b)\n\
+         \x20   s2         <- measure(a2b)\n\
+         \x20   return (q0a `tensored` q1a `tensored` q2, s1, s2)\n\
+         \x20 }\n\
+         }",
+    );
+}
