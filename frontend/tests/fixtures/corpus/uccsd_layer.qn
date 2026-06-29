@@ -1,0 +1,27 @@
+-- Unitary Coupled-Cluster Singles and Doubles (UCCSD) ansatz layer: single excitations as
+-- on-site rotations and double excitations as pairwise XX+YY rotations.
+-- Stresses: a singles rotation layer + an all-pairs doubles layer, depth p*(2*(n*n) + 1).
+
+fn singles_layer(n: Nat, theta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Ry(theta) q }
+}
+
+fn doubles_layer(n: Nat, theta: Float): Circuit<n, n, 2 * (n*n), Universal> = circuit {
+    for (i, j) in pairs(n) { Rxx(theta) @(i, j) }
+    |> for (i, j) in pairs(n) { Ryy(theta) @(i, j) }
+}
+
+fn uccsd_layer(n: Nat, theta: Float): Circuit<n, n, 2 * (n*n) + 1, Universal> = circuit {
+    singles_layer(n, theta) |> doubles_layer(n, theta)
+}
+
+fn uccsd_ansatz(n: Nat, p: Int, thetas: List<Float>)
+    : Circuit<n, n, p * (2 * (n*n) + 1), Universal> =
+    fold(take(p, thetas), identity(n), fn(acc, theta) ->
+        acc |> uccsd_layer(n, theta)
+    )
+
+fn uccsd_sample(n: Nat, p: Int, thetas: List<Float>): Q<List<Bit>> = run {
+    q <- uccsd_ansatz(n, p, thetas) @ qreg(n)
+    measure_all(q)
+}

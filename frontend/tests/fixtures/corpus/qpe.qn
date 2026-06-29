@@ -1,0 +1,34 @@
+-- Quantum Phase Estimation: Hadamard the estimation register, apply controlled-U powers, then
+-- the inverse QFT to read off the phase.
+-- Stresses: composing a controlled-power ladder with the adjoint recursive QFT, depth 2*n*n + n.
+
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / 4.0)) @(0, i + 1) }
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn controlled_powers(n: Nat, phase: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { CRz(phase) @(i, n - 1) }
+}
+
+fn qpe(n: Nat, phase: Float): Circuit<n, n, 2 * n * n + n, Universal> =
+    hadamard_all(n) |> controlled_powers(n, phase) |> adjoint(qft(n))
+
+fn run_qpe(n: Nat, phase: Float): Q<List<Bit>> = run {
+    q <- qpe(n, phase) @ qreg(n)
+    measure_all(q)
+}

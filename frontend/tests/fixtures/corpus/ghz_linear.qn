@@ -1,0 +1,15 @@
+-- GHZ state via the linear-depth construction: H on the lead qubit, then a CNOT fan-out ladder.
+-- Stresses: Clifford classification through H + CNOT, depth n.
+
+fn prepare_plus(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn cnot_ladder(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
+    for i in range(n - 1) { CNOT @(i, i + 1) }
+}
+
+fn ghz_linear(n: Nat): Circuit<n, n, n, Clifford> = prepare_plus(n) |> cnot_ladder(n)
+
+fn make_ghz(n: Nat): Q<List<Bit>> = run {
+    q <- ghz_linear(n) @ qreg(n)
+    measure_all(q)
+}

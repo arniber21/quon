@@ -1,0 +1,14 @@
+-- Deutsch–Jozsa: decide whether a black-box function is constant or balanced in one query.
+-- Stresses: oracle abstraction (`Oracle<n>` alias with a depth hole), H^n · U_f · H^n.
+
+type Oracle<n> = Circuit<n, n, _, Universal>
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn deutsch_jozsa(n: Nat, oracle: Oracle<n>): Q<List<Bit>> = run {
+    let circ = hadamard_all(n) |> oracle |> hadamard_all(n)
+    q       <- circ @ qreg(n)
+    measure_all(q)
+}

@@ -1,0 +1,43 @@
+-- Quantum Amplitude Estimation: m controlled Grover-operator powers followed by an inverse QFT
+-- on the counting register.
+-- Stresses: `repeat` of a reflection operator composed with the adjoint recursive QFT,
+-- depth m*4 + 2*n*n.
+
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / 4.0)) @(0, i + 1) }
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn phase_flip(n: Nat): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rz(PI) q }
+}
+
+fn grover_op(n: Nat): Circuit<n, n, 4, Universal> = circuit {
+    phase_flip(n) |> hadamard_all(n) |> phase_flip(n) |> hadamard_all(n)
+}
+
+fn grover_powers(n: Nat, m: Int): Circuit<n, n, m * 4, Universal> =
+    repeat(m, grover_op(n))
+
+fn amplitude_estimation(n: Nat, m: Int): Circuit<n, n, m * 4 + 2 * n * n, Universal> =
+    grover_powers(n, m) |> adjoint(qft(n))
+
+fn run_qae(n: Nat, m: Int): Q<List<Bit>> = run {
+    let circ = hadamard_all(n) |> amplitude_estimation(n, m)
+    q       <- circ @ qreg(n)
+    measure_all(q)
+}

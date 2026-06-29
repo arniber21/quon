@@ -1,0 +1,15 @@
+-- Fermionic-SWAP network: a brick-wall of fermionic swaps that permutes orbitals so every pair
+-- becomes adjacent, enabling all-to-all interactions on a linear-connectivity device.
+-- Stresses: an iSWAP+CZ fermionic-swap layer repeated over n brick-wall rounds, depth n*(n-1).
+
+fn fswap_layer(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
+    for i in range(n - 1) { iSWAP @(i, i + 1) }
+}
+
+fn fswap_network(n: Nat): Circuit<n, n, n * (n - 1), Clifford> =
+    repeat(n, fswap_layer(n))
+
+fn run_fswap(n: Nat): Q<List<Bit>> = run {
+    q <- fswap_network(n) @ qreg(n)
+    measure_all(q)
+}

@@ -1,0 +1,11 @@
+-- Uniform superposition over all 2^n basis states: a Hadamard on every qubit.
+-- Stresses: the simplest parallel Clifford layer, depth 1.
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn uniform_superposition(n: Nat): Q<List<Bit>> = run {
+    q <- hadamard_all(n) @ qreg(n)
+    measure_all(q)
+}

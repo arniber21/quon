@@ -1,0 +1,30 @@
+-- Draper QFT-based adder: add a classical constant in the Fourier basis (QFT · phase · QFT⁻¹).
+-- Stresses: sandwiching a phase-rotation layer between the recursive QFT and its adjoint,
+-- depth 4*n*n + 1.
+
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / 4.0)) @(0, i + 1) }
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+fn phase_add(n: Nat, a: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rz(a) q }
+}
+
+fn draper_add(n: Nat, a: Float): Circuit<n, n, 4 * n * n + 1, Universal> =
+    qft(n) |> phase_add(n, a) |> adjoint(qft(n))
+
+fn run_draper(n: Nat, a: Float): Q<List<Bit>> = run {
+    q <- draper_add(n, a) @ qreg(n)
+    measure_all(q)
+}

@@ -1,0 +1,34 @@
+-- QAOA for Graph Coloring (one-hot color assignment with edge/color penalties).
+-- Stresses: constraint-penalty two-body terms + per-assignment diagonal, depth p*(n*n+2).
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn coloring_cost(n: Nat, gamma: Float, penalty: Float, conflict: Matrix<n, n, Float>)
+    : Circuit<n, n, n*n + 1, Universal> = circuit {
+    for (i, j) in pairs(n) { Rzz(gamma * penalty * conflict[i][j]) @(i, j) }
+    |> for i in diag(n)    { Rz(gamma * penalty * conflict[i][i]) @i }
+}
+
+fn coloring_mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(2.0 * beta) q }
+}
+
+fn coloring_layer(n: Nat, gamma: Float, beta: Float, penalty: Float, conflict: Matrix<n, n, Float>)
+    : Circuit<n, n, n*n + 2, Universal> = circuit {
+    coloring_cost(n, gamma, penalty, conflict) |> coloring_mixer(n, beta)
+}
+
+fn coloring_qaoa(n: Nat, p: Int, penalty: Float, params: List<(Float, Float)>, conflict: Matrix<n, n, Float>)
+    : Circuit<n, n, p * (n*n + 2), Universal> =
+    fold(take(p, params), identity(n), fn(acc, (gamma, beta)) ->
+        acc |> coloring_layer(n, gamma, beta, penalty, conflict)
+    )
+
+fn coloring_shot(n: Nat, p: Int, penalty: Float, params: List<(Float, Float)>, conflict: Matrix<n, n, Float>)
+    : Q<List<Bit>> = run {
+    let circ = hadamard_all(n) |> coloring_qaoa(n, p, penalty, params, conflict)
+    reg     <- circ @ qreg(n)
+    measure_all(reg)
+}

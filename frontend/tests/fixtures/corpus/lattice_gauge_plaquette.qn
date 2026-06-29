@@ -1,0 +1,29 @@
+-- Z₂ lattice gauge theory: plaquette magnetic terms (pairwise-approximated) + electric field.
+-- Stresses: dense plaquette couplings over a Matrix<n,n,Float> + transverse electric layer,
+-- depth n_steps*(n*n+1).
+
+fn plaquette_layer(n: Nat, g: Float, tau: Float, plaq: Matrix<n, n, Float>)
+    : Circuit<n, n, n*n, Universal> = circuit {
+    for (i, j) in pairs(n) { Rzz(g * tau * plaq[i][j]) @(i, j) }
+}
+
+fn electric_layer(n: Nat, e: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(e * tau) q }
+}
+
+fn lgt_step(n: Nat, g: Float, e: Float, tau: Float, plaq: Matrix<n, n, Float>)
+    : Circuit<n, n, n*n + 1, Universal> = circuit {
+    plaquette_layer(n, g, tau, plaq) |> electric_layer(n, e, tau)
+}
+
+fn lgt_evolve(n: Nat, g: Float, e: Float, t: Float, n_steps: Int, plaq: Matrix<n, n, Float>)
+    : Circuit<n, n, n_steps * (n*n + 1), Universal> =
+    let tau = t / float(n_steps)
+    in fold(range(n_steps), identity(n), fn(acc, _) ->
+        acc |> lgt_step(n, g, e, tau, plaq)
+    )
+
+fn simulate_lgt(n: Nat, g: Float, e: Float, t: Float, n_steps: Int, plaq: Matrix<n, n, Float>): Q<List<Bit>> = run {
+    q <- lgt_evolve(n, g, e, t, n_steps, plaq) @ qreg(n)
+    measure_all(q)
+}
