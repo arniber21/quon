@@ -37,6 +37,7 @@ pub use error::TypeError;
 
 use crate::ast::{BinOp, CliffordClass, Decl, Expr, Name, NatExpr, Pat, Stmt, Type};
 use crate::lexer::{SimpleSpan, Sp};
+use crate::refinement::{DepthError, RefinementCtx};
 use crate::types::Ty;
 use builtins::Scheme;
 use linear::Delta;
@@ -78,6 +79,11 @@ pub struct TypeChecker {
     /// inside. Gate placement (`H @ 0`, `H(q)`) embeds a gate into the innermost register, so
     /// its result width is read from the top of this stack (issue #11, SPEC §5.6).
     circuit_width: Vec<DepthExpr>,
+    /// The Z3-backed refinement bridge (issue #13). Used only to discharge *symbolic* depth
+    /// obligations — verifying an annotation against an inferred depth, and reconciling
+    /// `match` branches — when structural equality (`DepthExpr::equiv`) is not enough.
+    /// Pure-constant depths never reach it.
+    refine: RefinementCtx,
 }
 
 impl TypeChecker {
@@ -89,6 +95,83 @@ impl TypeChecker {
             numeric: Vec::new(),
             lambda_linears: Vec::new(),
             circuit_width: Vec::new(),
+            refine: RefinementCtx::new(),
+        }
+    }
+
+    /// Reconcile an inferred type `got` against an expected type `expected`. For two circuits
+    /// the *depth* is the symbolic obligation discharged by Z3 (issue #13): widths must match
+    /// structurally and the Clifford class must be equal, but the depth is checked with
+    /// [`verify_depth`] so a symbolic annotation (`Circuit<…, 2*n+2, …>`) is *verified* against
+    /// the inferred depth rather than required to be the identical expression. Everything else
+    /// falls through to the ordinary unifier. `expected` carries the user annotation, `got` the
+    /// inferred type.
+    fn expect_type(&mut self, expected: &Ty, got: &Ty, span: SimpleSpan) -> Result<(), TypeError> {
+        if let (
+            Ty::Circuit {
+                n: en,
+                m: em,
+                d: ed,
+                c: ec,
+            },
+            Ty::Circuit {
+                n: gn,
+                m: gm,
+                d: gd,
+                c: gc,
+            },
+        ) = (self.table.resolve(expected), self.table.resolve(got))
+        {
+            // Class first, so a class disagreement is named specifically (issue #12).
+            if ec != gc {
+                return Err(TypeError::CliffordMismatch {
+                    expected: ec,
+                    found: gc,
+                    span,
+                });
+            }
+            if !en.equiv(&gn) {
+                return Err(TypeError::QubitCountMismatch {
+                    expected: en.to_string(),
+                    found: gn.to_string(),
+                    span,
+                });
+            }
+            if !em.equiv(&gm) {
+                return Err(TypeError::QubitCountMismatch {
+                    expected: em.to_string(),
+                    found: gm.to_string(),
+                    span,
+                });
+            }
+            return self.verify_depth(&ed, &gd, span);
+        }
+        self.table.unify(expected, got, span)
+    }
+
+    /// Verify an inferred symbolic depth against a user-supplied annotation (issue #13).
+    /// Structural equality is the fast path; only genuinely symbolic, non-`equiv` depths are
+    /// handed to Z3. Maps a [`DepthError`] to a span-accurate [`TypeError`].
+    fn verify_depth(
+        &self,
+        annotated: &DepthExpr,
+        inferred: &DepthExpr,
+        span: SimpleSpan,
+    ) -> Result<(), TypeError> {
+        if annotated.equiv(inferred) {
+            return Ok(());
+        }
+        match self.refine.verify_equal(inferred, annotated) {
+            Ok(()) => Ok(()),
+            Err(DepthError::Mismatch) => Err(TypeError::DepthMismatch {
+                expected: annotated.to_string(),
+                found: inferred.to_string(),
+                span,
+            }),
+            Err(DepthError::Intractable) => Err(TypeError::DepthIntractable {
+                expr: format!("{inferred} = {annotated}"),
+                span,
+            }),
         }
     }
 
@@ -885,23 +968,14 @@ impl TypeChecker {
         expected: &Ty,
         span: SimpleSpan,
     ) -> Result<(), TypeError> {
-        let (n, _, _, expected_c) = self.as_circuit(expected, span)?;
-        self.circuit_width.push(n);
+        let (en, ..) = self.as_circuit(expected, span)?;
+        self.circuit_width.push(en);
         let result = self.synth_block_body(env, delta, stmts, span);
         self.circuit_width.pop();
         let inferred = result?;
-        // Classification is always inferred; a user annotation is *checked* against it, with a
-        // span-accurate error (issue #12). Done before the dimension/depth unification so the
-        // diagnostic names the class disagreement specifically.
-        let (.., inferred_c) = self.as_circuit(&inferred, span)?;
-        if expected_c != inferred_c {
-            return Err(TypeError::CliffordMismatch {
-                expected: expected_c,
-                found: inferred_c,
-                span,
-            });
-        }
-        self.table.unify(expected, &inferred, span)
+        // The block's input width seeds gate placement; its inferred indices, class, and depth
+        // are then reconciled with the annotation — widths/class structurally, depth via Z3.
+        self.expect_type(expected, &inferred, span)
     }
 
     /// Synthesize the circuit a block body denotes: leading `let`s bind into scope, the final
@@ -1196,7 +1270,7 @@ impl TypeChecker {
         expected: &Ty,
     ) -> Result<(), TypeError> {
         let got = self.synth(env, delta, expr)?;
-        self.table.unify(expected, &got, expr.1)
+        self.expect_type(expected, &got, expr.1)
     }
 
     /// Type an `if`/`then`/`else`, shared by synthesis (`expected = None`) and checking
@@ -1225,12 +1299,54 @@ impl TypeChecker {
             }
             None => {
                 let then_ty = self.synth(env, &mut d_then, then)?;
-                self.check(env, &mut d_else, else_, &then_ty)?;
-                then_ty
+                let else_ty = self.synth(env, &mut d_else, else_)?;
+                self.join_branch_types(&then_ty, &else_ty, then.1)?
             }
         };
         self.merge_branches(delta, &[(&d_then, then.1), (&d_else, else_.1)])?;
         Ok(result)
+    }
+
+    /// Join the result types of two alternative branches in synthesis mode. Circuits that
+    /// agree on widths and would otherwise differ only in depth join by `max` (`DepthExpr::par`)
+    /// — a classically-selected circuit has the worst-case depth of its arms (SPEC §3.3), so a
+    /// correction like `if b then X else identity(1)` is well-typed at `max(1, 0) = 1`. The
+    /// Clifford class joins (Universal absorbs Clifford). Everything else must unify outright.
+    ///
+    /// Depth *verification* against a user annotation stays strict (issue #13, [`verify_depth`]);
+    /// this `max` is inference of a branch's depth, not a relaxation of annotation checking.
+    fn join_branch_types(&mut self, a: &Ty, b: &Ty, span: SimpleSpan) -> Result<Ty, TypeError> {
+        if let (
+            Ty::Circuit {
+                n: an,
+                m: am,
+                d: ad,
+                c: ac,
+            },
+            Ty::Circuit {
+                n: bn,
+                m: bm,
+                d: bd,
+                c: bc,
+            },
+        ) = (self.table.resolve(a), self.table.resolve(b))
+            && an.equiv(&bn)
+            && am.equiv(&bm)
+        {
+            let d = if ad.equiv(&bd) {
+                ad
+            } else {
+                ad.par(bd).normalize()
+            };
+            return Ok(Ty::Circuit {
+                n: an,
+                m: am,
+                d,
+                c: ac.join(&bc),
+            });
+        }
+        self.table.unify(a, b, span)?;
+        Ok(self.table.zonk(a))
     }
 
     /// Join the linear residuals of a set of alternative branches into `out`. Every branch
@@ -1328,24 +1444,36 @@ impl TypeChecker {
         // alternatives that then each branch from the same post-scrutinee `Δ`.
         let scrut_ty = self.synth(env, delta, scrutinee)?;
 
-        // The arms' result type: the expected type, or a fresh metavariable to join into.
-        let result = match expected {
-            Some(t) => t.clone(),
-            None => self.table.fresh(),
-        };
-
         // Each arm gets a clone of `Δ`; its pattern may bind further linear resources, which
         // (like any scope) must be consumed within the arm. The residual ambient resources
         // are collected for the join.
+        //
+        // In checking mode every arm is checked against the expected type. In synthesis mode
+        // arms are synthesized and folded with [`join_branch_types`], so circuit arms differing
+        // only in depth reconcile by `max` rather than being forced equal.
         let mut arm_deltas: Vec<(Delta, SimpleSpan)> = Vec::with_capacity(arms.len());
+        let mut joined: Option<Ty> = None;
         for (pat, body) in arms {
             let mut inner = env.clone();
             let mut d_arm = delta.clone();
             let introduced = self.check_pat(pat, &scrut_ty, &mut inner, &mut d_arm)?;
-            self.check(&inner, &mut d_arm, body, &result)?;
+            match expected {
+                Some(t) => self.check(&inner, &mut d_arm, body, t)?,
+                None => {
+                    let arm_ty = self.synth(&inner, &mut d_arm, body)?;
+                    joined = Some(match joined {
+                        None => arm_ty,
+                        Some(prev) => self.join_branch_types(&prev, &arm_ty, body.1)?,
+                    });
+                }
+            }
             self.ensure_consumed(&d_arm, &introduced)?;
             arm_deltas.push((d_arm, body.1));
         }
+        let result = match expected {
+            Some(t) => t.clone(),
+            None => joined.unwrap_or_else(|| self.table.fresh()),
+        };
 
         // Exhaustiveness + reachability against the (zonked) scrutinee type.
         let zonked = self.table.zonk(&scrut_ty);

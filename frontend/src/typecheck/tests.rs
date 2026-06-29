@@ -787,3 +787,82 @@ fn rotation_at_runtime_angle_is_universal() {
     accepts("fn f(beta: Float): Circuit<1, 1, 1, Universal> = circuit { Rz(beta) @0 }");
     rejects("fn f(beta: Float): Circuit<1, 1, 1, Clifford> = circuit { Rz(beta) @0 }");
 }
+
+// ── Symbolic depth refinement (issue #13, SPEC §3.6) ─────────────────────────────
+
+#[test]
+fn symbolic_depth_annotation_matching_inferred_var_is_accepted() {
+    // AC: `Circuit<1,1,n,_>` verifies the user's `n` against the inferred `DepthExpr::Var("n")`.
+    // Here the body's depth is exactly the symbolic `n` it was given — the structural fast path.
+    accepts("fn f(c: Circuit<1, 1, n, Clifford>): Circuit<1, 1, n, Clifford> = c");
+}
+
+#[test]
+fn symbolic_depth_off_by_one_is_a_depth_mismatch() {
+    // Body depth is `n`; the annotation claims `n + 1`. Z3 finds a counterexample (any n),
+    // so this is a depth mismatch, reported specifically (not a generic unification failure).
+    let err = reject_err("fn f(c: Circuit<1, 1, n, Clifford>): Circuit<1, 1, n + 1, Clifford> = c");
+    assert!(
+        matches!(err, TypeError::DepthMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn constant_depth_mismatch_is_a_depth_mismatch() {
+    // AC: an incorrect concrete annotation (depth 3 where the circuit has depth 2) is rejected
+    // with a depth-specific error — via the constant fast path, no solver needed.
+    let err =
+        reject_err("fn bell(): Circuit<2, 2, 3, Clifford> = circuit { H @0 |> CNOT @(0, 1) }");
+    assert!(
+        matches!(err, TypeError::DepthMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn z3_proves_a_nontrivial_symbolic_depth_equality() {
+    // `repeat(2, c)` over a depth-`n+1` circuit has depth `2 * (n + 1)`; the annotation writes
+    // the distributed form `2*n + 2`. These are not structurally equal but Z3 proves them so.
+    accepts(
+        "fn f(c: Circuit<1, 1, n + 1, Clifford>): Circuit<1, 1, 2 * n + 2, Clifford> = repeat(2, c)",
+    );
+}
+
+#[test]
+fn bilinear_depth_is_accepted() {
+    // SPEC §3.6 ising-style depth: a product of two runtime variables (`n_steps * n`) is a
+    // legitimate symbolic depth, not rejected as "non-linear".
+    accepts(
+        "fn f(n_steps: Int, c: Circuit<1, 1, n, Clifford>): Circuit<1, 1, n_steps * n, Clifford> \
+         = repeat(n_steps, c)",
+    );
+}
+
+#[test]
+fn if_over_circuits_joins_depth_by_max() {
+    // ADR-0005: a classically-selected circuit takes the worst-case depth of its arms.
+    // `X` is depth 1, `identity(1)` is depth 0, so the conditional is depth `max(1,0) = 1`.
+    assert_eq!(
+        ty("fn f(b: Bool): Int = if b then X else identity(1)"),
+        Ty::Circuit {
+            n: DepthExpr::Nat(1),
+            m: DepthExpr::Nat(1),
+            d: DepthExpr::Nat(1),
+            c: CliffordClass::Clifford,
+        }
+    );
+}
+
+#[test]
+fn match_over_circuits_joins_depth_by_max() {
+    assert_eq!(
+        ty("fn f(k: Int): Int = match k { 0 => identity(1), _ => X }"),
+        Ty::Circuit {
+            n: DepthExpr::Nat(1),
+            m: DepthExpr::Nat(1),
+            d: DepthExpr::Nat(1),
+            c: CliffordClass::Clifford,
+        }
+    );
+}
