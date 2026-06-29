@@ -35,7 +35,7 @@ mod tests;
 
 pub use error::TypeError;
 
-use crate::ast::{BinOp, CliffordClass, Decl, Expr, Name, NatExpr, Pat, Stmt, Type};
+use crate::ast::{BinOp, CliffordClass, Decl, Expr, LitPat, Name, NatExpr, Pat, Stmt, Type};
 use crate::lexer::{SimpleSpan, Sp};
 use crate::refinement::{Assumption, DepthError, RefinementCtx};
 use crate::types::Ty;
@@ -2065,6 +2065,48 @@ impl TypeChecker {
     /// Check a `match`. When `expected` is `Some`, every arm is checked against it;
     /// otherwise arm bodies are synthesized and unified to a common type. Exhaustiveness
     /// and reachability are validated against the scrutinee's type either way.
+    /// Push the refinement assumptions that a `match` arm's pattern implies about a `Nat`
+    /// scrutinee (issue #59). Only a scrutinee that is statically `Int`/`Nat` *and* lowers to a
+    /// [`DepthExpr`] (a variable, literal, or arithmetic over them — not, say, a function call)
+    /// carries refinement; everything else pushes nothing. The caller records the pre-push length
+    /// and truncates back to it, so this never has to undo its own work.
+    ///
+    /// - A literal arm `k =>` (`LitPat::Int`) asserts `scrut = k`.
+    /// - A wildcard/variable arm asserts `scrut ≠ kᵢ` for each *sibling* `Int` literal `kᵢ`. With
+    ///   the solver's global Nat domain (`≥ 0`), a `{0, _}` match yields `scrut ≥ 1` in the `_`
+    ///   arm — exactly what licenses `scrut - 1` as a non-saturating predecessor.
+    fn push_arm_refinement(
+        &mut self,
+        scrut_ty: &Ty,
+        scrutinee: &Sp<Expr>,
+        pat: &Sp<Pat>,
+        arms: &[(Sp<Pat>, Sp<Expr>)],
+    ) {
+        if !matches!(self.table.resolve(scrut_ty), Ty::Int) {
+            return;
+        }
+        let Ok(scrut) = self.depth_of(scrutinee) else {
+            return;
+        };
+        match &pat.0 {
+            Pat::Lit(LitPat::Int(k)) if *k >= 0 => {
+                self.assumptions
+                    .push(Assumption::Eq(scrut, DepthExpr::Nat(*k as u64)));
+            }
+            Pat::Wildcard | Pat::Var(_) => {
+                for (p, _) in arms {
+                    if let Pat::Lit(LitPat::Int(k)) = &p.0
+                        && *k >= 0
+                    {
+                        self.assumptions
+                            .push(Assumption::Ne(scrut.clone(), DepthExpr::Nat(*k as u64)));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn check_match(
         &mut self,
         env: &Env,
@@ -2090,15 +2132,26 @@ impl TypeChecker {
             let mut inner = env.clone();
             let mut d_arm = delta.clone();
             let introduced = self.check_pat(pat, &scrut_ty, &mut inner, &mut d_arm)?;
-            match expected {
-                Some(t) => self.check(&inner, &mut d_arm, body, t)?,
-                None => {
-                    let arm_ty = self.synth(&inner, &mut d_arm, body)?;
-                    joined = Some(match joined {
-                        None => arm_ty,
-                        Some(prev) => self.join_branch_types(&prev, &arm_ty, body.1)?,
-                    });
-                }
+
+            // Dependent refinement (issue #59): augment the proof context with what this arm's
+            // pattern reveals about a `Nat` scrutinee — `scrut = k` for a literal arm, `scrut ≠ kᵢ`
+            // for a wildcard/variable arm against every sibling literal. Discharged by `expect_type`
+            // while checking the arm body (so e.g. `identity(0)`'s width `0 = n` proves under `n = 0`,
+            // and `n - 1`'s predecessor reasoning gets `n ≥ 1` from `{0, _}`). Popped on *every* path
+            // (the `truncate`), so nothing leaks into sibling arms or the enclosing scope.
+            let base = self.assumptions.len();
+            self.push_arm_refinement(&scrut_ty, scrutinee, pat, arms);
+            let arm_outcome = match expected {
+                Some(t) => self.check(&inner, &mut d_arm, body, t).map(|()| None),
+                None => self.synth(&inner, &mut d_arm, body).map(Some),
+            };
+            self.assumptions.truncate(base);
+
+            if let Some(arm_ty) = arm_outcome? {
+                joined = Some(match joined {
+                    None => arm_ty,
+                    Some(prev) => self.join_branch_types(&prev, &arm_ty, body.1)?,
+                });
             }
             self.ensure_consumed(&d_arm, &introduced)?;
             arm_deltas.push((d_arm, body.1));
