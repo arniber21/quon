@@ -6,6 +6,10 @@
     dead_code,
     clippy::new_without_default,
     clippy::large_enum_variant,
+    // `TypeError` carries resolved `Ty`s (with symbolic `Circuit`/`QReg` dimensions) for
+    // span-accurate diagnostics, so `Result<_, TypeError>` has a large `Err` variant. The
+    // error path is cold; boxing every `?` site would add churn for no real benefit.
+    clippy::result_large_err,
     clippy::arc_with_non_send_sync // Z3 Context is !Send; Arc retained per PRD
 )]
 

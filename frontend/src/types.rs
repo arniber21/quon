@@ -14,7 +14,9 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
     Qubit,
-    QReg(u64),
+    /// A register of `n` qubits. The size is a symbolic [`DepthExpr`] so registers over
+    /// type-level variables (`QReg<n>`, `QReg<n+1>`) are representable, not just literals.
+    QReg(DepthExpr),
     Bit,
     Bool,
     Int,
@@ -24,9 +26,11 @@ pub enum Ty {
     Tuple(Vec<Ty>),
     Fn(Box<Ty>, Box<Ty>),
     Linear(Box<Ty>, Box<Ty>),
+    /// A unitary circuit morphism. Qubit counts `n`/`m` and depth `d` are symbolic
+    /// [`DepthExpr`]s; `c` is the inferred Clifford classification.
     Circuit {
-        n: u64,
-        m: u64,
+        n: DepthExpr,
+        m: DepthExpr,
         d: DepthExpr,
         c: CliffordClass,
     },

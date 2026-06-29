@@ -116,10 +116,24 @@ fn each_broken_function_yields_its_own_diagnostic() {
 }
 
 #[test]
-fn quantum_fragment_is_reported_as_unsupported() {
-    let diag = only_error("fn f(): Int = circuit { H @ 0 }");
+fn unimplemented_monadic_fragment_is_reported_as_unsupported() {
+    // Measurement / the `Q` monad land with issue #14; until then they are reported cleanly
+    // rather than mishandled. (The circuit fragment now type-checks.)
+    let diag = only_error("fn f(q: Qubit): Bit = measure(q)");
     assert!(
         diag.message.contains("not yet type-checked"),
+        "message was: {}",
+        diag.message
+    );
+}
+
+#[test]
+fn a_circuit_used_where_a_scalar_is_expected_is_a_circuit_error() {
+    // A `circuit { }` block no longer reports "unsupported"; against a non-circuit type it is
+    // a structured type error.
+    let diag = only_error("fn f(): Int = circuit { H @0 }");
+    assert!(
+        diag.message.contains("expected a circuit"),
         "message was: {}",
         diag.message
     );

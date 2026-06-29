@@ -5,11 +5,11 @@ use quon_core::DepthExpr;
 fn linear_resources_are_classified_correctly() {
     // The quantum values that must be consumed exactly once.
     assert!(Ty::Qubit.is_linear_resource());
-    assert!(Ty::QReg(4).is_linear_resource());
+    assert!(Ty::QReg(DepthExpr::Nat(4)).is_linear_resource());
     assert!(
         Ty::Circuit {
-            n: 1,
-            m: 1,
+            n: DepthExpr::Nat(1),
+            m: DepthExpr::Nat(1),
             d: DepthExpr::Nat(1),
             c: frontend::ast::CliffordClass::Clifford,
         }

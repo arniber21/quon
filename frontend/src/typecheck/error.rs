@@ -71,6 +71,34 @@ pub enum TypeError {
     /// A lambda body referred to a linear resource from the enclosing scope. A function
     /// value may run zero or many times, so it cannot consume a resource exactly once.
     LinearCapture { name: String, span: SimpleSpan },
+    /// A value was used as a circuit (composed, placed, adjointed, …) but is not one.
+    NotACircuit { found: Ty, span: SimpleSpan },
+    /// Sequential composition `f |> g` requires `f`'s output width to equal `g`'s input
+    /// width. `expected`/`found` are the two register sizes, rendered for the message.
+    QubitCountMismatch {
+        expected: String,
+        found: String,
+        span: SimpleSpan,
+    },
+    /// A gate was placed on the wrong number of qubit targets (`H @ (0,1)`, `CNOT @ 0`).
+    GateTargetArity {
+        expected: u64,
+        found: usize,
+        span: SimpleSpan,
+    },
+    /// A gate was targeted at a qubit index outside the ambient register `0..width`.
+    IndexOutOfBounds {
+        index: u64,
+        width: u64,
+        span: SimpleSpan,
+    },
+    /// A user-supplied Clifford annotation disagrees with the inferred classification
+    /// (issue #12). `expected` is the annotation, `found` the inferred class.
+    CliffordMismatch {
+        expected: crate::ast::CliffordClass,
+        found: crate::ast::CliffordClass,
+        span: SimpleSpan,
+    },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -98,6 +126,11 @@ impl TypeError {
             | TypeError::LinearBranchMismatch { span, .. }
             | TypeError::LinearDiscard { span, .. }
             | TypeError::LinearCapture { span, .. }
+            | TypeError::NotACircuit { span, .. }
+            | TypeError::QubitCountMismatch { span, .. }
+            | TypeError::GateTargetArity { span, .. }
+            | TypeError::IndexOutOfBounds { span, .. }
+            | TypeError::CliffordMismatch { span, .. }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -162,6 +195,32 @@ impl fmt::Display for TypeError {
             TypeError::LinearCapture { name, .. } => {
                 write!(f, "cannot capture linear resource `{name}` in a closure")
             }
+            TypeError::NotACircuit { found, .. } => {
+                write!(f, "expected a circuit, found `{found}`")
+            }
+            TypeError::QubitCountMismatch {
+                expected, found, ..
+            } => write!(
+                f,
+                "circuit composition requires matching qubit counts: \
+                 left produces {expected}, right consumes {found}"
+            ),
+            TypeError::GateTargetArity {
+                expected, found, ..
+            } => write!(
+                f,
+                "this gate acts on {expected} qubit(s), but {found} target(s) were given"
+            ),
+            TypeError::IndexOutOfBounds { index, width, .. } => write!(
+                f,
+                "qubit index {index} is out of bounds for a register of width {width}"
+            ),
+            TypeError::CliffordMismatch {
+                expected, found, ..
+            } => write!(
+                f,
+                "Clifford classification mismatch: annotated `{expected:?}`, inferred `{found:?}`"
+            ),
             TypeError::Unsupported { construct, .. } => write!(
                 f,
                 "`{construct}` is part of the linear/quantum fragment and is not yet type-checked"

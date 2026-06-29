@@ -459,7 +459,7 @@ fn discarding_a_destructured_qubit_with_wildcard_is_rejected() {
 fn a_pair_of_qubits_synthesizes_to_a_register() {
     assert_eq!(
         ty("fn f(a: Qubit, b: Qubit): QReg<2> = (a, b)"),
-        Ty::QReg(2)
+        Ty::QReg(DepthExpr::Nat(2))
     );
 }
 
@@ -568,4 +568,136 @@ fn a_closure_dropping_its_own_linear_parameter_is_rejected() {
 fn classical_functions_keep_an_empty_linear_context() {
     accepts("fn f(x: Int, y: Bool): Int = if y then x else x + 1");
     accepts("fn f(xs: List<Int>): List<Int> = map(fn(p) -> p + p, xs)");
+}
+
+// ── Circuit fragment (issue #11) ────────────────────────────────────────────────
+
+#[test]
+fn gate_primitives_have_their_circuit_types() {
+    assert_eq!(
+        ty("fn f(): Circuit<1, 1, 1, Clifford> = H"),
+        Ty::Circuit {
+            n: DepthExpr::Nat(1),
+            m: DepthExpr::Nat(1),
+            d: DepthExpr::Nat(1),
+            c: crate::ast::CliffordClass::Clifford,
+        }
+    );
+}
+
+#[test]
+fn bell_gate_synthesizes_its_annotated_type() {
+    // Acceptance criterion: `H @0 |> CNOT @(0,1)` is `Circuit<2,2,2,Clifford>`.
+    accepts("fn bell(): Circuit<2, 2, 2, Clifford> = circuit { H @0 |> CNOT @(0, 1) }");
+}
+
+#[test]
+fn bell_gate_with_wrong_depth_is_rejected() {
+    rejects("fn bell(): Circuit<2, 2, 3, Clifford> = circuit { H @0 |> CNOT @(0, 1) }");
+}
+
+#[test]
+fn circuit_too_narrow_for_its_gate_indices_is_rejected() {
+    // A width-1 register cannot host `CNOT @(0,1)`: qubit index 1 is out of bounds.
+    let err =
+        reject_err("fn bell(): Circuit<1, 1, 2, Clifford> = circuit { H @0 |> CNOT @(0, 1) }");
+    assert!(
+        matches!(err, TypeError::IndexOutOfBounds { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn gate_index_out_of_bounds_is_rejected() {
+    rejects("fn f(): Circuit<2, 2, 1, Clifford> = circuit { H @5 }");
+}
+
+#[test]
+fn gate_with_wrong_target_arity_is_rejected() {
+    // CNOT acts on two qubits; a single target is a placement error.
+    rejects("fn f(): Circuit<2, 2, 1, Clifford> = circuit { CNOT @0 }");
+}
+
+// ── The five composition rules (§3.3) ───────────────────────────────────────────
+
+#[test]
+fn compose_chains_widths_and_adds_depths() {
+    accepts(
+        "fn f(a: Circuit<2,2,1,Clifford>, b: Circuit<2,2,2,Clifford>): Circuit<2,2,3,Clifford> = a |> b",
+    );
+}
+
+#[test]
+fn compose_with_mismatched_widths_is_rejected() {
+    // Acceptance criterion: `f |> g` where `f.out ≠ g.in` is a type error.
+    let err = reject_err("fn f(): Circuit<2,3,0,Clifford> = identity(2) |> identity(3)");
+    assert!(
+        matches!(err, TypeError::QubitCountMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn par_scales_width_and_keeps_depth() {
+    accepts("fn f(c: Circuit<2,2,1,Clifford>): Circuit<6,6,1,Clifford> = par { c } * 3");
+}
+
+#[test]
+fn adjoint_swaps_widths_and_keeps_depth() {
+    accepts("fn f(c: Circuit<1,3,2,Clifford>): Circuit<3,1,2,Clifford> = adjoint(c)");
+}
+
+#[test]
+fn controlled_increments_widths_and_depth() {
+    accepts("fn f(c: Circuit<2,2,2,Clifford>): Circuit<3,3,3,Clifford> = controlled(c)");
+}
+
+#[test]
+fn repeat_multiplies_depth_by_the_count() {
+    // Acceptance criterion: `repeat(k, c)` with `k: Int`, `c: Circuit<n,n,d,_>` is `k*d`.
+    accepts("fn f(k: Nat, c: Circuit<2,2,3,Clifford>): Circuit<2,2,k*3,Clifford> = repeat(k, c)");
+}
+
+#[test]
+fn repeat_with_wrong_depth_is_rejected() {
+    rejects("fn f(k: Nat, c: Circuit<2,2,3,Clifford>): Circuit<2,2,k*4,Clifford> = repeat(k, c)");
+}
+
+// ── for-loops in circuit context (§5.8) ─────────────────────────────────────────
+
+#[test]
+fn parallel_for_over_qubits_keeps_body_depth() {
+    accepts(
+        "fn had_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit { for q in qubits(n) { H(q) } }",
+    );
+}
+
+#[test]
+fn sequential_for_over_range_multiplies_depth() {
+    // `range(k)` iterations are sequential: depth = count × body depth.
+    accepts(
+        "fn layer(k: Nat): Circuit<k, k, k, Universal> = circuit { for i in range(k) { T(i) } }",
+    );
+}
+
+// ── Symbolic depth via fold over a circuit accumulator (§3.6) ────────────────────
+
+#[test]
+fn fold_over_circuit_synthesizes_symbolic_depth() {
+    // Acceptance criterion: `ising_evolve` with `n_steps: Int` in the depth position
+    // synthesizes `Circuit<n,n,n_steps*n,Universal>` with no explicit promotion syntax.
+    accepts(
+        "fn trotter(n: Nat): Circuit<n, n, n, Universal> = circuit { repeat(n, T @0) }\n\
+         fn ising(n: Nat, n_steps: Int): Circuit<n, n, n_steps * n, Universal> =\n\
+         fold(range(n_steps), identity(n), fn(acc, _) -> acc |> trotter(n))",
+    );
+}
+
+#[test]
+fn classical_fold_still_threads_its_accumulator() {
+    // The circuit-fold special case must not disturb the ordinary classical fold.
+    assert_eq!(
+        ty("fn f(xs: List<Int>): Int = fold(xs, 0, fn(acc, x) -> acc + x)"),
+        Ty::Int
+    );
 }
