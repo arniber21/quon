@@ -110,6 +110,9 @@ pub enum TypeError {
     /// A symbolic depth constraint was beyond what the refinement solver could decide
     /// (issue #13) — e.g. an intractable nonlinear term. The user must supply a static bound.
     DepthIntractable { expr: String, span: SimpleSpan },
+    /// The right-hand side of a monadic `<-` bind was expected to be a quantum computation
+    /// `Q<_>` (or a pure value, auto-lifted) but was something else (issue #14).
+    ExpectedMonad { found: Ty, span: SimpleSpan },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -144,6 +147,7 @@ impl TypeError {
             | TypeError::CliffordMismatch { span, .. }
             | TypeError::DepthMismatch { span, .. }
             | TypeError::DepthIntractable { span, .. }
+            | TypeError::ExpectedMonad { span, .. }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -244,6 +248,10 @@ impl fmt::Display for TypeError {
                 f,
                 "depth constraint `{expr}` is too complex for the solver to verify; \
                  supply a static depth bound"
+            ),
+            TypeError::ExpectedMonad { found, .. } => write!(
+                f,
+                "the right-hand side of `<-` must be a quantum computation `Q<_>`, found `{found}`"
             ),
             TypeError::Unsupported { construct, .. } => write!(
                 f,

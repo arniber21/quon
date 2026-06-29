@@ -372,9 +372,15 @@ impl TypeChecker {
             Expr::App(f, x) => self.synth_app(env, delta, f, x, span),
 
             // ── Circuit fragment (issue #11) ────────────────────────────────────
+            // `c @ x` is gate *placement* inside a `circuit { }` block (an ambient register is
+            // in scope), and circuit *application* to a register otherwise (issue #14).
             Expr::GateApp { gate, qubits } => {
                 let g = self.synth(env, delta, gate)?;
-                self.place_gate(env, delta, g, qubits)
+                if self.circuit_width.is_empty() {
+                    self.apply_circuit(env, delta, g, qubits)
+                } else {
+                    self.place_gate(env, delta, g, qubits)
+                }
             }
             Expr::Compose(l, r) => self.synth_compose(env, delta, l, r, span),
             Expr::Par(body, count) => self.synth_par(env, delta, body, count),
@@ -416,6 +422,13 @@ impl TypeChecker {
                 self.check(env, delta, e, &resolved)?;
                 Ok(resolved)
             }
+
+            // ── Quantum monad (issue #14, SPEC §3.5) ────────────────────────────
+            Expr::Return(v) => {
+                let t = self.synth(env, delta, v)?;
+                Ok(Ty::Q(Box::new(t)))
+            }
+            Expr::Bind { rhs, param, body } => self.synth_bind(env, delta, rhs, param, body),
 
             // Linear/quantum fragment — handled in issues #11–#15.
             _ => Err(self.unsupported(&expr.0, span)),
@@ -551,10 +564,24 @@ impl TypeChecker {
                 _ => {}
             }
         }
-        // Default: gate placement (callee is a circuit value) or ordinary application.
+        // A `qreg(n)` allocation: size-dependent, so its result register width is read from the
+        // argument value (like `identity`). Yields a fresh register in the quantum monad.
+        if let Expr::Var(name) = &head.0
+            && name == "qreg"
+            && args.len() == 1
+        {
+            let size = self.expr_to_depth(env, delta, args[0])?;
+            return Ok(Ty::Q(Box::new(Ty::QReg(size))));
+        }
+        // Default: a circuit callee is gate placement inside a `circuit { }` block, circuit
+        // application to a register otherwise; anything else is ordinary application.
         let f_ty = self.synth(env, delta, f)?;
         if matches!(self.table.resolve(&f_ty), Ty::Circuit { .. }) {
-            return self.place_gate(env, delta, f_ty, x);
+            return if self.circuit_width.is_empty() {
+                self.apply_circuit(env, delta, f_ty, x)
+            } else {
+                self.place_gate(env, delta, f_ty, x)
+            };
         }
         let (dom, cod) = self.as_function(&f_ty, f.1)?;
         self.check(env, delta, x, &dom)?;
@@ -627,6 +654,125 @@ impl TypeChecker {
             d: gd,
             c: gc,
         })
+    }
+
+    /// Circuit *application* `c @ r` outside a `circuit { }` block (issue #14, SPEC §5.9
+    /// `apply`). The circuit `c : Circuit<n,m,d,C>` is applied to a register source `r`,
+    /// consuming it and producing the output register of width `m`:
+    ///
+    /// * `r : QReg<n>`        ⟶ `QReg<m>`        — pure unitary application
+    /// * `r : Qubit` (n=1)    ⟶ `Qubit`          — single-qubit gate on a qubit handle
+    /// * `r : Q<QReg<n>>`     ⟶ `Q<QReg<m>>`     — the register source is itself monadic
+    ///
+    /// Unitary application has no measurement, so the pure cases stay outside `Q` (the monad
+    /// threads the global state, SPEC §3.5); only a monadic source lifts the result into `Q`.
+    fn apply_circuit(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        circ: Ty,
+        reg: &Sp<Expr>,
+    ) -> Result<Ty, TypeError> {
+        let (n, m, _, _) = self.as_circuit(&circ, reg.1)?;
+        let reg_ty = self.synth(env, delta, reg)?;
+        // A register source nested in `Q<…>` threads the monad: the result is `Q<QReg<m>>`.
+        let (monadic, source) = match self.table.resolve(&reg_ty) {
+            Ty::Q(inner) => (true, *inner),
+            other => (false, other),
+        };
+        let out = match source {
+            Ty::QReg(w) => {
+                self.expect_width(&n, &w, reg.1)?;
+                Ty::QReg(m)
+            }
+            // A single-qubit gate applied to a qubit handle returns a qubit handle.
+            Ty::Qubit => {
+                self.expect_width(&n, &DepthExpr::Nat(1), reg.1)?;
+                if m.equiv(&DepthExpr::Nat(1)) {
+                    Ty::Qubit
+                } else {
+                    Ty::QReg(m)
+                }
+            }
+            other => {
+                return Err(TypeError::Mismatch {
+                    expected: Ty::QReg(n),
+                    found: other,
+                    span: reg.1,
+                });
+            }
+        };
+        Ok(if monadic { Ty::Q(Box::new(out)) } else { out })
+    }
+
+    /// A circuit's input width must match the register it is applied to.
+    fn expect_width(
+        &self,
+        expected: &DepthExpr,
+        found: &DepthExpr,
+        span: SimpleSpan,
+    ) -> Result<(), TypeError> {
+        if expected.equiv(found) {
+            Ok(())
+        } else {
+            Err(TypeError::QubitCountMismatch {
+                expected: expected.to_string(),
+                found: found.to_string(),
+                span,
+            })
+        }
+    }
+
+    /// A monadic bind `x <- e₁; e₂` (`Bind(e₁, fn(x) -> e₂)`, SPEC §3.5). `e₁` must produce a
+    /// quantum computation `Q<A>` — or a pure value `A`, which is auto-lifted (so a unitary
+    /// result threaded through `<-` is accepted). `x : A` is then bound (routed by linearity)
+    /// and the continuation `e₂` is checked; it must itself be `Q<B>`, the type of the bind.
+    /// `Δ` threads `e₁` then `e₂`, so a resource consumed by `e₁` is gone for `e₂` — reusing a
+    /// just-measured qubit surfaces as [`TypeError::LinearUsedTwice`].
+    fn synth_bind(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        rhs: &Sp<Expr>,
+        param: &str,
+        body: &Sp<Expr>,
+    ) -> Result<Ty, TypeError> {
+        let rhs_ty = self.synth(env, delta, rhs)?;
+        // The value the bind threads. The payload of a `Q<A>` is the usual case. A *pure*
+        // quantum resource is auto-lifted: a unitary application `c @ r : QReg<m>` has no
+        // measurement, so it stays outside `Q`, yet is naturally named with `<-` (teleport's
+        // `(a, b) <- bell_state() @ (alice, bob)`). A pure *classical* value (or an unsolved
+        // metavariable) is not a quantum computation — binding it with `<-` is the error AC5
+        // names; use `let` instead.
+        let bound = match self.table.resolve(&rhs_ty) {
+            Ty::Q(inner) => *inner,
+            pure if pure.is_linear_resource() => pure,
+            _ => {
+                return Err(TypeError::ExpectedMonad {
+                    found: self.table.zonk(&rhs_ty),
+                    span: rhs.1,
+                });
+            }
+        };
+        let mut inner = env.clone();
+        // Bind the threaded value. `_` discards it (a `Pat::Wildcard`, which rejects a leftover
+        // linear resource as a no-dropping error); a name routes by linearity via `bind_pat`.
+        let pat = if param == "_" {
+            (Pat::Wildcard, rhs.1)
+        } else {
+            (Pat::Var(param.to_string()), rhs.1)
+        };
+        let introduced = self.bind_pat(&pat, &bound, &mut inner, delta)?;
+        let body_ty = self.synth(&inner, delta, body)?;
+        self.ensure_consumed(delta, &introduced)?;
+        // The continuation must be a quantum computation.
+        match self.table.resolve(&body_ty) {
+            Ty::Q(_) => Ok(body_ty),
+            other => Err(TypeError::ExpectedMonad {
+                found: other,
+                span: body.1,
+            }),
+        }
     }
 
     /// `f |> g` (SPEC §3.3): `f`'s output width must equal `g`'s input width; depths add,
@@ -1288,7 +1434,20 @@ impl TypeChecker {
         else_: &Sp<Expr>,
         expected: Option<&Ty>,
     ) -> Result<Ty, TypeError> {
-        self.check(env, delta, cond, &Ty::Bool)?;
+        // A condition is `Bool` or a classical measurement `Bit` (SPEC §3.5: a measured bit
+        // drives classical control, as in teleport's `if x_bit then X else identity(1)`).
+        let cond_ty = self.synth(env, delta, cond)?;
+        match self.table.resolve(&cond_ty) {
+            Ty::Bool | Ty::Bit => {}
+            Ty::Meta(_) => self.table.unify(&cond_ty, &Ty::Bool, cond.1)?,
+            other => {
+                return Err(TypeError::Mismatch {
+                    expected: Ty::Bool,
+                    found: other,
+                    span: cond.1,
+                });
+            }
+        }
         let mut d_then = delta.clone();
         let mut d_else = delta.clone();
         let result = match expected {
