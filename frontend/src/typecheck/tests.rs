@@ -970,8 +970,10 @@ fn dependent_call_specializes_a_nat_parameter_in_the_result_type() {
     // call-site argument *everywhere* it appears (both the `n` and the `2*n` position).
     let kp1 = || DepthExpr::Var("k".into()).seq(DepthExpr::Nat(1));
     assert_eq!(
-        ty("fn dbl(n: Nat): Circuit<n, 2 * n, 0, Clifford> = identity(n)\n\
-            fn caller(k: Nat): Int = dbl(k + 1)"),
+        ty(
+            "fn dbl(n: Nat): Circuit<n, 2 * n, 0, Clifford> = identity(n)\n\
+            fn caller(k: Nat): Int = dbl(k + 1)"
+        ),
         Ty::Circuit {
             n: kp1(),
             m: DepthExpr::repeat(DepthExpr::Nat(2), kp1()),

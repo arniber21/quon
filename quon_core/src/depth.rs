@@ -214,24 +214,12 @@ impl DepthExpr {
         match self {
             DepthExpr::Var(name) => env.get(name).cloned().unwrap_or_else(|| self.clone()),
             DepthExpr::Nat(_) | DepthExpr::Hole => self.clone(),
-            DepthExpr::Add(l, r) => {
-                DepthExpr::Add(Box::new(l.subst(env)), Box::new(r.subst(env)))
-            }
-            DepthExpr::Mul(l, r) => {
-                DepthExpr::Mul(Box::new(l.subst(env)), Box::new(r.subst(env)))
-            }
-            DepthExpr::Max(l, r) => {
-                DepthExpr::Max(Box::new(l.subst(env)), Box::new(r.subst(env)))
-            }
-            DepthExpr::Sub(l, r) => {
-                DepthExpr::Sub(Box::new(l.subst(env)), Box::new(r.subst(env)))
-            }
-            DepthExpr::Div(l, r) => {
-                DepthExpr::Div(Box::new(l.subst(env)), Box::new(r.subst(env)))
-            }
-            DepthExpr::Exp(l, r) => {
-                DepthExpr::Exp(Box::new(l.subst(env)), Box::new(r.subst(env)))
-            }
+            DepthExpr::Add(l, r) => DepthExpr::Add(Box::new(l.subst(env)), Box::new(r.subst(env))),
+            DepthExpr::Mul(l, r) => DepthExpr::Mul(Box::new(l.subst(env)), Box::new(r.subst(env))),
+            DepthExpr::Max(l, r) => DepthExpr::Max(Box::new(l.subst(env)), Box::new(r.subst(env))),
+            DepthExpr::Sub(l, r) => DepthExpr::Sub(Box::new(l.subst(env)), Box::new(r.subst(env))),
+            DepthExpr::Div(l, r) => DepthExpr::Div(Box::new(l.subst(env)), Box::new(r.subst(env))),
+            DepthExpr::Exp(l, r) => DepthExpr::Exp(Box::new(l.subst(env)), Box::new(r.subst(env))),
         }
     }
 
@@ -349,11 +337,14 @@ fn collect(e: &DepthExpr, op: AcOp, terms: &mut Vec<DepthExpr>, konst: &mut u64)
     } else if let DepthExpr::Nat(n) = e {
         *konst = op.fold(*konst, *n);
     } else {
-        // A non-matching sub-term may itself *normalise* to a literal (e.g. `x * 0 = 0`);
-        // fold those into the constant too, so a hidden absorbing zero or identity does not
-        // survive as a stray operand and break idempotence.
+        // A non-matching sub-term may itself *normalise* to a literal (e.g. `x * 0 = 0`) or to an
+        // application of *this* operator (e.g. `max(x, 0) = x` where `x` is itself a sum, inside a
+        // parent `+`). Fold literals into the constant, and re-flatten a now-matching operand into
+        // this collection — otherwise its constant stays trapped one level down and a second
+        // `normalize` pass would fold it, breaking idempotence.
         match e.normalize() {
             DepthExpr::Nat(n) => *konst = op.fold(*konst, n),
+            normalized if op.matches(&normalized) => collect(&normalized, op, terms, konst),
             other => terms.push(other),
         }
     }
@@ -593,11 +584,24 @@ mod tests {
             nat(1).seq(nat(1)).seq(var("n")),
             DepthExpr::repeat(var("k"), var("d").controlled()),
             var("a").par(var("b")).par(var("a")),
+            // Regression: a `max(_, 0)` simplification under a parent `+` exposes a fresh constant
+            // fold. The simplified operand must be re-flattened in the same pass, else the second
+            // `normalize` folds the constant and the form is not idempotent.
+            // `max(1 + a, 0) + 1`  must fold to  `2 + a`  in a single pass.
+            nat(1).seq(var("a")).par(nat(0)).seq(nat(1)),
         ];
         for e in exprs {
             let once = e.normalize();
             assert_eq!(once.normalize(), once, "not idempotent: {e}");
         }
+    }
+
+    #[test]
+    fn normalisation_reflattens_a_simplified_operand() {
+        // `max(1 + a, 0) + 1` → the `max(_, 0)` collapses to `1 + a`, which must merge with the
+        // outer `+ 1` to give `2 + a` in one pass (a single combined constant, no nested sum).
+        let expr = nat(1).seq(var("a")).par(nat(0)).seq(nat(1));
+        assert_eq!(expr.normalize(), nat(2).seq(var("a")).normalize());
     }
 
     #[test]

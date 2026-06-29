@@ -1598,9 +1598,11 @@ impl TypeChecker {
             ),
             Ty::Q(t) => Ty::Q(Box::new(Self::subst_depth_in_ty(t, sigma))),
             Ty::List(t) => Ty::List(Box::new(Self::subst_depth_in_ty(t, sigma))),
-            Ty::Tuple(ts) => {
-                Ty::Tuple(ts.iter().map(|t| Self::subst_depth_in_ty(t, sigma)).collect())
-            }
+            Ty::Tuple(ts) => Ty::Tuple(
+                ts.iter()
+                    .map(|t| Self::subst_depth_in_ty(t, sigma))
+                    .collect(),
+            ),
             Ty::Fn(a, b) => Ty::Fn(
                 Box::new(Self::subst_depth_in_ty(a, sigma)),
                 Box::new(Self::subst_depth_in_ty(b, sigma)),
