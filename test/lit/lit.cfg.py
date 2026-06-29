@@ -23,4 +23,5 @@ config.test_exec_root = os.path.join(os.environ.get("QUON_BUILD_DIR", "."), "tes
 config.substitutions.append(("%quonc", "quonc"))
 config.substitutions.append(("%circ-roundtrip", "circ_roundtrip"))
 config.substitutions.append(("%dynamic-roundtrip", "dynamic_roundtrip"))
+config.substitutions.append(("%monadic-lower", "monadic_lower"))
 config.substitutions.append(("%FileCheck", "FileCheck"))
