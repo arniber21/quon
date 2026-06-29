@@ -36,6 +36,25 @@ pub fn desugar_expr(expr: Sp<Expr>) -> Result<Sp<Expr>, Vec<Diagnostic>> {
     }
 }
 
+/// Fold a `borrow` body — a statement sequence — into the `Bind`/`Let`/`Return` chain the
+/// type checker checks as a monadic block (issue #15). This is exactly the `run { }` folding
+/// (tuple-pattern binds are destructured, the block must end in an expression), reused so the
+/// two monadic block forms share one desugaring. The input statements have already been
+/// desugared as part of the enclosing declaration; re-running the transform on them is
+/// idempotent. Malformed blocks are reported as [`Diagnostic`]s, never panicked on.
+pub fn fold_monadic_block(
+    stmts: &[Sp<Stmt>],
+    block_span: SimpleSpan,
+) -> Result<Sp<Expr>, Vec<Diagnostic>> {
+    let mut errors = Vec::new();
+    let out = desugar_run_block(stmts.to_vec(), block_span, &mut errors);
+    if errors.is_empty() {
+        Ok(out)
+    } else {
+        Err(errors)
+    }
+}
+
 fn desugar_decl(decl: Sp<Decl>, errors: &mut Vec<Diagnostic>) -> Sp<Decl> {
     let (d, span) = decl;
     let d = match d {

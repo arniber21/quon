@@ -1426,11 +1426,15 @@ fn encode(): Circuit<1, 3, 2, Clifford> = circuit {
     CNOT @(0,1) |> CNOT @(0,2)
 }
 
+fn parity(): Circuit<2, 2, 1, Clifford> = circuit {
+    CNOT @(0, 1)
+}
+
 fn syndrome_measure(q: QReg<3>): Q<(QReg<3>, Bit, Bit)> = run {
     let (q0, q1, q2) = destructure(q)
     borrow a1: Qubit, a2: Qubit in {
-        (q0a, a1b) <- (CNOT @(0,0) |> CNOT @(1,0)) @ (q0 `tensored` a1)
-        (q1a, a2b) <- (CNOT @(1,0) |> CNOT @(2,0)) @ (q1 `tensored` a2)
+        (q0a, a1b) <- parity() @ (q0 `tensored` a1)
+        (q1a, a2b) <- parity() @ (q1 `tensored` a2)
         s1         <- measure(a1b)
         s2         <- measure(a2b)
         return (q0a `tensored` q1a `tensored` q2, s1, s2)

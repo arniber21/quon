@@ -430,6 +430,9 @@ impl TypeChecker {
             }
             Expr::Bind { rhs, param, body } => self.synth_bind(env, delta, rhs, param, body),
 
+            // ── Borrow blocks (issue #15, SPEC §3.4) ────────────────────────────
+            Expr::Borrow { bindings, body } => self.synth_borrow(env, delta, bindings, body, span),
+
             // Linear/quantum fragment — handled in issues #11–#15.
             _ => Err(self.unsupported(&expr.0, span)),
         }
@@ -509,6 +512,42 @@ impl TypeChecker {
         }
     }
 
+    /// Tensor introduction via `tensored` (SPEC §5): `a `tensored` b` concatenates two
+    /// registers into `QReg<n+m>`. Each operand is a register (`QReg<k>`) or a single qubit
+    /// (treated as `QReg<1>`), consumed exactly once; `Δ` threads left-to-right so reusing an
+    /// operand surfaces as [`TypeError::LinearUsedTwice`].
+    fn synth_tensored(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        a: &Sp<Expr>,
+        b: &Sp<Expr>,
+    ) -> Result<Ty, TypeError> {
+        let wa = self.tensor_width(env, delta, a)?;
+        let wb = self.tensor_width(env, delta, b)?;
+        Ok(Ty::QReg(wa.seq(wb).normalize()))
+    }
+
+    /// The register width of a `tensored` operand: a `QReg<n>` yields `n`, a bare `Qubit`
+    /// yields `1`. Any other type is a mismatch.
+    fn tensor_width(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        e: &Sp<Expr>,
+    ) -> Result<DepthExpr, TypeError> {
+        let t = self.synth(env, delta, e)?;
+        match self.table.resolve(&t) {
+            Ty::QReg(w) => Ok(w),
+            Ty::Qubit => Ok(DepthExpr::Nat(1)),
+            other => Err(TypeError::Mismatch {
+                expected: Ty::QReg(DepthExpr::Var("n".into())),
+                found: other,
+                span: e.1,
+            }),
+        }
+    }
+
     /// Synthesize a tuple. An all-`Qubit` tuple is the tensor *introduction* form and
     /// synthesizes to `QReg<n>` (SPEC §3.4); any other tuple keeps its component types.
     /// Components are synthesized left-to-right, threading `Δ`, so `(q, q)` fails at the
@@ -555,6 +594,9 @@ impl TypeChecker {
                 ("on_high" | "on_low", 2) => {
                     return self.synth_on_sub(env, delta, args[0], args[1]);
                 }
+                // `a `tensored` b` (SPEC §5): concatenate two registers into `QReg<n+m>`.
+                // Surfaced as a curried call by the parser (`tensored(a)(b)`).
+                ("tensored", 2) => return self.synth_tensored(env, delta, args[0], args[1]),
                 ("fold", 3) => return self.synth_fold(env, delta, args[0], args[1], args[2], span),
                 // A single-qubit rotation applied to its angle (issue #12): the Clifford
                 // classification is specialised from a static multiple of π/2.
@@ -772,6 +814,69 @@ impl TypeChecker {
                 found: other,
                 span: body.1,
             }),
+        }
+    }
+
+    /// A `borrow b₁: T₁, … in { body }` block (SPEC §3.4, ADR-0003): scoped ancilla
+    /// allocation. Each ancilla enters `Δ` as a linear resource and the body is checked as a
+    /// monadic block producing `Q<τ>`. Two guarantees are enforced:
+    ///
+    /// * **Cleanup (no-dropping).** Every ancilla must be consumed inside the block —
+    ///   measured, `reset`, `discard`ed, or fed into an operation that consumes it. A still-live
+    ///   ancilla at block exit is a [`TypeError::LinearUnconsumed`] (via [`Self::ensure_consumed`]).
+    /// * **No escape.** A borrowed name may not appear in the block's *result* value, even
+    ///   buried inside a returned register — otherwise the ancilla outlives its scope
+    ///   ([`TypeError::BorrowEscape`]). The data qubits a block legitimately returns are fine;
+    ///   only the *borrowed* names are forbidden in a `return`.
+    ///
+    /// The body is a statement sequence; it is folded into the same `Bind`/`Let`/`Return` chain
+    /// a `run { }` block desugars to (issue #8) and then synthesized.
+    fn synth_borrow(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        bindings: &[(Name, Sp<Type>)],
+        body: &[Sp<Stmt>],
+        span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        let block =
+            crate::desugar::fold_monadic_block(body, span).map_err(|_| TypeError::Unsupported {
+                construct: "malformed borrow block",
+                span,
+            })?;
+
+        // Introduce each ancilla into `Δ`. An ancilla must be a linear quantum resource; a
+        // classical `borrow x: Int` is meaningless (there is nothing to reclaim).
+        let mut introduced = Vec::new();
+        let mut borrowed: BTreeSet<String> = BTreeSet::new();
+        for (name, ann) in bindings {
+            let ty = self.resolve_type(ann)?;
+            if !ty.is_linear_resource() {
+                return Err(TypeError::Mismatch {
+                    expected: Ty::Qubit,
+                    found: ty,
+                    span: ann.1,
+                });
+            }
+            delta.introduce(name.clone(), ty, ann.1)?;
+            introduced.push((name.clone(), ann.1));
+            borrowed.insert(name.clone());
+        }
+
+        // No-escape: reject before threading `Δ`, since a `return a` would otherwise *consume*
+        // the ancilla into the result and pass the cleanup check, hiding the escape.
+        if let Some((name, esc_span)) = find_borrow_escape(&block, &borrowed) {
+            return Err(TypeError::BorrowEscape {
+                name,
+                span: esc_span,
+            });
+        }
+
+        let result_ty = self.synth(env, delta, &block)?;
+        self.ensure_consumed(delta, &introduced)?;
+        match self.table.resolve(&result_ty) {
+            Ty::Q(_) => Ok(result_ty),
+            other => Err(TypeError::ExpectedMonad { found: other, span }),
         }
     }
 
@@ -1948,6 +2053,97 @@ fn flatten_app<'a>(f: &'a Sp<Expr>, x: &'a Sp<Expr>) -> (&'a Sp<Expr>, Vec<&'a S
     args.reverse();
     args.push(x);
     (cur, args)
+}
+
+/// Walk a folded monadic block looking for a borrowed ancilla escaping in a `return`. The
+/// only escape route is a value flowing out of the block, i.e. the argument of a `return`:
+/// a borrowed name appearing there (`return a`, or buried in `return (q `tensored` a)`) means
+/// the ancilla outlives its scope. Mentions in *consuming* positions (`measure(a)`,
+/// `discard(a)`, `a `tensored` b` whose result is then measured) are fine — those are exactly
+/// how an ancilla is reclaimed — so only `Return` payloads are inspected. Returns the first
+/// offending name with the span of the returned value.
+fn find_borrow_escape(
+    expr: &Sp<Expr>,
+    borrowed: &BTreeSet<String>,
+) -> Option<(String, SimpleSpan)> {
+    match &expr.0 {
+        Expr::Return(v) => {
+            if let Some(name) = first_borrowed_var(v, borrowed) {
+                return Some((name, v.1));
+            }
+            // A `return` may itself wrap further structure (e.g. a nested block); keep walking.
+            find_borrow_escape(v, borrowed)
+        }
+        Expr::Bind { rhs, body, .. } => {
+            find_borrow_escape(rhs, borrowed).or_else(|| find_borrow_escape(body, borrowed))
+        }
+        Expr::Let { rhs, body, .. } => {
+            find_borrow_escape(rhs, borrowed).or_else(|| find_borrow_escape(body, borrowed))
+        }
+        Expr::If { cond, then, else_ } => find_borrow_escape(cond, borrowed)
+            .or_else(|| find_borrow_escape(then, borrowed))
+            .or_else(|| find_borrow_escape(else_, borrowed)),
+        Expr::Match { scrutinee, arms } => find_borrow_escape(scrutinee, borrowed).or_else(|| {
+            arms.iter()
+                .find_map(|(_, e)| find_borrow_escape(e, borrowed))
+        }),
+        _ => None,
+    }
+}
+
+/// The first borrowed name appearing anywhere in a returned value expression, if any.
+fn first_borrowed_var(expr: &Sp<Expr>, borrowed: &BTreeSet<String>) -> Option<String> {
+    let mut found = None;
+    collect_var_hit(expr, borrowed, &mut found);
+    found
+}
+
+/// Recursively scan `expr` for a `Var` whose name is in `borrowed`, recording the first hit.
+fn collect_var_hit(expr: &Sp<Expr>, borrowed: &BTreeSet<String>, found: &mut Option<String>) {
+    if found.is_some() {
+        return;
+    }
+    match &expr.0 {
+        Expr::Var(name) => {
+            if borrowed.contains(name) {
+                *found = Some(name.clone());
+            }
+        }
+        Expr::App(a, b)
+        | Expr::Compose(a, b)
+        | Expr::Par(a, b)
+        | Expr::GateApp { gate: a, qubits: b } => {
+            collect_var_hit(a, borrowed, found);
+            collect_var_hit(b, borrowed, found);
+        }
+        Expr::BinOp { lhs, rhs, .. } => {
+            collect_var_hit(lhs, borrowed, found);
+            collect_var_hit(rhs, borrowed, found);
+        }
+        Expr::Neg(a) | Expr::Adjoint(a) | Expr::Controlled(a) | Expr::Return(a) => {
+            collect_var_hit(a, borrowed, found);
+        }
+        Expr::Ascribe(a, _) => collect_var_hit(a, borrowed, found),
+        Expr::Tuple(es) | Expr::List(es) => {
+            for e in es {
+                collect_var_hit(e, borrowed, found);
+            }
+        }
+        Expr::If { cond, then, else_ } => {
+            collect_var_hit(cond, borrowed, found);
+            collect_var_hit(then, borrowed, found);
+            collect_var_hit(else_, borrowed, found);
+        }
+        Expr::Let { rhs, body, .. } => {
+            collect_var_hit(rhs, borrowed, found);
+            collect_var_hit(body, borrowed, found);
+        }
+        Expr::Bind { rhs, body, .. } => {
+            collect_var_hit(rhs, borrowed, found);
+            collect_var_hit(body, borrowed, found);
+        }
+        _ => {}
+    }
 }
 
 /// A non-negative integer literal used as a qubit index, for static bounds checking.
