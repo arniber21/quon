@@ -126,6 +126,15 @@ pub enum TypeError {
         param: String,
         span: SimpleSpan,
     },
+    /// A recursive circuit function whose recursion could not be shown to terminate (issue #60):
+    /// no `Nat` parameter strictly decreases (and stays `≥ 0`) at every recursive call. Without a
+    /// well-founded measure the depth index is not a bound on any finite circuit, so the function
+    /// is rejected — and reported, never looped on.
+    IllFoundedRecursion { name: String, span: SimpleSpan },
+    /// Mutual recursion among circuit functions (issue #60). v1 supports only direct
+    /// self-recursion with an inferred decreasing measure; a cycle through two or more distinct
+    /// functions is rejected rather than accepted without a termination witness.
+    MutualRecursion { name: String, span: SimpleSpan },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -163,6 +172,8 @@ impl TypeError {
             | TypeError::ExpectedMonad { span, .. }
             | TypeError::BorrowEscape { span, .. }
             | TypeError::NonDependentArg { span, .. }
+            | TypeError::IllFoundedRecursion { span, .. }
+            | TypeError::MutualRecursion { span, .. }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -277,6 +288,17 @@ impl fmt::Display for TypeError {
                 f,
                 "argument for the `Nat` parameter `{param}` of `{func}` is not a static depth \
                  expression; use an `Int` literal, variable, or `+ - * / ^` over them"
+            ),
+            TypeError::IllFoundedRecursion { name, .. } => write!(
+                f,
+                "cannot prove that the recursive function `{name}` terminates; some `Nat` \
+                 parameter must strictly decrease (and stay non-negative) at every recursive call \
+                 — add or adjust a base case so the recursion is well-founded"
+            ),
+            TypeError::MutualRecursion { name, .. } => write!(
+                f,
+                "`{name}` is part of a mutually-recursive cycle; only direct self-recursion with a \
+                 decreasing measure is supported"
             ),
             TypeError::Unsupported { construct, .. } => write!(
                 f,

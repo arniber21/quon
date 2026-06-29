@@ -1072,6 +1072,94 @@ fn if_guard_introduces_no_nat_refinement() {
     );
 }
 
+// ── Recursive circuit functions: well-founded measure (issue #60, SPEC §3.3) ─────
+
+#[test]
+fn well_founded_recursion_on_a_decreasing_nat_measure_is_accepted() {
+    // 60c: `rec(n)` recurses on `n - 1` under the `_` arm's `n ≥ 1`, appending a depth-1 gate.
+    // The synthesized depth `(n-1) + 1 = n` meets the `Circuit<1,1,n,…>` bound, and `n` strictly
+    // decreases (staying ≥ 0) at the single recursive call — so the recursion is well-founded.
+    accepts(
+        "fn rec(n: Nat): Circuit<1, 1, n, Clifford> = \
+         match n { 0 => identity(1), _ => rec(n - 1) |> X }",
+    );
+}
+
+#[test]
+fn non_decreasing_recursion_is_ill_founded() {
+    // 60b: a self-call on the *same* (or a *larger*) argument has no decreasing measure.
+    let same = reject_err("fn f(n: Nat): Circuit<1, 1, 0, Clifford> = f(n)");
+    assert!(
+        matches!(same, TypeError::IllFoundedRecursion { .. }),
+        "got {same:?}"
+    );
+    let larger = reject_err("fn f(n: Nat): Circuit<1, 1, 0, Clifford> = f(n + 1)");
+    assert!(
+        matches!(larger, TypeError::IllFoundedRecursion { .. }),
+        "got {larger:?}"
+    );
+}
+
+#[test]
+fn recursion_without_a_base_case_is_ill_founded() {
+    // 60b′: `f(n) = f(n-1) |> X` decreases, but nothing establishes `n ≥ 1`, so `n - 1 ≥ 0` fails
+    // at `n = 0` — the measure's non-negativity half forces a base case. (The depth bound `n` is
+    // met, so the rejection is specifically the termination obligation, not a depth mismatch.)
+    let err = reject_err("fn f(n: Nat): Circuit<1, 1, n, Clifford> = f(n - 1) |> X");
+    assert!(
+        matches!(err, TypeError::IllFoundedRecursion { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn well_founded_recursion_with_a_wrong_depth_bound_is_a_depth_mismatch() {
+    // 60d: the measure decreases, but the body's depth `(n-1) + 2 = n + 1` exceeds the annotated
+    // `n` — termination holds, the *bound* does not. Reported as a depth mismatch, not a recursion
+    // error, so the diagnostics stay precise about which obligation failed.
+    let err = reject_err(
+        "fn rec(n: Nat): Circuit<1, 1, n, Clifford> = \
+         match n { 0 => identity(1), _ => rec(n - 1) |> X |> X }",
+    );
+    assert!(
+        matches!(err, TypeError::DepthMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn recursive_qft_kernel_type_checks_end_to_end() {
+    // 60a: a self-contained recursive QFT — the heart of `shor.qn`. The base case `identity(0)`
+    // checks under `n = 0`, the self-call `qft(n-1)` terminates on the measure `n` under `n ≥ 1`,
+    // and the synthesized step depth is proven `≤ 2*n*n` by Z3. (Full `shor.qn` is exercised by
+    // `reference_algorithm_fixtures_type_check`; this is the minimal kernel in isolation.)
+    accepts(
+        "fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }\n\
+         fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = \
+            circuit { for i in range(n - 1) { controlled(Rz(PI / 4.0)) @(0, i + 1) } }\n\
+         fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> = \
+            match n { \
+                0 => identity(0), \
+                _ => apply_hadamard(n) |> controlled_rotations(n) \
+                     |> (qft(n - 1) `on_high` n) |> swap_reverse(n) \
+            }",
+    );
+}
+
+#[test]
+fn mutual_circuit_recursion_is_rejected() {
+    // 60e: two circuit functions that call each other have no per-body decreasing measure, so the
+    // cycle is rejected up front rather than accepted without a termination witness.
+    let err = reject_err(
+        "fn a(n: Nat): Circuit<1, 1, 0, Clifford> = b(n)\n\
+         fn b(n: Nat): Circuit<1, 1, 0, Clifford> = a(n)",
+    );
+    assert!(
+        matches!(err, TypeError::MutualRecursion { .. }),
+        "got {err:?}"
+    );
+}
+
 // ── Quantum monad: Q<τ>, run { } bind chains (issue #14, SPEC §3.5) ──────────────
 
 #[test]
@@ -1293,10 +1381,10 @@ fn reference_algorithm_fixtures_type_check() {
             include_str!("../../tests/fixtures/bell_state.qn"),
         ),
         ("grover", include_str!("../../tests/fixtures/grover.qn")),
-        // NOTE: `shor.qn` is intentionally excluded. Its recursive `qft` kernel is a known gap
-        // (a `match` base case `identity(0)` of width 0 in a `Circuit<n, n, …>` function needs
-        // dependent refinement of `n`, plus self-recursion) — see SPEC §12 "Known gap". It is
-        // still exercised by the parse-only `reference_algorithms` snapshot suite.
+        // `shor.qn` now type-checks end-to-end: the recursive `qft` kernel exercises the full
+        // value-dependent machinery (issues #57–#60) — call-site substitution, dependent-match
+        // base case, the well-founded `n` measure, and the `2*n*n` depth proven as an upper bound.
+        ("shor", include_str!("../../tests/fixtures/shor.qn")),
         (
             "error_correction",
             include_str!("../../tests/fixtures/error_correction.qn"),
