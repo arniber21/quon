@@ -3,11 +3,9 @@
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 
-use petgraph::Direction;
 use petgraph::stable_graph::NodeIndex;
-use petgraph::visit::EdgeRef;
 
-use crate::graph::{Spider, SpiderColor, WireKind, ZXGraph};
+use crate::graph::{PHASE_EPS, WireKind, ZXGraph};
 
 /// Apply rewrite rules to fixpoint. Returns the number of rewrites applied.
 pub fn simplify(zx: &mut ZXGraph) -> usize {
@@ -34,63 +32,55 @@ pub fn simplify(zx: &mut ZXGraph) -> usize {
     total
 }
 
-fn neighbors(zx: &ZXGraph, node: NodeIndex) -> Vec<(NodeIndex, WireKind)> {
-    zx.graph
-        .edges_directed(node, Direction::Incoming)
-        .map(|edge| (edge.source(), edge.weight().clone()))
-        .chain(
-            zx.graph
-                .edges_directed(node, Direction::Outgoing)
-                .map(|edge| (edge.target(), edge.weight().clone())),
-        )
-        .collect()
-}
-
-fn degree(zx: &ZXGraph, node: NodeIndex) -> usize {
-    zx.graph.edges_directed(node, Direction::Incoming).count()
-        + zx.graph.edges_directed(node, Direction::Outgoing).count()
-}
-
+/// Fuse `node` with an adjacent same-colour spider joined by a Regular edge,
+/// folding the partner's phase and edges into `node` and deleting the partner.
+///
+/// Boundaries are never fused or deleted: doing so would leave `inputs` or
+/// `outputs` pointing at a removed node. Because the partner that gets removed
+/// is required to be interior, `inputs`/`outputs` always stay valid.
 fn spider_fusion(zx: &mut ZXGraph, node: NodeIndex) -> bool {
+    if zx.is_boundary(node) {
+        return false;
+    }
     let Some(spider) = zx.graph.node_weight(node).cloned() else {
         return false;
     };
-    let node_neighbors = neighbors(zx, node);
-    if node_neighbors.len() != 1 {
-        return false;
-    }
-    let (other, WireKind::Regular) = &node_neighbors[0] else {
+    // Pick an interior, same-colour, Regular-edge partner to absorb.
+    let Some((other, _)) = zx.neighbors(node).into_iter().find(|(neighbor, kind)| {
+        *kind == WireKind::Regular
+            && !zx.is_boundary(*neighbor)
+            && zx
+                .graph
+                .node_weight(*neighbor)
+                .is_some_and(|partner| partner.color == spider.color)
+    }) else {
         return false;
     };
-    let other = *other;
-    let Some(other_spider) = zx.graph.node_weight(other).cloned() else {
-        return false;
-    };
-    if spider.color != other_spider.color {
-        return false;
+
+    let other_phase = zx.graph.node_weight(other).expect("partner").phase;
+    if let Some(merged) = zx.graph.node_weight_mut(node) {
+        merged.phase = normalize_phase(spider.phase + other_phase);
     }
-    let merged_phase = normalize_phase(spider.phase + other_spider.phase);
-    zx.graph.node_weight_mut(node).expect("node").phase = merged_phase;
-    let other_node_neighbors = neighbors(zx, other);
-    for (neighbor, kind) in other_node_neighbors {
-        if neighbor == node {
-            continue;
+    for (neighbor, kind) in zx.neighbors(other) {
+        if neighbor != node {
+            zx.graph.add_edge(node, neighbor, kind);
         }
-        zx.graph.add_edge(node, neighbor, kind);
     }
     zx.graph.remove_node(other);
     true
 }
 
+/// Remove a phase-0, degree-2, Regular-wired interior spider, bridging its two
+/// neighbours. Boundaries and Hadamard-edged spiders are left untouched.
 fn identity_removal(zx: &mut ZXGraph, node: NodeIndex) -> bool {
+    if zx.is_boundary(node) {
+        return false;
+    }
     let Some(spider) = zx.graph.node_weight(node).cloned() else {
         return false;
     };
-    if spider.phase.abs() > 1e-9 || degree(zx, node) != 2 {
-        return false;
-    }
-    let neighbors = neighbors(zx, node);
-    if neighbors.len() != 2 {
+    let neighbors = zx.neighbors(node);
+    if spider.phase.abs() > PHASE_EPS || neighbors.len() != 2 {
         return false;
     }
     let (left, left_kind) = neighbors[0].clone();
@@ -145,7 +135,23 @@ mod tests {
         let recovered = zx_to_circuit(&zx);
         assert!(rewrites > 0);
         assert!(zx.graph.node_count() < before);
-        assert!(recovered.len() <= 1);
+        // The two Rz must fuse into a single Rz with the summed angle — not be
+        // dropped (the old extractor produced an empty circuit here).
+        assert_eq!(recovered, vec![GateRef::rotation("Rz", 0, 0.8)]);
+    }
+
+    #[test]
+    fn opposite_rotations_cancel_to_identity() {
+        // Rz(π)·Rz(π) fuses to phase 0, leaving a bare wire. Extraction yields
+        // an empty circuit, which callers read as "identity" only because the
+        // diagram is a fully-walked chain, not because extraction declined.
+        let gates = vec![
+            GateRef::rotation("Rz", 0, PI),
+            GateRef::rotation("Rz", 0, PI),
+        ];
+        let mut zx = circuit_to_zx(&gates);
+        assert!(simplify(&mut zx) > 0);
+        assert!(zx_to_circuit(&zx).is_empty());
     }
 
     #[test]

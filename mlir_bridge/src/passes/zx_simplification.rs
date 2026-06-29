@@ -1,11 +1,11 @@
 //! ZX simplification pass (issue #20).
 
-use melior::ir::attribute::{FloatAttribute, IntegerAttribute, StringAttribute};
+use melior::ir::attribute::{FloatAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
-use melior::ir::{Block, BlockLike, OperationRef, Region, RegionLike, Value, ValueLike};
+use melior::ir::{BlockLike, OperationRef, RegionLike, Value};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
-use melior::{Context, ContextRef};
+use melior::{Context, ContextRef, IrRewriter};
 use zx::{GateRef, circuit_to_zx, simplify, zx_to_circuit};
 
 use crate::dialect::quantum_circ::{self, attr};
@@ -62,6 +62,14 @@ pub fn extract_gates<'c, 'a>(func: OperationRef<'c, 'a>) -> Vec<GateRef> {
     gates
 }
 
+/// Replaces the gate sequence of `func` with `gates` in place, threading fresh
+/// wires from the block arguments and repointing the terminator. Returns `true`
+/// when the body was rewritten.
+///
+/// The work is done on the existing block — the original gate ops are erased
+/// only after the new ones and the new terminator are wired up, so the IR is
+/// never left with dangling uses. (The previous version built a detached block
+/// and dropped it, leaving the pass a silent no-op.)
 fn rebuild_func_body<'c, 'a>(
     context: &'c Context,
     func: OperationRef<'c, 'a>,
@@ -70,44 +78,89 @@ fn rebuild_func_body<'c, 'a>(
     let Ok(region) = func.region(0) else {
         return false;
     };
-    let Some(old_block) = region.first_block() else {
+    let Some(block) = region.first_block() else {
         return false;
     };
     let location = func.location();
-    let qubit = quantum_circ::qubit_type(context);
-    let in_qubits = old_block.argument_count();
-    let args: Vec<(melior::ir::Type<'_>, melior::ir::Location<'_>)> =
-        (0..in_qubits).map(|_| (qubit, location)).collect();
-    let block = Block::new(&args);
-    let mut wires: Vec<Value<'c, 'a>> = (0..in_qubits)
+
+    // Find the terminator and snapshot the gate ops we are about to replace.
+    let mut return_op = None;
+    let mut old_ops = Vec::new();
+    let mut op = block.first_operation();
+    while let Some(current) = op {
+        op = current.next_in_block();
+        if op_name(&current) == quantum_circ::op::RETURN {
+            return_op = Some(current);
+            break;
+        }
+        old_ops.push(current);
+    }
+    let Some(return_op) = return_op else {
+        return false;
+    };
+
+    let mut wires: Vec<Value<'c, 'a>> = (0..block.argument_count())
         .map(|index| Value::from(block.argument(index).expect("arg")))
         .collect();
     for gate in gates {
+        let (Some(&first), true) = (
+            gate.qubits.first(),
+            gate.qubits.iter().all(|index| *index < wires.len()),
+        ) else {
+            return false;
+        };
         let operands: Vec<Value<'c, 'a>> = gate.qubits.iter().map(|index| wires[*index]).collect();
         let built = if let Some(angle) = gate.angle {
-            quantum_circ::rotation_gate(context, &gate.name, angle, 1, false, operands[0], location)
+            quantum_circ::rotation_gate(
+                context,
+                &gate.name,
+                angle,
+                1,
+                false,
+                wires[first],
+                location,
+            )
         } else {
             quantum_circ::gate(context, &gate.name, 1, true, &operands, location)
         };
         let Ok(built) = built else {
             return false;
         };
-        let appended = block.append_operation(built);
+        let appended = block.insert_operation_before(return_op, built);
         for (index, target) in gate.qubits.iter().enumerate() {
             if let Ok(result) = appended.result(index) {
                 wires[*target] = Value::from(result);
             }
         }
     }
-    block.append_operation(quantum_circ::r#return(&wires, location).expect("return"));
-    let new_region = Region::new();
-    new_region.append_block(block);
-    let _ = new_region;
-    false
+
+    // Insert the new terminator, then erase the old terminator and gates. The
+    // new gates read block arguments only, so erasing the old ops (deepest
+    // first) can never strand a live use.
+    block.insert_operation_before(
+        return_op,
+        quantum_circ::r#return(&wires, location).expect("return"),
+    );
+    let rewriter = IrRewriter::new(context);
+    let base = rewriter.as_rewriter_base();
+    base.erase_op(return_op);
+    for old in old_ops.into_iter().rev() {
+        base.erase_op(old);
+    }
+    true
 }
 
 /// Returns true when ZX rewriting shrinks the gate list for `func`.
+///
+/// Restricted to single-wire funcs: `extract_gates` keys gates by operand
+/// position rather than SSA wire, and [`zx_to_circuit`] only round-trips
+/// independent single-qubit chains. Outside that regime the encode/extract
+/// round trip is not faithful, so we decline rather than risk emitting a
+/// shorter-but-different circuit. Multi-qubit ZX extraction is a follow-up.
 pub fn simplify_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) -> bool {
+    if func_qubit_count(func) != 1 {
+        return false;
+    }
     let gates = extract_gates(func);
     if gates.len() < 2 {
         return false;
@@ -120,6 +173,15 @@ pub fn simplify_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) -
         return false;
     }
     rebuild_func_body(context, func, &simplified)
+}
+
+/// Number of qubit arguments on `func`'s entry block (0 if it has no body).
+fn func_qubit_count<'c, 'a>(func: OperationRef<'c, 'a>) -> usize {
+    func.region(0)
+        .ok()
+        .and_then(|region| region.first_block())
+        .map(|block| block.argument_count())
+        .unwrap_or(0)
 }
 
 fn simplify_module<'c, 'a>(context: &'c Context, module: OperationRef<'c, 'a>) {

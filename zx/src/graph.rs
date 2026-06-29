@@ -1,8 +1,13 @@
 // ZX-graph data structure — see issue #20, SPEC.md §7.2
 
+use petgraph::Direction;
 use petgraph::stable_graph::{NodeIndex, StableGraph};
+use petgraph::visit::EdgeRef;
 
 use crate::gate::GateRef;
+
+/// Phases within this tolerance of zero are treated as identity.
+pub(crate) const PHASE_EPS: f64 = 1e-9;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpiderColor {
@@ -53,6 +58,25 @@ impl ZXGraph {
 
     fn connect(&mut self, from: NodeIndex, to: NodeIndex, kind: WireKind) {
         self.graph.add_edge(from, to, kind);
+    }
+
+    /// True when `node` is an input or output boundary. Boundaries carry no gate
+    /// and must never be fused or deleted, otherwise `inputs`/`outputs` dangle.
+    pub(crate) fn is_boundary(&self, node: NodeIndex) -> bool {
+        self.inputs.contains(&node) || self.outputs.contains(&node)
+    }
+
+    /// Undirected neighbours of `node` paired with the connecting wire kind.
+    pub(crate) fn neighbors(&self, node: NodeIndex) -> Vec<(NodeIndex, WireKind)> {
+        self.graph
+            .edges_directed(node, Direction::Incoming)
+            .map(|edge| (edge.source(), edge.weight().clone()))
+            .chain(
+                self.graph
+                    .edges_directed(node, Direction::Outgoing)
+                    .map(|edge| (edge.target(), edge.weight().clone())),
+            )
+            .collect()
     }
 }
 
@@ -123,31 +147,65 @@ pub fn circuit_to_zx(gates: &[GateRef]) -> ZXGraph {
         }
     }
 
-    zx.outputs = wires;
+    // Terminate each wire in a dedicated phase-0 boundary so every gate spider
+    // stays interior and is free to fuse without invalidating `outputs`.
+    zx.outputs = wires
+        .into_iter()
+        .map(|wire| {
+            let boundary = zx.add_boundary();
+            zx.connect(wire, boundary, WireKind::Regular);
+            boundary
+        })
+        .collect();
     zx
 }
 
-/// Translate a ZX-diagram back to a gate list via a greedy spider walk.
+/// Translate a ZX-diagram back to a gate list by walking each wire from its
+/// input boundary to its output boundary.
+///
+/// This extractor is deliberately **all-or-nothing**: it only reconstructs
+/// diagrams that are independent single-qubit chains of Regular-edge Z/X
+/// spiders (rotations and Paulis). If it meets a branch (degree > 2, e.g. the
+/// shared spiders of a `CNOT`), a Hadamard edge, or a dangling boundary, it
+/// returns an empty vector to signal "cannot faithfully extract" rather than
+/// emitting a circuit that differs from the diagram. Callers must treat the
+/// empty result as "no rewrite" — never as a verified identity — so an
+/// incomplete extraction can never silently corrupt a circuit.
 pub fn zx_to_circuit(zx: &ZXGraph) -> Vec<GateRef> {
-    if zx.inputs.is_empty() {
-        return vec![];
-    }
     let mut gates = Vec::new();
-    for qubit in 0..zx.outputs.len() {
-        let output = zx.outputs[qubit];
-        if let Some(spider) = zx.graph.node_weight(output) {
-            match spider.color {
-                SpiderColor::Z if spider.phase.abs() > 1e-9 => {
-                    gates.push(GateRef::rotation("Rz", qubit, spider.phase));
+    for (qubit, &input) in zx.inputs.iter().enumerate() {
+        let Some(&output) = zx.outputs.get(qubit) else {
+            return Vec::new();
+        };
+        let mut previous: Option<NodeIndex> = None;
+        let mut current = input;
+        while current != output {
+            let forward: Vec<(NodeIndex, WireKind)> = zx
+                .neighbors(current)
+                .into_iter()
+                .filter(|(neighbor, _)| Some(*neighbor) != previous)
+                .collect();
+            // A faithful single-qubit chain has exactly one way forward and
+            // never uses a Hadamard edge (which would denote an `H` gate this
+            // encoding cannot round-trip).
+            let [(next, WireKind::Regular)] = forward.as_slice() else {
+                return Vec::new();
+            };
+            let next = *next;
+            if next != output {
+                let Some(spider) = zx.graph.node_weight(next) else {
+                    return Vec::new();
+                };
+                if spider.phase.abs() > PHASE_EPS {
+                    let axis = match spider.color {
+                        SpiderColor::Z => "Rz",
+                        SpiderColor::X => "Rx",
+                    };
+                    gates.push(GateRef::rotation(axis, qubit, spider.phase));
                 }
-                SpiderColor::X if spider.phase.abs() > 1e-9 => {
-                    gates.push(GateRef::rotation("Rx", qubit, spider.phase));
-                }
-                SpiderColor::X if spider.phase.abs() <= 1e-9 => {
-                    gates.push(GateRef::new("H", vec![qubit]));
-                }
-                _ => {}
             }
+            previous = Some(current);
+            current = next;
         }
     }
     gates
@@ -158,10 +216,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bell_state_round_trips_through_zx() {
-        let gates = vec![GateRef::new("H", vec![0]), GateRef::new("CNOT", vec![0, 1])];
+    fn rotation_chain_round_trips_faithfully() {
+        // Distinct axes must survive extraction in order — the old extractor
+        // kept only the final spider and silently dropped the Rz.
+        let gates = vec![
+            GateRef::rotation("Rz", 0, 0.5),
+            GateRef::rotation("Rx", 0, 0.3),
+        ];
         let zx = circuit_to_zx(&gates);
         let recovered = zx_to_circuit(&zx);
-        assert!(!recovered.is_empty());
+        assert_eq!(recovered, gates);
+    }
+
+    #[test]
+    fn extraction_declines_on_multi_qubit_entangling_diagrams() {
+        // The greedy chain walk cannot faithfully extract a CNOT, so it must
+        // decline (empty) rather than emit a wrong, shorter circuit.
+        let gates = vec![GateRef::new("H", vec![0]), GateRef::new("CNOT", vec![0, 1])];
+        let zx = circuit_to_zx(&gates);
+        assert!(zx_to_circuit(&zx).is_empty());
+    }
+
+    #[test]
+    fn independent_single_qubit_wires_extract_each_chain() {
+        let gates = vec![
+            GateRef::rotation("Rz", 0, 0.5),
+            GateRef::rotation("Rx", 1, 0.25),
+        ];
+        let zx = circuit_to_zx(&gates);
+        assert_eq!(zx_to_circuit(&zx), gates);
     }
 }
