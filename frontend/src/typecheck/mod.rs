@@ -56,11 +56,28 @@ struct AliasDef {
     body: Sp<Type>,
 }
 
+/// A top-level function's value-dependency signature (issue #57). Records each parameter's
+/// name and whether it is a `Nat` value parameter (so its call-site argument can be lowered to
+/// a [`DepthExpr`] and substituted into the result type), together with the resolved return
+/// type the substitution targets. A function with no `Nat` parameter is non-dependent and its
+/// call sites take the ordinary application path.
+#[derive(Clone)]
+struct FnSig {
+    /// One entry per declared parameter, in order: `(name, is_nat)`. `is_nat` is read off the
+    /// *surface* `Type::Nat` (which resolves to `Ty::Int`, so it cannot be recovered from `ret`).
+    params: Vec<(Name, bool)>,
+    /// The resolved return type, whose embedded depth/width [`DepthExpr`]s get specialized.
+    ret: Ty,
+}
+
 /// The classical-fragment type checker. Holds the global signature environment, the
 /// alias table, and the metavariable substitution shared across one checking run.
 pub struct TypeChecker {
     /// Top-level function signatures, available to every body (enables mutual recursion).
     globals: Env,
+    /// Value-dependency signatures for top-level functions (issue #57): which parameters are
+    /// `Nat` and the return type their call-site arguments specialize. Keyed by function name.
+    fn_sigs: HashMap<Name, FnSig>,
     /// Type aliases declared with `type`.
     aliases: HashMap<Name, AliasDef>,
     /// Metavariable substitution for this run.
@@ -99,6 +116,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         Self {
             globals: Env::new(),
+            fn_sigs: HashMap::new(),
             aliases: HashMap::new(),
             table: Table::new(),
             numeric: Vec::new(),
@@ -232,6 +250,7 @@ impl TypeChecker {
                 match self.fn_type(params, ret) {
                     Ok(ty) => {
                         self.globals.insert(name.clone(), ty);
+                        self.record_fn_sig(name, params, ret);
                     }
                     Err(e) => errors.push(e),
                 }
@@ -277,6 +296,7 @@ impl TypeChecker {
                 && let Ok(ty) = self.fn_type(params, ret)
             {
                 self.globals.insert(name.clone(), ty);
+                self.record_fn_sig(name, params, ret);
             }
         }
         let last_fn = decls.iter().rev().find_map(|(d, _)| match d {
@@ -315,6 +335,25 @@ impl TypeChecker {
             ty = Ty::func(pty, ty);
         }
         Ok(ty)
+    }
+
+    /// Record a function's value-dependency signature (issue #57) into `fn_sigs`. `is_nat` is
+    /// read from the *surface* `Type::Nat` (it resolves to `Ty::Int`, so the distinction is lost
+    /// in `ret`). Only called once the signature is known to resolve, so it never double-reports.
+    fn record_fn_sig(&mut self, name: &Name, params: &[(Name, Sp<Type>)], ret: &Sp<Type>) {
+        if let Ok(ret_ty) = self.resolve_type(ret) {
+            let sig_params = params
+                .iter()
+                .map(|(pn, pt)| (pn.clone(), matches!(pt.0, Type::Nat)))
+                .collect();
+            self.fn_sigs.insert(
+                name.clone(),
+                FnSig {
+                    params: sig_params,
+                    ret: ret_ty,
+                },
+            );
+        }
     }
 
     /// Bind a function's parameters, routing each by linearity: a linear-resource parameter
@@ -755,6 +794,34 @@ impl TypeChecker {
         {
             let size = self.expr_to_depth(env, delta, args[0])?;
             return Ok(Ty::Q(Box::new(Ty::QReg(size))));
+        }
+        // Value-dependent application (issue #57): a *fully-applied* call to a top-level function
+        // with at least one `Nat` value parameter specializes that parameter to the call-site
+        // argument in the result type. e.g. `qft(n-1)` of `qft(n): Circuit<n,n,n*n,…>` yields
+        // `Circuit<n-1, n-1, (n-1)*(n-1), …>`. The substitution is computed *before* the ordinary
+        // application machinery checks the arguments and threads the linear context, then applied
+        // to the un-specialized result. Under-applied calls fall through to the default path.
+        if let Expr::Var(name) = &head.0
+            && let Some(sig) = self.fn_sigs.get(name).cloned()
+            && args.len() == sig.params.len()
+            && sig.params.iter().any(|(_, is_nat)| *is_nat)
+        {
+            let mut sigma: HashMap<String, DepthExpr> = HashMap::new();
+            for ((pname, is_nat), arg) in sig.params.iter().zip(args.iter()) {
+                if *is_nat {
+                    let d = self.depth_of(arg).map_err(|_| TypeError::NonDependentArg {
+                        func: name.clone(),
+                        param: pname.clone(),
+                        span: arg.1,
+                    })?;
+                    sigma.insert(pname.clone(), d);
+                }
+            }
+            // Run the ordinary application to check arguments and consume the linear context.
+            let f_ty = self.synth(env, delta, f)?;
+            let (dom, cod) = self.as_function(&f_ty, f.1)?;
+            self.check(env, delta, x, &dom)?;
+            return Ok(Self::subst_depth_in_ty(&self.table.zonk(&cod), &sigma));
         }
         // Default: a circuit callee is gate placement inside a `circuit { }` block, circuit
         // application to a register otherwise; anything else is ordinary application.
@@ -1509,6 +1576,50 @@ impl TypeChecker {
     ) -> Result<DepthExpr, TypeError> {
         self.check(env, delta, e, &Ty::Int)?;
         self.depth_of(e)
+    }
+
+    /// Specialize every depth/width [`DepthExpr`] embedded in `ty` by the value substitution
+    /// `σ` (issue #57). Reaches every nested position — register/circuit/matrix indices — and
+    /// recurses through `Q`, `List`, `Tuple`, and both function arrows. The Clifford class and
+    /// the leaf scalar types carry no depth, so they pass through unchanged.
+    fn subst_depth_in_ty(ty: &Ty, sigma: &HashMap<String, DepthExpr>) -> Ty {
+        match ty {
+            Ty::QReg(n) => Ty::QReg(n.subst(sigma)),
+            Ty::Circuit { n, m, d, c } => Ty::Circuit {
+                n: n.subst(sigma),
+                m: m.subst(sigma),
+                d: d.subst(sigma),
+                c: c.clone(),
+            },
+            Ty::Matrix(r, c, t) => Ty::Matrix(
+                r.subst(sigma),
+                c.subst(sigma),
+                Box::new(Self::subst_depth_in_ty(t, sigma)),
+            ),
+            Ty::Q(t) => Ty::Q(Box::new(Self::subst_depth_in_ty(t, sigma))),
+            Ty::List(t) => Ty::List(Box::new(Self::subst_depth_in_ty(t, sigma))),
+            Ty::Tuple(ts) => Ty::Tuple(
+                ts.iter()
+                    .map(|t| Self::subst_depth_in_ty(t, sigma))
+                    .collect(),
+            ),
+            Ty::Fn(a, b) => Ty::Fn(
+                Box::new(Self::subst_depth_in_ty(a, sigma)),
+                Box::new(Self::subst_depth_in_ty(b, sigma)),
+            ),
+            Ty::Linear(a, b) => Ty::Linear(
+                Box::new(Self::subst_depth_in_ty(a, sigma)),
+                Box::new(Self::subst_depth_in_ty(b, sigma)),
+            ),
+            Ty::Qubit
+            | Ty::Bit
+            | Ty::Bool
+            | Ty::Int
+            | Ty::Float
+            | Ty::Unit
+            | Ty::Var(_)
+            | Ty::Meta(_) => ty.clone(),
+        }
     }
 
     /// The structural depth form of an `Int` expression, without re-type-checking it.

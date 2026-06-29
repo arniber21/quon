@@ -118,6 +118,14 @@ pub enum TypeError {
     /// (measured, `reset`, or `discard`ed) inside the block, never returned. `span` points at
     /// the returned value that mentions it.
     BorrowEscape { name: String, span: SimpleSpan },
+    /// A `Nat` value argument at a value-dependent call site (issue #57) could not be lowered to
+    /// a symbolic depth — only `Int` literals, variables, and `+ - * / ^` over them specialize a
+    /// dependent parameter. `func`/`param` name the callee and the offending parameter.
+    NonDependentArg {
+        func: String,
+        param: String,
+        span: SimpleSpan,
+    },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -154,6 +162,7 @@ impl TypeError {
             | TypeError::DepthIntractable { span, .. }
             | TypeError::ExpectedMonad { span, .. }
             | TypeError::BorrowEscape { span, .. }
+            | TypeError::NonDependentArg { span, .. }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -263,6 +272,11 @@ impl fmt::Display for TypeError {
                 f,
                 "borrowed ancilla `{name}` escapes its borrow scope; it must be measured, \
                  `reset`, or `discard`ed inside the block, not returned"
+            ),
+            TypeError::NonDependentArg { func, param, .. } => write!(
+                f,
+                "argument for the `Nat` parameter `{param}` of `{func}` is not a static depth \
+                 expression; use an `Int` literal, variable, or `+ - * / ^` over them"
             ),
             TypeError::Unsupported { construct, .. } => write!(
                 f,
