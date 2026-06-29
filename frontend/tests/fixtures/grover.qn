@@ -4,6 +4,10 @@ fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
     for q in qubits(n) { H q }
 }
 
+fn phase_flip_zero(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { Z q }
+}
+
 fn diffusion(n: Nat): Circuit<n, n, 3, Clifford> = circuit {
     hadamard_all(n) |> phase_flip_zero(n) |> hadamard_all(n)
 }

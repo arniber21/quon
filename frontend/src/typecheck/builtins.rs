@@ -46,7 +46,7 @@ fn subst_vars(ty: &Ty, mapping: &[(&str, Ty)]) -> Ty {
             .unwrap_or_else(|| ty.clone()),
         Ty::List(t) => Ty::List(Box::new(subst_vars(t, mapping))),
         Ty::Q(t) => Ty::Q(Box::new(subst_vars(t, mapping))),
-        Ty::Matrix(n, m, t) => Ty::Matrix(*n, *m, Box::new(subst_vars(t, mapping))),
+        Ty::Matrix(n, m, t) => Ty::Matrix(n.clone(), m.clone(), Box::new(subst_vars(t, mapping))),
         Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| subst_vars(t, mapping)).collect()),
         Ty::Fn(a, b) => Ty::Fn(
             Box::new(subst_vars(a, mapping)),

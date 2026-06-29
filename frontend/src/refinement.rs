@@ -58,6 +58,9 @@ impl RefinementCtx {
         inferred: &DepthExpr,
         annotated: &DepthExpr,
     ) -> Result<(), DepthError> {
+        if annotated.is_hole() || inferred.is_hole() {
+            return Ok(());
+        }
         // Fast path: both sides constant — no solver needed.
         if let (Some(a), Some(b)) = (inferred.as_const(), annotated.as_const()) {
             return if a == b {
@@ -119,6 +122,32 @@ fn to_int<'ctx>(
             // Z3 has no native max: max(a, b) = if a <= b then b else a.
             a.le(&b).ite(&b, &a)
         }
+        DepthExpr::Sub(l, r) => {
+            let a = to_int(ctx, l, vars);
+            let b = to_int(ctx, r, vars);
+            a - b
+        }
+        DepthExpr::Div(l, r) => {
+            let a = to_int(ctx, l, vars);
+            let b = to_int(ctx, r, vars);
+            a / b
+        }
+        DepthExpr::Exp(l, r) => {
+            let base = to_int(ctx, l, vars);
+            match r.as_const() {
+                Some(0) => Int::from_u64(ctx, 1),
+                Some(1) => base,
+                Some(exp) if exp <= 32 => {
+                    let mut acc = base.clone();
+                    for _ in 1..exp {
+                        acc = Int::mul(ctx, &[&acc, &base]);
+                    }
+                    acc
+                }
+                _ => base,
+            }
+        }
+        DepthExpr::Hole => Int::from_u64(ctx, 0),
     }
 }
 

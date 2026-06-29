@@ -11,7 +11,7 @@
 //!
 //! ```text
 //!   depth   := nat | var | '(' op depth depth ')'
-//!   op      := '+' | '*' | 'max'
+//!   op      := '+' | '*' | 'max' | '-' | '/' | '^'
 //!   nat     := unsigned integer literal
 //!   var     := identifier (first char alphabetic or '_')
 //! ```
@@ -36,6 +36,14 @@ pub enum DepthExpr {
     Mul(Box<DepthExpr>, Box<DepthExpr>),
     /// Parallel composition: `max(lhs, rhs)`.
     Max(Box<DepthExpr>, Box<DepthExpr>),
+    /// Natural subtraction: `lhs - rhs` (saturating at 0 when constant).
+    Sub(Box<DepthExpr>, Box<DepthExpr>),
+    /// Natural division: `lhs / rhs` (only when `rhs` is a non-zero constant).
+    Div(Box<DepthExpr>, Box<DepthExpr>),
+    /// Exponentiation: `lhs ^ rhs` (only when `rhs` is a small constant).
+    Exp(Box<DepthExpr>, Box<DepthExpr>),
+    /// A depth hole (`_`) — accepts any depth during annotation checking.
+    Hole,
 }
 
 /// An error parsing a [`DepthExpr`] S-expression.
@@ -59,6 +67,21 @@ impl DepthExpr {
     /// The zero-depth expression (identity for `+` and `max`).
     pub fn zero() -> Self {
         DepthExpr::Nat(0)
+    }
+
+    /// Natural subtraction: `self - other`.
+    pub fn minus(self, other: DepthExpr) -> Self {
+        DepthExpr::Sub(Box::new(self), Box::new(other))
+    }
+
+    /// Natural division: `self / other`.
+    pub fn quot(self, other: DepthExpr) -> Self {
+        DepthExpr::Div(Box::new(self), Box::new(other))
+    }
+
+    /// Exponentiation: `self ^ other`.
+    pub fn power(self, other: DepthExpr) -> Self {
+        DepthExpr::Exp(Box::new(self), Box::new(other))
     }
 
     /// Sequential composition (`|>`): `self + other`. Depths add.
@@ -95,6 +118,10 @@ impl DepthExpr {
             DepthExpr::Add(l, r) => Self::write_binary(out, "+", l, r),
             DepthExpr::Mul(l, r) => Self::write_binary(out, "*", l, r),
             DepthExpr::Max(l, r) => Self::write_binary(out, "max", l, r),
+            DepthExpr::Sub(l, r) => Self::write_binary(out, "-", l, r),
+            DepthExpr::Div(l, r) => Self::write_binary(out, "/", l, r),
+            DepthExpr::Exp(l, r) => Self::write_binary(out, "^", l, r),
+            DepthExpr::Hole => out.push('_'),
         }
     }
 
@@ -123,10 +150,19 @@ impl DepthExpr {
     /// bridge (issue #13).
     pub fn normalize(&self) -> DepthExpr {
         match self {
-            DepthExpr::Nat(_) | DepthExpr::Var(_) => self.clone(),
+            DepthExpr::Nat(_) | DepthExpr::Var(_) | DepthExpr::Hole => self.clone(),
             DepthExpr::Add(..) => norm_ac(self, AcOp::Add),
             DepthExpr::Mul(..) => norm_ac(self, AcOp::Mul),
             DepthExpr::Max(..) => norm_ac(self, AcOp::Max),
+            DepthExpr::Sub(l, r) => {
+                DepthExpr::Sub(Box::new(l.normalize()), Box::new(r.normalize()))
+            }
+            DepthExpr::Div(l, r) => {
+                DepthExpr::Div(Box::new(l.normalize()), Box::new(r.normalize()))
+            }
+            DepthExpr::Exp(l, r) => {
+                DepthExpr::Exp(Box::new(l.normalize()), Box::new(r.normalize()))
+            }
         }
     }
 
@@ -144,7 +180,25 @@ impl DepthExpr {
             DepthExpr::Add(l, r) => Some(l.as_const()?.saturating_add(r.as_const()?)),
             DepthExpr::Mul(l, r) => Some(l.as_const()?.saturating_mul(r.as_const()?)),
             DepthExpr::Max(l, r) => Some(l.as_const()?.max(r.as_const()?)),
+            DepthExpr::Sub(l, r) => Some(l.as_const()?.saturating_sub(r.as_const()?)),
+            DepthExpr::Div(l, r) => {
+                let d = r.as_const()?;
+                if d == 0 {
+                    return None;
+                }
+                Some(l.as_const()? / d)
+            }
+            DepthExpr::Exp(l, r) => {
+                let exp = u32::try_from(r.as_const()?).ok()?;
+                l.as_const()?.checked_pow(exp)
+            }
+            DepthExpr::Hole => None,
         }
+    }
+
+    /// Whether this depth is a hole wildcard.
+    pub fn is_hole(&self) -> bool {
+        matches!(self, DepthExpr::Hole)
     }
 
     /// Parses a [`DepthExpr`] from its S-expression form.
@@ -317,6 +371,9 @@ fn parse_expr(tokens: &[String], cursor: &mut usize) -> Result<DepthExpr, DepthP
                 "+" => Ok(lhs.seq(rhs)),
                 "max" => Ok(lhs.par(rhs)),
                 "*" => Ok(DepthExpr::repeat(lhs, rhs)),
+                "-" => Ok(lhs.minus(rhs)),
+                "/" => Ok(lhs.quot(rhs)),
+                "^" => Ok(lhs.power(rhs)),
                 other => Err(DepthParseError::UnknownOperator(other.to_string())),
             }
         }
@@ -329,6 +386,9 @@ fn parse_expr(tokens: &[String], cursor: &mut usize) -> Result<DepthExpr, DepthP
 }
 
 fn parse_atom(atom: &str) -> DepthExpr {
+    if atom == "_" {
+        return DepthExpr::Hole;
+    }
     match atom.parse::<u64>() {
         Ok(n) => DepthExpr::Nat(n),
         Err(_) => DepthExpr::Var(atom.to_string()),

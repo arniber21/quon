@@ -31,4 +31,4 @@ fn simulate_ising(n: Nat, j: Float, h: Float, t: Float, n_steps: Int): Q<List<Bi
 -- map_q is monadic map: (A -> Q<B>, List<A>) -> Q<List<B>>
 fn ising_time_series(n: Nat, j: Float, h: Float, dt: Float, steps: Int, n_trott: Int)
     : Q<List<List<Bit>>> =
-    map_q(fn(k) -> simulate_ising(n, j, h, float(k) * dt, n_trott), range(steps + 1))
+    map_q(fn(k: Int) -> simulate_ising(n, j, h, float(k) * dt, n_trott), range(steps + 1))

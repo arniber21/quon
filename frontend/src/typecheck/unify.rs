@@ -91,7 +91,7 @@ impl Table {
                 self.unify(a1, a2, span)?;
                 self.unify(b1, b2, span)
             }
-            (Ty::Matrix(n1, m1, t1), Ty::Matrix(n2, m2, t2)) if n1 == n2 && m1 == m2 => {
+            (Ty::Matrix(n1, m1, t1), Ty::Matrix(n2, m2, t2)) if n1.equiv(n2) && m1.equiv(m2) => {
                 self.unify(t1, t2, span)
             }
             (
@@ -107,7 +107,13 @@ impl Table {
                     d: d2,
                     c: c2,
                 },
-            ) if n1.equiv(n2) && m1.equiv(m2) && d1.equiv(d2) && c1 == c2 => Ok(()),
+            ) if n1.equiv(n2)
+                && m1.equiv(m2)
+                && (d1.is_hole() || d2.is_hole() || d1.equiv(d2))
+                && c1 == c2 =>
+            {
+                Ok(())
+            }
 
             _ => Err(TypeError::Mismatch {
                 expected: self.zonk(&a),

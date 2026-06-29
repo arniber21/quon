@@ -95,6 +95,7 @@ fn head_ctor(pat: &Pat) -> Option<Ctor> {
 fn is_complete(ty: &Ty, present: &[Ctor]) -> bool {
     match ty {
         Ty::Bool => present.contains(&Ctor::Bool(true)) && present.contains(&Ctor::Bool(false)),
+        Ty::Bit => present.contains(&Ctor::Int(0)) && present.contains(&Ctor::Int(1)),
         Ty::Tuple(ts) => present.contains(&Ctor::Tuple(ts.len())),
         _ => false,
     }
@@ -176,6 +177,13 @@ fn missing_witness(ty: &Ty, present: &[Ctor]) -> Witness {
                 Witness::Bool(false)
             } else {
                 Witness::Bool(true)
+            }
+        }
+        Ty::Bit => {
+            if !present.contains(&Ctor::Int(0)) {
+                Witness::Int(0)
+            } else {
+                Witness::Int(1)
             }
         }
         Ty::Int => {

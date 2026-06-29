@@ -79,6 +79,9 @@ pub struct TypeChecker {
     /// inside. Gate placement (`H @ 0`, `H(q)`) embeds a gate into the innermost register, so
     /// its result width is read from the top of this stack (issue #11, SPEC §5.6).
     circuit_width: Vec<DepthExpr>,
+    /// Annotated output width `m` of the innermost `circuit { }` block — caps how far gate
+    /// placement may grow the register footprint (width-changing `Circuit<n,m,…>` with `m > n`).
+    circuit_width_cap: Vec<DepthExpr>,
     /// The Z3-backed refinement bridge (issue #13). Used only to discharge *symbolic* depth
     /// obligations — verifying an annotation against an inferred depth, and reconciling
     /// `match` branches — when structural equality (`DepthExpr::equiv`) is not enough.
@@ -95,6 +98,7 @@ impl TypeChecker {
             numeric: Vec::new(),
             lambda_linears: Vec::new(),
             circuit_width: Vec::new(),
+            circuit_width_cap: Vec::new(),
             refine: RefinementCtx::new(),
         }
     }
@@ -158,6 +162,9 @@ impl TypeChecker {
         inferred: &DepthExpr,
         span: SimpleSpan,
     ) -> Result<(), TypeError> {
+        if annotated.is_hole() {
+            return Ok(());
+        }
         if annotated.equiv(inferred) {
             return Ok(());
         }
@@ -528,6 +535,114 @@ impl TypeChecker {
         Ok(Ty::QReg(wa.seq(wb).normalize()))
     }
 
+    /// Register split (SPEC §5): `split(k, q)` consumes `QReg<n>` and yields
+    /// `(QReg<k>, QReg<n-k>)`. The remainder may be discarded with `_` (SPEC §3.4).
+    fn synth_split(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        k: &Sp<Expr>,
+        q: &Sp<Expr>,
+    ) -> Result<Ty, TypeError> {
+        let k_w = self.expr_to_depth(env, delta, k)?;
+        let q_ty = self.synth(env, delta, q)?;
+        let n_w = match self.table.resolve(&q_ty) {
+            Ty::QReg(w) => w,
+            other => {
+                return Err(TypeError::Mismatch {
+                    expected: Ty::QReg(DepthExpr::Var("n".into())),
+                    found: other,
+                    span: q.1,
+                });
+            }
+        };
+        Ok(Ty::Tuple(vec![
+            Ty::QReg(k_w.clone()),
+            Ty::QReg(n_w.minus(k_w).normalize()),
+        ]))
+    }
+
+    /// Sequential Z-basis measurement of every qubit in a register (SPEC §5).
+    fn synth_measure_all(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        q: &Sp<Expr>,
+    ) -> Result<Ty, TypeError> {
+        let q_ty = self.synth(env, delta, q)?;
+        match self.table.resolve(&q_ty) {
+            Ty::QReg(_) => Ok(Ty::Q(Box::new(Ty::list(Ty::Bit)))),
+            other => Err(TypeError::Mismatch {
+                expected: Ty::QReg(DepthExpr::Var("n".into())),
+                found: other,
+                span: q.1,
+            }),
+        }
+    }
+
+    /// Monadic map (SPEC §5): `(A -> Q<B>, List<A>) -> Q<List<B>>`.
+    fn synth_map_q(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        f: &Sp<Expr>,
+        xs: &Sp<Expr>,
+    ) -> Result<Ty, TypeError> {
+        let xs_ty = self.synth(env, delta, xs)?;
+        let elem_a = self.table.fresh();
+        self.table.unify(&xs_ty, &Ty::list(elem_a.clone()), xs.1)?;
+        let f_ty = self.synth(env, delta, f)?;
+        let (dom, cod) = self.as_function(&f_ty, f.1)?;
+        self.table.unify(&dom, &elem_a, f.1)?;
+        match self.table.resolve(&cod) {
+            Ty::Q(inner) => Ok(Ty::Q(Box::new(Ty::list(*inner)))),
+            other => Err(TypeError::Mismatch {
+                expected: Ty::Q(Box::new(self.table.fresh())),
+                found: other,
+                span: f.1,
+            }),
+        }
+    }
+
+    /// Sequence a list of monadic computations (SPEC §5): `List<Q<A>> -> Q<List<A>>`.
+    fn synth_sequence_q(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        cs: &Sp<Expr>,
+    ) -> Result<Ty, TypeError> {
+        let cs_ty = self.synth(env, delta, cs)?;
+        let elem = self.table.fresh();
+        self.table
+            .unify(&cs_ty, &Ty::list(Ty::Q(Box::new(elem.clone()))), cs.1)?;
+        Ok(Ty::Q(Box::new(Ty::list(elem))))
+    }
+
+    /// Matrix/list indexing: `index(base, i)` (parser desugars `base[i]`).
+    fn synth_index(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        base: &Sp<Expr>,
+        idx: &Sp<Expr>,
+    ) -> Result<Ty, TypeError> {
+        self.check(env, delta, idx, &Ty::Int)?;
+        let base_ty = self.synth(env, delta, base)?;
+        match self.table.resolve(&base_ty) {
+            Ty::Matrix(_, _, elem) => Ok(Ty::list(*elem)),
+            Ty::List(elem) => Ok(*elem),
+            other => Err(TypeError::Mismatch {
+                expected: Ty::Matrix(
+                    DepthExpr::Var("n".into()),
+                    DepthExpr::Var("m".into()),
+                    Box::new(self.table.fresh()),
+                ),
+                found: other,
+                span: base.1,
+            }),
+        }
+    }
+
     /// The register width of a `tensored` operand: a `QReg<n>` yields `n`, a bare `Qubit`
     /// yields `1`. Any other type is a mismatch.
     fn tensor_width(
@@ -594,9 +709,15 @@ impl TypeChecker {
                 ("on_high" | "on_low", 2) => {
                     return self.synth_on_sub(env, delta, args[0], args[1]);
                 }
+                ("swap_reverse", 1) => return self.synth_swap_reverse(env, delta, args[0]),
                 // `a `tensored` b` (SPEC §5): concatenate two registers into `QReg<n+m>`.
                 // Surfaced as a curried call by the parser (`tensored(a)(b)`).
                 ("tensored", 2) => return self.synth_tensored(env, delta, args[0], args[1]),
+                ("split", 2) => return self.synth_split(env, delta, args[0], args[1]),
+                ("measure_all", 1) => return self.synth_measure_all(env, delta, args[0]),
+                ("map_q", 2) => return self.synth_map_q(env, delta, args[0], args[1]),
+                ("sequence_q", 1) => return self.synth_sequence_q(env, delta, args[0]),
+                ("index", 2) => return self.synth_index(env, delta, args[0], args[1]),
                 ("fold", 3) => return self.synth_fold(env, delta, args[0], args[1], args[2], span),
                 // A single-qubit rotation applied to its angle (issue #12): the Clifford
                 // classification is specialised from a static multiple of π/2.
@@ -678,9 +799,10 @@ impl TypeChecker {
             });
         }
         let width = self.ambient_width(qubits.1)?;
+        let placement = self.placement_width(&width, &targets)?;
         for t in &targets {
             self.check(env, delta, t, &Ty::Int)?;
-            if let (Some(w), Some(idx)) = (width.as_const(), literal_index(t))
+            if let (Some(w), Some(idx)) = (placement.as_const(), literal_index(t))
                 && idx >= w
             {
                 return Err(TypeError::IndexOutOfBounds {
@@ -690,12 +812,54 @@ impl TypeChecker {
                 });
             }
         }
+        if let Some(cap) = self.circuit_width_cap.last()
+            && let (Some(p), Some(m)) = (placement.as_const(), cap.as_const())
+            && p > m
+        {
+            return Err(TypeError::IndexOutOfBounds {
+                index: targets
+                    .iter()
+                    .filter_map(|t| literal_index(t))
+                    .max()
+                    .unwrap_or(0),
+                width: m,
+                span: qubits.1,
+            });
+        }
+        if let Some(top) = self.circuit_width.last_mut() {
+            *top = top.clone().par(placement.clone()).normalize();
+        }
         Ok(Ty::Circuit {
-            n: width.clone(),
-            m: width,
+            n: width,
+            m: placement,
             d: gd,
             c: gc,
         })
+    }
+
+    /// The register footprint a gate placement needs: at least the ambient width, and wide
+    /// enough to cover every target index.
+    ///
+    /// Growth only applies when the ambient width is a *constant* (a width-changing encoder
+    /// like `Circuit<1, 3, …>`): there a literal index beyond the current footprint genuinely
+    /// widens the register. When the ambient width is *symbolic* (`Circuit<n, …>`), a gate on a
+    /// literal wire stays within the declared `n`-wide register — growing it to `max(idx+1, n)`
+    /// would be unsound (`max(1, n) ≠ n` for `n = 0`) and would break composition with any
+    /// other `n`-wide circuit, so the ambient width is preserved.
+    fn placement_width(
+        &self,
+        ambient: &DepthExpr,
+        targets: &[&Sp<Expr>],
+    ) -> Result<DepthExpr, TypeError> {
+        let max_idx = targets
+            .iter()
+            .filter_map(|t| literal_index(t))
+            .max()
+            .unwrap_or(0);
+        match ambient.as_const() {
+            Some(a) => Ok(DepthExpr::Nat(a.max(max_idx.saturating_add(1)))),
+            None => Ok(ambient.clone()),
+        }
     }
 
     /// Circuit *application* `c @ r` outside a `circuit { }` block (issue #14, SPEC §5.9
@@ -754,7 +918,7 @@ impl TypeChecker {
         found: &DepthExpr,
         span: SimpleSpan,
     ) -> Result<(), TypeError> {
-        if expected.equiv(found) {
+        if expected.equiv(found) || self.refine.verify_equal(found, expected).is_ok() {
             Ok(())
         } else {
             Err(TypeError::QubitCountMismatch {
@@ -894,19 +1058,25 @@ impl TypeChecker {
         let rt = self.synth(env, delta, r)?;
         let (ln, lm, ld, lc) = self.as_circuit(&lt, l.1)?;
         let (rn, rm, rd, rc) = self.as_circuit(&rt, r.1)?;
-        if !lm.equiv(&rn) {
+        if !lm.equiv(&rn) && self.refine.verify_equal(&lm, &rn).is_err() {
             return Err(TypeError::QubitCountMismatch {
                 expected: lm.to_string(),
                 found: rn.to_string(),
                 span,
             });
         }
-        Ok(Ty::Circuit {
+        let composed = Ty::Circuit {
             n: ln,
-            m: rm,
+            m: rm.clone(),
             d: ld.seq(rd),
             c: lc.join(&rc),
-        })
+        };
+        if let Some(top) = self.circuit_width.last_mut()
+            && !top.equiv(&rm)
+        {
+            *top = rm;
+        }
+        Ok(composed)
     }
 
     /// `par { body } * k` (SPEC §5.8): `k`-fold tensor of `body` with itself — qubit counts
@@ -960,6 +1130,22 @@ impl TypeChecker {
             m: m.seq(DepthExpr::Nat(1)),
             d: d.controlled(),
             c: cl,
+        })
+    }
+
+    /// `swap_reverse(n) : Circuit<n,n,n/2,Clifford>` (SPEC §5.7).
+    fn synth_swap_reverse(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        n: &Sp<Expr>,
+    ) -> Result<Ty, TypeError> {
+        let w = self.expr_to_depth(env, delta, n)?;
+        Ok(Ty::Circuit {
+            n: w.clone(),
+            m: w.clone(),
+            d: w.quot(DepthExpr::Nat(2)),
+            c: CliffordClass::Clifford,
         })
     }
 
@@ -1055,20 +1241,29 @@ impl TypeChecker {
         span: SimpleSpan,
     ) -> Result<Ty, TypeError> {
         let (count, sequential, elem) = self.iter_info(iter, span)?;
+        let saved_ambient = self.circuit_width.last().cloned();
         // The loop variable(s) are classical qubit indices; bind them into Γ for the body.
         let mut inner = env.clone();
         let mut bound = Vec::new();
         self.check_pat_into(pat, &elem, &mut inner, delta, &mut bound)?;
         let body_ty = self.synth(&inner, delta, body)?;
-        let (bn, bm, bd, bc) = self.as_circuit(&body_ty, body.1)?;
+        if let (Some(saved), Some(top)) = (saved_ambient.as_ref(), self.circuit_width.last_mut()) {
+            *top = saved.clone();
+        }
+        let (_bn, bm, bd, bc) = self.as_circuit(&body_ty, body.1)?;
         let depth = if sequential {
-            DepthExpr::repeat(count, bd)
+            DepthExpr::repeat(count.clone(), bd)
         } else {
             bd
         };
+        let reg_width = if sequential {
+            saved_ambient.unwrap_or(bm)
+        } else {
+            count.clone()
+        };
         Ok(Ty::Circuit {
-            n: bn,
-            m: bm,
+            n: reg_width.clone(),
+            m: reg_width,
             d: depth,
             c: bc,
         })
@@ -1089,7 +1284,12 @@ impl TypeChecker {
                 "range" => return Ok((self.depth_of(x)?, true, Ty::Int)),
                 // ordered pairs `(i, j)` of indices.
                 "pairs" => {
-                    return Ok((self.depth_of(x)?, true, Ty::Tuple(vec![Ty::Int, Ty::Int])));
+                    let w = self.depth_of(x)?;
+                    return Ok((
+                        DepthExpr::repeat(w.clone(), w),
+                        true,
+                        Ty::Tuple(vec![Ty::Int, Ty::Int]),
+                    ));
                 }
                 _ => {}
             }
@@ -1219,10 +1419,12 @@ impl TypeChecker {
         expected: &Ty,
         span: SimpleSpan,
     ) -> Result<(), TypeError> {
-        let (en, ..) = self.as_circuit(expected, span)?;
+        let (en, em, ..) = self.as_circuit(expected, span)?;
         self.circuit_width.push(en);
+        self.circuit_width_cap.push(em);
         let result = self.synth_block_body(env, delta, stmts, span);
         self.circuit_width.pop();
+        self.circuit_width_cap.pop();
         let inferred = result?;
         // The block's input width seeds gate placement; its inferred indices, class, and depth
         // are then reconciled with the annotation — widths/class structurally, depth via Z3.
@@ -1300,6 +1502,21 @@ impl TypeChecker {
                 lhs,
                 rhs,
             } => Ok(DepthExpr::repeat(self.depth_of(lhs)?, self.depth_of(rhs)?)),
+            Expr::BinOp {
+                op: BinOp::Sub,
+                lhs,
+                rhs,
+            } => Ok(self.depth_of(lhs)?.minus(self.depth_of(rhs)?)),
+            Expr::BinOp {
+                op: BinOp::Div,
+                lhs,
+                rhs,
+            } => Ok(self.depth_of(lhs)?.quot(self.depth_of(rhs)?)),
+            Expr::BinOp {
+                op: BinOp::Pow,
+                lhs,
+                rhs,
+            } => Ok(self.depth_of(lhs)?.power(self.depth_of(rhs)?)),
             _ => Err(TypeError::Unsupported {
                 construct: "non-linear index/depth expression",
                 span: e.1,
@@ -1311,15 +1528,32 @@ impl TypeChecker {
         &mut self,
         env: &Env,
         delta: &mut Delta,
-        _op: BinOp,
+        op: BinOp,
         lhs: &Sp<Expr>,
         rhs: &Sp<Expr>,
         span: SimpleSpan,
     ) -> Result<Ty, TypeError> {
         let lt = self.synth(env, delta, lhs)?;
         let rt = self.synth(env, delta, rhs)?;
+        if op == BinOp::Pow {
+            return self.synth_pow(&lt, &rt, span);
+        }
         self.table.unify(&lt, &rt, span)?;
         self.numeric(&lt, span)
+    }
+
+    /// Exponentiation promotes to `Float` when the base is `Float` (e.g. `2.0 ^ n`).
+    fn synth_pow(&mut self, base: &Ty, exp: &Ty, span: SimpleSpan) -> Result<Ty, TypeError> {
+        match (self.table.resolve(base), self.table.resolve(exp)) {
+            (Ty::Float, Ty::Int) | (Ty::Float, Ty::Float) => Ok(Ty::Float),
+            (Ty::Int, Ty::Int) => Ok(Ty::Int),
+            (Ty::Meta(_), _) | (_, Ty::Meta(_)) => {
+                let m = self.table.fresh();
+                self.table.unify(base, &m, span)?;
+                self.numeric(&m, span)
+            }
+            (found, _) => Err(TypeError::NotNumeric { found, span }),
+        }
     }
 
     /// Resolve `t` and require it to be `Int` or `Float`. An unsolved metavariable defers:
@@ -1805,10 +2039,11 @@ impl TypeChecker {
     ) -> Result<(), TypeError> {
         let span = pat.1;
         match &pat.0 {
-            // A wildcard over a linear resource is a silent discard — rejected (no-dropping).
+            // A wildcard over a linear resource is a silent discard — rejected (no-dropping),
+            // except a `QReg` remainder after `split`, which SPEC §3.4 allows to drop.
             Pat::Wildcard => {
                 let resolved = self.table.resolve(ty);
-                if resolved.is_linear_resource() {
+                if resolved.is_linear_resource() && !matches!(resolved, Ty::QReg(_)) {
                     return Err(TypeError::LinearDiscard {
                         name: resolved.to_string(),
                         span,
@@ -1818,6 +2053,14 @@ impl TypeChecker {
             }
             Pat::Var(name) => {
                 let resolved = self.table.resolve(ty);
+                // A `_`-prefixed name discards a register without using it — this is the named
+                // form of the wildcard discard above, for `split` remainders written `_rest`
+                // (SPEC §3.4). As with the wildcard, only a `QReg` may be dropped this way; a
+                // bare `Qubit` (or any other linear resource) must still be consumed, so a typo
+                // like `let _q = some_qubit` is a no-dropping error, not a silent leak.
+                if name.starts_with('_') && matches!(resolved, Ty::QReg(_)) {
+                    return Ok(());
+                }
                 if resolved.is_linear_resource() {
                     delta.introduce(name.clone(), resolved, span)?;
                     introduced.push((name.clone(), span));
@@ -1828,6 +2071,11 @@ impl TypeChecker {
             }
             Pat::Lit(lit) => {
                 let lit_ty = match lit {
+                    crate::ast::LitPat::Int(n)
+                        if matches!(self.table.resolve(ty), Ty::Bit) && (*n == 0 || *n == 1) =>
+                    {
+                        Ty::Bit
+                    }
                     crate::ast::LitPat::Int(_) => Ty::Int,
                     crate::ast::LitPat::Bool(_) => Ty::Bool,
                 };
@@ -1951,8 +2199,8 @@ impl TypeChecker {
             ),
             Type::Q(t) => Ty::Q(Box::new(self.resolve_type_at(t, visiting)?)),
             Type::Matrix(n, m, t) => Ty::Matrix(
-                self.eval_nat(n)?,
-                self.eval_nat(m)?,
+                self.nat_to_depth(n)?,
+                self.nat_to_depth(m)?,
                 Box::new(self.resolve_type_at(t, visiting)?),
             ),
             Type::Circuit { n, m, d, c } => Ty::Circuit {
@@ -2222,8 +2470,10 @@ fn nat_to_depth(n: &NatExpr) -> Option<DepthExpr> {
         NatExpr::Var(name) => DepthExpr::Var(name.clone()),
         NatExpr::Add(a, b) => nat_to_depth(&a.0)?.seq(nat_to_depth(&b.0)?),
         NatExpr::Mul(a, b) => DepthExpr::repeat(nat_to_depth(&a.0)?, nat_to_depth(&b.0)?),
-        // Sub/Div/Exp/Hole have no DepthExpr form yet — handled with Z3 in issue #13.
-        _ => return None,
+        NatExpr::Sub(a, b) => nat_to_depth(&a.0)?.minus(nat_to_depth(&b.0)?),
+        NatExpr::Div(a, b) => nat_to_depth(&a.0)?.quot(nat_to_depth(&b.0)?),
+        NatExpr::Exp(a, b) => nat_to_depth(&a.0)?.power(nat_to_depth(&b.0)?),
+        NatExpr::Hole => DepthExpr::Hole,
     })
 }
 

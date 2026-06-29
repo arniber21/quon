@@ -2,7 +2,11 @@
 source: frontend/tests/reference_algorithms.rs
 expression: "frontend :: pretty :: pretty(& decls)"
 ---
-fn cost_layer(n: Nat, gamma: Float, q: Matrix<n, n, Float>): Circuit<n, n, (n) * (n), Universal> = circuit {
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in (qubits(n)) { H(q) }
+}
+
+fn cost_layer(n: Nat, gamma: Float, q: Matrix<n, n, Float>): Circuit<n, n, ((n) * (n)) + (1), Universal> = circuit {
     for (i, j) in (pairs(n)) { (Rzz(gamma * ((index((index(q))(i)))(j)))) @ (i, j) } |> for i in (diag(n)) { (Rz(gamma * ((index((index(q))(i)))(i)))) @ i }
 }
 
@@ -10,11 +14,11 @@ fn mixer_layer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
     for q in (qubits(n)) { (Rx(beta))(q) }
 }
 
-fn qaoa_layer(n: Nat, gamma: Float, beta: Float, q: Matrix<n, n, Float>): Circuit<n, n, ((n) * (n)) + (1), Universal> = circuit {
+fn qaoa_layer(n: Nat, gamma: Float, beta: Float, q: Matrix<n, n, Float>): Circuit<n, n, ((n) * (n)) + (2), Universal> = circuit {
     (((cost_layer(n))(gamma))(q)) |> ((mixer_layer(n))(beta))
 }
 
-fn qaoa_circuit(n: Nat, p: Int, params: List<(Float, Float)>, q: Matrix<n, n, Float>): Circuit<n, n, (p) * (((n) * (n)) + (1)), Universal> = ((fold((take(params))(p)))(identity(n)))(fn(acc, (gamma, beta)) -> acc |> ((((qaoa_layer(n))(gamma))(beta))(q)))
+fn qaoa_circuit(n: Nat, p: Int, params: List<(Float, Float)>, q: Matrix<n, n, Float>): Circuit<n, n, (p) * (((n) * (n)) + (2)), Universal> = ((fold((take(p))(params)))(identity(n)))(fn(acc, (gamma, beta)) -> acc |> ((((qaoa_layer(n))(gamma))(beta))(q)))
 
 fn qaoa_shot(n: Nat, p: Int, params: List<(Float, Float)>, q: Matrix<n, n, Float>): Q<List<Bit>> = run {
     let circ = (hadamard_all(n)) |> ((((qaoa_circuit(n))(p))(params))(q))
