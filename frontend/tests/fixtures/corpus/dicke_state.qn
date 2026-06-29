@@ -1,0 +1,18 @@
+-- Dicke state |D^n_k⟩ preparation: seed k excitations, then symmetrize with a YY mixing cascade.
+-- Stresses: a parametric excitation count `k` in the depth, depth k + (n-1).
+
+fn dicke_seed(n: Nat, k: Int): Circuit<n, n, k, Clifford> = circuit {
+    for i in range(k) { X @i }
+}
+
+fn dicke_mix(n: Nat): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Ryy(PI / 4.0) @(i, i + 1) }
+}
+
+fn dicke_state(n: Nat, k: Int): Circuit<n, n, k + (n - 1), Universal> =
+    dicke_seed(n, k) |> dicke_mix(n)
+
+fn make_dicke(n: Nat, k: Int): Q<List<Bit>> = run {
+    q <- dicke_state(n, k) @ qreg(n)
+    measure_all(q)
+}

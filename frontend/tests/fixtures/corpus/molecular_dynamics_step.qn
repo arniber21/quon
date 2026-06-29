@@ -1,0 +1,26 @@
+-- Split-operator molecular dynamics step: symmetric kinetic/potential factorization of e^{-iHt},
+-- with the potential a dense pairwise interaction Matrix<n,n,Float>.
+-- Stresses: symmetric kinetic·potential·kinetic split, depth n_steps*(n*n+2).
+
+fn kinetic_layer(n: Nat, dt: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(0.5 * dt) q }
+}
+
+fn potential_layer(n: Nat, dt: Float, v: Matrix<n, n, Float>): Circuit<n, n, n*n, Universal> = circuit {
+    for (i, j) in pairs(n) { Rzz(dt * v[i][j]) @(i, j) }
+}
+
+fn md_step(n: Nat, dt: Float, v: Matrix<n, n, Float>): Circuit<n, n, n*n + 2, Universal> = circuit {
+    kinetic_layer(n, dt) |> potential_layer(n, dt, v) |> kinetic_layer(n, dt)
+}
+
+fn md_evolve(n: Nat, dt: Float, v: Matrix<n, n, Float>, n_steps: Int)
+    : Circuit<n, n, n_steps * (n*n + 2), Universal> =
+    fold(range(n_steps), identity(n), fn(acc, _) ->
+        acc |> md_step(n, dt, v)
+    )
+
+fn simulate_md(n: Nat, dt: Float, v: Matrix<n, n, Float>, n_steps: Int): Q<List<Bit>> = run {
+    q <- md_evolve(n, dt, v, n_steps) @ qreg(n)
+    measure_all(q)
+}

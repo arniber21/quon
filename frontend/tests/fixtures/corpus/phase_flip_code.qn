@@ -1,0 +1,15 @@
+-- 3-qubit phase-flip code: the bit-flip code conjugated by Hadamards (protects against Z errors).
+-- Stresses: width-growing encode (1 → 3) and its adjoint decode, `split` of the recovered logical.
+
+fn encode_phase(): Circuit<1, 3, 6, Clifford> = circuit {
+    CNOT @(0, 1) |> CNOT @(0, 2) |> H @0 |> H @1 |> H @2
+}
+
+fn decode_phase(): Circuit<3, 1, 6, Clifford> = adjoint(encode_phase())
+
+fn protect_phase(logical: Qubit): Q<QReg<1>> = run {
+    enc              <- encode_phase() @ logical
+    dec              <- decode_phase() @ enc
+    let (out, _rest)  = split(1, dec)
+    return out
+}

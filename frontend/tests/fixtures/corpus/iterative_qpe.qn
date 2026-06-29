@@ -1,0 +1,18 @@
+-- Iterative quantum phase estimation: `b` rounds of controlled-phase kickback from the lead
+-- (ancilla) qubit onto the remaining register. Recursive on the bit count `b`.
+-- Stresses: value-dependent recursion (#57–#60) on `b` with the width `n` held fixed.
+
+fn phase_round(n: Nat, phase: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { CRz(phase) @(0, i + 1) }
+}
+
+fn iqpe(b: Nat, n: Nat, phase: Float): Circuit<n, n, b * (n - 1), Universal> =
+    match b {
+        0 => identity(n),
+        _ => phase_round(n, phase) |> iqpe(b - 1, n, phase)
+    }
+
+fn run_iqpe(b: Nat, n: Nat, phase: Float): Q<List<Bit>> = run {
+    q <- iqpe(b, n, phase) @ qreg(n)
+    measure_all(q)
+}

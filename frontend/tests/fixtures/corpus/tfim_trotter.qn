@@ -1,0 +1,27 @@
+-- Transverse-Field Ising Model, 2nd-order (Strang) Trotterization.
+-- H = -J Σ ZᵢZᵢ₊₁ - h Σ Xᵢ.  Each step is a symmetric X/ZZ/X split for O(τ³) local error.
+-- Stresses: symmetric Trotter splitting, symbolic depth n_steps*(n+1).
+
+fn zz_layer(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Rzz(-2.0 * j * tau) @(i, i + 1) }
+}
+
+fn x_half_layer(n: Nat, h: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(-h * tau) q }
+}
+
+fn strang_step(n: Nat, j: Float, h: Float, tau: Float): Circuit<n, n, n + 1, Universal> = circuit {
+    x_half_layer(n, h, tau) |> zz_layer(n, j, tau) |> x_half_layer(n, h, tau)
+}
+
+fn tfim_evolve(n: Nat, j: Float, h: Float, t: Float, n_steps: Int)
+    : Circuit<n, n, n_steps * (n + 1), Universal> =
+    let tau = t / float(n_steps)
+    in fold(range(n_steps), identity(n), fn(acc, _) ->
+        acc |> strang_step(n, j, h, tau)
+    )
+
+fn simulate_tfim(n: Nat, j: Float, h: Float, t: Float, n_steps: Int): Q<List<Bit>> = run {
+    q <- tfim_evolve(n, j, h, t, n_steps) @ qreg(n)
+    measure_all(q)
+}

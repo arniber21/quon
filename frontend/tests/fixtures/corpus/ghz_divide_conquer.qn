@@ -1,0 +1,16 @@
+-- GHZ state via a recursive divide-and-conquer construction: build the GHZ on n-1 qubits, then
+-- entangle one more. Recursive on n.
+-- Stresses: value-dependent recursion (#57–#60) building a Clifford state, depth n.
+
+fn entangle_one(n: Nat): Circuit<n, n, 1, Clifford> = circuit { CNOT @(0, n - 1) }
+
+fn ghz_dc(n: Nat): Circuit<n, n, n, Clifford> =
+    match n {
+        0 => identity(0),
+        _ => (ghz_dc(n - 1) `on_low` n) |> entangle_one(n)
+    }
+
+fn make_ghz_dc(n: Nat): Q<List<Bit>> = run {
+    q <- ghz_dc(n) @ qreg(n)
+    measure_all(q)
+}

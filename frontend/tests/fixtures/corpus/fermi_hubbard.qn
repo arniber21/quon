@@ -1,0 +1,33 @@
+-- Fermi–Hubbard chain (Jordan–Wigner mapped): hopping (XX+YY) + on-site Coulomb (ZZ) + chemical
+-- potential (Z). First-order Trotter step.
+-- Stresses: hopping layers + interaction layer + single-body field, depth n_steps*(3*(n-1)+1).
+
+fn hop_layer(n: Nat, th: Float, tau: Float): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { Rxx(th * tau) @(i, i + 1) }
+    |> for i in range(n - 1) { Ryy(th * tau) @(i, i + 1) }
+}
+
+fn coulomb_layer(n: Nat, u: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Rzz(u * tau) @(i, i + 1) }
+}
+
+fn potential_layer(n: Nat, mu: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rz(mu * tau) q }
+}
+
+fn hubbard_step(n: Nat, th: Float, u: Float, mu: Float, tau: Float)
+    : Circuit<n, n, 3 * (n - 1) + 1, Universal> = circuit {
+    hop_layer(n, th, tau) |> coulomb_layer(n, u, tau) |> potential_layer(n, mu, tau)
+}
+
+fn hubbard_evolve(n: Nat, th: Float, u: Float, mu: Float, t: Float, n_steps: Int)
+    : Circuit<n, n, n_steps * (3 * (n - 1) + 1), Universal> =
+    let tau = t / float(n_steps)
+    in fold(range(n_steps), identity(n), fn(acc, _) ->
+        acc |> hubbard_step(n, th, u, mu, tau)
+    )
+
+fn simulate_hubbard(n: Nat, th: Float, u: Float, mu: Float, t: Float, n_steps: Int): Q<List<Bit>> = run {
+    q <- hubbard_evolve(n, th, u, mu, t, n_steps) @ qreg(n)
+    measure_all(q)
+}

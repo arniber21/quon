@@ -1,0 +1,32 @@
+-- Heisenberg XXZ chain: H = Σ (Jx XᵢXᵢ₊₁ + Jy YᵢYᵢ₊₁ + Jz ZᵢZᵢ₊₁).
+-- First-order Trotter step = XX · YY · ZZ nearest-neighbour layers.
+-- Stresses: three sequential two-body rotation layers, depth n_steps*(3*(n-1)).
+
+fn xx_layer(n: Nat, jx: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Rxx(2.0 * jx * tau) @(i, i + 1) }
+}
+
+fn yy_layer(n: Nat, jy: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Ryy(2.0 * jy * tau) @(i, i + 1) }
+}
+
+fn zz_layer(n: Nat, jz: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Rzz(2.0 * jz * tau) @(i, i + 1) }
+}
+
+fn xxz_step(n: Nat, jx: Float, jy: Float, jz: Float, tau: Float)
+    : Circuit<n, n, 3 * (n - 1), Universal> = circuit {
+    xx_layer(n, jx, tau) |> yy_layer(n, jy, tau) |> zz_layer(n, jz, tau)
+}
+
+fn xxz_evolve(n: Nat, jx: Float, jy: Float, jz: Float, t: Float, n_steps: Int)
+    : Circuit<n, n, n_steps * (3 * (n - 1)), Universal> =
+    let tau = t / float(n_steps)
+    in fold(range(n_steps), identity(n), fn(acc, _) ->
+        acc |> xxz_step(n, jx, jy, jz, tau)
+    )
+
+fn simulate_xxz(n: Nat, jx: Float, jy: Float, jz: Float, t: Float, n_steps: Int): Q<List<Bit>> = run {
+    q <- xxz_evolve(n, jx, jy, jz, t, n_steps) @ qreg(n)
+    measure_all(q)
+}

@@ -1,0 +1,25 @@
+-- A hardware-efficient ansatz: per-qubit Ry·Rz rotation pair + a CZ entangling ladder, p layers.
+-- Stresses: two parallel rotation sub-layers + a sequential CZ ladder, depth p*(n+1).
+
+fn rotation_layer(n: Nat, theta: Float, phi: Float): Circuit<n, n, 2, Universal> = circuit {
+    for q in qubits(n) { Ry(theta) q }
+    |> for q in qubits(n) { Rz(phi) q }
+}
+
+fn cz_ladder(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
+    for i in range(n - 1) { CZ @(i, i + 1) }
+}
+
+fn hea_layer(n: Nat, theta: Float, phi: Float): Circuit<n, n, n + 1, Universal> = circuit {
+    rotation_layer(n, theta, phi) |> cz_ladder(n)
+}
+
+fn hea_ansatz(n: Nat, p: Int, params: List<(Float, Float)>): Circuit<n, n, p * (n + 1), Universal> =
+    fold(take(p, params), identity(n), fn(acc, (theta, phi)) ->
+        acc |> hea_layer(n, theta, phi)
+    )
+
+fn hea_sample(n: Nat, p: Int, params: List<(Float, Float)>): Q<List<Bit>> = run {
+    reg <- hea_ansatz(n, p, params) @ qreg(n)
+    measure_all(reg)
+}

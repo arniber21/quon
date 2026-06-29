@@ -1,0 +1,24 @@
+-- The inverse QFT, as the adjoint of the recursive QFT.
+-- Stresses: `adjoint` of a value-dependent recursive circuit, preserving the `2*n*n` depth bound.
+
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / 4.0)) @(0, i + 1) }
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+fn inverse_qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> = adjoint(qft(n))
+
+fn run_inverse_qft(n: Nat): Q<List<Bit>> = run {
+    q <- inverse_qft(n) @ qreg(n)
+    measure_all(q)
+}
