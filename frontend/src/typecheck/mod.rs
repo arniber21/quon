@@ -126,8 +126,12 @@ impl TypeChecker {
             },
         ) = (self.table.resolve(expected), self.table.resolve(got))
         {
-            // Class first, so a class disagreement is named specifically (issue #12).
-            if ec != gc {
+            // Class first, so a class disagreement is named specifically (issue #12). Checked by
+            // *subsumption*, not equality (issue #58, SPEC §3.3/§3.7): a `Clifford` value (`gc`)
+            // satisfies a `Universal` expectation (`ec`) since `Clifford ⊑ Universal`, but a
+            // `Universal` value never satisfies a `Clifford` annotation. Class *inference* (the
+            // `join`) is unchanged — this only relaxes the checking direction.
+            if !gc.leq(&ec) {
                 return Err(TypeError::CliffordMismatch {
                     expected: ec,
                     found: gc,

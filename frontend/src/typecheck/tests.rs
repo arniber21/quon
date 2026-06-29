@@ -757,8 +757,11 @@ fn single(gate: &str, class: &str) -> String {
 fn clifford_single_qubit_gates_are_inferred_clifford() {
     for g in ["I", "X", "Y", "Z", "H", "S", "S_dag", "SX", "SX_dag"] {
         accepts(&single(g, "Clifford"));
-        // Annotating an inferred-Clifford gate as Universal is rejected.
-        rejects(&single(g, "Universal"));
+        // Annotating an inferred-Clifford gate as Universal is *accepted* by subsumption
+        // (issue #58): `Clifford ⊑ Universal`, so a Clifford value satisfies a Universal
+        // annotation. The reverse (Universal value, Clifford annotation) stays rejected
+        // (see `universal_single_qubit_gates_are_inferred_universal`).
+        accepts(&single(g, "Universal"));
     }
 }
 
@@ -830,6 +833,37 @@ fn rotation_at_runtime_angle_is_universal() {
     // A runtime angle cannot be proved a multiple of π/2, so it stays Universal.
     accepts("fn f(beta: Float): Circuit<1, 1, 1, Universal> = circuit { Rz(beta) @0 }");
     rejects("fn f(beta: Float): Circuit<1, 1, 1, Clifford> = circuit { Rz(beta) @0 }");
+}
+
+// ── Clifford subsumption (issue #58, SPEC §3.3/§3.7) ─────────────────────────────
+
+#[test]
+fn clifford_value_satisfies_universal_annotation() {
+    // AC #58a: a Clifford value (`identity(1)`, depth 0) satisfies a Universal annotation,
+    // since `Clifford ⊑ Universal`. This is what lets a Clifford base case inhabit a
+    // Universal-annotated recursive definition (#60).
+    accepts("fn f(): Circuit<1, 1, 0, Universal> = identity(1)");
+}
+
+#[test]
+fn universal_value_violates_clifford_annotation() {
+    // AC #58b: the reverse direction stays an error — a Universal value (`T @0`) never
+    // satisfies a Clifford annotation.
+    let err = reject_err("fn f(): Circuit<1, 1, 1, Clifford> = circuit { T @0 }");
+    assert!(
+        matches!(err, TypeError::CliffordMismatch { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn clifford_argument_satisfies_universal_parameter() {
+    // AC #58c: a Clifford argument is accepted where a `Circuit<…, Universal>` parameter is
+    // expected (subsumption flows through function-argument checking).
+    accepts(
+        "fn use_universal(c: Circuit<1, 1, 0, Universal>): Circuit<1, 1, 0, Universal> = c\n\
+         fn f(): Circuit<1, 1, 0, Universal> = use_universal(identity(1))",
+    );
 }
 
 // ── Symbolic depth refinement (issue #13, SPEC §3.6) ─────────────────────────────
