@@ -22,6 +22,7 @@ config.test_exec_root = os.path.join(os.environ.get("QUON_BUILD_DIR", "."), "tes
 # %dynamic-roundtrip is mlir_bridge's `dynamic_roundtrip` example (issue #6).
 config.substitutions.append(("%quonc", "quonc"))
 config.substitutions.append(("%circ-roundtrip", "circ_roundtrip"))
+config.substitutions.append(("%circ-lower", "circ_lower"))
 config.substitutions.append(("%dynamic-roundtrip", "dynamic_roundtrip"))
 config.substitutions.append(("%monadic-lower", "monadic_lower"))
 config.substitutions.append(("%gate-cancel", "gate_cancel"))

@@ -24,7 +24,7 @@
 //! * **Exhaustiveness** is delegated to the [`exhaust`] usefulness algorithm.
 
 mod builtins;
-mod circuit;
+pub(crate) mod circuit;
 mod error;
 mod exhaust;
 mod linear;
@@ -301,6 +301,11 @@ impl TypeChecker {
         } else {
             Err(errors)
         }
+    }
+
+    /// Resolved top-level function type after [`check_decls`] (issue #16 lowering).
+    pub fn fn_type_of(&self, name: &str) -> Option<&Ty> {
+        self.globals.get(name)
     }
 
     /// Test/diagnostic hook: synthesize the body type of the *last* function in `decls`,
@@ -2505,7 +2510,7 @@ impl TypeChecker {
 
     /// Lower a surface [`Type`] into a checker [`Ty`]. Classical types resolve fully;
     /// quantum types resolve structurally when their `Nat` indices are literal.
-    fn resolve_type(&mut self, ty: &Sp<Type>) -> Result<Ty, TypeError> {
+    pub(crate) fn resolve_type(&mut self, ty: &Sp<Type>) -> Result<Ty, TypeError> {
         self.resolve_type_at(ty, &mut Vec::new())
     }
 
