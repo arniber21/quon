@@ -5,7 +5,6 @@ mod support;
 use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike, Value};
 
 use mlir_bridge::dialect::quantum_circ as qc;
-use mlir_bridge::passes::depth_scheduling;
 
 use support::{context, generic_op, i32_attr};
 

@@ -168,7 +168,11 @@ fn select_mode(target: &BackendTarget, circuit_depth: i64) -> ScheduleMode {
     ScheduleMode::Asap
 }
 
-fn schedule_module<'c, 'a>(context: &'c Context, target: &BackendTarget, module: OperationRef<'c, 'a>) {
+fn schedule_module<'c, 'a>(
+    context: &'c Context,
+    target: &BackendTarget,
+    module: OperationRef<'c, 'a>,
+) {
     let Some(body) = module
         .region(0)
         .ok()
@@ -212,7 +216,11 @@ fn schedule_module<'c, 'a>(context: &'c Context, target: &BackendTarget, module:
 }
 
 /// Runs depth scheduling on `module`.
-pub fn run_on_module<'c>(context: &'c Context, target: &BackendTarget, module: &melior::ir::Module<'c>) {
+pub fn run_on_module<'c>(
+    context: &'c Context,
+    target: &BackendTarget,
+    module: &melior::ir::Module<'c>,
+) {
     schedule_module(context, target, module.as_operation());
 }
 
