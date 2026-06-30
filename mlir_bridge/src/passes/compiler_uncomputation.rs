@@ -3,7 +3,7 @@
 use melior::ir::attribute::StringAttribute;
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
-use melior::ir::{BlockLike, OperationRef, RegionLike, Value, ValueLike};
+use melior::ir::{BlockLike, OperationRef, RegionLike, Value};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef};
 

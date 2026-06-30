@@ -28,11 +28,7 @@ use flux_rs::attrs::*;
     spec(fn(current: u64, removed: u64) -> u64{v: v <= current})
 )]
 pub fn depth_after_removal(current: u64, removed: u64) -> u64 {
-    if removed >= current {
-        0
-    } else {
-        current - removed
-    }
+    current.saturating_sub(removed)
 }
 
 /// Sequential composition depth (`a |> b`): depths add. The result bounds each

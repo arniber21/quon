@@ -24,7 +24,7 @@ fn main() -> ExitCode {
     let context = Context::new();
     dialect::register_all(&context);
 
-    let Some(mut module) = Module::parse(&context, &source) else {
+    let Some(module) = Module::parse(&context, &source) else {
         eprintln!("error: failed to parse module");
         return ExitCode::FAILURE;
     };

@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "quonc", about = "Quon quantum compiler")]
+#[command(name = "quonc", about = "Quon quantum compiler", version)]
 struct Cli {
     /// Source file to compile (.qn)
     source: std::path::PathBuf,
