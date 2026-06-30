@@ -1,0 +1,38 @@
+[package]
+name = "quon_core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.quon_core]
+path = ".."
+
+[[bin]]
+name = "fuzz_depth_parse"
+path = "fuzz_targets/fuzz_depth_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_depth_roundtrip"
+path = "fuzz_targets/fuzz_depth_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_linearity_classify"
+path = "fuzz_targets/fuzz_linearity_classify.rs"
+test = false
+doc = false
+bench = false

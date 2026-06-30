@@ -6,6 +6,7 @@ Static analysis and refinement-type checks for the Quon workspace.
 
 | Workflow | Trigger | What runs |
 | -------- | ------- | --------- |
+| [coverage.yml](../../.github/workflows/coverage.yml) | every PR (non-blocking) | `cargo llvm-cov` summary via `./scripts/coverage.sh` (stable, excludes `flux_verify`; needs LLVM 22 + MLIR) |
 | [ci.yml](../../.github/workflows/ci.yml) | every push and PR | `cargo fmt --check`, `clippy`, `build --release`, `test --workspace` on stable (excludes `flux_verify`; needs LLVM 22 + MLIR + z3) |
 | [taskless.yml](../../.github/workflows/taskless.yml) | every PR; push to `main` | diff-scoped `@taskless/cli check` (Node 22+) |
 | [flux.yml](../../.github/workflows/flux.yml) | PR when `flux_verify/` or lockfile changes; push to `main` | `cargo flux -p flux_verify` (nightly + z3) |
@@ -95,3 +96,24 @@ Agents should treat validation as a **stack of fast feedback loops**, not a sing
 5. **Refinement-heavy Rust** — Flux specs in `flux_verify` when `{v: …}` contracts clarify intent beyond tests.
 
 Slow checks (`lit`, Aer, full fuzz campaigns) are valuable before phase milestones but should not replace the fast layers above for day-to-day development.
+
+## LLVM source coverage (`cargo-llvm-cov`)
+
+Optional line coverage for the stable workspace (excludes `flux_verify`). Requires LLVM/MLIR on PATH like `cargo test`.
+
+### Prerequisites
+
+```bash
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov
+```
+
+### Run locally
+
+```bash
+./scripts/coverage.sh              # summary table
+./scripts/coverage.sh --html       # HTML report → target/llvm-cov/html/
+./scripts/coverage.sh --lcov       # lcov.info for upload tools
+```
+
+CI: `.github/workflows/coverage.yml` runs on pull requests (non-blocking summary). Same exclusions as the main `ci.yml` test job.

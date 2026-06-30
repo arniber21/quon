@@ -1,0 +1,3 @@
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1)
+}

@@ -1,0 +1,4 @@
+// Placeholder teleport fixture for e2e harness (full algorithm in frontend/tests/fixtures).
+fn teleport(): Circuit<3, 3, _, _> = circuit {
+    H @1 |> CNOT @(1, 2) |> CNOT @(0, 1) |> H @0
+}
