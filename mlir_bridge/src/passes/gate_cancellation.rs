@@ -220,7 +220,7 @@ fn cancel_once_in_block<'c, 'a>(context: &'c Context, block: melior::ir::BlockRe
     removed_depth
 }
 
-fn cancel_in_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) -> i64 {
+pub fn cancel_in_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) -> i64 {
     if op_name(&func) != quantum_circ::op::FUNC {
         return 0;
     }
@@ -240,7 +240,7 @@ fn cancel_in_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) -> i
     removed
 }
 
-fn cancel_module<'c, 'a>(context: &'c Context, module: OperationRef<'c, 'a>) {
+pub fn cancel_module<'c, 'a>(context: &'c Context, module: OperationRef<'c, 'a>) {
     let Some(body) = module
         .region(0)
         .ok()

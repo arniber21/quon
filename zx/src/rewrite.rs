@@ -101,6 +101,7 @@ fn normalize_phase(phase: f64) -> f64 {
     value
 }
 
+#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
 fn pi_copy(_zx: &mut ZXGraph) -> bool {
     false
 }
