@@ -78,6 +78,10 @@ fn fuses_adjacent_ifs_on_disjoint_qubits_with_same_condition() {
 
     classical_region_fusion::run_on_module(&context, &module);
     assert_eq!(count_ifs(&module), 1);
+    assert!(module
+        .as_operation()
+        .to_string()
+        .contains(qd::op::UNITARY_REGION));
 }
 
 #[test]

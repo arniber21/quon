@@ -11,6 +11,7 @@ use melior::ir::r#type::TypeId;
 use melior::ir::{Block, BlockLike, Location, OperationRef, Region, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
+use quon_core::DepthExpr;
 use thiserror::Error;
 
 use crate::dialect::{quantum_circ, quantum_dynamic};
@@ -63,6 +64,22 @@ struct GateStep {
 }
 
 fn extract_gates_from_region<'c, 'a>(region: melior::ir::RegionRef<'c, 'a>) -> Vec<GateStep> {
+    let Some(block) = region.first_block() else {
+        return Vec::new();
+    };
+    let mut op = block.first_operation();
+    while let Some(inner) = op {
+        if op_name(&inner) == quantum_dynamic::op::UNITARY_REGION
+            && let Ok(body) = inner.region(0)
+        {
+            return extract_gates_from_circ_region(body);
+        }
+        op = inner.next_in_block();
+    }
+    extract_gates_from_circ_region(region)
+}
+
+fn extract_gates_from_circ_region<'c, 'a>(region: melior::ir::RegionRef<'c, 'a>) -> Vec<GateStep> {
     let mut gates = Vec::new();
     let Some(block) = region.first_block() else {
         return gates;
@@ -148,26 +165,27 @@ fn same_condition<'c, 'a>(left: OperationRef<'c, 'a>, right: OperationRef<'c, 'a
     value_key(&left_bit) == value_key(&right_bit)
 }
 
-fn build_branch_region<'c>(
+fn build_unitary_circ_region<'c>(
     context: &'c Context,
     location: Location<'c>,
     left_gates: &[GateStep],
     right_gates: &[GateStep],
     left_count: usize,
     right_count: usize,
-) -> Result<Region<'c>, FusionError> {
+) -> Result<(Region<'c>, DepthExpr, bool), FusionError> {
     let qubit = quantum_circ::qubit_type(context);
     let total = left_count + right_count;
     let block = Block::new(&vec![(qubit, location); total]);
     let mut wires: Vec<Value<'c, '_>> = Vec::with_capacity(total);
     for index in 0..total {
         let argument = block.argument(index).map_err(|_| FusionError::Build {
-            op: quantum_dynamic::op::IF,
+            op: quantum_dynamic::op::UNITARY_REGION,
             message: format!("missing block argument #{index}"),
         })?;
         wires.push(Value::from(argument));
     }
 
+    let gate_count = left_gates.len() + right_gates.len();
     for gate in left_gates {
         let operands: Vec<Value<'c, '_>> = gate.targets.iter().map(|i| wires[*i]).collect();
         let op = block.append_operation(
@@ -204,7 +222,51 @@ fn build_branch_region<'c>(
         }
     }
 
-    block.append_operation(quantum_dynamic::r#yield(&wires, location).map_err(|error| {
+    block.append_operation(quantum_circ::r#return(&wires, location).map_err(|error| {
+        FusionError::Build {
+            op: quantum_circ::op::RETURN,
+            message: error.to_string(),
+        }
+    })?);
+    let region = Region::new();
+    region.append_block(block);
+    let depth = DepthExpr::Nat(gate_count.max(1) as u64);
+    Ok((region, depth, true))
+}
+
+fn build_branch_region<'c>(
+    context: &'c Context,
+    location: Location<'c>,
+    left_gates: &[GateStep],
+    right_gates: &[GateStep],
+    left_count: usize,
+    right_count: usize,
+) -> Result<Region<'c>, FusionError> {
+    let (inner, depth, clifford) =
+        build_unitary_circ_region(context, location, left_gates, right_gates, left_count, right_count)?;
+    let qubit = quantum_circ::qubit_type(context);
+    let total = left_count + right_count;
+    let block = Block::new(&vec![(qubit, location); total]);
+    let mut operands: Vec<Value<'c, '_>> = Vec::with_capacity(total);
+    for index in 0..total {
+        let argument = block.argument(index).map_err(|_| FusionError::Build {
+            op: quantum_dynamic::op::IF,
+            message: format!("missing branch argument #{index}"),
+        })?;
+        operands.push(Value::from(argument));
+    }
+
+    let unitary = quantum_dynamic::unitary_region(context, &operands, &depth, clifford, inner, location)
+        .map_err(|error| FusionError::Build {
+            op: quantum_dynamic::op::UNITARY_REGION,
+            message: error.to_string(),
+        })?;
+    let unitary_ref = block.append_operation(unitary);
+    let outputs: Vec<Value<'c, '_>> = unitary_ref
+        .results()
+        .map(|result| Value::from(result))
+        .collect();
+    block.append_operation(quantum_dynamic::r#yield(&outputs, location).map_err(|error| {
         FusionError::Build {
             op: quantum_dynamic::op::YIELD,
             message: error.to_string(),

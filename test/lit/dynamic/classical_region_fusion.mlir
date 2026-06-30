@@ -3,7 +3,8 @@
 // RUN: %classical-region-fuse < %s | FileCheck %s
 
 module {
-  // CHECK: "quantum.dynamic.if"
+  // CHECK-COUNT-1: "quantum.dynamic.if"
+  // CHECK-COUNT-2: "quantum.dynamic.unitary_region"
   // CHECK: gate_name = "X"
   // CHECK: gate_name = "Z"
 
