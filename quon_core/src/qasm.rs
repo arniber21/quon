@@ -21,9 +21,10 @@
 //! Two invariants are machine-checked by Flux (load-bearing at the reify
 //! boundary), following the established `quon_core` kernel pattern:
 //!
-//! 1. **Index bounds.** Every [`QubitId`] is `< the qubit register's size` and
-//!    every [`BitId`] is `< the bit register's size`; [`index_in_bounds`] gates
-//!    every construction, so [`render`] indexes `q[i]` / `c[i]` without a guard.
+//! 1. **Index bounds and context.** Every [`QubitId`] is `< the owning qubit
+//!    register's size` and every [`BitId`] is `< the owning bit register's size`;
+//!    [`index_in_bounds`] gates every construction, and [`Program`] validates
+//!    that IDs belong to its own registers before accepting statements.
 //! 2. **Gate arity.** Each [`QasmGate`] variant fixes its qubit-operand count
 //!    structurally (no `Vec`), so an arity mismatch is unrepresentable;
 //!    [`operand_arity_ok`] checks the IR's operand count at the boundary.
@@ -31,6 +32,7 @@
 //! This crate is MLIR-free; [`render`] is pure string production.
 
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "flux")]
 use flux_rs::attrs::*;
@@ -55,39 +57,73 @@ pub fn operand_arity_ok(expected: usize, actual: usize) -> bool {
 
 // ─── Index newtypes ──────────────────────────────────────────────────────────
 
+/// An opaque key identifying one program register context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct RegisterKey(u64);
+
+impl RegisterKey {
+    fn fresh() -> Self {
+        static NEXT_REGISTER_KEY: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT_REGISTER_KEY.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// An index into the program's qubit register.
 ///
-/// The inner index is private: a `QubitId` is built only through [`QubitId::new`],
-/// which goes through the Flux-checked [`index_in_bounds`]. Holding one is
-/// therefore evidence the index is in range.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct QubitId(usize);
+/// The inner index and context key are private: a `QubitId` is minted by
+/// [`Program::qubit`], which checks the bound and tags it with the owning
+/// program's qubit register. A qubit may be copied, but it cannot be inserted
+/// into another program through the safe API.
+#[derive(Clone, Copy, Debug, Eq, Hash)]
+pub struct QubitId {
+    index: usize,
+    register: RegisterKey,
+}
+
+impl PartialEq for QubitId {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+    }
+}
 
 impl QubitId {
-    /// Construct a qubit index, returning `None` when `idx >= register_size`.
-    pub fn new(idx: usize, register_size: usize) -> Option<Self> {
-        index_in_bounds(idx, register_size).then_some(Self(idx))
+    fn new(idx: usize, register_size: usize, register: RegisterKey) -> Option<Self> {
+        index_in_bounds(idx, register_size).then_some(Self {
+            index: idx,
+            register,
+        })
     }
 
     /// The underlying index. In range by construction.
     pub fn index(self) -> usize {
-        self.0
+        self.index
     }
 }
 
 /// An index into the program's classical bit register.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BitId(usize);
+#[derive(Clone, Copy, Debug, Eq, Hash)]
+pub struct BitId {
+    index: usize,
+    register: RegisterKey,
+}
+
+impl PartialEq for BitId {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+    }
+}
 
 impl BitId {
-    /// Construct a bit index, returning `None` when `idx >= register_size`.
-    pub fn new(idx: usize, register_size: usize) -> Option<Self> {
-        index_in_bounds(idx, register_size).then_some(Self(idx))
+    fn new(idx: usize, register_size: usize, register: RegisterKey) -> Option<Self> {
+        index_in_bounds(idx, register_size).then_some(Self {
+            index: idx,
+            register,
+        })
     }
 
     /// The underlying index. In range by construction.
     pub fn index(self) -> usize {
-        self.0
+        self.index
     }
 }
 
@@ -192,15 +228,13 @@ pub enum QasmGate {
 
 // ─── Condition expressions ────────────────────────────────────────────────────
 
-/// A boolean expression used as an `if` condition. Modelled as a small tree so
-/// backends can lower conditions however they like (e.g. `c[i] == true` vs
-/// `c[i] == 1` vs a register equality) rather than matching on rendered text.
+/// A condition expression used as an `if` condition. OpenQASM 3.0 feed-forward
+/// uses integer comparison semantics, so measured bits compare against `1`
+/// rather than rendering boolean literals.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     /// A single classical bit, `c[i]`.
     Bit(BitId),
-    /// A boolean literal.
-    Bool(bool),
     /// An integer literal.
     Int(i64),
     /// Equality, `lhs == rhs`.
@@ -208,9 +242,9 @@ pub enum Expr {
 }
 
 impl Expr {
-    /// Build `c[bit] == true`, the feed-forward condition for a measured bit.
+    /// Build `c[bit] == 1`, the feed-forward condition for a measured bit.
     pub fn bit_is_set(bit: BitId) -> Self {
-        Expr::Eq(Box::new(Expr::Bit(bit)), Box::new(Expr::Bool(true)))
+        Expr::Eq(Box::new(Expr::Bit(bit)), Box::new(Expr::Int(1)))
     }
 }
 
@@ -257,20 +291,22 @@ pub struct GateDef {
 
 /// A complete OpenQASM 3.0 program, as a syntax tree. Every node [`render`] needs
 /// is present here — nothing about the concrete syntax is implicit.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Program {
     /// The `OPENQASM <major>.<minor>;` version header.
-    pub version: (u32, u32),
+    version: (u32, u32),
     /// `include "...";` directives, in order.
-    pub includes: Vec<String>,
+    includes: Vec<String>,
     /// The single qubit register every physical index refers into.
-    pub qubits: Register,
+    qubits: Register,
+    qubit_register: RegisterKey,
     /// The classical bit register, present iff the program measures anything.
-    pub bits: Option<Register>,
+    bits: Option<Register>,
+    bit_register: Option<RegisterKey>,
     /// User-defined gate definitions, emitted before the body.
-    pub gate_defs: Vec<GateDef>,
+    gate_defs: Vec<GateDef>,
     /// Top-level statements in execution order.
-    pub body: Vec<Stmt>,
+    body: Vec<Stmt>,
 }
 
 impl Program {
@@ -279,6 +315,7 @@ impl Program {
     /// `stdgates.inc`. This is the shape `reify` produces; construct [`Program`]
     /// directly for other register layouts.
     pub fn new(num_qubits: usize, num_bits: usize) -> Self {
+        let bit_register = (num_bits > 0).then(RegisterKey::fresh);
         Self {
             version: (3, 0),
             includes: vec!["stdgates.inc".to_string()],
@@ -286,10 +323,12 @@ impl Program {
                 name: "q".to_string(),
                 size: num_qubits,
             },
-            bits: (num_bits > 0).then(|| Register {
+            qubit_register: RegisterKey::fresh(),
+            bits: bit_register.map(|_| Register {
                 name: "c".to_string(),
                 size: num_bits,
             }),
+            bit_register,
             gate_defs: Vec::new(),
             body: Vec::new(),
         }
@@ -304,6 +343,186 @@ impl Program {
     pub fn num_bits(&self) -> usize {
         self.bits.as_ref().map_or(0, |r| r.size)
     }
+
+    /// Mint a qubit ID in this program's qubit-register context.
+    pub fn qubit(&self, idx: usize) -> Option<QubitId> {
+        QubitId::new(idx, self.num_qubits(), self.qubit_register)
+    }
+
+    /// Mint a classical bit ID in this program's bit-register context.
+    pub fn bit(&self, idx: usize) -> Option<BitId> {
+        let register = self.bit_register?;
+        BitId::new(idx, self.num_bits(), register)
+    }
+
+    /// The qubit register declaration.
+    pub fn qubits(&self) -> &Register {
+        &self.qubits
+    }
+
+    /// The classical bit register declaration, if present.
+    pub fn bits(&self) -> Option<&Register> {
+        self.bits.as_ref()
+    }
+
+    /// Top-level statements in execution order.
+    pub fn body(&self) -> &[Stmt] {
+        &self.body
+    }
+
+    /// User-defined gate definitions.
+    pub fn gate_defs(&self) -> &[GateDef] {
+        &self.gate_defs
+    }
+
+    /// Append a user-defined gate declaration.
+    pub fn push_gate_def(&mut self, gate_def: GateDef) {
+        self.gate_defs.push(gate_def);
+    }
+
+    /// Append a validated top-level statement.
+    pub fn push(&mut self, stmt: Stmt) -> Result<(), QasmError> {
+        self.validate_stmt(&stmt)?;
+        self.body.push(stmt);
+        Ok(())
+    }
+
+    /// Append several validated top-level statements.
+    pub fn extend<I>(&mut self, stmts: I) -> Result<(), QasmError>
+    where
+        I: IntoIterator<Item = Stmt>,
+    {
+        for stmt in stmts {
+            self.push(stmt)?;
+        }
+        Ok(())
+    }
+
+    pub fn push_gate(&mut self, gate: QasmGate) -> Result<(), QasmError> {
+        self.push(Stmt::Gate(gate))
+    }
+
+    pub fn push_measure(&mut self, qubit: QubitId, bit: BitId) -> Result<(), QasmError> {
+        self.push(Stmt::Measure { qubit, bit })
+    }
+
+    pub fn push_reset(&mut self, qubit: QubitId) -> Result<(), QasmError> {
+        self.push(Stmt::Reset(qubit))
+    }
+
+    pub fn push_if(
+        &mut self,
+        condition: Expr,
+        then_body: Vec<Stmt>,
+        else_body: Vec<Stmt>,
+    ) -> Result<(), QasmError> {
+        self.push(Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        })
+    }
+
+    pub fn push_barrier(&mut self, qubits: Vec<QubitId>) -> Result<(), QasmError> {
+        self.push(Stmt::Barrier(qubits))
+    }
+
+    fn validate_stmt(&self, stmt: &Stmt) -> Result<(), QasmError> {
+        match stmt {
+            Stmt::Gate(gate) => self.validate_gate(gate),
+            Stmt::Measure { qubit, bit } => {
+                self.validate_qubit(*qubit)?;
+                self.validate_bit(*bit)
+            }
+            Stmt::Reset(qubit) => self.validate_qubit(*qubit),
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                self.validate_expr(condition)?;
+                for stmt in then_body.iter().chain(else_body) {
+                    self.validate_stmt(stmt)?;
+                }
+                Ok(())
+            }
+            Stmt::Barrier(qubits) => {
+                for qubit in qubits {
+                    self.validate_qubit(*qubit)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn validate_gate(&self, gate: &QasmGate) -> Result<(), QasmError> {
+        match gate {
+            QasmGate::One(_, a)
+            | QasmGate::Rotation(_, _, a)
+            | QasmGate::U2 { q: a, .. }
+            | QasmGate::U3 { q: a, .. } => self.validate_qubit(*a),
+            QasmGate::Two(_, a, b) => {
+                self.validate_qubit(*a)?;
+                self.validate_qubit(*b)
+            }
+            QasmGate::Ccx(a, b, c) => {
+                self.validate_qubit(*a)?;
+                self.validate_qubit(*b)?;
+                self.validate_qubit(*c)
+            }
+        }
+    }
+
+    fn validate_expr(&self, expr: &Expr) -> Result<(), QasmError> {
+        match expr {
+            Expr::Bit(bit) => self.validate_bit(*bit),
+            Expr::Int(_) => Ok(()),
+            Expr::Eq(lhs, rhs) => {
+                self.validate_expr(lhs)?;
+                self.validate_expr(rhs)
+            }
+        }
+    }
+
+    fn validate_qubit(&self, qubit: QubitId) -> Result<(), QasmError> {
+        if qubit.register == self.qubit_register {
+            Ok(())
+        } else {
+            Err(QasmError::QubitOutOfContext {
+                index: qubit.index(),
+            })
+        }
+    }
+
+    fn validate_bit(&self, bit: BitId) -> Result<(), QasmError> {
+        match self.bit_register {
+            Some(register) if bit.register == register => Ok(()),
+            Some(_) => Err(QasmError::BitOutOfContext { index: bit.index() }),
+            None => Err(QasmError::MissingClassicalRegister),
+        }
+    }
+}
+
+impl PartialEq for Program {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.includes == other.includes
+            && self.qubits == other.qubits
+            && self.bits == other.bits
+            && self.gate_defs == other.gate_defs
+            && self.body == other.body
+    }
+}
+
+/// Errors returned by the safe QASM builder API.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum QasmError {
+    #[error("qubit q[{index}] belongs to a different program")]
+    QubitOutOfContext { index: usize },
+    #[error("bit c[{index}] belongs to a different program")]
+    BitOutOfContext { index: usize },
+    #[error("program has no classical bit register")]
+    MissingClassicalRegister,
 }
 
 // ─── Rendering (total) ─────────────────────────────────────────────────────────
@@ -340,14 +559,14 @@ pub fn render(program: &Program) -> String {
 /// an index into these.
 struct RegisterNames<'a> {
     qubits: &'a str,
-    bits: &'a str,
+    bits: Option<&'a str>,
 }
 
 impl<'a> RegisterNames<'a> {
     fn of(program: &'a Program) -> Self {
         Self {
             qubits: &program.qubits.name,
-            bits: program.bits.as_ref().map_or("c", |r| r.name.as_str()),
+            bits: program.bits.as_ref().map(|r| r.name.as_str()),
         }
     }
 }
@@ -371,10 +590,13 @@ fn render_stmt(out: &mut String, stmt: &Stmt, names: &RegisterNames, depth: usiz
     match stmt {
         Stmt::Gate(gate) => render_gate(out, gate, names.qubits),
         Stmt::Measure { qubit, bit } => {
+            let Some(bits) = names.bits else {
+                unreachable!("validated QASM program cannot measure without a bit register")
+            };
             let _ = writeln!(
                 out,
                 "{}[{}] = measure {}[{}];",
-                names.bits,
+                bits,
                 bit.index(),
                 names.qubits,
                 qubit.index()
@@ -418,8 +640,12 @@ fn render_stmt(out: &mut String, stmt: &Stmt, names: &RegisterNames, depth: usiz
 
 fn render_expr(expr: &Expr, names: &RegisterNames) -> String {
     match expr {
-        Expr::Bit(bit) => format!("{}[{}]", names.bits, bit.index()),
-        Expr::Bool(value) => value.to_string(),
+        Expr::Bit(bit) => {
+            let Some(bits) = names.bits else {
+                unreachable!("validated QASM program cannot reference bits without a bit register")
+            };
+            format!("{}[{}]", bits, bit.index())
+        }
         Expr::Int(value) => value.to_string(),
         Expr::Eq(lhs, rhs) => {
             format!("{} == {}", render_expr(lhs, names), render_expr(rhs, names))
@@ -508,27 +734,26 @@ fn fmt_angle(theta: f64) -> String {
 mod tests {
     use super::*;
 
-    // Test indices are always within the bound 8 by construction; `let ... else`
-    // keeps these helpers free of unwrap()/expect() (workspace lint policy).
-    fn q(i: usize) -> QubitId {
-        let Some(id) = QubitId::new(i, 8) else {
-            unreachable!("test qubit index {i} exceeds bound 8")
+    fn q(program: &Program, i: usize) -> QubitId {
+        let Some(id) = program.qubit(i) else {
+            unreachable!("test qubit index {i} exceeds program bound")
         };
         id
     }
-    fn b(i: usize) -> BitId {
-        let Some(id) = BitId::new(i, 8) else {
-            unreachable!("test bit index {i} exceeds bound 8")
+    fn b(program: &Program, i: usize) -> BitId {
+        let Some(id) = program.bit(i) else {
+            unreachable!("test bit index {i} exceeds program bound")
         };
         id
     }
 
     #[test]
     fn index_constructors_enforce_bounds() {
-        assert!(QubitId::new(0, 2).is_some());
-        assert!(QubitId::new(1, 2).is_some());
-        assert!(QubitId::new(2, 2).is_none());
-        assert!(BitId::new(2, 2).is_none());
+        let p = Program::new(2, 2);
+        assert!(p.qubit(0).is_some());
+        assert!(p.qubit(1).is_some());
+        assert!(p.qubit(2).is_none());
+        assert!(p.bit(2).is_none());
         assert!(index_in_bounds(1, 2));
         assert!(!index_in_bounds(2, 2));
         assert!(operand_arity_ok(2, 2));
@@ -536,20 +761,12 @@ mod tests {
     }
 
     #[test]
-    fn bell_state_renders_exact_qasm() {
+    fn bell_state_renders_exact_qasm() -> Result<(), QasmError> {
         let mut p = Program::new(2, 2);
-        p.body
-            .push(Stmt::Gate(QasmGate::One(OneQubitGate::H, q(0))));
-        p.body
-            .push(Stmt::Gate(QasmGate::Two(TwoQubitGate::Cx, q(0), q(1))));
-        p.body.push(Stmt::Measure {
-            qubit: q(0),
-            bit: b(0),
-        });
-        p.body.push(Stmt::Measure {
-            qubit: q(1),
-            bit: b(1),
-        });
+        p.push_gate(QasmGate::One(OneQubitGate::H, q(&p, 0)))?;
+        p.push_gate(QasmGate::Two(TwoQubitGate::Cx, q(&p, 0), q(&p, 1)))?;
+        p.push_measure(q(&p, 0), b(&p, 0))?;
+        p.push_measure(q(&p, 1), b(&p, 1))?;
         let expected = "\
 OPENQASM 3.0;
 include \"stdgates.inc\";
@@ -561,42 +778,41 @@ c[0] = measure q[0];
 c[1] = measure q[1];
 ";
         assert_eq!(render(&p), expected);
+        Ok(())
     }
 
     #[test]
-    fn feed_forward_renders_exact_if_block() {
+    fn feed_forward_renders_exact_if_block() -> Result<(), QasmError> {
         let mut p = Program::new(3, 2);
-        p.body.push(Stmt::Measure {
-            qubit: q(0),
-            bit: b(0),
-        });
-        p.body.push(Stmt::If {
-            condition: Expr::bit_is_set(b(0)),
-            then_body: vec![Stmt::Gate(QasmGate::One(OneQubitGate::X, q(2)))],
-            else_body: vec![],
-        });
+        p.push_measure(q(&p, 0), b(&p, 0))?;
+        p.push_if(
+            Expr::bit_is_set(b(&p, 0)),
+            vec![Stmt::Gate(QasmGate::One(OneQubitGate::X, q(&p, 2)))],
+            vec![],
+        )?;
         let expected = "\
 OPENQASM 3.0;
 include \"stdgates.inc\";
 qubit[3] q;
 bit[2] c;
 c[0] = measure q[0];
-if (c[0] == true) {
+if (c[0] == 1) {
   x q[2];
 }
 ";
         assert_eq!(render(&p), expected);
+        Ok(())
     }
 
     #[test]
-    fn rotation_and_barrier_render_without_bit_register() {
+    fn rotation_and_barrier_render_without_bit_register() -> Result<(), QasmError> {
         let mut p = Program::new(2, 0);
-        p.body.push(Stmt::Gate(QasmGate::Rotation(
+        p.push_gate(QasmGate::Rotation(
             RotationGate::Rz,
             std::f64::consts::FRAC_PI_4,
-            q(0),
-        )));
-        p.body.push(Stmt::Barrier(vec![q(0), q(1)]));
+            q(&p, 0),
+        ))?;
+        p.push_barrier(vec![q(&p, 0), q(&p, 1)])?;
         let expected = format!(
             "\
 OPENQASM 3.0;
@@ -609,6 +825,33 @@ barrier q[0], q[1];
         );
         assert_eq!(render(&p), expected);
         // No classical register declared when there are no measurements.
-        assert!(p.bits.is_none());
+        assert!(p.bits().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_qubits_from_another_program() {
+        let mut p = Program::new(1, 0);
+        let other = Program::new(1, 0);
+        let err = p
+            .push_gate(QasmGate::One(OneQubitGate::H, q(&other, 0)))
+            .err();
+        assert_eq!(err, Some(QasmError::QubitOutOfContext { index: 0 }));
+        assert!(p.body().is_empty());
+    }
+
+    #[test]
+    fn cannot_measure_without_classical_register() {
+        let p = Program::new(1, 0);
+        assert!(p.bit(0).is_none());
+    }
+
+    #[test]
+    fn rejects_bits_from_another_program() {
+        let mut p = Program::new(1, 1);
+        let other = Program::new(1, 1);
+        let err = p.push_measure(q(&p, 0), b(&other, 0)).err();
+        assert_eq!(err, Some(QasmError::BitOutOfContext { index: 0 }));
+        assert!(p.body().is_empty());
     }
 }

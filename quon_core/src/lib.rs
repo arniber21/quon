@@ -20,6 +20,6 @@ pub use optimization::{
     arity_preserved, depth_after_removal, par_depth, seq_depth, single_qubit_pair,
 };
 pub use qasm::{
-    BitId, Expr, GateDef, OneQubitGate, Program, QasmGate, QubitId, Register, RotationGate, Stmt,
-    TwoQubitGate, index_in_bounds, operand_arity_ok, render,
+    BitId, Expr, GateDef, OneQubitGate, Program, QasmError, QasmGate, QubitId, Register,
+    RotationGate, Stmt, TwoQubitGate, index_in_bounds, operand_arity_ok, render,
 };

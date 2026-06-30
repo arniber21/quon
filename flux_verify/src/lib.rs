@@ -59,18 +59,18 @@ mod smoke {
     /// The OpenQASM emitter (#27) is valid by construction: index-bounds and
     /// gate-arity are Flux-checked at the reify boundary (`index_in_bounds`,
     /// `operand_arity_ok`), so the renderer is total. Pin those kernels and the
-    /// bound-enforcing `QubitId`/`BitId` constructors here.
+    /// bound-enforcing `Program` ID minting here.
     #[test]
     fn quon_core_qasm_kernels_enforce_bounds_and_arity() {
-        use quon_core::qasm::{BitId, QubitId};
-        use quon_core::{index_in_bounds, operand_arity_ok};
+        use quon_core::{Program, index_in_bounds, operand_arity_ok};
         assert!(index_in_bounds(1, 2));
         assert!(!index_in_bounds(2, 2));
         assert!(operand_arity_ok(2, 2));
         assert!(!operand_arity_ok(2, 1));
         // Constructors refuse out-of-range indices, so every id that exists is in range.
-        assert!(QubitId::new(1, 2).is_some());
-        assert!(QubitId::new(2, 2).is_none());
-        assert!(BitId::new(2, 2).is_none());
+        let program = Program::new(2, 2);
+        assert!(program.qubit(1).is_some());
+        assert!(program.qubit(2).is_none());
+        assert!(program.bit(2).is_none());
     }
 }
