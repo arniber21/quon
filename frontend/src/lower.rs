@@ -191,7 +191,7 @@ impl<'c> LoweringCtx<'c> {
                 .map(|_| (qubit, self.location))
                 .collect::<Vec<_>>(),
         );
-        let mut wires: Vec<Value<'c, 'c>> = Vec::with_capacity(block.argument_count() as usize);
+        let mut wires: Vec<Value<'c, 'c>> = Vec::with_capacity(block.argument_count());
         for i in 0..block.argument_count() {
             let arg = block
                 .argument(i)
@@ -489,7 +489,10 @@ fn circuit_ref_op<'c>(
     Ok(operation)
 }
 
-fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<(Sp<Expr>, Sp<Expr>)>, LowerError> {
+/// A gate placement: a gate expression paired with its target-qubit expression.
+type GatePlacement = (Sp<Expr>, Sp<Expr>);
+
+fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<GatePlacement>, LowerError> {
     match &expr.0 {
         Expr::CircuitBlock(stmts) => {
             let Some(Stmt::Expr(last)) = stmts.last().map(|s| &s.0) else {

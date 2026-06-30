@@ -63,7 +63,7 @@ fn count_op(text: &str, op: &str) -> usize {
 fn staging_module_constructs_without_pass() {
     let context = dynamic_context();
     let location = Location::unknown(&context);
-    let mut module = Module::new(location);
+    let module = Module::new(location);
     let body = module.body();
     body.append_operation(gate_func(
         &context,
@@ -87,7 +87,7 @@ fn staging_module_constructs_without_pass() {
 fn qreg_only_lowering_inserts_test_qubits() {
     let context = dynamic_context();
     let location = Location::unknown(&context);
-    let mut module = Module::new(location);
+    let module = Module::new(location);
     let body = module.body();
     let run_block = Block::new(&[]);
     run_block.append_operation(staging::qreg(&context, 2, location));
@@ -106,7 +106,7 @@ fn hello_bell_lowers_to_two_measures() {
     let location = Location::unknown(&context);
     let depth = DepthExpr::Nat(2);
 
-    let mut module = Module::new(location);
+    let module = Module::new(location);
     let body = module.body();
 
     body.append_operation(gate_func(
@@ -150,7 +150,7 @@ fn teleport_lowers_with_two_ifs_and_measures() {
     let context = dynamic_context();
     let location = Location::unknown(&context);
 
-    let mut module = Module::new(location);
+    let module = Module::new(location);
     let body = module.body();
 
     body.append_operation(gate_func(
@@ -291,7 +291,7 @@ fn lit_teleport_mlir_lowers() {
 fn unitary_regions_contain_only_circ_ops() {
     let context = dynamic_context();
     let location = Location::unknown(&context);
-    let mut module = Module::new(location);
+    let module = Module::new(location);
     let body = module.body();
     body.append_operation(gate_func(
         &context,
