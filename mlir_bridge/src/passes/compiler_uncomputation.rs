@@ -3,7 +3,7 @@
 use melior::ir::attribute::StringAttribute;
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
-use melior::ir::{BlockLike, OperationRef, RegionLike, Value, ValueLike};
+use melior::ir::{BlockLike, OperationRef, RegionLike, Value};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef};
 
@@ -76,9 +76,13 @@ fn uncompute_borrow<'c, 'a>(context: &'c Context, borrow: OperationRef<'c, 'a>) 
         op = current.next_in_block();
     }
 
-    let mut wires: Vec<Value<'c, 'a>> = (0..block.argument_count())
-        .map(|index| Value::from(block.argument(index).expect("arg")))
-        .collect();
+    let mut wires = Vec::with_capacity(block.argument_count());
+    for index in 0..block.argument_count() {
+        let Ok(argument) = block.argument(index) else {
+            return false;
+        };
+        wires.push(Value::from(argument));
+    }
     let return_op = {
         let mut cursor = block.first_operation();
         let mut found = None;
@@ -89,13 +93,19 @@ fn uncompute_borrow<'c, 'a>(context: &'c Context, borrow: OperationRef<'c, 'a>) 
             }
             cursor = current.next_in_block();
         }
-        found.expect("borrow return")
+        let Some(return_op) = found else {
+            return false;
+        };
+        return_op
     };
     for gate in gates.iter().rev() {
-        let inverse = inverse_name(&gate.name).expect("inverse");
+        let Some(inverse) = inverse_name(&gate.name) else {
+            return false;
+        };
         let operands: Vec<Value<'c, 'a>> = gate.targets.iter().map(|index| wires[*index]).collect();
-        let built = quantum_circ::gate(context, &inverse, 1, true, &operands, location)
-            .expect("adjoint gate");
+        let Ok(built) = quantum_circ::gate(context, &inverse, 1, true, &operands, location) else {
+            return false;
+        };
         let appended = block.insert_operation_before(return_op, built);
         for (index, target) in gate.targets.iter().enumerate() {
             if let Ok(result) = appended.result(index) {
