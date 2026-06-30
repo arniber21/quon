@@ -15,6 +15,7 @@ use melior::{Context, ContextRef, StringRef};
 use mlir_sys::mlirOperationSetAttributeByName;
 
 use crate::dialect::{quantum_circ, quantum_dynamic};
+use crate::passes::qubit_wiring::WireTracker;
 
 const GATE_TIME_US: f64 = 0.1;
 
@@ -63,6 +64,8 @@ struct GateStep<'c, 'a> {
 
 fn collect_gates<'c, 'a>(block: melior::ir::BlockRef<'c, 'a>) -> Vec<GateStep<'c, 'a>> {
     let mut steps = Vec::new();
+    let mut tracker = WireTracker::new();
+    tracker.seed_block_args(&block);
     let mut op = block.first_operation();
     while let Some(current) = op {
         op = current.next_in_block();
@@ -79,16 +82,23 @@ fn collect_gates<'c, 'a>(block: melior::ir::BlockRef<'c, 'a>) -> Vec<GateStep<'c
             continue;
         }
         if name != quantum_circ::op::GATE {
+            tracker.observe_operation(current);
             continue;
         }
-        let phys = read_i32_attr(&current, "phys_qubit")
-            .map(|value| vec![value])
-            .unwrap_or_default();
+        let roots = tracker.roots_for_operands(current);
+        let phys = if roots.is_empty() {
+            read_i32_attr(&current, "phys_qubit")
+                .map(|value| vec![value])
+                .unwrap_or_default()
+        } else {
+            roots.into_iter().map(|root| root as i32).collect()
+        };
         steps.push(GateStep {
             op: current,
             phys_qubits: phys,
             barrier: false,
         });
+        tracker.observe_operation(current);
     }
     steps
 }
@@ -97,12 +107,14 @@ fn schedule_segment<'c, 'a>(
     context: &'c Context,
     gates: &[GateStep<'c, 'a>],
     mode: ScheduleMode,
+    offset: i64,
 ) -> i64 {
     if gates.is_empty() {
         return 0;
     }
     let n = gates.len();
     let mut preds: Vec<Vec<usize>> = vec![vec![]; n];
+    let mut succs: Vec<Vec<usize>> = vec![vec![]; n];
     let mut last_on_qubit: HashMap<i32, usize> = HashMap::new();
 
     for (index, gate) in gates.iter().enumerate() {
@@ -119,8 +131,14 @@ fn schedule_segment<'c, 'a>(
             last_on_qubit.insert(*q, index);
         }
     }
+    for (index, gate_preds) in preds.iter().enumerate() {
+        for pred in gate_preds {
+            succs[*pred].push(index);
+        }
+    }
 
     let mut times = vec![0i64; n];
+    let mut asap = vec![0i64; n];
     for index in 0..n {
         if gates[index].barrier {
             continue;
@@ -130,29 +148,29 @@ fn schedule_segment<'c, 'a>(
             .map(|pred| times[*pred] + 1)
             .max()
             .unwrap_or(0);
+        asap[index] = earliest;
         times[index] = earliest;
     }
 
     if mode == ScheduleMode::Alap {
         let max_time = *times.iter().max().unwrap_or(&0);
+        times.fill(max_time);
         for index in (0..n).rev() {
             if gates[index].barrier {
-                times[index] = max_time;
                 continue;
             }
-            let succ_constraint = max_time;
-            let pred_constraint = preds[index]
+            let latest = succs[index]
                 .iter()
-                .map(|pred| times[*pred] + 1)
-                .max()
-                .unwrap_or(0);
-            times[index] = succ_constraint.max(pred_constraint);
+                .map(|succ| times[*succ] - 1)
+                .min()
+                .unwrap_or(max_time);
+            times[index] = latest.max(asap[index]);
         }
     }
 
     for (index, gate) in gates.iter().enumerate() {
         if !gate.barrier {
-            set_schedule_time(context, gate.op, times[index]);
+            set_schedule_time(context, gate.op, times[index] + offset);
         }
     }
     *times.iter().max().unwrap_or(&0) + 1
@@ -201,7 +219,9 @@ fn schedule_module<'c, 'a>(
                 segments.push(vec![]);
                 continue;
             }
-            segments.last_mut().expect("segment").push(gate);
+            if let Some(segment) = segments.last_mut() {
+                segment.push(gate);
+            }
         }
 
         let mut total_depth = 0i64;
@@ -210,7 +230,7 @@ fn schedule_module<'c, 'a>(
                 continue;
             }
             let mode = select_mode(target, total_depth);
-            total_depth += schedule_segment(context, segment, mode);
+            total_depth += schedule_segment(context, segment, mode, total_depth);
         }
     }
 }
