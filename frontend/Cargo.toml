@@ -18,6 +18,7 @@ proptest    = { workspace = true }
 insta       = { workspace = true }
 melior      = { workspace = true }
 mlir_bridge = { path = "../mlir_bridge" }
+backend     = { path = "../backend" }
 # Shared with the fuzz crate: the proptest roundtrip test drives the same Unstructured-based
 # generator (frontend/fuzz/src/gen.rs) via random bytes.
 arbitrary   = { workspace = true }

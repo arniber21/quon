@@ -137,11 +137,17 @@ fn find_run_op<'c, 'a>(module: OperationRef<'c, 'a>) -> Option<OperationRef<'c, 
     found
 }
 
-fn foreign_qubit<'c>(context: &'c Context, location: Location<'c>) -> Operation<'c> {
+fn foreign_qubit<'c>(
+    context: &'c Context,
+    location: Location<'c>,
+) -> Result<Operation<'c>, LowerError> {
     OperationBuilder::new("test.qubit", location)
         .add_results(&[quantum_circ::qubit_type(context)])
         .build()
-        .expect("test.qubit builds")
+        .map_err(|error| LowerError::Build {
+            op: "test.qubit",
+            message: error.to_string(),
+        })
 }
 
 fn insert_lowered<'c, 'a>(
@@ -246,13 +252,17 @@ fn inline_func_as_unitary_body<'c, 'a>(
                 message: error.to_string(),
             })?;
             let appended = block.append_operation(built);
-            for (operand_index, operand) in gate_op
-                .operands()
-                .filter(|operand| quantum_circ::is_qubit_type(operand.r#type()))
+            // Thread by the *result* SSA value: a downstream gate consumes the
+            // previous gate's result (the live wire), not its operand. Mapping
+            // operand→result instead would leave chained gates referencing the
+            // original func's dangling SSA values.
+            for (result_index, gate_result) in gate_op
+                .results()
+                .filter(|result| quantum_circ::is_qubit_type(result.r#type()))
                 .enumerate()
             {
-                if let Ok(result) = appended.result(operand_index) {
-                    arg_map.insert(value_key(&operand), Value::from(result));
+                if let Ok(result) = appended.result(result_index) {
+                    arg_map.insert(value_key(&gate_result), Value::from(result));
                 }
             }
         } else {
@@ -263,8 +273,16 @@ fn inline_func_as_unitary_body<'c, 'a>(
 
     let outputs = if return_operands.is_empty() {
         (0..block.argument_count())
-            .map(|index| Value::from(block.argument(index).expect("arg")))
-            .collect()
+            .map(|index| {
+                block
+                    .argument(index)
+                    .map(Value::from)
+                    .map_err(|_| LowerError::Build {
+                        op: quantum_dynamic::op::UNITARY_REGION,
+                        message: format!("missing block argument #{index}"),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
     } else {
         return_operands
     };
@@ -324,7 +342,7 @@ fn lower_run_region<'c, 'a>(
                         &module_block,
                         run_op,
                         &mut insert_after,
-                        foreign_qubit(context, location),
+                        foreign_qubit(context, location)?,
                     );
                     if let Ok(staging_result) = staging_op.result(index as usize) {
                         let qubit_result = inserted.result(0).map_err(|_| LowerError::Build {
