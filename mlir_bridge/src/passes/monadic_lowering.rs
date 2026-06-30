@@ -331,10 +331,7 @@ fn lower_run_region<'c, 'a>(
                             op: staging::op::QREG,
                             message: "missing qubit result".to_string(),
                         })?;
-                        value_map.insert(
-                            value_key(&staging_result),
-                            Value::from(qubit_result),
-                        );
+                        value_map.insert(value_key(&staging_result), Value::from(qubit_result));
                     }
                 }
             }
@@ -396,10 +393,7 @@ fn lower_run_region<'c, 'a>(
                         op: quantum_dynamic::op::MEASURE,
                         message: "missing measure result".to_string(),
                     })?;
-                    value_map.insert(
-                        value_key(&staging_result),
-                        Value::from(bit_result),
-                    );
+                    value_map.insert(value_key(&staging_result), Value::from(bit_result));
                 }
             }
             staging::op::RESET => {
@@ -426,10 +420,7 @@ fn lower_run_region<'c, 'a>(
                         op: quantum_dynamic::op::RESET,
                         message: "missing reset result".to_string(),
                     })?;
-                    value_map.insert(
-                        value_key(&staging_result),
-                        Value::from(qubit_result),
-                    );
+                    value_map.insert(value_key(&staging_result), Value::from(qubit_result));
                 }
             }
             staging::op::COND_APPLY => {
