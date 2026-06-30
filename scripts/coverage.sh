@@ -27,7 +27,7 @@ if ! rustup component list --installed | grep -q '^llvm-tools'; then
   exit 1
 fi
 
-EXCLUDE=(--exclude flux_verify)
+EXCLUDE=(--workspace --exclude flux_verify)
 
 case "${1:-}" in
   --html)
