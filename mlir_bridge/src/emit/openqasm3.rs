@@ -53,6 +53,9 @@ pub enum EmitError {
     /// An op appeared inside a unitary region or branch that is not a gate.
     #[error("unexpected op `{0}` inside a unitary region")]
     UnexpectedOp(String),
+    /// The typed QASM builder rejected an invalid statement.
+    #[error("invalid QASM program: {0}")]
+    InvalidProgram(#[from] qasm::QasmError),
 }
 
 // ─── Melior helpers (mirror monadic_lowering.rs) ─────────────────────────────
@@ -165,16 +168,25 @@ impl Reifier<'_> {
             .ok_or(EmitError::UnassignedBit)
     }
 
-    fn alloc_qubit<'a>(&mut self, value: &impl ValueLike<'a>) -> Result<QubitId, EmitError> {
-        let id =
-            QubitId::new(self.next_qubit, self.num_qubits).ok_or(EmitError::UnassignedQubit)?;
+    fn alloc_qubit<'a>(
+        &mut self,
+        program: &Program,
+        value: &impl ValueLike<'a>,
+    ) -> Result<QubitId, EmitError> {
+        let id = program
+            .qubit(self.next_qubit)
+            .ok_or(EmitError::UnassignedQubit)?;
         self.next_qubit += 1;
         self.qubits.insert(value_key(value), id);
         Ok(id)
     }
 
-    fn alloc_bit<'a>(&mut self, value: &impl ValueLike<'a>) -> Result<BitId, EmitError> {
-        let id = BitId::new(self.next_bit, self.num_bits).ok_or(EmitError::UnassignedBit)?;
+    fn alloc_bit<'a>(
+        &mut self,
+        program: &Program,
+        value: &impl ValueLike<'a>,
+    ) -> Result<BitId, EmitError> {
+        let id = program.bit(self.next_bit).ok_or(EmitError::UnassignedBit)?;
         self.next_bit += 1;
         self.bits.insert(value_key(value), id);
         Ok(id)
@@ -357,6 +369,7 @@ pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitErr
     };
 
     let (num_qubits, num_bits) = count_registers(top);
+    let mut program = Program::new(num_qubits, num_bits);
     let mut reifier = Reifier {
         qubits: HashMap::new(),
         bits: HashMap::new(),
@@ -367,14 +380,13 @@ pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitErr
         native: target.native_gates.iter().map(|g| g.name.clone()).collect(),
         target_id: &target.id,
     };
-    let mut program = Program::new(num_qubits, num_bits);
 
     let mut op = top.first_operation();
     while let Some(current) = op {
         let name = op_name(&current);
         if is_allocation(current) {
             for result in current.results() {
-                reifier.alloc_qubit(&result)?;
+                reifier.alloc_qubit(&program, &result)?;
             }
         } else {
             match name.as_str() {
@@ -386,15 +398,15 @@ pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitErr
                     let bit_value = current
                         .result(0)
                         .map_err(|_| EmitError::MissingOperand { op: "measure" })?;
-                    let b = reifier.alloc_bit(&bit_value)?;
-                    program.body.push(Stmt::Measure { qubit: q, bit: b });
+                    let b = reifier.alloc_bit(&program, &bit_value)?;
+                    program.push_measure(q, b)?;
                 }
                 quantum_dynamic::op::RESET => {
                     let qubit = current
                         .operand(0)
                         .map_err(|_| EmitError::MissingOperand { op: "reset" })?;
                     let q = reifier.lookup_qubit(&qubit)?;
-                    program.body.push(Stmt::Reset(q));
+                    program.push_reset(q)?;
                     if let Ok(result) = current.result(0) {
                         reifier.thread(&result, q);
                     }
@@ -411,7 +423,7 @@ pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitErr
                         },
                     )?;
                     let (stmts, outputs) = reifier.reify_circ_block(block, &arg_ids)?;
-                    program.body.extend(stmts);
+                    program.extend(stmts)?;
                     thread_results(&mut reifier, current, &arg_ids, &outputs);
                 }
                 quantum_dynamic::op::IF => {
@@ -434,11 +446,7 @@ pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitErr
                         Some(block) => reifier.reify_circ_block(block, &arg_ids)?.0,
                         None => Vec::new(),
                     };
-                    program.body.push(Stmt::If {
-                        condition: quon_core::qasm::Expr::bit_is_set(bit),
-                        then_body,
-                        else_body,
-                    });
+                    program.push_if(qasm::Expr::bit_is_set(bit), then_body, else_body)?;
                     // Feed-forward threads each qubit through unchanged.
                     let ids = arg_ids.clone();
                     thread_results(&mut reifier, current, &ids, &ids);
@@ -449,7 +457,7 @@ pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitErr
                         .iter()
                         .map(|v| reifier.lookup_qubit(v))
                         .collect::<Result<Vec<_>, _>>()?;
-                    program.body.push(Stmt::Barrier(ids.clone()));
+                    program.push_barrier(ids.clone())?;
                     thread_results(&mut reifier, current, &ids, &ids);
                 }
                 // Function/circuit definitions and anything else at the top

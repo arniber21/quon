@@ -28,8 +28,14 @@ use crate::types::Ty;
 pub enum LowerError {
     #[error("lowering is not implemented for `{construct}`")]
     Unsupported { construct: &'static str },
-    #[error("circuit function `{name}` must have no parameters in this lowering pass")]
-    ParametricFn { name: String },
+    #[error(
+        "parameterized circuit function `{name}` is not supported by the QASM lowering pass yet (deferred under #27)"
+    )]
+    ParametricCircuitFn { name: String },
+    #[error(
+        "parameterized run function `{name}` is not supported by the QASM lowering pass yet (deferred under #27)"
+    )]
+    ParametricRunFn { name: String },
     #[error("could not read a constant qubit count from `{field}`")]
     NonConstWidth { field: &'static str },
     #[error("unknown gate `{name}`")]
@@ -159,12 +165,12 @@ impl<'c> LoweringCtx<'c> {
         ret: &Sp<AstType>,
         body: &Sp<Expr>,
     ) -> Result<(), LowerError> {
-        if !params.is_empty() {
-            return Err(LowerError::ParametricFn { name: name.clone() });
-        }
         let Ty::Circuit { n, m, d, c } = self.checker.resolve_type(ret)? else {
             return Ok(());
         };
+        if !params.is_empty() {
+            return Err(LowerError::ParametricCircuitFn { name: name.clone() });
+        }
         let in_qubits = const_width(&n, "in_qubits")?;
         let out_qubits = const_width(&m, "out_qubits")?;
         let clifford = matches!(c, CliffordClass::Clifford);
@@ -266,7 +272,7 @@ impl<'c> LoweringCtx<'c> {
         // params in as run operands; the runnable entry points we compile take no
         // qubit parameters (they allocate via `qreg`).
         if !params.is_empty() {
-            return Err(LowerError::ParametricFn { name: name.clone() });
+            return Err(LowerError::ParametricRunFn { name: name.clone() });
         }
 
         let region = Region::new();
