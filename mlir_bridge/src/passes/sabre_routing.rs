@@ -14,14 +14,11 @@ use melior::ir::r#type::TypeId;
 use melior::ir::{AttributeLike, BlockLike, Location, OperationRef, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef};
-use mlir_sys::mlirOperationSetAttributeByName;
+use mlir_sys::{mlirOperationSetAttributeByName, mlirOperationSetOperand};
 use thiserror::Error;
 
 use crate::dialect::quantum_circ;
-
-fn value_key<'a>(value: &impl ValueLike<'a>) -> usize {
-    value.to_raw().ptr as usize
-}
+use crate::passes::qubit_wiring::{self, WireTracker};
 
 fn set_i32_attr<'c>(context: &'c Context, op: OperationRef<'c, '_>, key: &str, value: i32) {
     let attribute: melior::ir::Attribute<'_> = IntegerAttribute::new(
@@ -103,39 +100,100 @@ struct Layout {
     /// logical value key -> physical index
     mapping: HashMap<usize, usize>,
     /// physical index -> logical value key
-    inverse: Vec<usize>,
+    inverse: Vec<Option<usize>>,
 }
 
 impl Layout {
     fn new(num_qubits: usize) -> Self {
         Self {
             mapping: HashMap::new(),
-            inverse: (0..num_qubits).collect(),
+            inverse: vec![None; num_qubits],
         }
     }
 
-    fn assign(&mut self, logical: usize, physical: usize) {
+    fn assign(&mut self, logical: usize, physical: usize) -> Result<(), RouteError> {
+        if physical >= self.inverse.len() {
+            return Err(RouteError::Build {
+                op: quantum_circ::op::GATE,
+                message: format!("logical qubit {logical} exceeds physical device size"),
+            });
+        }
         self.mapping.insert(logical, physical);
-        if physical < self.inverse.len() {
-            self.inverse[physical] = logical;
+        self.inverse[physical] = Some(logical);
+        Ok(())
+    }
+
+    fn phys(&self, logical: usize) -> Result<usize, RouteError> {
+        self.mapping
+            .get(&logical)
+            .copied()
+            .ok_or_else(|| RouteError::Build {
+                op: quantum_circ::op::GATE,
+                message: format!("unassigned logical qubit {logical}"),
+            })
+    }
+
+    fn logical_at(&self, physical: usize) -> Result<usize, RouteError> {
+        self.inverse
+            .get(physical)
+            .and_then(|value| *value)
+            .ok_or_else(|| RouteError::Build {
+                op: quantum_circ::op::GATE,
+                message: format!("empty physical slot {physical}"),
+            })
+    }
+
+    fn swap_phys(&mut self, a: usize, b: usize) -> Result<(usize, usize), RouteError> {
+        if a >= self.inverse.len() || b >= self.inverse.len() {
+            return Err(RouteError::Build {
+                op: quantum_circ::op::GATE,
+                message: "swap endpoint outside physical device".to_string(),
+            });
         }
-    }
-
-    fn phys(&self, logical: usize) -> usize {
-        *self.mapping.get(&logical).unwrap_or(&logical)
-    }
-
-    fn swap_phys(&mut self, a: usize, b: usize) {
         let la = self.inverse[a];
         let lb = self.inverse[b];
-        self.mapping.insert(la, b);
-        self.mapping.insert(lb, a);
+        if let Some(logical) = la {
+            self.mapping.insert(logical, b);
+        }
+        if let Some(logical) = lb {
+            self.mapping.insert(logical, a);
+        }
         self.inverse[a] = lb;
         self.inverse[b] = la;
+        let Some(la) = la else {
+            return Err(RouteError::Build {
+                op: quantum_circ::op::GATE,
+                message: format!("empty physical slot {a}"),
+            });
+        };
+        let Some(lb) = lb else {
+            return Err(RouteError::Build {
+                op: quantum_circ::op::GATE,
+                message: format!("empty physical slot {b}"),
+            });
+        };
+        Ok((la, lb))
     }
 }
 
-// Threaded routing state: layout, IR cursor, and live wire map travel together.
+fn set_qubit_operands<'c, 'a>(gate: OperationRef<'c, 'a>, values: &[Value<'c, 'a>]) {
+    let mut qubit_index = 0usize;
+    for operand_index in 0..gate.operand_count() {
+        let Ok(operand) = gate.operand(operand_index) else {
+            continue;
+        };
+        if !quantum_circ::is_qubit_type(operand.r#type()) {
+            continue;
+        }
+        if let Some(value) = values.get(qubit_index) {
+            unsafe {
+                mlirOperationSetOperand(gate.to_raw(), operand_index as isize, value.to_raw());
+            }
+        }
+        qubit_index += 1;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn route_two_qubit<'c, 'a>(
     context: &'c Context,
@@ -149,53 +207,66 @@ fn route_two_qubit<'c, 'a>(
     wires: &mut HashMap<usize, Value<'c, 'a>>,
 ) -> Result<(), RouteError> {
     let location = gate.location();
-    let mut p_a = layout.phys(logical_a);
-    let mut p_b = layout.phys(logical_b);
+    let mut p_a = layout.phys(logical_a)?;
+    let mut p_b = layout.phys(logical_b)?;
 
     while target.topology.dist(p_a, p_b) > 1 {
-        let path = shortest_path(&target.topology.dist, p_a, p_b);
-        // No connecting path (e.g. disconnected components): bail out instead of
-        // indexing an empty path and panicking.
-        let Some(&(u, v)) = path.first() else {
-            break;
-        };
-        let swap_cost = cost.alpha + cost.gamma * noise_penalty(target, u, v);
-        let _ = swap_cost;
+        let (u, v) = best_swap(target, cost, layout, p_a, p_b)?;
 
-        let wire_u = wires[&layout.inverse[u]];
-        let wire_v = wires[&layout.inverse[v]];
+        let logical_u = layout.logical_at(u)?;
+        let logical_v = layout.logical_at(v)?;
+        let wire_u = wires[&logical_u];
+        let wire_v = wires[&logical_v];
         let (out_u, out_v) = append_swap(context, block, gate, wire_u, wire_v, location)?;
-        wires.insert(layout.inverse[u], out_u);
-        wires.insert(layout.inverse[v], out_v);
-        layout.swap_phys(u, v);
-        p_a = layout.phys(logical_a);
-        p_b = layout.phys(logical_b);
+        let (new_u, new_v) = layout.swap_phys(u, v)?;
+        wires.insert(new_u, out_u);
+        wires.insert(new_v, out_v);
+        p_a = layout.phys(logical_a)?;
+        p_b = layout.phys(logical_b)?;
     }
+
+    set_qubit_operands(gate, &[wires[&logical_a], wires[&logical_b]]);
     Ok(())
 }
 
-fn shortest_path(dist: &[Vec<usize>], start: usize, end: usize) -> Vec<(usize, usize)> {
-    if start == end {
-        return vec![];
-    }
-    let mut current = start;
-    let mut path = Vec::new();
-    while current != end {
-        let mut next = current;
-        let mut best = dist[current][end];
-        for (candidate, row) in dist.iter().enumerate() {
-            if dist[current][candidate] == 1 && row[end] < best {
-                best = row[end];
-                next = candidate;
-            }
+fn best_swap(
+    target: &BackendTarget,
+    cost: SabreCost,
+    layout: &Layout,
+    p_a: usize,
+    p_b: usize,
+) -> Result<(usize, usize), RouteError> {
+    let mut best: Option<((usize, usize), f64)> = None;
+    for &(u, v) in &target.topology.edges {
+        if layout.inverse.get(u).and_then(|value| *value).is_none()
+            || layout.inverse.get(v).and_then(|value| *value).is_none()
+        {
+            continue;
         }
-        if next == current {
-            break;
+        let swapped_a = if p_a == u {
+            v
+        } else if p_a == v {
+            u
+        } else {
+            p_a
+        };
+        let swapped_b = if p_b == u {
+            v
+        } else if p_b == v {
+            u
+        } else {
+            p_b
+        };
+        let distance = target.topology.dist(swapped_a, swapped_b) as f64;
+        let score = cost.alpha * distance + cost.gamma * noise_penalty(target, u, v);
+        if best.is_none_or(|(_, best_score)| score < best_score) {
+            best = Some(((u, v), score));
         }
-        path.push((current, next));
-        current = next;
     }
-    path
+    best.map(|(edge, _)| edge).ok_or_else(|| RouteError::Build {
+        op: quantum_circ::op::GATE,
+        message: "no legal swap candidate".to_string(),
+    })
 }
 
 fn noise_penalty(target: &BackendTarget, a: usize, b: usize) -> f64 {
@@ -217,6 +288,8 @@ fn route_block<'c, 'a>(
     let mut layout = Layout::new(target.num_qubits);
     let mut next_phys = 0usize;
     let mut wires: HashMap<usize, Value<'c, 'a>> = HashMap::new();
+    let mut tracker = WireTracker::new();
+    tracker.seed_block_args(&block);
 
     let mut op = block.first_operation();
     while let Some(current) = op {
@@ -228,18 +301,16 @@ fn route_block<'c, 'a>(
             continue;
         }
 
-        let qubits: Vec<(usize, Value<'c, 'a>)> = current
-            .operands()
-            .filter(|operand| quantum_circ::is_qubit_type(operand.r#type()))
-            .map(|operand| {
-                let key = value_key(&operand);
-                (key, operand)
-            })
-            .collect();
+        let operands = qubit_wiring::qubit_operands(current);
+        let roots = tracker.roots_for_operands(current);
+        let qubits: Vec<(usize, Value<'c, 'a>)> = roots.into_iter().zip(operands).collect();
 
         for (logical, _) in &qubits {
             if !layout.mapping.contains_key(logical) {
-                layout.assign(*logical, next_phys);
+                if let Err(error) = layout.assign(*logical, next_phys) {
+                    eprintln!("sabre-routing: {error}");
+                    return;
+                }
                 next_phys += 1;
             }
         }
@@ -265,9 +336,12 @@ fn route_block<'c, 'a>(
             }
         }
 
-        if let Some((logical, _)) = qubits.first() {
-            set_i32_attr(context, current, "phys_qubit", layout.phys(*logical) as i32);
+        if let Some((logical, _)) = qubits.first()
+            && let Ok(phys) = layout.phys(*logical)
+        {
+            set_i32_attr(context, current, "phys_qubit", phys as i32);
         }
+        tracker.observe_operation(current);
     }
 }
 
