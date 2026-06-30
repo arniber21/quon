@@ -25,6 +25,7 @@ pub mod dynamic_linearity_verifier;
 pub mod gate_cancellation;
 pub mod linearity_verifier;
 pub mod measurement_deferral;
+pub mod monadic_lowering;
 pub mod native_gate_decomp;
 pub mod rotation_merging;
 pub mod sabre_routing;

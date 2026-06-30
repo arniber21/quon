@@ -1,3 +1,4 @@
+pub mod monadic_staging;
 pub mod quantum_circ;
 pub mod quantum_dynamic;
 
