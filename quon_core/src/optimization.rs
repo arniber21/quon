@@ -31,11 +31,7 @@ use flux_rs::attrs::*;
 // discharge the `v <= current` refinement; silence clippy's rewrite hint.
 #[allow(clippy::implicit_saturating_sub)]
 pub fn depth_after_removal(current: u64, removed: u64) -> u64 {
-    if removed >= current {
-        0
-    } else {
-        current - removed
-    }
+    current.saturating_sub(removed)
 }
 
 /// Sequential composition depth (`a |> b`): depths add. The result bounds each
