@@ -2,6 +2,7 @@
 
 use std::env;
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 use backend::json;
@@ -12,11 +13,11 @@ use mlir_bridge::dialect;
 use mlir_bridge::passes::native_gate_decomp;
 
 fn main() -> ExitCode {
-    let target_path = env::args().nth(1).unwrap_or_else(|| {
-        "backend/tests/fixtures/device_5q.json".to_string()
-    });
+    let target_path = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "backend/tests/fixtures/device_5q.json".to_string());
 
-    let target = match json::load(&target_path) {
+    let target = match json::load(Path::new(&target_path)) {
         Ok(target) => target,
         Err(error) => {
             eprintln!("error: failed to load target `{target_path}`: {error}");
