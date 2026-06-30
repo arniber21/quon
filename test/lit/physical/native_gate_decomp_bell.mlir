@@ -5,6 +5,12 @@
 module {
   // CHECK-NOT: gate_name = "H"
   // CHECK-NOT: gate_name = "CNOT"
+  // CHECK-NOT: gate_name = "Y"
+  // CHECK-NOT: gate_name = "Z"
+  // CHECK-NOT: gate_name = "SWAP"
+  // CHECK-NOT: gate_name = "Ry"
+  // CHECK-NOT: gate_name = "Rx"
+  // CHECK-NOT: native_gate = false
   // CHECK-DAG: gate_name = "cx"
   // CHECK-DAG: gate_name = "rz"
   // CHECK-DAG: gate_name = "sx"
