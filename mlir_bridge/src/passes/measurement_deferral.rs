@@ -8,9 +8,7 @@ use std::collections::HashMap;
 use melior::ir::attribute::{BoolAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
-use melior::ir::{
-    Block, BlockLike, Location, Operation, OperationRef, Region, RegionLike, Value, ValueLike,
-};
+use melior::ir::{Block, BlockLike, Location, OperationRef, Region, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use quon_core::DepthExpr;
@@ -113,8 +111,17 @@ fn invert_clifford_gate(name: &str) -> Option<String> {
     }
 }
 
+/// Builds the gate list whose composite operator is `U · V†` (then = `U`,
+/// else = `V`), in circuit order (first-applied first).
+///
+/// The deferred region applies `V` unconditionally, then the controlled
+/// correction. The deferred-measurement identity requires that correction to be
+/// `C(U V†)`: `W = |0><0|⊗V + |1><1|⊗U = C(U V†) · (I⊗V)`. A circuit's operator
+/// is the reverse product of its gates, so to realise the operator `U V†` we
+/// emit `V†` first (the else gates reversed and inverted) followed by `U` (the
+/// then gates in order).
 fn compose_u_v_dagger(then_gates: &[GateStep], else_gates: &[GateStep]) -> Vec<GateStep> {
-    let mut composed = then_gates.to_vec();
+    let mut composed = Vec::with_capacity(then_gates.len() + else_gates.len());
     for gate in else_gates.iter().rev() {
         if let Some(inv) = invert_clifford_gate(&gate.name) {
             composed.push(GateStep {
@@ -125,6 +132,7 @@ fn compose_u_v_dagger(then_gates: &[GateStep], else_gates: &[GateStep]) -> Vec<G
             });
         }
     }
+    composed.extend(then_gates.iter().cloned());
     composed
 }
 
@@ -250,15 +258,14 @@ fn find_unique_if_for_bit<'c, 'a>(
     let mut found = None;
     let mut op = body.first_operation();
     while let Some(current) = op {
-        if op_name(&current) == quantum_dynamic::op::IF {
-            if let Ok(condition) = current.operand(0) {
-                if value_key(&condition) == bit_key {
-                    if found.is_some() {
-                        return None;
-                    }
-                    found = Some(current);
-                }
+        if op_name(&current) == quantum_dynamic::op::IF
+            && let Ok(condition) = current.operand(0)
+            && value_key(&condition) == bit_key
+        {
+            if found.is_some() {
+                return None;
             }
+            found = Some(current);
         }
         op = current.next_in_block();
     }
@@ -331,23 +338,26 @@ fn defer_one<'c, 'a>(
         output_map.insert(index, Value::from(result));
     }
     for (index, _qubit) in if_qubits.iter().enumerate() {
-        if let Some(mapped) = output_map.get(&(index + 1)) {
-            if let Ok(if_result) = if_op.result(index) {
-                let rewriter = IrRewriter::new(context);
-                rewriter
-                    .as_rewriter_base()
-                    .replace_all_uses_with(Value::from(if_result), *mapped);
-            }
+        if let Some(mapped) = output_map.get(&(index + 1))
+            && let Ok(if_result) = if_op.result(index)
+        {
+            let rewriter = IrRewriter::new(context);
+            rewriter
+                .as_rewriter_base()
+                .replace_all_uses_with(Value::from(if_result), *mapped);
         }
     }
 
-    let terminal =
-        quantum_dynamic::measure(context, output_map[&0], location).map_err(|error| {
-            DeferError::Build {
-                op: quantum_dynamic::op::MEASURE,
-                message: error.to_string(),
-            }
-        })?;
+    let measured_out = output_map.get(&0).copied().ok_or(DeferError::Build {
+        op: quantum_dynamic::op::UNITARY_REGION,
+        message: "deferred region has no control-qubit result".to_string(),
+    })?;
+    let terminal = quantum_dynamic::measure(context, measured_out, location).map_err(|error| {
+        DeferError::Build {
+            op: quantum_dynamic::op::MEASURE,
+            message: error.to_string(),
+        }
+    })?;
     body.insert_operation_after(deferred_ref, terminal);
 
     let rewriter = IrRewriter::new(context);

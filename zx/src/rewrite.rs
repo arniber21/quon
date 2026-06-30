@@ -105,15 +105,19 @@ fn normalize_phase(phase: f64) -> f64 {
 fn pi_copy(_zx: &mut ZXGraph) -> bool {
     false
 }
+#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
 fn bialgebra(_zx: &mut ZXGraph) -> bool {
     false
 }
+#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
 fn euler_decomposition(_zx: &mut ZXGraph) -> bool {
     false
 }
+#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
 fn color_change(_zx: &mut ZXGraph) -> bool {
     false
 }
+#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
 fn state_copy(_zx: &mut ZXGraph) -> bool {
     false
 }
