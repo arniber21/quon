@@ -25,7 +25,7 @@ def compile_to_qasm(source_file: str) -> str:
     return result.stdout
 
 
-def run(qasm_src: str, shots: int = 4096) -> dict:
+def run(qasm_src: str, shots: int = 4096, seed: int | None = None) -> dict:
     from qiskit import qasm3
     from qiskit_aer import AerSimulator
 
@@ -36,7 +36,12 @@ def run(qasm_src: str, shots: int = 4096) -> dict:
     if circuit.num_clbits == 0:
         circuit.measure_all()
     sim = AerSimulator()
-    job = sim.run(circuit, shots=shots)
+    # `seed` pins the sampler RNG so verification runs are reproducible; left as
+    # None for the interactive CLI, where fresh randomness is fine.
+    run_kwargs: dict = {"shots": shots}
+    if seed is not None:
+        run_kwargs["seed_simulator"] = seed
+    job = sim.run(circuit, **run_kwargs)
     return job.result().get_counts()
 
 
@@ -44,6 +49,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run a compiled Quon program on Qiskit Aer")
     parser.add_argument("source", nargs="?", help=".qn source file (omit to read QASM from stdin)")
     parser.add_argument("--shots", type=int, default=4096)
+    parser.add_argument("--seed", type=int, default=None, help="pin the Aer sampler RNG")
     args = parser.parse_args()
 
     if args.source:
@@ -51,7 +57,7 @@ def main():
     else:
         qasm_src = sys.stdin.read()
 
-    counts = run(qasm_src, shots=args.shots)
+    counts = run(qasm_src, shots=args.shots, seed=args.seed)
     for bitstring, count in sorted(counts.items(), key=lambda x: -x[1]):
         print(f"{bitstring}: {count}")
 

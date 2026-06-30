@@ -19,12 +19,13 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "python"))
 import quon_aer  # noqa: E402
 
 SHOTS = 4096
+SEED = 1234  # pin the Aer sampler so the run is reproducible
 SOURCE = os.path.join(REPO_ROOT, "test", "verify", "teleport.qn")
 
 
 def main() -> int:
     qasm = quon_aer.compile_to_qasm(SOURCE)
-    counts = quon_aer.run(qasm, shots=SHOTS)
+    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
 
     # Qiskit prints classical bits high-index-first, so Bob (c[2]) is the
     # leftmost character of each outcome string.

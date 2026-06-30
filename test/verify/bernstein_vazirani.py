@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "python"))
 import quon_aer  # noqa: E402
 
 SHOTS = 4096
+SEED = 1234  # pin the Aer sampler so the run is reproducible
 SOURCE = os.path.join(REPO_ROOT, "test", "verify", "bernstein_vazirani.qn")
 SECRET = (1, 1, 0)  # (c0, c1, c2)
 
@@ -29,7 +30,7 @@ def clbit(key: str, k: int, nbits: int) -> int:
 
 def main() -> int:
     qasm = quon_aer.compile_to_qasm(SOURCE)
-    counts = quon_aer.run(qasm, shots=SHOTS)
+    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
     nbits = len(next(iter(counts)).replace(" ", ""))
 
     recovered = {tuple(clbit(key, i, nbits) for i in range(3)) for key in counts}

@@ -17,18 +17,20 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "python"))
 import quon_aer  # noqa: E402
 
 SHOTS = 4096
+SEED = 1234  # pin the Aer sampler so the run is reproducible
 SOURCE = os.path.join(REPO_ROOT, "test", "verify", "bell.qn")
 
 
 def main() -> int:
     qasm = quon_aer.compile_to_qasm(SOURCE)
-    counts = quon_aer.run(qasm, shots=SHOTS)
+    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
 
     correlated = counts.get("00", 0) + counts.get("11", 0)
     leakage = counts.get("01", 0) + counts.get("10", 0)
 
     # The two correlated outcomes should each land near half the shots; allow a
-    # generous statistical band (~5σ for a fair coin over 4096 shots).
+    # generous statistical band. tol = 0.08*4096 ≈ 328, about 10σ for a fair
+    # coin over 4096 shots (σ = sqrt(4096*0.25) = 32).
     tol = 0.08 * SHOTS
     ok = (
         leakage == 0
