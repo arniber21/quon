@@ -271,10 +271,11 @@ fn merge_in_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) -> i6
     if removed > 0
         && let DepthExpr::Nat(n) = read_depth_attr(&func)
     {
+        // Flux-verified non-increasing depth (quon_core::optimization).
         set_func_depth(
             context,
             func,
-            &DepthExpr::Nat(n.saturating_sub(removed as u64)),
+            &DepthExpr::Nat(quon_core::depth_after_removal(n, removed as u64)),
         );
     }
     removed

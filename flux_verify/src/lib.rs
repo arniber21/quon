@@ -36,4 +36,23 @@ mod smoke {
             Some(UseCountViolation::ReuseAfterMeasure)
         );
     }
+
+    /// The optimization-pass invariants (#18–#21) carry Flux postconditions
+    /// verified by `cargo flux -p quon_core --features flux`; these calls pin the
+    /// same kernels the `mlir_bridge` passes use so the proofs stay load-bearing.
+    #[test]
+    fn quon_core_optimization_kernels_are_safe() {
+        use quon_core::optimization::{
+            arity_preserved, depth_after_removal, par_depth, seq_depth, single_qubit_pair,
+        };
+        // Depth is non-increasing under gate removal / rotation merging.
+        assert!(depth_after_removal(5, 2) <= 5);
+        assert_eq!(depth_after_removal(2, 5), 0);
+        // Composition bounds.
+        assert!(seq_depth(3, 4) >= 4);
+        assert_eq!(par_depth(3, 7), 7);
+        // Arity preservation guards.
+        assert!(arity_preserved(2, 2));
+        assert!(single_qubit_pair(1, 1));
+    }
 }

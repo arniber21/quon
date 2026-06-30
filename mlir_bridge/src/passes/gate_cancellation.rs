@@ -234,7 +234,9 @@ pub fn cancel_in_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) 
     if removed > 0
         && let DepthExpr::Nat(n) = read_depth_attr(&func)
     {
-        let updated = n.saturating_sub(removed as u64);
+        // Flux-verified: the new depth never exceeds `n` — cancellation cannot
+        // deepen the circuit (quon_core::optimization::depth_after_removal).
+        let updated = quon_core::depth_after_removal(n, removed as u64);
         set_func_depth(context, func, &DepthExpr::Nat(updated));
     }
     removed
