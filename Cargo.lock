@@ -446,6 +446,8 @@ dependencies = [
  "ariadne",
  "chumsky",
  "insta",
+ "melior",
+ "mlir_bridge",
  "proptest",
  "quon_core",
  "thiserror 1.0.69",

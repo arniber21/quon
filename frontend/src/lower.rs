@@ -2,16 +2,622 @@
 // Translates a type-checked AST to in-memory quantum.circ IR using Melior.
 // Circuit<n,m,d,C> indices are encoded as op attributes (ADR-0002).
 
-use crate::ast::Decl;
-use crate::lexer::Sp;
+use std::collections::HashMap;
 
-pub struct LoweringCtx {
-    // Melior MLIR context lives in mlir_bridge; this struct holds a reference
-    // to it once the bridge is available.
+use melior::Context;
+use melior::ir::attribute::{BoolAttribute, StringAttribute};
+use melior::ir::operation::OperationBuilder;
+use melior::ir::{
+    Block, BlockLike, Identifier, Location, Module, Operation, Region, RegionLike, Value,
+};
+use mlir_bridge::dialect::quantum_circ as qc;
+use quon_core::DepthExpr;
+use thiserror::Error;
+
+use crate::ast::{CliffordClass, Decl, Expr, Name, Stmt, Type as AstType};
+use crate::diagnostics::Diagnostic;
+use crate::lexer::Sp;
+use crate::typecheck::circuit;
+use crate::typecheck::{TypeChecker, TypeError};
+use crate::types::Ty;
+
+/// Errors raised while lowering a well-typed program to `quantum.circ`.
+#[derive(Debug, Error)]
+pub enum LowerError {
+    #[error("lowering is not implemented for `{construct}`")]
+    Unsupported { construct: &'static str },
+    #[error("circuit function `{name}` must have no parameters in this lowering pass")]
+    ParametricFn { name: String },
+    #[error("could not read a constant qubit count from `{field}`")]
+    NonConstWidth { field: &'static str },
+    #[error("unknown gate `{name}`")]
+    UnknownGate { name: String },
+    #[error("rotation gate `{name}` needs a static angle literal")]
+    NonStaticRotation { name: String },
+    #[error("call to unknown circuit function `{name}`")]
+    UnknownCallee { name: String },
+    #[error("MLIR builder failed: {0}")]
+    Mlir(#[from] qc::BuildError),
+    #[error("internal lowering error: {0}")]
+    Internal(&'static str),
+    #[error("type checking failed: {0}")]
+    Type(#[from] TypeError),
 }
 
-impl LoweringCtx {
-    pub fn lower_decls(&mut self, _decls: &[Sp<Decl>]) {
-        todo!("AST → quantum.circ lowering — see issue #16")
+/// Lowers a desugared, type-checked declaration list into a `quantum.circ` module.
+pub struct LoweringCtx<'c> {
+    context: &'c Context,
+    module: Module<'c>,
+    location: Location<'c>,
+    checker: TypeChecker,
+    /// Bodies of zero-parameter circuit functions, for inlining and adjoint.
+    bodies: HashMap<Name, Sp<Expr>>,
+    /// Metadata for each circuit function.
+    func_meta: HashMap<Name, FuncMeta>,
+}
+
+#[derive(Clone)]
+struct FuncMeta {
+    depth: DepthExpr,
+    clifford: bool,
+    in_qubits: i64,
+    out_qubits: i64,
+}
+
+struct GateSpec {
+    name: String,
+    angle: Option<f64>,
+    clifford: bool,
+    depth_contribution: i64,
+}
+
+impl<'c> LoweringCtx<'c> {
+    pub fn new(context: &'c Context) -> Self {
+        qc::register_dialect(context);
+        let location = Location::unknown(context);
+        Self {
+            context,
+            module: Module::new(location),
+            location,
+            checker: TypeChecker::new(),
+            bodies: HashMap::new(),
+            func_meta: HashMap::new(),
+        }
     }
+
+    pub fn lower_decls(&mut self, decls: &[Sp<Decl>]) -> Result<&Module<'c>, LowerError> {
+        if let Err(errs) = self.checker.check_decls(decls) {
+            return Err(errs
+                .into_iter()
+                .next()
+                .map(LowerError::Type)
+                .unwrap_or(LowerError::Internal("empty type error list")));
+        }
+
+        for decl in decls {
+            if let Decl::Fn {
+                name,
+                params,
+                ret,
+                body,
+            } = &decl.0
+                && params.is_empty()
+                && let Ok(Ty::Circuit { n, m, d, c }) = self.checker.resolve_type(ret)
+            {
+                self.func_meta.insert(
+                    name.clone(),
+                    FuncMeta {
+                        depth: d,
+                        clifford: matches!(c, CliffordClass::Clifford),
+                        in_qubits: const_width(&n, "in_qubits")?,
+                        out_qubits: const_width(&m, "out_qubits")?,
+                    },
+                );
+                self.bodies.insert(name.clone(), body.clone());
+            }
+        }
+
+        for decl in decls {
+            if let Decl::Fn {
+                name,
+                params,
+                ret,
+                body,
+            } = &decl.0
+            {
+                self.lower_circuit_fn(name, params, ret, body)?;
+            }
+        }
+        Ok(&self.module)
+    }
+
+    pub fn into_module(self) -> Module<'c> {
+        self.module
+    }
+
+    fn lower_circuit_fn(
+        &mut self,
+        name: &Name,
+        params: &[(Name, Sp<AstType>)],
+        ret: &Sp<AstType>,
+        body: &Sp<Expr>,
+    ) -> Result<(), LowerError> {
+        if !params.is_empty() {
+            return Err(LowerError::ParametricFn { name: name.clone() });
+        }
+        let Ty::Circuit { n, m, d, c } = self.checker.resolve_type(ret)? else {
+            return Ok(());
+        };
+        let in_qubits = const_width(&n, "in_qubits")?;
+        let out_qubits = const_width(&m, "out_qubits")?;
+        let clifford = matches!(c, CliffordClass::Clifford);
+        let meta = FuncMeta {
+            depth: d,
+            clifford,
+            in_qubits,
+            out_qubits,
+        };
+
+        if let Expr::Adjoint(inner) = &body.0
+            && let Some(callee) = zero_arg_callee_name(inner)
+        {
+            let callee_meta =
+                self.func_meta
+                    .get(&callee)
+                    .cloned()
+                    .ok_or_else(|| LowerError::UnknownCallee {
+                        name: callee.clone(),
+                    })?;
+            let ref_op = circuit_ref_op(
+                self.context,
+                &callee,
+                &callee_meta.depth,
+                callee_meta.clifford,
+                self.location,
+            )?;
+            let appended = self.module.body().append_operation(ref_op);
+            let callee_ref = match appended.result(0) {
+                Ok(value) => Value::from(value),
+                Err(_) => return Err(LowerError::Internal("missing circuit ref result")),
+            };
+            let adjoint = qc::adjoint(self.context, callee_ref, &callee_meta.depth, self.location)?;
+            self.module.body().append_operation(adjoint);
+        }
+
+        let region = Region::new();
+        let qubit = qc::qubit_type(self.context);
+        let mut block = Block::new(
+            &(0..in_qubits)
+                .map(|_| (qubit, self.location))
+                .collect::<Vec<_>>(),
+        );
+        let mut wires: Vec<Value<'c, 'c>> = Vec::with_capacity(block.argument_count() as usize);
+        for i in 0..block.argument_count() {
+            let arg = block
+                .argument(i)
+                .map_err(|_| LowerError::Internal("missing block argument"))?;
+            wires.push(Value::from(arg));
+        }
+
+        match &body.0 {
+            Expr::CircuitBlock(stmts) => {
+                self.lower_circuit_block(stmts, &mut block, &mut wires)?;
+            }
+            other => {
+                self.lower_circuit_body_expr(other, &mut block, &mut wires)?;
+            }
+        }
+
+        if wires.len() != out_qubits as usize {
+            return Err(LowerError::Unsupported {
+                construct: "circuit output width mismatch",
+            });
+        }
+
+        block.append_operation(qc::r#return(&wires, self.location)?);
+        region.append_block(block);
+        let func = qc::func(
+            self.context,
+            name,
+            in_qubits,
+            out_qubits,
+            &meta.depth,
+            meta.clifford,
+            region,
+            self.location,
+        )?;
+        self.module.body().append_operation(func);
+        Ok(())
+    }
+
+    fn lower_circuit_block(
+        &mut self,
+        stmts: &[Sp<Stmt>],
+        block: &mut Block<'c>,
+        wires: &mut Vec<Value<'c, 'c>>,
+    ) -> Result<(), LowerError> {
+        let Some((last, leading)) = stmts.split_last() else {
+            return Err(LowerError::Unsupported {
+                construct: "empty circuit block",
+            });
+        };
+        let mut locals: HashMap<Name, Sp<Expr>> = HashMap::new();
+        for stmt in leading {
+            let Stmt::Let { pat, rhs } = &stmt.0 else {
+                return Err(LowerError::Unsupported {
+                    construct: "non-let statement inside a circuit block",
+                });
+            };
+            if let crate::ast::Pat::Var(var) = &pat.0 {
+                locals.insert(var.clone(), rhs.clone());
+            }
+        }
+        let Stmt::Expr(expr) = &last.0 else {
+            return Err(LowerError::Unsupported {
+                construct: "circuit block not ending in an expression",
+            });
+        };
+        self.lower_circuit_body_expr_with_locals(&expr.0, block, wires, &locals)
+    }
+
+    fn lower_circuit_body_expr_with_locals(
+        &mut self,
+        expr: &Expr,
+        block: &mut Block<'c>,
+        wires: &mut Vec<Value<'c, 'c>>,
+        locals: &HashMap<Name, Sp<Expr>>,
+    ) -> Result<(), LowerError> {
+        match expr {
+            Expr::Compose(lhs, rhs) => {
+                self.lower_circuit_body_expr_with_locals(&lhs.0, block, wires, locals)?;
+                self.lower_circuit_body_expr_with_locals(&rhs.0, block, wires, locals)
+            }
+            Expr::GateApp { gate, qubits } => self.apply_gate(gate, qubits, block, wires),
+            Expr::Adjoint(inner) => {
+                let name = zero_arg_callee_name(inner).ok_or(LowerError::Unsupported {
+                    construct: "adjoint of non-call",
+                })?;
+                self.inline_circuit_body(&name, block, wires, true)
+            }
+            Expr::App(f, x) => {
+                let name = zero_arg_callee_name_from_app(f, x).ok_or(LowerError::Unsupported {
+                    construct: "indirect circuit call",
+                })?;
+                self.inline_circuit_body(&name, block, wires, false)
+            }
+            Expr::Var(name) => {
+                let bound = locals
+                    .get(name)
+                    .cloned()
+                    .or_else(|| self.bodies.get(name).cloned());
+                if let Some(body) = bound {
+                    self.lower_circuit_body_expr_with_locals(&body.0, block, wires, locals)
+                } else {
+                    Err(LowerError::Unsupported {
+                        construct: "circuit variable",
+                    })
+                }
+            }
+            _ => Err(LowerError::Unsupported {
+                construct: "circuit body expression",
+            }),
+        }
+    }
+
+    fn lower_circuit_body_expr(
+        &mut self,
+        expr: &Expr,
+        block: &mut Block<'c>,
+        wires: &mut Vec<Value<'c, 'c>>,
+    ) -> Result<(), LowerError> {
+        self.lower_circuit_body_expr_with_locals(expr, block, wires, &HashMap::new())
+    }
+
+    fn inline_circuit_body(
+        &mut self,
+        name: &str,
+        block: &mut Block<'c>,
+        wires: &mut Vec<Value<'c, 'c>>,
+        invert: bool,
+    ) -> Result<(), LowerError> {
+        let body = self
+            .bodies
+            .get(name)
+            .cloned()
+            .ok_or_else(|| LowerError::UnknownCallee {
+                name: name.to_string(),
+            })?;
+        if invert {
+            self.inline_inverted_body(&body, block, wires)
+        } else {
+            self.lower_circuit_body_expr(&body.0, block, wires)
+        }
+    }
+
+    fn inline_inverted_body(
+        &mut self,
+        body: &Sp<Expr>,
+        block: &mut Block<'c>,
+        wires: &mut Vec<Value<'c, 'c>>,
+    ) -> Result<(), LowerError> {
+        let gates = collect_gate_placements(body)?;
+        for (gate, qubits) in gates.into_iter().rev() {
+            let spec = self.gate_spec(&gate)?;
+            let inv_name = inverse_gate_name(&spec.name);
+            let inv_gate = (Expr::Var(inv_name), gate.1);
+            self.apply_gate(&inv_gate, &qubits, block, wires)?;
+        }
+        Ok(())
+    }
+
+    fn apply_gate(
+        &mut self,
+        gate: &Sp<Expr>,
+        qubits: &Sp<Expr>,
+        block: &mut Block<'c>,
+        wires: &mut Vec<Value<'c, 'c>>,
+    ) -> Result<(), LowerError> {
+        let spec = self.gate_spec(gate)?;
+        let targets = qubit_targets(qubits);
+        for &target in &targets {
+            self.ensure_wire(wires, target, block)?;
+        }
+        let operands: Vec<Value<'c, '_>> = targets.iter().map(|&idx| wires[idx]).collect();
+        let op = if let Some(angle) = spec.angle {
+            qc::rotation_gate(
+                self.context,
+                &spec.name,
+                angle,
+                spec.depth_contribution,
+                spec.clifford,
+                wires[targets[0]],
+                self.location,
+            )?
+        } else {
+            qc::gate(
+                self.context,
+                &spec.name,
+                spec.depth_contribution,
+                spec.clifford,
+                &operands,
+                self.location,
+            )?
+        };
+        let appended = block.append_operation(op);
+        for (i, &idx) in targets.iter().enumerate() {
+            let out = appended
+                .result(i)
+                .map_err(|_| LowerError::Internal("missing gate result"))?;
+            wires[idx] = Value::from(out);
+        }
+        Ok(())
+    }
+
+    fn ensure_wire(
+        &mut self,
+        wires: &mut Vec<Value<'c, 'c>>,
+        index: usize,
+        block: &mut Block<'c>,
+    ) -> Result<(), LowerError> {
+        while wires.len() <= index {
+            let borrow_region = Region::new();
+            borrow_region.append_block(Block::new(&[]));
+            let borrow = qc::borrow(
+                self.context,
+                1,
+                &DepthExpr::zero(),
+                borrow_region,
+                self.location,
+            )?;
+            let appended = block.append_operation(borrow);
+            let borrowed = appended
+                .result(0)
+                .map_err(|_| LowerError::Internal("missing borrowed qubit"))?;
+            wires.push(Value::from(borrowed));
+        }
+        Ok(())
+    }
+
+    fn gate_spec(&self, gate: &Sp<Expr>) -> Result<GateSpec, LowerError> {
+        match &gate.0 {
+            Expr::Var(name) => {
+                let ty = circuit::gate_type(name)
+                    .ok_or_else(|| LowerError::UnknownGate { name: name.clone() })?;
+                let (clifford, depth) = circuit_meta(&ty);
+                Ok(GateSpec {
+                    name: name.clone(),
+                    angle: None,
+                    clifford,
+                    depth_contribution: depth,
+                })
+            }
+            Expr::App(f, x) => {
+                let (head, args) = flatten_app(f, x);
+                let Expr::Var(name) = &head.0 else {
+                    return Err(LowerError::Unsupported {
+                        construct: "indirect rotation gate",
+                    });
+                };
+                if circuit::rotation_arity(name).is_none() {
+                    return Err(LowerError::UnknownGate { name: name.clone() });
+                }
+                let Expr::Float(angle) = &args[0].0 else {
+                    return Err(LowerError::NonStaticRotation { name: name.clone() });
+                };
+                let ty = circuit::gate_type(name)
+                    .ok_or_else(|| LowerError::UnknownGate { name: name.clone() })?;
+                let (clifford, depth) = circuit_meta(&ty);
+                Ok(GateSpec {
+                    name: name.clone(),
+                    angle: Some(*angle),
+                    clifford,
+                    depth_contribution: depth,
+                })
+            }
+            _ => Err(LowerError::Unsupported {
+                construct: "gate expression",
+            }),
+        }
+    }
+}
+
+fn circuit_ref_op<'c>(
+    context: &'c Context,
+    name: &str,
+    depth: &DepthExpr,
+    clifford: bool,
+    location: Location<'c>,
+) -> Result<Operation<'c>, qc::BuildError> {
+    let operation = OperationBuilder::new("quantum.circ.ref", location)
+        .add_results(&[qc::circuit_type(context)])
+        .add_attributes(&[
+            (
+                Identifier::new(context, qc::attr::SYM_NAME),
+                StringAttribute::new(context, name).into(),
+            ),
+            (
+                Identifier::new(context, qc::attr::DEPTH),
+                StringAttribute::new(context, &depth.to_sexpr()).into(),
+            ),
+            (
+                Identifier::new(context, qc::attr::CLIFFORD),
+                BoolAttribute::new(context, clifford).into(),
+            ),
+        ])
+        .build()?;
+    qc::verify(&operation)?;
+    Ok(operation)
+}
+
+fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<(Sp<Expr>, Sp<Expr>)>, LowerError> {
+    match &expr.0 {
+        Expr::CircuitBlock(stmts) => {
+            let Some(Stmt::Expr(last)) = stmts.last().map(|s| &s.0) else {
+                return Err(LowerError::Unsupported {
+                    construct: "empty circuit block",
+                });
+            };
+            collect_gate_placements(last)
+        }
+        Expr::Compose(lhs, rhs) => {
+            let mut out = collect_gate_placements(lhs)?;
+            out.extend(collect_gate_placements(rhs)?);
+            Ok(out)
+        }
+        Expr::GateApp { gate, qubits } => Ok(vec![(*gate.clone(), *qubits.clone())]),
+        _ => Err(LowerError::Unsupported {
+            construct: "gate placement collection",
+        }),
+    }
+}
+
+fn inverse_gate_name(name: &str) -> String {
+    match name {
+        "S" => "S_dag".to_string(),
+        "S_dag" => "S".to_string(),
+        "T" => "T_dag".to_string(),
+        "T_dag" => "T".to_string(),
+        "SX" => "SX_dag".to_string(),
+        "SX_dag" => "SX".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn const_width(depth: &DepthExpr, field: &'static str) -> Result<i64, LowerError> {
+    depth
+        .as_const()
+        .and_then(|n| i64::try_from(n).ok())
+        .ok_or(LowerError::NonConstWidth { field })
+}
+
+fn circuit_meta(ty: &Ty) -> (bool, i64) {
+    match ty {
+        Ty::Fn(_, body) => circuit_meta(body),
+        Ty::Circuit { d, c, .. } => (
+            matches!(c, CliffordClass::Clifford),
+            i64::try_from(d.as_const().unwrap_or(1)).unwrap_or(1),
+        ),
+        _ => (true, 1),
+    }
+}
+
+fn qubit_targets(qubits: &Sp<Expr>) -> Vec<usize> {
+    match &qubits.0 {
+        Expr::Tuple(es) => es.iter().filter_map(|e| literal_usize(&e.0)).collect(),
+        other => literal_usize(other).into_iter().collect(),
+    }
+}
+
+fn literal_usize(expr: &Expr) -> Option<usize> {
+    match expr {
+        Expr::Int(n) if *n >= 0 => Some(*n as usize),
+        _ => None,
+    }
+}
+
+fn flatten_app<'a>(f: &'a Sp<Expr>, x: &'a Sp<Expr>) -> (&'a Sp<Expr>, Vec<&'a Sp<Expr>>) {
+    let mut args = vec![x];
+    let mut head = f;
+    while let Expr::App(inner_f, inner_x) = &head.0 {
+        args.push(inner_x);
+        head = inner_f;
+    }
+    args.reverse();
+    (head, args)
+}
+
+fn zero_arg_callee_name(expr: &Sp<Expr>) -> Option<String> {
+    let (head, args) = match &expr.0 {
+        Expr::App(f, x) => flatten_app(f, x),
+        _ => return None,
+    };
+    if !is_unit_args(&args) {
+        return None;
+    }
+    match &head.0 {
+        Expr::Var(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn zero_arg_callee_name_from_app(f: &Sp<Expr>, x: &Sp<Expr>) -> Option<String> {
+    let (head, args) = flatten_app(f, x);
+    if !is_unit_args(&args) {
+        return None;
+    }
+    match &head.0 {
+        Expr::Var(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn is_unit_args(args: &[&Sp<Expr>]) -> bool {
+    match args.len() {
+        0 => true,
+        1 => matches!(args[0].0, Expr::Unit),
+        _ => false,
+    }
+}
+
+/// Parse, desugar, type-check, and lower `src` to an in-memory `quantum.circ` module.
+pub fn lower_program<'c>(context: &'c Context, src: &str) -> Result<Module<'c>, Vec<Diagnostic>> {
+    let decls = crate::desugar_program(src)?;
+    let mut lowering = LoweringCtx::new(context);
+    lowering.lower_decls(&decls).map_err(|err| {
+        vec![Diagnostic::new(
+            err.to_string(),
+            chumsky::span::SimpleSpan::from(0..0),
+        )]
+    })?;
+    Ok(lowering.into_module())
+}
+
+/// Lower `decls` that have already been desugared.
+pub fn lower_checked_decls<'c>(
+    context: &'c Context,
+    decls: &[Sp<Decl>],
+) -> Result<Module<'c>, LowerError> {
+    let mut lowering = LoweringCtx::new(context);
+    lowering.lower_decls(decls)?;
+    Ok(lowering.into_module())
 }

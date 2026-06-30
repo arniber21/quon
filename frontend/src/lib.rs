@@ -62,3 +62,10 @@ pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
         .check_decls(&decls)
         .map_err(|errs| errs.iter().map(|e| e.to_diagnostic()).collect())
 }
+
+/// Parse, desugar, type-check, and lower circuit functions to `quantum.circ` MLIR (issue #16).
+pub fn lower_program_to_mlir(src: &str) -> Result<String, Vec<Diagnostic>> {
+    let context = melior::Context::new();
+    let module = lower::lower_program(&context, src)?;
+    Ok(module.as_operation().to_string())
+}
