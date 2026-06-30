@@ -74,7 +74,7 @@ impl RegisterKey {
 /// [`Program::qubit`], which checks the bound and tags it with the owning
 /// program's qubit register. A qubit may be copied, but it cannot be inserted
 /// into another program through the safe API.
-#[derive(Clone, Copy, Debug, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Eq)]
 pub struct QubitId {
     index: usize,
     register: RegisterKey,
@@ -101,7 +101,7 @@ impl QubitId {
 }
 
 /// An index into the program's classical bit register.
-#[derive(Clone, Copy, Debug, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Eq)]
 pub struct BitId {
     index: usize,
     register: RegisterKey,
