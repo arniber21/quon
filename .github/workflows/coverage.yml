@@ -13,7 +13,10 @@ jobs:
   llvm-cov:
     name: cargo llvm-cov (summary)
     runs-on: ubuntu-latest
+    # Informational only: coverage must never block a merge. Keep it off the
+    # required-checks list and bound its runtime so it cannot wedge CI.
     continue-on-error: true
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +27,7 @@ jobs:
           wget -q https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh 22
-          sudo apt-get install -y libmlir-22-dev mlir-22-tools llvm-22-dev
+          sudo apt-get install -y libmlir-22-dev mlir-22-tools llvm-22-dev libpolly-22-dev
           echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
 
       - uses: dtolnay/rust-toolchain@stable
@@ -32,7 +35,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
 
       - uses: Swatinem/rust-cache@v2
 

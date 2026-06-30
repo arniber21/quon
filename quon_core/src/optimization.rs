@@ -27,8 +27,18 @@ use flux_rs::attrs::*;
     feature = "flux",
     spec(fn(current: u64, removed: u64) -> u64{v: v <= current})
 )]
+// Written as an explicit guard rather than `saturating_sub` so Flux can
+// discharge the `{v: v <= current}` postcondition — Flux does not model the
+// `saturating_sub` intrinsic, and the saturating form fails refinement
+// checking. Both forms have identical runtime behavior; the lint is silenced
+// only here because the proof obligation takes precedence.
+#[allow(clippy::implicit_saturating_sub)]
 pub fn depth_after_removal(current: u64, removed: u64) -> u64 {
-    current.saturating_sub(removed)
+    if removed >= current {
+        0
+    } else {
+        current - removed
+    }
 }
 
 /// Sequential composition depth (`a |> b`): depths add. The result bounds each

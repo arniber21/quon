@@ -1654,9 +1654,6 @@ audit_case!(depth_err_0009, {
 audit_case!(depth_err_0010, {
     assert!(DepthExpr::parse("(unknown 1 2)").is_err());
 });
-audit_case!(depth_atom_plus_plus_one, {
-    assert_eq!(DepthExpr::parse("++1"), Ok(DepthExpr::Var("++1".into())));
-});
 audit_case!(depth_div_by_zero_parses, {
     assert_eq!(
         DepthExpr::parse("(/ 1 0)"),

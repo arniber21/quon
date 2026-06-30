@@ -100,13 +100,11 @@ def gen_depth_parse() -> int:
     ]
     for i, src in enumerate(bad_inputs):
         cases.append((f"depth_err_{i:04d}", f"assert!(DepthExpr::parse({rust_str(src)}).is_err());"))
-    # Edge cases that parse successfully but encode non-standard atoms / ops
-    cases.append(
-        (
-            "depth_atom_plus_plus_one",
-            f"assert_eq!(DepthExpr::parse({rust_str('++1')}), Ok(DepthExpr::Var({rust_str('++1')}.into())));",
-        )
-    )
+    # Edge cases that parse successfully but encode non-standard atoms / ops.
+    # NB: deliberately no test pinning `++1` -> Var("++1"). Whether the atom
+    # lexer should accept `+`-prefixed junk as a variable name is unsettled
+    # language semantics; a characterization test would only cement a quirk and
+    # block a future fix. See review notes on PR #83.
     cases.append(
         (
             "depth_div_by_zero_parses",
