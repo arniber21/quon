@@ -25,8 +25,8 @@ fn bell_module(context: &melior::Context) -> Module<'_> {
 
     let h = block.append_operation(qc::gate(context, "H", 1, true, &[q0], location).unwrap());
     let h_out = Value::from(h.result(0).unwrap());
-    let cx = block
-        .append_operation(qc::gate(context, "CNOT", 1, true, &[h_out, q1], location).unwrap());
+    let cx =
+        block.append_operation(qc::gate(context, "CNOT", 1, true, &[h_out, q1], location).unwrap());
     let out0 = Value::from(cx.result(0).unwrap());
     let out1 = Value::from(cx.result(1).unwrap());
     block.append_operation(qc::r#return(&[out0, out1], location).unwrap());

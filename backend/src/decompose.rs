@@ -2,8 +2,8 @@
 
 use crate::target::GateOp;
 use crate::unitary::{
-    gate_unitary, is_cnot_equivalent, is_separable, rotation_unitary, tensor,
-    two_qubit_gate_unitary, zyz_angles, zyz_matrix, M2, M4,
+    Complex, M2, M4, gate_unitary, is_separable, rotation_unitary, two_qubit_gate_unitary,
+    unitary_distance, unitary_distance2, zyz_angles, zyz_matrix,
 };
 
 const EPS: f64 = 1e-8;
@@ -17,7 +17,9 @@ fn normalize(name: &str) -> String {
 
 fn is_native(native: &[String], name: &str) -> bool {
     let n = normalize(name);
-    native.iter().any(|g| g.eq_ignore_ascii_case(&n) || g.eq_ignore_ascii_case(name))
+    native
+        .iter()
+        .any(|g| g.eq_ignore_ascii_case(&n) || g.eq_ignore_ascii_case(name))
 }
 
 fn push_rz(out: &mut Vec<GateOp>, theta: f64, qubit: usize) {
@@ -55,6 +57,14 @@ fn push_cx(out: &mut Vec<GateOp>, control: usize, target: usize) {
     });
 }
 
+fn remap_ops(ops: &mut [GateOp], qubit: usize) {
+    for op in ops {
+        if op.qubits.len() == 1 {
+            op.qubits[0] = qubit;
+        }
+    }
+}
+
 fn wrap_angle(theta: f64) -> f64 {
     let two_pi = 2.0 * std::f64::consts::PI;
     let mut t = theta % two_pi;
@@ -64,17 +74,16 @@ fn wrap_angle(theta: f64) -> f64 {
     t
 }
 
-/// Synthesize Ry(θ) using only `rz` and `sx` (IBM-style).
+/// Synthesize Ry(θ) using only `rz` and `sx` (IBM-style), up to global phase.
 fn synthesize_ry_rz_sx(out: &mut Vec<GateOp>, theta: f64, qubit: usize) {
     if theta.abs() < EPS {
         return;
     }
-    // Ry(θ) = Rz(-π/2) · Sx · Rz(π) · Sx · Rz(θ - π/2) up to global phase.
-    push_rz(out, -std::f64::consts::FRAC_PI_2, qubit);
+    // Emitted order composes as Rz(π) · Sx · Rz(θ + π) · Sx up to global phase.
+    push_sx(out, qubit);
+    push_rz(out, theta + std::f64::consts::PI, qubit);
     push_sx(out, qubit);
     push_rz(out, std::f64::consts::PI, qubit);
-    push_sx(out, qubit);
-    push_rz(out, theta - std::f64::consts::FRAC_PI_2, qubit);
 }
 
 /// Decompose a single-qubit unitary into native gates.
@@ -94,31 +103,31 @@ pub fn decompose_single_qubit(u: M2, native: &[String]) -> Vec<GateOp> {
     }
 
     if is_native(native, "ry") {
-        push_rz(&mut out, alpha, q);
+        push_rz(&mut out, gamma, q);
         out.push(GateOp {
             name: "ry".to_string(),
             qubits: vec![q],
             params: vec![beta],
         });
-        push_rz(&mut out, gamma, q);
+        push_rz(&mut out, alpha, q);
         return out;
     }
 
     if is_native(native, "rz") && is_native(native, "sx") {
-        push_rz(&mut out, alpha, q);
-        synthesize_ry_rz_sx(&mut out, beta, q);
         push_rz(&mut out, gamma, q);
+        synthesize_ry_rz_sx(&mut out, beta, q);
+        push_rz(&mut out, alpha, q);
         return out;
     }
 
     if is_native(native, "rz") && is_native(native, "rx") {
-        push_rz(&mut out, alpha, q);
+        push_rz(&mut out, gamma, q);
         out.push(GateOp {
             name: "rx".to_string(),
             qubits: vec![q],
             params: vec![beta],
         });
-        push_rz(&mut out, gamma, q);
+        push_rz(&mut out, alpha, q);
         return out;
     }
 
@@ -126,7 +135,12 @@ pub fn decompose_single_qubit(u: M2, native: &[String]) -> Vec<GateOp> {
 }
 
 /// Decompose a named single-qubit gate into native ops on qubit `q`.
-pub fn decompose_named_single(name: &str, angle: Option<f64>, native: &[String], q: usize) -> Vec<GateOp> {
+pub fn decompose_named_single(
+    name: &str,
+    angle: Option<f64>,
+    native: &[String],
+    q: usize,
+) -> Vec<GateOp> {
     if is_native(native, name) {
         return vec![GateOp {
             name: name.to_lowercase(),
@@ -156,57 +170,45 @@ pub fn decompose_named_single(name: &str, angle: Option<f64>, native: &[String],
 pub fn decompose_two_qubit(u: M4, native: &[String], q0: usize, q1: usize) -> Vec<GateOp> {
     if is_separable(u) {
         // Product U₁ ⊗ U₂ — decompose each factor, 0 entangling gates.
-        let mut left = [[0.0; 2]; 2];
-        let mut right = [[0.0; 2]; 2];
+        let mut left = [[Complex::new(0.0, 0.0); 2]; 2];
+        let mut right = [[Complex::new(0.0, 0.0); 2]; 2];
         extract_product_factors(u, &mut left, &mut right);
-        let u1 = M2([
-            [
-                crate::unitary::Complex::new(left[0][0], 0.0),
-                crate::unitary::Complex::new(left[0][1], 0.0),
-            ],
-            [
-                crate::unitary::Complex::new(left[1][0], 0.0),
-                crate::unitary::Complex::new(left[1][1], 0.0),
-            ],
-        ]);
-        let u2 = M2([
-            [
-                crate::unitary::Complex::new(right[0][0], 0.0),
-                crate::unitary::Complex::new(right[0][1], 0.0),
-            ],
-            [
-                crate::unitary::Complex::new(right[1][0], 0.0),
-                crate::unitary::Complex::new(right[1][1], 0.0),
-            ],
-        ]);
+        let u1 = M2(left);
+        let u2 = M2(right);
         let mut out = decompose_single_qubit(u1, native);
-        for op in &mut out {
-            if op.qubits.len() == 1 {
-                op.qubits[0] = q0;
-            }
-        }
+        remap_ops(&mut out, q0);
         let mut right_ops = decompose_single_qubit(u2, native);
-        for op in &mut right_ops {
-            if op.qubits.len() == 1 {
-                op.qubits[0] = q1;
-            }
-        }
+        remap_ops(&mut right_ops, q1);
         out.extend(right_ops);
         return out;
     }
 
-    if is_cnot_equivalent(u) && is_native(native, "cx") {
-        // U = (A⊗B) · CNOT · (C⊗D) — emit 1 CNOT plus local gates.
+    if unitary_distance(u, crate::unitary::cnot_unitary()) < EPS && is_native(native, "cx") {
         let mut out = Vec::new();
         push_cx(&mut out, q0, q1);
         return out;
     }
 
-    // General case: up to 3 CNOTs — emit 3 for safety.
-    if is_native(native, "cx") {
+    if let Some(cz) = two_qubit_gate_unitary("CZ")
+        && unitary_distance(u, cz) < EPS
+        && is_native(native, "cx")
+    {
+        let mut out = Vec::new();
+        let mut h_before = decompose_named_single("H", None, native, q1);
+        out.append(&mut h_before);
+        push_cx(&mut out, q0, q1);
+        let mut h_after = decompose_named_single("H", None, native, q1);
+        out.append(&mut h_after);
+        return out;
+    }
+
+    if let Some(swap) = two_qubit_gate_unitary("SWAP")
+        && unitary_distance(u, swap) < EPS
+        && is_native(native, "cx")
+    {
         let mut out = Vec::new();
         push_cx(&mut out, q0, q1);
-        push_cx(&mut out, q0, q1);
+        push_cx(&mut out, q1, q0);
         push_cx(&mut out, q0, q1);
         return out;
     }
@@ -235,12 +237,24 @@ pub fn decompose_named_two(name: &str, native: &[String], q0: usize, q1: usize) 
     decompose_two_qubit(u, native, q0, q1)
 }
 
-/// Rough extraction of product factors from a separable 4×4 unitary (real part).
-fn extract_product_factors(u: M4, left: &mut [[f64; 2]; 2], right: &mut [[f64; 2]; 2]) {
+/// Extract product factors from a separable 4×4 unitary.
+fn extract_product_factors(u: M4, left: &mut [[Complex; 2]; 2], right: &mut [[Complex; 2]; 2]) {
+    let mut pivot = None;
+    'outer: for row in 0..4 {
+        for col in 0..4 {
+            if u.0[row][col].norm() > EPS {
+                pivot = Some((row / 2, row % 2, col / 2, col % 2, u.0[row][col]));
+                break 'outer;
+            }
+        }
+    }
+    let Some((a0, c0, b0, d0, scale)) = pivot else {
+        return;
+    };
     for i in 0..2 {
         for j in 0..2 {
-            left[i][j] = u.0[2 * i][2 * j].re;
-            right[i][j] = u.0[2 * i + 1][2 * j + 1].re;
+            left[i][j] = u.0[2 * i + c0][2 * j + d0];
+            right[i][j] = u.0[2 * a0 + i][2 * b0 + j] / scale;
         }
     }
 }
@@ -252,16 +266,79 @@ pub fn zyz_reconstructs(name: &str) -> bool {
     };
     let (a, b, g) = zyz_angles(u);
     let rebuilt = zyz_matrix(a, b, g);
-    (0..2).all(|i| (0..2).all(|j| (u.0[i][j].norm() - rebuilt.0[i][j].norm()).abs() < 0.05))
+    unitary_distance2(u, rebuilt) < 1e-9
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unitary::cnot_unitary;
+    use crate::unitary::{cnot_unitary, mul2, mul4, tensor};
 
     fn native_rz_sx() -> Vec<String> {
         vec!["rz".into(), "sx".into()]
+    }
+
+    fn gate_op_unitary(op: &GateOp) -> M2 {
+        if let Some(theta) = op.params.first() {
+            rotation_unitary(&op.name, *theta).unwrap()
+        } else {
+            gate_unitary(&op.name).unwrap()
+        }
+    }
+
+    fn compose_single_ops(ops: &[GateOp]) -> M2 {
+        ops.iter().fold(gate_unitary("I").unwrap(), |acc, op| {
+            mul2(gate_op_unitary(op), acc)
+        })
+    }
+
+    fn expand_two_qubit_op(op: &GateOp) -> M4 {
+        if op.qubits.len() == 1 {
+            let single = gate_op_unitary(op);
+            if op.qubits[0] == 0 {
+                tensor(single, gate_unitary("I").unwrap())
+            } else {
+                tensor(gate_unitary("I").unwrap(), single)
+            }
+        } else if op.name == "cx" && op.qubits == [0, 1] {
+            cnot_unitary()
+        } else if op.name == "cx" && op.qubits == [1, 0] {
+            M4([
+                [
+                    Complex::new(1.0, 0.0),
+                    Complex::new(0.0, 0.0),
+                    Complex::new(0.0, 0.0),
+                    Complex::new(0.0, 0.0),
+                ],
+                [
+                    Complex::new(0.0, 0.0),
+                    Complex::new(0.0, 0.0),
+                    Complex::new(0.0, 0.0),
+                    Complex::new(1.0, 0.0),
+                ],
+                [
+                    Complex::new(0.0, 0.0),
+                    Complex::new(0.0, 0.0),
+                    Complex::new(1.0, 0.0),
+                    Complex::new(0.0, 0.0),
+                ],
+                [
+                    Complex::new(0.0, 0.0),
+                    Complex::new(1.0, 0.0),
+                    Complex::new(0.0, 0.0),
+                    Complex::new(0.0, 0.0),
+                ],
+            ])
+        } else {
+            two_qubit_gate_unitary(&op.name).unwrap()
+        }
+    }
+
+    fn compose_two_ops(ops: &[GateOp]) -> M4 {
+        ops.iter().fold(
+            tensor(gate_unitary("I").unwrap(), gate_unitary("I").unwrap()),
+            |acc, op| mul4(expand_two_qubit_op(op), acc),
+        )
     }
 
     #[test]
@@ -270,6 +347,19 @@ mod tests {
         let ops = decompose_single_qubit(h, &native_rz_sx());
         assert!(!ops.is_empty());
         assert!(ops.iter().all(|g| g.name == "rz" || g.name == "sx"));
+        assert!(unitary_distance2(h, compose_single_ops(&ops)) < 1e-9);
+    }
+
+    #[test]
+    fn standard_single_qubit_gates_decompose_equivalently() {
+        for name in ["X", "Y", "Z", "H", "S", "T", "sx"] {
+            let u = gate_unitary(name).unwrap();
+            let ops = decompose_single_qubit(u, &native_rz_sx());
+            assert!(
+                unitary_distance2(u, compose_single_ops(&ops)) < 1e-9,
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -277,11 +367,29 @@ mod tests {
         let u = tensor(gate_unitary("H").unwrap(), gate_unitary("Z").unwrap());
         let ops = decompose_two_qubit(u, &["cx".into(), "rz".into(), "sx".into()], 0, 1);
         assert!(!ops.iter().any(|g| g.name == "cx"));
+        assert!(unitary_distance(u, compose_two_ops(&ops)) < 1e-8);
     }
 
     #[test]
     fn cnot_equivalent_uses_one_cx() {
         let ops = decompose_two_qubit(cnot_unitary(), &["cx".into(), "rz".into()], 0, 1);
         assert_eq!(ops.iter().filter(|g| g.name == "cx").count(), 1);
+        assert!(unitary_distance(cnot_unitary(), compose_two_ops(&ops)) < 1e-8);
+    }
+
+    #[test]
+    fn cz_decomposes_exactly_with_cx_and_local_h() {
+        let cz = two_qubit_gate_unitary("CZ").unwrap();
+        let ops = decompose_two_qubit(cz, &["cx".into(), "rz".into(), "sx".into()], 0, 1);
+        assert_eq!(ops.iter().filter(|g| g.name == "cx").count(), 1);
+        assert!(unitary_distance(cz, compose_two_ops(&ops)) < 1e-8);
+    }
+
+    #[test]
+    fn swap_decomposes_exactly_to_three_cx() {
+        let swap = two_qubit_gate_unitary("SWAP").unwrap();
+        let ops = decompose_two_qubit(swap, &["cx".into(), "rz".into(), "sx".into()], 0, 1);
+        assert_eq!(ops.iter().filter(|g| g.name == "cx").count(), 3);
+        assert!(unitary_distance(swap, compose_two_ops(&ops)) < 1e-8);
     }
 }

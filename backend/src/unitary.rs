@@ -30,6 +30,10 @@ impl Complex {
         let r = self.re.exp();
         Self::new(r * self.im.cos(), r * self.im.sin())
     }
+
+    fn from_polar(theta: f64) -> Self {
+        Self::new(theta.cos(), theta.sin())
+    }
 }
 
 impl std::ops::Add for Complex {
@@ -115,10 +119,7 @@ fn kron(a: M2, b: M2) -> M4 {
 
 fn rz(theta: f64) -> M2 {
     let half = Complex::new(0.0, -theta / 2.0).exp();
-    M2([
-        [half, ZERO],
-        [ZERO, half.conj()],
-    ])
+    M2([[half, ZERO], [ZERO, half.conj()]])
 }
 
 fn ry(theta: f64) -> M2 {
@@ -130,10 +131,7 @@ fn ry(theta: f64) -> M2 {
 fn rx(theta: f64) -> M2 {
     let cos = (theta / 2.0).cos();
     let sin = (theta / 2.0).sin();
-    M2([
-        [c(cos, 0.0), c(0.0, -sin)],
-        [c(0.0, -sin), c(cos, 0.0)],
-    ])
+    M2([[c(cos, 0.0), c(0.0, -sin)], [c(0.0, -sin), c(cos, 0.0)]])
 }
 
 fn normalize_name(name: &str) -> &str {
@@ -209,6 +207,7 @@ pub fn tensor(a: M2, b: M2) -> M4 {
 }
 
 /// Matrix multiply for 2×2.
+#[allow(clippy::needless_range_loop)]
 pub fn mul2(a: M2, b: M2) -> M2 {
     let mut out = [[ZERO; 2]; 2];
     for i in 0..2 {
@@ -221,7 +220,18 @@ pub fn mul2(a: M2, b: M2) -> M2 {
     M2(out)
 }
 
+pub fn scale2(a: M2, phase: Complex) -> M2 {
+    let mut out = a.0;
+    for row in &mut out {
+        for value in row {
+            *value = phase * *value;
+        }
+    }
+    M2(out)
+}
+
 /// Matrix multiply for 4×4.
+#[allow(clippy::needless_range_loop)]
 pub fn mul4(a: M4, b: M4) -> M4 {
     let mut out = [[ZERO; 4]; 4];
     for i in 0..4 {
@@ -237,15 +247,16 @@ pub fn mul4(a: M4, b: M4) -> M4 {
 /// ZYZ Euler angles (α, β, γ) such that U ≈ Rz(α) · Ry(β) · Rz(γ) up to global phase.
 pub fn zyz_angles(u: M2) -> (f64, f64, f64) {
     let eps = 1e-10;
-    let u01 = u.0[0][1].norm();
-    if u01 > eps {
-        let beta = 2.0 * u01.asin().clamp(-1.0, 1.0);
-        let alpha = u.0[0][1].arg() - u.0[1][1].arg();
-        let gamma = u.0[0][1].arg() + u.0[0][0].arg();
-        (alpha, beta, gamma)
+    let det = u.0[0][0] * u.0[1][1] - u.0[0][1] * u.0[1][0];
+    let su2 = scale2(u, Complex::from_polar(-det.arg() / 2.0));
+    let sin_half = su2.0[1][0].norm();
+    let beta = 2.0 * sin_half.atan2(su2.0[0][0].norm());
+    if sin_half > eps {
+        let sum = su2.0[1][1].arg() - su2.0[0][0].arg();
+        let diff = su2.0[1][0].arg() - (-su2.0[0][1]).arg();
+        ((sum + diff) / 2.0, beta, (sum - diff) / 2.0)
     } else {
-        let alpha = u.0[1][1].arg() - u.0[0][0].arg();
-        (alpha, 0.0, 0.0)
+        (su2.0[1][1].arg() - su2.0[0][0].arg(), 0.0, 0.0)
     }
 }
 
@@ -266,6 +277,7 @@ pub fn is_separable(u: M4) -> bool {
     matrix_rank_4(&r) <= 1
 }
 
+#[allow(clippy::needless_range_loop)]
 fn matrix_rank_4(m: &[[Complex; 4]; 4]) -> usize {
     let mut a = *m;
     let mut rank = 0usize;
@@ -304,20 +316,48 @@ fn matrix_rank_4(m: &[[Complex; 4]; 4]) -> usize {
 
 /// Frob-norm distance between two 4×4 unitaries up to global phase.
 pub fn unitary_distance(a: M4, b: M4) -> f64 {
-    let mut best = f64::MAX;
-    for phase in 0..8 {
-        let theta = phase as f64 * PI / 4.0;
-        let phase = c(theta.cos(), theta.sin());
-        let mut sum = 0.0;
-        for i in 0..4 {
-            for j in 0..4 {
-                let diff = a.0[i][j] - phase * b.0[i][j];
-                sum += diff.norm() * diff.norm();
-            }
+    let mut inner = ZERO;
+    for i in 0..4 {
+        for j in 0..4 {
+            inner = inner + a.0[i][j] * b.0[i][j].conj();
         }
-        best = best.min(sum.sqrt());
     }
-    best
+    let phase = if inner.norm() > 1e-12 {
+        inner / c(inner.norm(), 0.0)
+    } else {
+        ONE
+    };
+    let mut sum = 0.0;
+    for i in 0..4 {
+        for j in 0..4 {
+            let diff = a.0[i][j] - phase * b.0[i][j];
+            sum += diff.norm() * diff.norm();
+        }
+    }
+    sum.sqrt()
+}
+
+/// Frob-norm distance between two 2×2 unitaries up to global phase.
+pub fn unitary_distance2(a: M2, b: M2) -> f64 {
+    let mut inner = ZERO;
+    for i in 0..2 {
+        for j in 0..2 {
+            inner = inner + a.0[i][j] * b.0[i][j].conj();
+        }
+    }
+    let phase = if inner.norm() > 1e-12 {
+        inner / c(inner.norm(), 0.0)
+    } else {
+        ONE
+    };
+    let mut sum = 0.0;
+    for i in 0..2 {
+        for j in 0..2 {
+            let diff = a.0[i][j] - phase * b.0[i][j];
+            sum += diff.norm() * diff.norm();
+        }
+    }
+    sum.sqrt()
 }
 
 /// True when `u` is locally equivalent to CNOT (one entangling gate suffices).
@@ -342,10 +382,16 @@ mod tests {
         let h = gate_unitary("H").unwrap();
         let (a, b, g) = zyz_angles(h);
         let rebuilt = zyz_matrix(a, b, g);
-        for i in 0..2 {
-            for j in 0..2 {
-                assert!((h.0[i][j].norm() - rebuilt.0[i][j].norm()).abs() < 0.05);
-            }
+        assert!(unitary_distance2(h, rebuilt) < 1e-9);
+    }
+
+    #[test]
+    fn zyz_reconstructs_standard_gates() {
+        for name in ["X", "Y", "Z", "H", "S", "T", "sx"] {
+            let u = gate_unitary(name).unwrap();
+            let (a, b, g) = zyz_angles(u);
+            let rebuilt = zyz_matrix(a, b, g);
+            assert!(unitary_distance2(u, rebuilt) < 1e-9, "{name}");
         }
     }
 

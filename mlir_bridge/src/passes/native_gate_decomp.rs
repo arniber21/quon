@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use backend::decompose::{decompose_named_single, decompose_named_two};
 use backend::target::BackendTarget;
+use melior::StringRef;
 use melior::ir::attribute::{BoolAttribute, FloatAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
@@ -15,7 +16,6 @@ use melior::ir::{AttributeLike, BlockLike, Location, OperationRef, RegionLike, V
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use mlir_sys::mlirOperationSetAttributeByName;
-use melior::StringRef;
 use thiserror::Error;
 
 use crate::dialect::quantum_circ::{self, attr};
@@ -81,6 +81,7 @@ fn set_native_gate<'c>(context: &'c Context, op: OperationRef<'c, '_>, native: b
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_native_gate<'c, 'a>(
     context: &'c Context,
     block: melior::ir::BlockRef<'c, 'a>,
@@ -92,7 +93,8 @@ fn append_native_gate<'c, 'a>(
     angle: Option<f64>,
     location: Location<'c>,
 ) -> Result<OperationRef<'c, 'a>, DecompError> {
-    let mut builder = melior::ir::operation::OperationBuilder::new(quantum_circ::op::GATE, location);
+    let mut builder =
+        melior::ir::operation::OperationBuilder::new(quantum_circ::op::GATE, location);
     builder = builder.add_operands(qubits);
     let results = vec![quantum_circ::qubit_type(context); qubits.len()];
     builder = builder.add_results(&results);
@@ -119,7 +121,8 @@ fn append_native_gate<'c, 'a>(
         ),
     ];
     if let Some(theta) = angle {
-        let float_type = melior::ir::Type::parse(context, "f64").unwrap_or_else(|| melior::ir::Type::none(context));
+        let float_type = melior::ir::Type::parse(context, "f64")
+            .unwrap_or_else(|| melior::ir::Type::none(context));
         attrs.push((
             melior::ir::Identifier::new(context, attr::ANGLE),
             FloatAttribute::new(context, float_type, theta).into(),
@@ -195,11 +198,7 @@ fn decompose_gate<'c, 'a>(
 
     let mut last_results: Vec<Value<'c, 'a>> = qubits.clone();
     for step in &decomposed {
-        let operands: Vec<Value<'c, 'a>> = step
-            .qubits
-            .iter()
-            .map(|index| wires[index])
-            .collect();
+        let operands: Vec<Value<'c, 'a>> = step.qubits.iter().map(|index| wires[index]).collect();
         let op_ref = append_native_gate(
             context,
             block,
@@ -211,10 +210,7 @@ fn decompose_gate<'c, 'a>(
             step.params.first().copied(),
             location,
         )?;
-        last_results = op_ref
-            .results()
-            .map(Value::from)
-            .collect();
+        last_results = op_ref.results().map(Value::from).collect();
         for (index, result) in step.qubits.iter().zip(last_results.iter()) {
             wires.insert(*index, *result);
         }
@@ -229,7 +225,11 @@ fn decompose_gate<'c, 'a>(
     Ok(())
 }
 
-fn decompose_module<'c, 'a>(context: &'c Context, target: &BackendTarget, module: OperationRef<'c, 'a>) {
+fn decompose_module<'c, 'a>(
+    context: &'c Context,
+    target: &BackendTarget,
+    module: OperationRef<'c, 'a>,
+) {
     let Some(body) = module
         .region(0)
         .ok()
@@ -264,7 +264,11 @@ fn decompose_module<'c, 'a>(context: &'c Context, target: &BackendTarget, module
 }
 
 /// Runs native gate decomposition on `module` using `target`.
-pub fn run_on_module<'c>(context: &'c Context, target: &BackendTarget, module: &melior::ir::Module<'c>) {
+pub fn run_on_module<'c>(
+    context: &'c Context,
+    target: &BackendTarget,
+    module: &melior::ir::Module<'c>,
+) {
     decompose_module(context, target, module.as_operation());
 }
 
