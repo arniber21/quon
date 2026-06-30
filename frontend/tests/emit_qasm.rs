@@ -9,7 +9,7 @@
 use backend::generic_openqasm;
 use mlir_bridge::emit::openqasm3;
 use mlir_bridge::passes::monadic_lowering;
-use quon_core::qasm::{BitId, Expr, OneQubitGate, Program, QasmGate, QubitId, Stmt, TwoQubitGate};
+use quon_core::qasm::{Expr, OneQubitGate, Program, QasmError, QasmGate, Stmt, TwoQubitGate};
 
 /// Compile a Quon source string to the reified QASM syntax tree.
 fn reify(src: &str) -> Program {
@@ -32,26 +32,34 @@ fn main(): Q<(Bit, Bit)> = run {
 }
 "#;
 
-#[test]
-fn bell_state_reifies_to_expected_tree() {
-    let qubit = |i| QubitId::new(i, 2).unwrap();
-    let bit = |i| BitId::new(i, 2).unwrap();
+fn qubit(program: &Program, i: usize) -> quon_core::qasm::QubitId {
+    let Some(id) = program.qubit(i) else {
+        unreachable!("test qubit index {i} exceeds program bound")
+    };
+    id
+}
 
+fn bit(program: &Program, i: usize) -> quon_core::qasm::BitId {
+    let Some(id) = program.bit(i) else {
+        unreachable!("test bit index {i} exceeds program bound")
+    };
+    id
+}
+
+#[test]
+fn bell_state_reifies_to_expected_tree() -> Result<(), QasmError> {
     let mut expected = Program::new(2, 2);
-    expected.body = vec![
-        Stmt::Gate(QasmGate::One(OneQubitGate::H, qubit(0))),
-        Stmt::Gate(QasmGate::Two(TwoQubitGate::Cx, qubit(0), qubit(1))),
-        Stmt::Measure {
-            qubit: qubit(0),
-            bit: bit(0),
-        },
-        Stmt::Measure {
-            qubit: qubit(1),
-            bit: bit(1),
-        },
-    ];
+    expected.push_gate(QasmGate::One(OneQubitGate::H, qubit(&expected, 0)))?;
+    expected.push_gate(QasmGate::Two(
+        TwoQubitGate::Cx,
+        qubit(&expected, 0),
+        qubit(&expected, 1),
+    ))?;
+    expected.push_measure(qubit(&expected, 0), bit(&expected, 0))?;
+    expected.push_measure(qubit(&expected, 1), bit(&expected, 1))?;
 
     assert_eq!(reify(BELL), expected);
+    Ok(())
 }
 
 const TELEPORT: &str = r#"
@@ -74,46 +82,47 @@ fn main(): Q<Bit> = run {
 "#;
 
 #[test]
-fn teleport_reifies_to_expected_feed_forward_tree() {
-    let qubit = |i| QubitId::new(i, 3).unwrap();
-    let bit = |i| BitId::new(i, 3).unwrap();
-
+fn teleport_reifies_to_expected_feed_forward_tree() -> Result<(), QasmError> {
     let mut expected = Program::new(3, 3);
-    expected.body = vec![
-        // prep: message |1>, Bell pair on (alice, bob).
-        Stmt::Gate(QasmGate::One(OneQubitGate::X, qubit(0))),
-        Stmt::Gate(QasmGate::One(OneQubitGate::H, qubit(1))),
-        Stmt::Gate(QasmGate::Two(TwoQubitGate::Cx, qubit(1), qubit(2))),
-        // bell_basis on (msg, alice).
-        Stmt::Gate(QasmGate::Two(TwoQubitGate::Cx, qubit(0), qubit(1))),
-        Stmt::Gate(QasmGate::One(OneQubitGate::H, qubit(0))),
-        // Bell measurement: msg -> c[0], alice -> c[1].
-        Stmt::Measure {
-            qubit: qubit(0),
-            bit: bit(0),
-        },
-        Stmt::Measure {
-            qubit: qubit(1),
-            bit: bit(1),
-        },
-        // Feed-forward corrections on bob: X if Alice's bit, Z if the message's.
-        Stmt::If {
-            condition: Expr::bit_is_set(bit(1)),
-            then_body: vec![Stmt::Gate(QasmGate::One(OneQubitGate::X, qubit(2)))],
-            else_body: vec![],
-        },
-        Stmt::If {
-            condition: Expr::bit_is_set(bit(0)),
-            then_body: vec![Stmt::Gate(QasmGate::One(OneQubitGate::Z, qubit(2)))],
-            else_body: vec![],
-        },
-        Stmt::Measure {
-            qubit: qubit(2),
-            bit: bit(2),
-        },
-    ];
+    // prep: message |1>, Bell pair on (alice, bob).
+    expected.push_gate(QasmGate::One(OneQubitGate::X, qubit(&expected, 0)))?;
+    expected.push_gate(QasmGate::One(OneQubitGate::H, qubit(&expected, 1)))?;
+    expected.push_gate(QasmGate::Two(
+        TwoQubitGate::Cx,
+        qubit(&expected, 1),
+        qubit(&expected, 2),
+    ))?;
+    // bell_basis on (msg, alice).
+    expected.push_gate(QasmGate::Two(
+        TwoQubitGate::Cx,
+        qubit(&expected, 0),
+        qubit(&expected, 1),
+    ))?;
+    expected.push_gate(QasmGate::One(OneQubitGate::H, qubit(&expected, 0)))?;
+    // Bell measurement: msg -> c[0], alice -> c[1].
+    expected.push_measure(qubit(&expected, 0), bit(&expected, 0))?;
+    expected.push_measure(qubit(&expected, 1), bit(&expected, 1))?;
+    // Feed-forward corrections on bob: X if Alice's bit, Z if the message's.
+    expected.push_if(
+        Expr::bit_is_set(bit(&expected, 1)),
+        vec![Stmt::Gate(QasmGate::One(
+            OneQubitGate::X,
+            qubit(&expected, 2),
+        ))],
+        vec![],
+    )?;
+    expected.push_if(
+        Expr::bit_is_set(bit(&expected, 0)),
+        vec![Stmt::Gate(QasmGate::One(
+            OneQubitGate::Z,
+            qubit(&expected, 2),
+        ))],
+        vec![],
+    )?;
+    expected.push_measure(qubit(&expected, 2), bit(&expected, 2))?;
 
     assert_eq!(reify(TELEPORT), expected);
+    Ok(())
 }
 
 const BERNSTEIN_VAZIRANI: &str = r#"
@@ -135,42 +144,29 @@ fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
 "#;
 
 #[test]
-fn bernstein_vazirani_reifies_to_expected_tree() {
-    let qubit = |i| QubitId::new(i, 4).unwrap();
-    let bit = |i| BitId::new(i, 4).unwrap();
+fn bernstein_vazirani_reifies_to_expected_tree() -> Result<(), QasmError> {
     let one = |g, q| Stmt::Gate(QasmGate::One(g, q));
     let cx = |a, b| Stmt::Gate(QasmGate::Two(TwoQubitGate::Cx, a, b));
 
     let mut expected = Program::new(4, 4);
-    expected.body = vec![
-        one(OneQubitGate::X, qubit(3)),
-        one(OneQubitGate::H, qubit(0)),
-        one(OneQubitGate::H, qubit(1)),
-        one(OneQubitGate::H, qubit(2)),
-        one(OneQubitGate::H, qubit(3)),
+    expected.extend(vec![
+        one(OneQubitGate::X, qubit(&expected, 3)),
+        one(OneQubitGate::H, qubit(&expected, 0)),
+        one(OneQubitGate::H, qubit(&expected, 1)),
+        one(OneQubitGate::H, qubit(&expected, 2)),
+        one(OneQubitGate::H, qubit(&expected, 3)),
         // Oracle for secret 110: CNOT(q0, anc), CNOT(q1, anc).
-        cx(qubit(0), qubit(3)),
-        cx(qubit(1), qubit(3)),
-        one(OneQubitGate::H, qubit(0)),
-        one(OneQubitGate::H, qubit(1)),
-        one(OneQubitGate::H, qubit(2)),
-        Stmt::Measure {
-            qubit: qubit(0),
-            bit: bit(0),
-        },
-        Stmt::Measure {
-            qubit: qubit(1),
-            bit: bit(1),
-        },
-        Stmt::Measure {
-            qubit: qubit(2),
-            bit: bit(2),
-        },
-        Stmt::Measure {
-            qubit: qubit(3),
-            bit: bit(3),
-        },
-    ];
+        cx(qubit(&expected, 0), qubit(&expected, 3)),
+        cx(qubit(&expected, 1), qubit(&expected, 3)),
+        one(OneQubitGate::H, qubit(&expected, 0)),
+        one(OneQubitGate::H, qubit(&expected, 1)),
+        one(OneQubitGate::H, qubit(&expected, 2)),
+    ])?;
+    expected.push_measure(qubit(&expected, 0), bit(&expected, 0))?;
+    expected.push_measure(qubit(&expected, 1), bit(&expected, 1))?;
+    expected.push_measure(qubit(&expected, 2), bit(&expected, 2))?;
+    expected.push_measure(qubit(&expected, 3), bit(&expected, 3))?;
 
     assert_eq!(reify(BERNSTEIN_VAZIRANI), expected);
+    Ok(())
 }

@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 
@@ -25,11 +26,28 @@ def compile_to_qasm(source_file: str) -> str:
     return result.stdout
 
 
+def _qiskit_qasm3_compat(qasm_src: str) -> str:
+    """Normalize spec-valid bit integer conditions for Qiskit's importer.
+
+    quonc emits `if (c[i] == 1)` to match the OpenQASM integer-comparison
+    convention used by the backend. qiskit_qasm3_import currently accepts
+    indexed-bit conditions only as `bit == const bool`, while accepting integer
+    comparisons for whole bit arrays. Keep quonc's output unchanged and adapt
+    only this verification bridge.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        bit_ref, value = match.groups()
+        return f"{bit_ref} == {'true' if value == '1' else 'false'}"
+
+    return re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*\[\d+\])\s*==\s*([01])\b", replace, qasm_src)
+
+
 def run(qasm_src: str, shots: int = 4096, seed: int | None = None) -> dict:
     from qiskit import qasm3
     from qiskit_aer import AerSimulator
 
-    circuit = qasm3.loads(qasm_src)
+    circuit = qasm3.loads(_qiskit_qasm3_compat(qasm_src))
     # quonc emits explicit `measure` statements into a `bit[m] c;` register, so
     # the loaded circuit already carries its measurements. Only fall back to
     # measure_all() for a purely unitary circuit with no classical bits.
