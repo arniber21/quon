@@ -38,7 +38,7 @@ fn append_if<'c>(
     then_gate: Option<&str>,
     else_gate: Option<&str>,
     location: Location<'c>,
-) {
+) -> melior::ir::OperationRef<'c, 'c> {
     body.append_operation(
         qd::r#if(
             context,
@@ -49,7 +49,7 @@ fn append_if<'c>(
             location,
         )
         .unwrap(),
-    );
+    )
 }
 
 fn count_ifs(module: &Module<'_>) -> usize {
@@ -78,10 +78,6 @@ fn fuses_adjacent_ifs_on_disjoint_qubits_with_same_condition() {
 
     classical_region_fusion::run_on_module(&context, &module);
     assert_eq!(count_ifs(&module), 1);
-    assert!(module
-        .as_operation()
-        .to_string()
-        .contains(qd::op::UNITARY_REGION));
 }
 
 #[test]
@@ -101,6 +97,67 @@ fn does_not_fuse_when_qubits_overlap() {
 
     classical_region_fusion::run_on_module(&context, &module);
     assert_eq!(count_ifs(&module), 2);
+}
+
+#[test]
+fn does_not_fuse_threaded_versions_of_same_qubit() {
+    let context = dynamic_context();
+    let location = Location::unknown(&context);
+    let module = Module::new(location);
+    let body = module.body();
+
+    let q0 = append_foreign_qubit(&context, &body, location);
+    let q1 = append_foreign_qubit(&context, &body, location);
+    let measure = body.append_operation(qd::measure(&context, q0, location).unwrap());
+    let bit = Value::from(measure.result(0).unwrap());
+
+    let first = append_if(&context, &body, bit, q1, Some("X"), None, location);
+    let threaded_q1 = Value::from(first.result(0).unwrap());
+    append_if(&context, &body, bit, threaded_q1, Some("Z"), None, location);
+
+    classical_region_fusion::run_on_module(&context, &module);
+    assert_eq!(count_ifs(&module), 2);
+}
+
+#[test]
+fn does_not_drop_non_gate_branch_ops() {
+    let context = dynamic_context();
+    let location = Location::unknown(&context);
+    let module = Module::new(location);
+    let body = module.body();
+
+    let q0 = append_foreign_qubit(&context, &body, location);
+    let q1 = append_foreign_qubit(&context, &body, location);
+    let q2 = append_foreign_qubit(&context, &body, location);
+    let measure = body.append_operation(qd::measure(&context, q0, location).unwrap());
+    let bit = Value::from(measure.result(0).unwrap());
+
+    let branch_with_measure = {
+        let block = Block::new(&[(qc::qubit_type(&context), location)]);
+        let arg = Value::from(block.argument(0).unwrap());
+        block.append_operation(qd::measure(&context, arg, location).unwrap());
+        block.append_operation(qd::r#yield(&[arg], location).unwrap());
+        let region = Region::new();
+        region.append_block(block);
+        region
+    };
+    body.append_operation(
+        qd::r#if(
+            &context,
+            bit,
+            &[q1],
+            branch_with_measure,
+            branch_region(&context, location, None),
+            location,
+        )
+        .unwrap(),
+    );
+    append_if(&context, &body, bit, q2, Some("Z"), None, location);
+
+    classical_region_fusion::run_on_module(&context, &module);
+    let text = module.as_operation().to_string();
+    assert_eq!(count_ifs(&module), 2, "{text}");
+    assert!(text.contains(qd::op::MEASURE), "{text}");
 }
 
 #[test]

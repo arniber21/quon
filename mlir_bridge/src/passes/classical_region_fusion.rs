@@ -3,7 +3,7 @@
 //! Merges adjacent `quantum.dynamic.if` ops that share a condition bit and act
 //! on disjoint qubit sets into a single `if` with parallel unitary regions.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use melior::ir::attribute::{BoolAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
@@ -11,19 +11,15 @@ use melior::ir::r#type::TypeId;
 use melior::ir::{Block, BlockLike, Location, OperationRef, Region, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
-use quon_core::DepthExpr;
 use thiserror::Error;
 
 use crate::dialect::{quantum_circ, quantum_dynamic};
+use crate::passes::qubit_wiring::{self, WireTracker};
 
 #[derive(Debug, Error)]
 pub enum FusionError {
     #[error("failed to build `{op}`: {message}")]
     Build { op: &'static str, message: String },
-}
-
-fn value_key<'a>(value: &impl ValueLike<'a>) -> usize {
-    value.to_raw().ptr as usize
 }
 
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
@@ -61,48 +57,38 @@ fn read_bool_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str
 struct GateStep {
     name: String,
     targets: Vec<usize>,
+    depth_contribution: i64,
+    clifford: bool,
 }
 
-fn extract_gates_from_region<'c, 'a>(region: melior::ir::RegionRef<'c, 'a>) -> Vec<GateStep> {
-    let Some(block) = region.first_block() else {
-        return Vec::new();
-    };
-    let mut op = block.first_operation();
-    while let Some(inner) = op {
-        if op_name(&inner) == quantum_dynamic::op::UNITARY_REGION
-            && let Ok(body) = inner.region(0)
-        {
-            return extract_gates_from_circ_region(body);
-        }
-        op = inner.next_in_block();
-    }
-    extract_gates_from_circ_region(region)
-}
-
-fn extract_gates_from_circ_region<'c, 'a>(region: melior::ir::RegionRef<'c, 'a>) -> Vec<GateStep> {
+fn extract_gates_from_region<'c, 'a>(
+    region: melior::ir::RegionRef<'c, 'a>,
+) -> Option<Vec<GateStep>> {
     let mut gates = Vec::new();
     let Some(block) = region.first_block() else {
-        return gates;
+        return Some(gates);
     };
+    let mut tracker = WireTracker::new();
+    tracker.seed_block_args(&block);
     let mut op = block.first_operation();
     while let Some(inner) = op {
-        if op_name(&inner) == quantum_circ::op::GATE {
-            let gate_name = read_string_attr(&inner, quantum_circ::attr::GATE_NAME)
-                .unwrap_or_else(|| "?".to_string());
-            let targets: Vec<usize> = inner
-                .operands()
-                .filter(|operand| quantum_circ::is_qubit_type(operand.r#type()))
-                .enumerate()
-                .map(|(index, _)| index)
-                .collect();
+        let name = op_name(&inner);
+        if name == quantum_circ::op::GATE {
             gates.push(GateStep {
-                name: gate_name,
-                targets,
+                name: read_string_attr(&inner, quantum_circ::attr::GATE_NAME)
+                    .unwrap_or_else(|| "?".to_string()),
+                targets: tracker.roots_for_operands(inner),
+                depth_contribution: read_i64_attr(&inner, quantum_circ::attr::DEPTH_CONTRIBUTION)
+                    .unwrap_or(1),
+                clifford: read_bool_attr(&inner, quantum_circ::attr::CLIFFORD).unwrap_or(false),
             });
+        } else if name != quantum_dynamic::op::YIELD {
+            return None;
         }
+        tracker.observe_operation(inner);
         op = inner.next_in_block();
     }
-    gates
+    Some(gates)
 }
 
 fn qubit_operands<'c, 'a>(operation: OperationRef<'c, 'a>) -> Vec<Value<'c, 'a>> {
@@ -120,7 +106,7 @@ fn region_produces_bit<'c, 'a>(region: melior::ir::RegionRef<'c, 'a>, bit_key: u
         while let Some(inner) = op {
             if op_name(&inner) == quantum_dynamic::op::MEASURE
                 && let Ok(result) = inner.result(0)
-                && value_key(&result) == bit_key
+                && qubit_wiring::value_key(&result) == bit_key
             {
                 return true;
             }
@@ -138,7 +124,7 @@ fn if_depends_on_other_bit<'c, 'a>(
     let Ok(condition) = consumer.operand(0) else {
         return false;
     };
-    let bit_key = value_key(&condition);
+    let bit_key = qubit_wiring::value_key(&condition);
     for region_index in 0..producer.region_count() {
         if let Ok(region) = producer.region(region_index)
             && region_produces_bit(region, bit_key)
@@ -150,9 +136,15 @@ fn if_depends_on_other_bit<'c, 'a>(
 }
 
 fn disjoint_qubits<'c, 'a>(left: OperationRef<'c, 'a>, right: OperationRef<'c, 'a>) -> bool {
-    let left_keys: HashSet<_> = qubit_operands(left).iter().map(value_key).collect();
-    let right_keys: HashSet<_> = qubit_operands(right).iter().map(value_key).collect();
-    left_keys.is_disjoint(&right_keys)
+    let Some(left_block) = left.block() else {
+        return false;
+    };
+    let Some(right_block) = right.block() else {
+        return false;
+    };
+    let left_keys = qubit_wiring::roots_before(&left_block, left);
+    let right_keys = qubit_wiring::roots_before(&right_block, right);
+    left_keys.iter().all(|left| !right_keys.contains(left))
 }
 
 fn same_condition<'c, 'a>(left: OperationRef<'c, 'a>, right: OperationRef<'c, 'a>) -> bool {
@@ -162,39 +154,44 @@ fn same_condition<'c, 'a>(left: OperationRef<'c, 'a>, right: OperationRef<'c, 'a
     let Ok(right_bit) = right.operand(0) else {
         return false;
     };
-    value_key(&left_bit) == value_key(&right_bit)
+    qubit_wiring::value_key(&left_bit) == qubit_wiring::value_key(&right_bit)
 }
 
-fn build_unitary_circ_region<'c>(
+fn build_branch_region<'c>(
     context: &'c Context,
     location: Location<'c>,
     left_gates: &[GateStep],
     right_gates: &[GateStep],
     left_count: usize,
     right_count: usize,
-) -> Result<(Region<'c>, DepthExpr, bool), FusionError> {
+) -> Result<Region<'c>, FusionError> {
     let qubit = quantum_circ::qubit_type(context);
     let total = left_count + right_count;
     let block = Block::new(&vec![(qubit, location); total]);
     let mut wires: Vec<Value<'c, '_>> = Vec::with_capacity(total);
     for index in 0..total {
         let argument = block.argument(index).map_err(|_| FusionError::Build {
-            op: quantum_dynamic::op::UNITARY_REGION,
+            op: quantum_dynamic::op::IF,
             message: format!("missing block argument #{index}"),
         })?;
         wires.push(Value::from(argument));
     }
 
-    let gate_count = left_gates.len() + right_gates.len();
     for gate in left_gates {
         let operands: Vec<Value<'c, '_>> = gate.targets.iter().map(|i| wires[*i]).collect();
         let op = block.append_operation(
-            quantum_circ::gate(context, &gate.name, 1, true, &operands, location).map_err(
-                |error| FusionError::Build {
-                    op: quantum_circ::op::GATE,
-                    message: error.to_string(),
-                },
-            )?,
+            quantum_circ::gate(
+                context,
+                &gate.name,
+                gate.depth_contribution,
+                gate.clifford,
+                &operands,
+                location,
+            )
+            .map_err(|error| FusionError::Build {
+                op: quantum_circ::op::GATE,
+                message: error.to_string(),
+            })?,
         );
         for (index, target) in gate.targets.iter().enumerate() {
             wires[*target] = Value::from(op.result(index).map_err(|_| FusionError::Build {
@@ -207,12 +204,18 @@ fn build_unitary_circ_region<'c>(
         let targets: Vec<usize> = gate.targets.iter().map(|i| i + left_count).collect();
         let operands: Vec<Value<'c, '_>> = targets.iter().map(|i| wires[*i]).collect();
         let op = block.append_operation(
-            quantum_circ::gate(context, &gate.name, 1, true, &operands, location).map_err(
-                |error| FusionError::Build {
-                    op: quantum_circ::op::GATE,
-                    message: error.to_string(),
-                },
-            )?,
+            quantum_circ::gate(
+                context,
+                &gate.name,
+                gate.depth_contribution,
+                gate.clifford,
+                &operands,
+                location,
+            )
+            .map_err(|error| FusionError::Build {
+                op: quantum_circ::op::GATE,
+                message: error.to_string(),
+            })?,
         );
         for (index, target) in targets.iter().enumerate() {
             wires[*target] = Value::from(op.result(index).map_err(|_| FusionError::Build {
@@ -222,51 +225,7 @@ fn build_unitary_circ_region<'c>(
         }
     }
 
-    block.append_operation(quantum_circ::r#return(&wires, location).map_err(|error| {
-        FusionError::Build {
-            op: quantum_circ::op::RETURN,
-            message: error.to_string(),
-        }
-    })?);
-    let region = Region::new();
-    region.append_block(block);
-    let depth = DepthExpr::Nat(gate_count.max(1) as u64);
-    Ok((region, depth, true))
-}
-
-fn build_branch_region<'c>(
-    context: &'c Context,
-    location: Location<'c>,
-    left_gates: &[GateStep],
-    right_gates: &[GateStep],
-    left_count: usize,
-    right_count: usize,
-) -> Result<Region<'c>, FusionError> {
-    let (inner, depth, clifford) =
-        build_unitary_circ_region(context, location, left_gates, right_gates, left_count, right_count)?;
-    let qubit = quantum_circ::qubit_type(context);
-    let total = left_count + right_count;
-    let block = Block::new(&vec![(qubit, location); total]);
-    let mut operands: Vec<Value<'c, '_>> = Vec::with_capacity(total);
-    for index in 0..total {
-        let argument = block.argument(index).map_err(|_| FusionError::Build {
-            op: quantum_dynamic::op::IF,
-            message: format!("missing branch argument #{index}"),
-        })?;
-        operands.push(Value::from(argument));
-    }
-
-    let unitary = quantum_dynamic::unitary_region(context, &operands, &depth, clifford, inner, location)
-        .map_err(|error| FusionError::Build {
-            op: quantum_dynamic::op::UNITARY_REGION,
-            message: error.to_string(),
-        })?;
-    let unitary_ref = block.append_operation(unitary);
-    let outputs: Vec<Value<'c, '_>> = unitary_ref
-        .results()
-        .map(|result| Value::from(result))
-        .collect();
-    block.append_operation(quantum_dynamic::r#yield(&outputs, location).map_err(|error| {
+    block.append_operation(quantum_dynamic::r#yield(&wires, location).map_err(|error| {
         FusionError::Build {
             op: quantum_dynamic::op::YIELD,
             message: error.to_string(),
@@ -296,21 +255,37 @@ fn fuse_pair<'c, 'a>(
     let then_left = extract_gates_from_region(first.region(0).map_err(|_| FusionError::Build {
         op: quantum_dynamic::op::IF,
         message: "missing then region".to_string(),
-    })?);
+    })?)
+    .ok_or_else(|| FusionError::Build {
+        op: quantum_dynamic::op::IF,
+        message: "unsupported non-gate op in branch".to_string(),
+    })?;
     let else_left = extract_gates_from_region(first.region(1).map_err(|_| FusionError::Build {
         op: quantum_dynamic::op::IF,
         message: "missing else region".to_string(),
-    })?);
+    })?)
+    .ok_or_else(|| FusionError::Build {
+        op: quantum_dynamic::op::IF,
+        message: "unsupported non-gate op in branch".to_string(),
+    })?;
     let then_right =
         extract_gates_from_region(second.region(0).map_err(|_| FusionError::Build {
             op: quantum_dynamic::op::IF,
             message: "missing then region".to_string(),
-        })?);
+        })?)
+        .ok_or_else(|| FusionError::Build {
+            op: quantum_dynamic::op::IF,
+            message: "unsupported non-gate op in branch".to_string(),
+        })?;
     let else_right =
         extract_gates_from_region(second.region(1).map_err(|_| FusionError::Build {
             op: quantum_dynamic::op::IF,
             message: "missing else region".to_string(),
-        })?);
+        })?)
+        .ok_or_else(|| FusionError::Build {
+            op: quantum_dynamic::op::IF,
+            message: "unsupported non-gate op in branch".to_string(),
+        })?;
 
     let then_region = build_branch_region(
         context,
