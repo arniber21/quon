@@ -31,7 +31,9 @@
 //! [`DepthExpr`] S-expression.
 
 use melior::Context;
-use melior::ir::attribute::{AttributeLike, BoolAttribute, IntegerAttribute, StringAttribute};
+use melior::ir::attribute::{
+    AttributeLike, BoolAttribute, FloatAttribute, IntegerAttribute, StringAttribute,
+};
 use melior::ir::operation::{OperationBuilder, OperationLike};
 use melior::ir::r#type::IntegerType;
 use melior::ir::{
@@ -99,6 +101,8 @@ pub mod attr {
     pub const GATE_NAME: &str = "gate_name";
     /// Per-gate depth contribution (`I64Attr`).
     pub const DEPTH_CONTRIBUTION: &str = "depth_contribution";
+    /// Rotation angle in radians (`F64Attr`) on `Rz`/`Rx`/`Ry` gates.
+    pub const ANGLE: &str = "angle";
 }
 
 /// Registers the `quantum.circ` dialect with `context`.
@@ -598,6 +602,42 @@ pub fn func<'c>(
                 ),
             ])
             .add_regions([body]),
+    )
+}
+
+/// Builds a single-qubit rotation gate with an `angle` attribute (radians).
+pub fn rotation_gate<'c>(
+    context: &'c Context,
+    name: &str,
+    angle: f64,
+    depth_contribution: i64,
+    clifford: bool,
+    qubit: Value<'c, '_>,
+    location: Location<'c>,
+) -> Result<Operation<'c>, BuildError> {
+    let float_type = Type::parse(context, "f64").unwrap_or_else(|| Type::none(context));
+    finish(
+        OperationBuilder::new(op::GATE, location)
+            .add_operands(&[qubit])
+            .add_results(&[qubit_type(context)])
+            .add_attributes(&[
+                (
+                    Identifier::new(context, attr::GATE_NAME),
+                    StringAttribute::new(context, name).into(),
+                ),
+                (
+                    Identifier::new(context, attr::DEPTH_CONTRIBUTION),
+                    IntegerAttribute::new(i64_type(context), depth_contribution).into(),
+                ),
+                (
+                    Identifier::new(context, attr::CLIFFORD),
+                    BoolAttribute::new(context, clifford).into(),
+                ),
+                (
+                    Identifier::new(context, attr::ANGLE),
+                    FloatAttribute::new(context, float_type, angle).into(),
+                ),
+            ]),
     )
 }
 
