@@ -282,6 +282,57 @@ fn bit_used_by_two_ifs_is_not_deferred() {
 }
 
 #[test]
+fn non_commuting_branch_correction_uses_u_v_dagger_order() {
+    let context = dynamic_context();
+    let location = Location::unknown(&context);
+    let module = Module::new(location);
+    let body = module.body();
+
+    let q_meas = append_foreign_qubit(&context, &body, location);
+    let q_target = append_foreign_qubit(&context, &body, location);
+    let measure = body.append_operation(qd::measure(&context, q_meas, location).unwrap());
+    let bit = Value::from(measure.result(0).unwrap());
+
+    body.append_operation(
+        qd::r#if(
+            &context,
+            bit,
+            &[q_target],
+            branch_with_gate(&context, location, "X"),
+            branch_with_gate(&context, location, "Z"),
+            location,
+        )
+        .unwrap(),
+    );
+
+    measurement_deferral::run_on_module(&context, &module);
+    let text = module.as_operation().to_string();
+    assert_eq!(count_op(&text, qd::op::IF), 0, "{text}");
+    let cz = text.find("gate_name = \"CZ\"").expect(&text);
+    let cx = text.find("gate_name = \"CNOT\"").expect(&text);
+    assert!(
+        cz < cx,
+        "correction must emit V† before U to implement U·V†: {text}"
+    );
+}
+
+fn branch_with_gate<'c>(
+    context: &'c melior::Context,
+    location: Location<'c>,
+    gate_name: &str,
+) -> Region<'c> {
+    let block = Block::new(&[(qc::qubit_type(context), location)]);
+    let arg = Value::from(block.argument(0).unwrap());
+    let gate =
+        block.append_operation(qc::gate(context, gate_name, 1, true, &[arg], location).unwrap());
+    let out = Value::from(gate.result(0).unwrap());
+    block.append_operation(qd::r#yield(&[out], location).unwrap());
+    let region = Region::new();
+    region.append_block(block);
+    region
+}
+
+#[test]
 fn teleport_defers_both_measurements() {
     let context = dynamic_context();
     let module = lower_teleport_module(&context);

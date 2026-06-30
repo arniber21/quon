@@ -15,15 +15,12 @@ use quon_core::DepthExpr;
 use thiserror::Error;
 
 use crate::dialect::{quantum_circ, quantum_dynamic};
+use crate::passes::qubit_wiring::{self, WireTracker};
 
 #[derive(Debug, Error)]
 pub enum DeferError {
     #[error("failed to build `{op}`: {message}")]
     Build { op: &'static str, message: String },
-}
-
-fn value_key<'a>(value: &impl ValueLike<'a>) -> usize {
-    value.to_raw().ptr as usize
 }
 
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
@@ -73,6 +70,8 @@ fn extract_gates_from_region<'c, 'a>(
     let Some(block) = region.first_block() else {
         return gates;
     };
+    let mut tracker = WireTracker::new();
+    tracker.seed_block_args(&block);
     let mut op = block.first_operation();
     while let Some(inner) = op {
         let name = op_name(&inner);
@@ -82,11 +81,10 @@ fn extract_gates_from_region<'c, 'a>(
             let depth_contribution =
                 read_i64_attr(&inner, quantum_circ::attr::DEPTH_CONTRIBUTION).unwrap_or(1);
             let clifford = read_bool_attr(&inner, quantum_circ::attr::CLIFFORD).unwrap_or(true);
-            let targets: Vec<usize> = inner
-                .operands()
-                .filter(|operand| quantum_circ::is_qubit_type(operand.r#type()))
-                .enumerate()
-                .map(|(index, _)| index + target_offset)
+            let targets: Vec<usize> = tracker
+                .roots_for_operands(inner)
+                .into_iter()
+                .map(|index| index + target_offset)
                 .collect();
             gates.push(GateStep {
                 name: gate_name,
@@ -95,6 +93,7 @@ fn extract_gates_from_region<'c, 'a>(
                 clifford,
             });
         }
+        tracker.observe_operation(inner);
         op = inner.next_in_block();
     }
     gates
@@ -242,7 +241,9 @@ fn count_bit_uses<'c, 'a>(body: melior::ir::BlockRef<'c, 'a>, bit_key: usize) ->
     let mut op = body.first_operation();
     while let Some(current) = op {
         for operand in current.operands() {
-            if quantum_dynamic::is_bit_type(operand.r#type()) && value_key(&operand) == bit_key {
+            if quantum_dynamic::is_bit_type(operand.r#type())
+                && qubit_wiring::value_key(&operand) == bit_key
+            {
                 uses += 1;
             }
         }
@@ -260,7 +261,7 @@ fn find_unique_if_for_bit<'c, 'a>(
     while let Some(current) = op {
         if op_name(&current) == quantum_dynamic::op::IF
             && let Ok(condition) = current.operand(0)
-            && value_key(&condition) == bit_key
+            && qubit_wiring::value_key(&condition) == bit_key
         {
             if found.is_some() {
                 return None;
@@ -390,7 +391,7 @@ fn defer_module<'c, 'a>(context: &'c Context, module: OperationRef<'c, 'a>) {
             continue;
         };
         let bit_value = Value::from(bit);
-        let bit_key = value_key(&bit_value);
+        let bit_key = qubit_wiring::value_key(&bit_value);
         if count_bit_uses(body, bit_key) != 1 {
             continue;
         }
