@@ -7,13 +7,19 @@ Usage:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 
 
+def quonc_binary() -> str:
+    """The quonc executable: the QUONC env var if set, else `quonc` on PATH."""
+    return os.environ.get("QUONC", "quonc")
+
+
 def compile_to_qasm(source_file: str) -> str:
     result = subprocess.run(
-        ["quonc", "--emit-qasm", source_file],
+        [quonc_binary(), "--emit-qasm", source_file],
         capture_output=True, text=True, check=True,
     )
     return result.stdout
@@ -24,7 +30,11 @@ def run(qasm_src: str, shots: int = 4096) -> dict:
     from qiskit_aer import AerSimulator
 
     circuit = qasm3.loads(qasm_src)
-    circuit.measure_all()
+    # quonc emits explicit `measure` statements into a `bit[m] c;` register, so
+    # the loaded circuit already carries its measurements. Only fall back to
+    # measure_all() for a purely unitary circuit with no classical bits.
+    if circuit.num_clbits == 0:
+        circuit.measure_all()
     sim = AerSimulator()
     job = sim.run(circuit, shots=shots)
     return job.result().get_counts()
