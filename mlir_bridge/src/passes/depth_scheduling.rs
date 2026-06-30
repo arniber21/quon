@@ -79,6 +79,7 @@ fn collect_gates<'c, 'a>(block: melior::ir::BlockRef<'c, 'a>) -> Vec<GateStep<'c
                 phys_qubits: vec![],
                 barrier: true,
             });
+            tracker.observe_operation(current);
             continue;
         }
         if name != quantum_circ::op::GATE {
@@ -86,13 +87,18 @@ fn collect_gates<'c, 'a>(block: melior::ir::BlockRef<'c, 'a>) -> Vec<GateStep<'c
             continue;
         }
         let roots = tracker.roots_for_operands(current);
-        let phys = if roots.is_empty() {
+        let mut phys = if roots.is_empty() {
             read_i32_attr(&current, "phys_qubit")
                 .map(|value| vec![value])
                 .unwrap_or_default()
         } else {
             roots.into_iter().map(|root| root as i32).collect()
         };
+        if let Some(attr_phys) = read_i32_attr(&current, "phys_qubit")
+            && !phys.contains(&attr_phys)
+        {
+            phys.push(attr_phys);
+        }
         steps.push(GateStep {
             op: current,
             phys_qubits: phys,
