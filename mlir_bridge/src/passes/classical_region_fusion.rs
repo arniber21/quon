@@ -101,12 +101,11 @@ fn region_produces_bit<'c, 'a>(region: melior::ir::RegionRef<'c, 'a>, bit_key: u
     while let Some(current) = block {
         let mut op = current.first_operation();
         while let Some(inner) = op {
-            if op_name(&inner) == quantum_dynamic::op::MEASURE {
-                if let Ok(result) = inner.result(0) {
-                    if value_key(&result) == bit_key {
-                        return true;
-                    }
-                }
+            if op_name(&inner) == quantum_dynamic::op::MEASURE
+                && let Ok(result) = inner.result(0)
+                && value_key(&result) == bit_key
+            {
+                return true;
             }
             op = inner.next_in_block();
         }
@@ -124,18 +123,18 @@ fn if_depends_on_other_bit<'c, 'a>(
     };
     let bit_key = value_key(&condition);
     for region_index in 0..producer.region_count() {
-        if let Ok(region) = producer.region(region_index) {
-            if region_produces_bit(region, bit_key) {
-                return true;
-            }
+        if let Ok(region) = producer.region(region_index)
+            && region_produces_bit(region, bit_key)
+        {
+            return true;
         }
     }
     false
 }
 
 fn disjoint_qubits<'c, 'a>(left: OperationRef<'c, 'a>, right: OperationRef<'c, 'a>) -> bool {
-    let left_keys: HashSet<_> = qubit_operands(left).iter().map(|v| value_key(v)).collect();
-    let right_keys: HashSet<_> = qubit_operands(right).iter().map(|v| value_key(v)).collect();
+    let left_keys: HashSet<_> = qubit_operands(left).iter().map(value_key).collect();
+    let right_keys: HashSet<_> = qubit_operands(right).iter().map(value_key).collect();
     left_keys.is_disjoint(&right_keys)
 }
 
@@ -294,17 +293,17 @@ fn fuse_pair<'c, 'a>(
     let rewriter = IrRewriter::new(context);
     let base = rewriter.as_rewriter_base();
     for (index, _qubit) in left_qubits.iter().enumerate() {
-        if let Some(mapped) = output_map.get(&index) {
-            if let Ok(result) = first.result(index) {
-                base.replace_all_uses_with(Value::from(result), *mapped);
-            }
+        if let Some(mapped) = output_map.get(&index)
+            && let Ok(result) = first.result(index)
+        {
+            base.replace_all_uses_with(Value::from(result), *mapped);
         }
     }
     for (index, _qubit) in right_qubits.iter().enumerate() {
-        if let Some(mapped) = output_map.get(&(index + left_count)) {
-            if let Ok(result) = second.result(index) {
-                base.replace_all_uses_with(Value::from(result), *mapped);
-            }
+        if let Some(mapped) = output_map.get(&(index + left_count))
+            && let Ok(result) = second.result(index)
+        {
+            base.replace_all_uses_with(Value::from(result), *mapped);
         }
     }
 
