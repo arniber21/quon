@@ -4,7 +4,6 @@ use std::env;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
-use backend::json;
 use melior::Context;
 use melior::ir::Module;
 
@@ -12,12 +11,12 @@ use mlir_bridge::dialect;
 use mlir_bridge::passes::sabre_routing::{self, SabreCost};
 
 fn main() -> ExitCode {
-    let target_path = env::args().nth(1).unwrap_or_else(|| {
-        "backend/tests/fixtures/device_5q.json".to_string()
-    });
+    let target_path = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "backend/tests/fixtures/device_5q.json".to_string());
 
     let target = match std::fs::read_to_string(&target_path)
-        .map_err(|error| backend::BackendError::Io(error))
+        .map_err(backend::BackendError::Io)
         .and_then(|text| backend::json::from_str(&text))
     {
         Ok(target) => target,

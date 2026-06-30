@@ -7,13 +7,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use backend::target::BackendTarget;
+use melior::StringRef;
 use melior::ir::attribute::IntegerAttribute;
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
 use melior::ir::{AttributeLike, BlockLike, Location, OperationRef, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef};
-use melior::StringRef;
 use mlir_sys::mlirOperationSetAttributeByName;
 use thiserror::Error;
 
@@ -30,7 +30,11 @@ fn set_i32_attr<'c>(context: &'c Context, op: OperationRef<'c, '_>, key: &str, v
     )
     .into();
     unsafe {
-        mlirOperationSetAttributeByName(op.to_raw(), StringRef::new(key).to_raw(), attribute.to_raw());
+        mlirOperationSetAttributeByName(
+            op.to_raw(),
+            StringRef::new(key).to_raw(),
+            attribute.to_raw(),
+        );
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -75,12 +79,13 @@ fn append_swap<'c, 'a>(
     q1: Value<'c, 'a>,
     location: Location<'c>,
 ) -> Result<(Value<'c, 'a>, Value<'c, 'a>), RouteError> {
-    let op = quantum_circ::gate(context, "SWAP", 1, true, &[q0, q1], location).map_err(|error| {
-        RouteError::Build {
-            op: quantum_circ::op::GATE,
-            message: error.to_string(),
-        }
-    })?;
+    let op =
+        quantum_circ::gate(context, "SWAP", 1, true, &[q0, q1], location).map_err(|error| {
+            RouteError::Build {
+                op: quantum_circ::op::GATE,
+                message: error.to_string(),
+            }
+        })?;
     let op_ref = block.insert_operation_before(before, op);
     Ok((
         Value::from(op_ref.result(0).map_err(|_| RouteError::Build {
@@ -105,7 +110,7 @@ impl Layout {
     fn new(num_qubits: usize) -> Self {
         Self {
             mapping: HashMap::new(),
-            inverse: (0..num_qubits).map(|i| i).collect(),
+            inverse: (0..num_qubits).collect(),
         }
     }
 
@@ -130,6 +135,8 @@ impl Layout {
     }
 }
 
+// Threaded routing state: layout, IR cursor, and live wire map travel together.
+#[allow(clippy::too_many_arguments)]
 fn route_two_qubit<'c, 'a>(
     context: &'c Context,
     target: &BackendTarget,
@@ -147,7 +154,11 @@ fn route_two_qubit<'c, 'a>(
 
     while target.topology.dist(p_a, p_b) > 1 {
         let path = shortest_path(&target.topology.dist, p_a, p_b);
-        let (u, v) = path[0];
+        // No connecting path (e.g. disconnected components): bail out instead of
+        // indexing an empty path and panicking.
+        let Some(&(u, v)) = path.first() else {
+            break;
+        };
         let swap_cost = cost.alpha + cost.gamma * noise_penalty(target, u, v);
         let _ = swap_cost;
 
@@ -172,9 +183,9 @@ fn shortest_path(dist: &[Vec<usize>], start: usize, end: usize) -> Vec<(usize, u
     while current != end {
         let mut next = current;
         let mut best = dist[current][end];
-        for candidate in 0..dist.len() {
-            if dist[current][candidate] == 1 && dist[candidate][end] < best {
-                best = dist[candidate][end];
+        for (candidate, row) in dist.iter().enumerate() {
+            if dist[current][candidate] == 1 && row[end] < best {
+                best = row[end];
                 next = candidate;
             }
         }
