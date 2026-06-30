@@ -1,5 +1,7 @@
 //! Complex 2×2 and 4×4 unitary matrices for gate decomposition (issue #24).
 
+#[cfg(feature = "flux")]
+use flux_rs::attrs::*;
 use std::f64::consts::PI;
 
 /// A complex number with real and imaginary parts.
@@ -103,13 +105,14 @@ fn c(re: f64, im: f64) -> Complex {
 
 fn kron(a: M2, b: M2) -> M4 {
     let mut out = [[ZERO; 4]; 4];
-    for i in 0..2 {
-        for j in 0..2 {
-            for k in 0..2 {
-                for l in 0..2 {
-                    let row = 2 * i + k;
-                    let col = 2 * j + l;
-                    out[row][col] = a.0[i][j] * b.0[k][l];
+    // The Kronecker layout places `a[i][j] * b[k][l]` at `out[2i+k][2j+l]`.
+    // Splitting the 4×4 output into 2×2 blocks lets us walk it with iterators
+    // instead of computed indices, so Flux proves the access from slice lengths.
+    for (row_block, a_row) in out.chunks_mut(2).zip(a.0.iter()) {
+        for (out_row, b_row) in row_block.iter_mut().zip(b.0.iter()) {
+            for (col_block, a_ij) in out_row.chunks_mut(2).zip(a_row.iter()) {
+                for (cell, b_kl) in col_block.iter_mut().zip(b_row.iter()) {
+                    *cell = *a_ij * *b_kl;
                 }
             }
         }
@@ -207,13 +210,14 @@ pub fn tensor(a: M2, b: M2) -> M4 {
 }
 
 /// Matrix multiply for 2×2.
-#[allow(clippy::needless_range_loop)]
 pub fn mul2(a: M2, b: M2) -> M2 {
     let mut out = [[ZERO; 2]; 2];
-    for i in 0..2 {
-        for j in 0..2 {
-            for k in 0..2 {
-                out[i][j] = out[i][j] + a.0[i][k] * b.0[k][j];
+    // Row-oriented accumulation `out[i] += a[i][k] * b[k]` avoids index-based
+    // access so Flux can discharge the bounds purely from iterator lengths.
+    for (out_row, a_row) in out.iter_mut().zip(a.0.iter()) {
+        for (a_ik, b_row) in a_row.iter().zip(b.0.iter()) {
+            for (out_ij, b_kj) in out_row.iter_mut().zip(b_row.iter()) {
+                *out_ij = *out_ij + *a_ik * *b_kj;
             }
         }
     }
@@ -231,13 +235,14 @@ pub fn scale2(a: M2, phase: Complex) -> M2 {
 }
 
 /// Matrix multiply for 4×4.
-#[allow(clippy::needless_range_loop)]
 pub fn mul4(a: M4, b: M4) -> M4 {
     let mut out = [[ZERO; 4]; 4];
-    for i in 0..4 {
-        for j in 0..4 {
-            for k in 0..4 {
-                out[i][j] = out[i][j] + a.0[i][k] * b.0[k][j];
+    // Row-oriented accumulation `out[i] += a[i][k] * b[k]` avoids index-based
+    // access so Flux can discharge the bounds purely from iterator lengths.
+    for (out_row, a_row) in out.iter_mut().zip(a.0.iter()) {
+        for (a_ik, b_row) in a_row.iter().zip(b.0.iter()) {
+            for (out_ij, b_kj) in out_row.iter_mut().zip(b_row.iter()) {
+                *out_ij = *out_ij + *a_ik * *b_kj;
             }
         }
     }
@@ -262,21 +267,32 @@ pub fn zyz_angles(u: M2) -> (f64, f64, f64) {
 
 /// True when the 4×4 unitary is a product U₁ ⊗ U₂ (KAK separable).
 pub fn is_separable(u: M4) -> bool {
-    let mut r = [[ZERO; 4]; 4];
-    for a in 0..2 {
-        for b in 0..2 {
-            for c in 0..2 {
-                for d in 0..2 {
-                    let row = 2 * a + c;
-                    let col = 2 * b + d;
-                    r[row][col] = u.0[2 * a + b][2 * c + d];
-                }
-            }
-        }
-    }
+    // Separability reduces to rank(R) <= 1 where R is the "realignment" of U:
+    // R[2a+c][2b+d] = U[2a+b][2c+d] (swap of the inner index bits). The mapping
+    // is a fixed permutation, so we spell it out with constant indices — this is
+    // identical to the loop nest but keeps every access provably in bounds.
+    let m = u.0;
+    let r = [
+        [m[0][0], m[0][1], m[1][0], m[1][1]],
+        [m[0][2], m[0][3], m[1][2], m[1][3]],
+        [m[2][0], m[2][1], m[3][0], m[3][1]],
+        [m[2][2], m[2][3], m[3][2], m[3][3]],
+    ];
     matrix_rank_4(&r) <= 1
 }
 
+// `#[trusted]` under Flux: this is Gauss–Jordan elimination on a fixed 4×4
+// matrix, which needs data-dependent random access (pivot search, `a.swap`,
+// the `rank` counter) that cannot be expressed with the length-carrying
+// iterators Flux proves from. Every index is in `0..4` by construction:
+//   * `col`, `i` range over `0..4`; `j` ranges over `col..4 ⊆ 0..4`;
+//   * `pivot` is only read while the `pivot < 4` guard holds (and `pivot == 4`
+//     is handled by the early `continue`);
+//   * `rank` is incremented at most once per column, so `rank <= col < 4`
+//     whenever it indexes (and `a.swap(rank, pivot)` runs only past the
+//     `pivot == 4` guard).
+// The regular (non-Flux) build verifies these accesses at runtime via tests.
+#[cfg_attr(feature = "flux", trusted)]
 #[allow(clippy::needless_range_loop)]
 fn matrix_rank_4(m: &[[Complex; 4]; 4]) -> usize {
     let mut a = *m;
@@ -317,9 +333,9 @@ fn matrix_rank_4(m: &[[Complex; 4]; 4]) -> usize {
 /// Frob-norm distance between two 4×4 unitaries up to global phase.
 pub fn unitary_distance(a: M4, b: M4) -> f64 {
     let mut inner = ZERO;
-    for i in 0..4 {
-        for j in 0..4 {
-            inner = inner + a.0[i][j] * b.0[i][j].conj();
+    for (row_a, row_b) in a.0.iter().zip(b.0.iter()) {
+        for (va, vb) in row_a.iter().zip(row_b.iter()) {
+            inner = inner + *va * vb.conj();
         }
     }
     let phase = if inner.norm() > 1e-12 {
@@ -328,9 +344,9 @@ pub fn unitary_distance(a: M4, b: M4) -> f64 {
         ONE
     };
     let mut sum = 0.0;
-    for i in 0..4 {
-        for j in 0..4 {
-            let diff = a.0[i][j] - phase * b.0[i][j];
+    for (row_a, row_b) in a.0.iter().zip(b.0.iter()) {
+        for (va, vb) in row_a.iter().zip(row_b.iter()) {
+            let diff = *va - phase * *vb;
             sum += diff.norm() * diff.norm();
         }
     }
@@ -340,9 +356,9 @@ pub fn unitary_distance(a: M4, b: M4) -> f64 {
 /// Frob-norm distance between two 2×2 unitaries up to global phase.
 pub fn unitary_distance2(a: M2, b: M2) -> f64 {
     let mut inner = ZERO;
-    for i in 0..2 {
-        for j in 0..2 {
-            inner = inner + a.0[i][j] * b.0[i][j].conj();
+    for (row_a, row_b) in a.0.iter().zip(b.0.iter()) {
+        for (va, vb) in row_a.iter().zip(row_b.iter()) {
+            inner = inner + *va * vb.conj();
         }
     }
     let phase = if inner.norm() > 1e-12 {
@@ -351,9 +367,9 @@ pub fn unitary_distance2(a: M2, b: M2) -> f64 {
         ONE
     };
     let mut sum = 0.0;
-    for i in 0..2 {
-        for j in 0..2 {
-            let diff = a.0[i][j] - phase * b.0[i][j];
+    for (row_a, row_b) in a.0.iter().zip(b.0.iter()) {
+        for (va, vb) in row_a.iter().zip(row_b.iter()) {
+            let diff = *va - phase * *vb;
             sum += diff.norm() * diff.norm();
         }
     }

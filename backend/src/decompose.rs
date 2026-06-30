@@ -239,22 +239,30 @@ pub fn decompose_named_two(name: &str, native: &[String], q0: usize, q1: usize) 
 
 /// Extract product factors from a separable 4×4 unitary.
 fn extract_product_factors(u: M4, left: &mut [[Complex; 2]; 2], right: &mut [[Complex; 2]; 2]) {
-    let mut pivot = None;
-    'outer: for row in 0..4 {
-        for col in 0..4 {
-            if u.0[row][col].norm() > EPS {
-                pivot = Some((row / 2, row % 2, col / 2, col % 2, u.0[row][col]));
-                break 'outer;
-            }
-        }
-    }
+    // First non-negligible entry, in row-major order. The enumerate indices feed
+    // only arithmetic (block/offset decomposition), never array access, so Flux
+    // discharges the search without bounds reasoning.
+    let pivot = u.0.iter().enumerate().find_map(|(row, u_row)| {
+        u_row.iter().enumerate().find_map(|(col, &val)| {
+            (val.norm() > EPS).then_some((row / 2, row % 2, col / 2, col % 2, val))
+        })
+    });
     let Some((a0, c0, b0, d0, scale)) = pivot else {
         return;
     };
-    for i in 0..2 {
-        for j in 0..2 {
-            left[i][j] = u.0[2 * i + c0][2 * j + d0];
-            right[i][j] = u.0[2 * a0 + i][2 * b0 + j] / scale;
+    // `left[i][j] = u[c0 + 2i][d0 + 2j]`: the strided 2×2 sub-grid with row/col
+    // offsets `c0`/`d0` and stride 2. `skip(..).step_by(2)` walks exactly those
+    // rows/cols, so the fill stays iterator-based and provably in bounds.
+    for (left_row, u_row) in left.iter_mut().zip(u.0.iter().skip(c0).step_by(2)) {
+        for (cell, &val) in left_row.iter_mut().zip(u_row.iter().skip(d0).step_by(2)) {
+            *cell = val;
+        }
+    }
+    // `right[i][j] = u[2*a0 + i][2*b0 + j] / scale`: the contiguous 2×2 block at
+    // block-row `a0`, block-col `b0`. `skip(2*block).take(2)` selects it.
+    for (right_row, u_row) in right.iter_mut().zip(u.0.iter().skip(2 * a0).take(2)) {
+        for (cell, &val) in right_row.iter_mut().zip(u_row.iter().skip(2 * b0).take(2)) {
+            *cell = val / scale;
         }
     }
 }
