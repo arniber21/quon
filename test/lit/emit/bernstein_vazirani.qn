@@ -1,0 +1,28 @@
+-- RUN: %quonc --emit-qasm %s | %FileCheck %s
+--
+-- Bernstein-Vazirani for secret s = 110 (issue #29). Single-shot recovery of the
+-- secret in the query bits c[0..2]; the ancilla c[3] is irrelevant.
+
+fn bv_oracle_s110(): Circuit<4, 4, 10, Clifford> = circuit {
+    X @3
+    |> H @0 |> H @1 |> H @2 |> H @3
+    |> CNOT @(0, 3) |> CNOT @(1, 3)
+    |> H @0 |> H @1 |> H @2
+}
+
+fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, anc) <- bv_oracle_s110() @ qreg(4)
+    b0  <- measure(q0)
+    b1  <- measure(q1)
+    b2  <- measure(q2)
+    anc_bit <- measure(anc)
+    return (b0, b1, b2, anc_bit)
+}
+
+-- CHECK: qubit[4] q;
+-- CHECK: bit[4] c;
+-- CHECK: x q[3];
+-- CHECK: cx q[0], q[3];
+-- CHECK: cx q[1], q[3];
+-- CHECK: c[0] = measure q[0];
+-- CHECK: c[3] = measure q[3];
