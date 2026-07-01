@@ -4,7 +4,6 @@
 //! via [`super::gate_cancellation`] for both Clifford and universal circuits.
 
 use melior::ir::OperationRef;
-use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef};

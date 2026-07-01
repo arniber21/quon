@@ -9,6 +9,7 @@
 pub mod depth;
 pub mod linearity;
 pub mod optimization;
+pub mod qasm;
 
 pub use depth::{DepthExpr, DepthParseError};
 pub use linearity::{
@@ -17,4 +18,8 @@ pub use linearity::{
 };
 pub use optimization::{
     arity_preserved, depth_after_removal, par_depth, seq_depth, single_qubit_pair,
+};
+pub use qasm::{
+    BitId, Expr, GateDef, OneQubitGate, Program, QasmError, QasmGate, QubitId, Register,
+    RotationGate, Stmt, TwoQubitGate, index_in_bounds, operand_arity_ok, render,
 };

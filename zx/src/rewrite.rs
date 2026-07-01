@@ -57,7 +57,9 @@ fn spider_fusion(zx: &mut ZXGraph, node: NodeIndex) -> bool {
         return false;
     };
 
-    let other_phase = zx.graph.node_weight(other).expect("partner").phase;
+    let Some(other_phase) = zx.graph.node_weight(other).map(|partner| partner.phase) else {
+        return false;
+    };
     if let Some(merged) = zx.graph.node_weight_mut(node) {
         merged.phase = normalize_phase(spider.phase + other_phase);
     }
@@ -105,15 +107,19 @@ fn normalize_phase(phase: f64) -> f64 {
 fn pi_copy(_zx: &mut ZXGraph) -> bool {
     false
 }
+#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
 fn bialgebra(_zx: &mut ZXGraph) -> bool {
     false
 }
+#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
 fn euler_decomposition(_zx: &mut ZXGraph) -> bool {
     false
 }
+#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
 fn color_change(_zx: &mut ZXGraph) -> bool {
     false
 }
+#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
 fn state_copy(_zx: &mut ZXGraph) -> bool {
     false
 }
