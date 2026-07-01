@@ -1,0 +1,31 @@
+-- RUN: %quonc --emit-qasm %s | %FileCheck %s
+--
+-- Quantum teleportation with feed-forward corrections (issue #27). The `if`
+-- conditions render as `bit == true` for OpenQASM 3.0 importer compatibility.
+
+fn prep(): Circuit<3, 3, 3, Clifford> = circuit { X @0 |> H @1 |> CNOT @(1, 2) }
+fn bell_basis(): Circuit<2, 2, 2, Clifford> = circuit { CNOT @(0, 1) |> H @0 }
+fn pauli_x(): Circuit<1, 1, 1, Clifford> = circuit { X @0 }
+fn pauli_z(): Circuit<1, 1, 1, Clifford> = circuit { Z @0 }
+fn id_one(): Circuit<1, 1, 1, Clifford> = circuit { I @0 }
+
+fn main(): Q<Bit> = run {
+    (msg, alice, bob) <- prep() @ qreg(3)
+    (m2, a2)          <- bell_basis() @ (msg, alice)
+    x_bit             <- measure(m2)
+    z_bit             <- measure(a2)
+    b2                <- (if z_bit then pauli_x() else id_one()) @ bob
+    b3                <- (if x_bit then pauli_z() else id_one()) @ b2
+    result            <- measure(b3)
+    return result
+}
+
+-- CHECK: qubit[3] q;
+-- CHECK: cx q[1], q[2];
+-- CHECK: c[0] = measure q[0];
+-- CHECK: c[1] = measure q[1];
+-- CHECK: if (c[1] == true) {
+-- CHECK: x q[2];
+-- CHECK: if (c[0] == true) {
+-- CHECK: z q[2];
+-- CHECK: c[2] = measure q[2];

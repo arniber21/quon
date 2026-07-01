@@ -444,6 +444,7 @@ dependencies = [
  "anyhow",
  "arbitrary",
  "ariadne",
+ "backend",
  "chumsky",
  "insta",
  "melior",
@@ -836,6 +837,7 @@ dependencies = [
  "backend",
  "clap",
  "frontend",
+ "melior",
  "mlir_bridge",
 ]
 

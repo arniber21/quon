@@ -57,10 +57,9 @@ fn spider_fusion(zx: &mut ZXGraph, node: NodeIndex) -> bool {
         return false;
     };
 
-    let Some(partner) = zx.graph.node_weight(other) else {
+    let Some(other_phase) = zx.graph.node_weight(other).map(|partner| partner.phase) else {
         return false;
     };
-    let other_phase = partner.phase;
     if let Some(merged) = zx.graph.node_weight_mut(node) {
         merged.phase = normalize_phase(spider.phase + other_phase);
     }

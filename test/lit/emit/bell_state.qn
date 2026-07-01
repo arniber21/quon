@@ -1,0 +1,26 @@
+-- RUN: %quonc --emit-qasm %s | %FileCheck %s
+--
+-- End-to-end OpenQASM 3.0 emission for the Bell state (issue #27). Uses `--`
+-- line comments (the Quon lexer's comment syntax) so the source still parses
+-- when fed straight to quonc; FileCheck/lit find RUN:/CHECK: regardless of the
+-- comment prefix.
+
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1)
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- bell_state() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+}
+
+-- CHECK: OPENQASM 3.0;
+-- CHECK: include "stdgates.inc";
+-- CHECK: qubit[2] q;
+-- CHECK: bit[2] c;
+-- CHECK: h q[0];
+-- CHECK: cx q[0], q[1];
+-- CHECK: c[0] = measure q[0];
+-- CHECK: c[1] = measure q[1];

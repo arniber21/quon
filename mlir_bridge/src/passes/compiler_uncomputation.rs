@@ -76,13 +76,14 @@ fn uncompute_borrow<'c, 'a>(context: &'c Context, borrow: OperationRef<'c, 'a>) 
         op = current.next_in_block();
     }
 
-    let mut wires = Vec::with_capacity(block.argument_count());
-    for index in 0..block.argument_count() {
-        let Ok(argument) = block.argument(index) else {
-            return false;
-        };
-        wires.push(Value::from(argument));
-    }
+    // Conservatively bail out (leaving the borrow as-is) on any structural
+    // surprise rather than panicking — uncomputation is an optional rewrite.
+    let Some(mut wires) = (0..block.argument_count())
+        .map(|index| block.argument(index).ok().map(Value::from))
+        .collect::<Option<Vec<Value<'c, 'a>>>>()
+    else {
+        return false;
+    };
     let return_op = {
         let mut cursor = block.first_operation();
         let mut found = None;
@@ -93,12 +94,13 @@ fn uncompute_borrow<'c, 'a>(context: &'c Context, borrow: OperationRef<'c, 'a>) 
             }
             cursor = current.next_in_block();
         }
-        let Some(return_op) = found else {
-            return false;
-        };
-        return_op
+        found
+    };
+    let Some(return_op) = return_op else {
+        return false;
     };
     for gate in gates.iter().rev() {
+        // `inverse_name` was already confirmed `Some` when recording each gate.
         let Some(inverse) = inverse_name(&gate.name) else {
             return false;
         };

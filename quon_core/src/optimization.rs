@@ -27,6 +27,9 @@ use flux_rs::attrs::*;
     feature = "flux",
     spec(fn(current: u64, removed: u64) -> u64{v: v <= current})
 )]
+// The explicit branch is deliberate: Flux discharges `v <= current` from it, but
+// has no refined spec for `u64::saturating_sub`, so the clippy-suggested rewrite
+// would break refinement checking. Keep the branch and silence the lint.
 #[allow(clippy::implicit_saturating_sub)]
 pub fn depth_after_removal(current: u64, removed: u64) -> u64 {
     if removed >= current {
