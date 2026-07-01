@@ -23,6 +23,8 @@ use crate::typecheck::circuit;
 use crate::typecheck::{TypeChecker, TypeError};
 use crate::types::Ty;
 
+type GatePlacement = (Sp<Expr>, Sp<Expr>);
+
 /// Errors raised while lowering a well-typed program to `quantum.circ`.
 #[derive(Debug, Error)]
 pub enum LowerError {
@@ -680,10 +682,7 @@ fn circuit_ref_op<'c>(
     Ok(operation)
 }
 
-/// A flattened sequence of `(gate, qubits)` placements from a circuit body.
-type GatePlacements = Vec<(Sp<Expr>, Sp<Expr>)>;
-
-fn collect_gate_placements(expr: &Sp<Expr>) -> Result<GatePlacements, LowerError> {
+fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<GatePlacement>, LowerError> {
     match &expr.0 {
         Expr::CircuitBlock(stmts) => {
             let Some(Stmt::Expr(last)) = stmts.last().map(|s| &s.0) else {
