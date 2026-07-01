@@ -8,13 +8,15 @@ use melior::Context;
 use melior::ir::attribute::{BoolAttribute, StringAttribute};
 use melior::ir::operation::OperationBuilder;
 use melior::ir::{
-    Block, BlockLike, Identifier, Location, Module, Operation, Region, RegionLike, Value,
+    Block, BlockLike, Identifier, Location, Module, Operation, OperationRef, Region, RegionLike,
+    Value,
 };
+use mlir_bridge::dialect::monadic_staging as staging;
 use mlir_bridge::dialect::quantum_circ as qc;
 use quon_core::DepthExpr;
 use thiserror::Error;
 
-use crate::ast::{CliffordClass, Decl, Expr, Name, Stmt, Type as AstType};
+use crate::ast::{CliffordClass, Decl, Expr, Name, Pat, Stmt, Type as AstType};
 use crate::diagnostics::Diagnostic;
 use crate::lexer::Sp;
 use crate::typecheck::circuit;
@@ -26,8 +28,14 @@ use crate::types::Ty;
 pub enum LowerError {
     #[error("lowering is not implemented for `{construct}`")]
     Unsupported { construct: &'static str },
-    #[error("circuit function `{name}` must have no parameters in this lowering pass")]
-    ParametricFn { name: String },
+    #[error(
+        "parameterized circuit function `{name}` is not supported by the QASM lowering pass yet (deferred under #27)"
+    )]
+    ParametricCircuitFn { name: String },
+    #[error(
+        "parameterized run function `{name}` is not supported by the QASM lowering pass yet (deferred under #27)"
+    )]
+    ParametricRunFn { name: String },
     #[error("could not read a constant qubit count from `{field}`")]
     NonConstWidth { field: &'static str },
     #[error("unknown gate `{name}`")]
@@ -128,6 +136,21 @@ impl<'c> LoweringCtx<'c> {
                 self.lower_circuit_fn(name, params, ret, body)?;
             }
         }
+
+        // Run-block (`Q<τ>`) functions lower to a `quantum.circ.run` staging op,
+        // which the monadic-lowering pass (#17) rewrites to `quantum.dynamic`.
+        // Circuit funcs are lowered first so `apply` callees already exist.
+        for decl in decls {
+            if let Decl::Fn {
+                name,
+                params,
+                ret,
+                body,
+            } = &decl.0
+            {
+                self.lower_run_fn(name, params, ret, body)?;
+            }
+        }
         Ok(&self.module)
     }
 
@@ -142,12 +165,12 @@ impl<'c> LoweringCtx<'c> {
         ret: &Sp<AstType>,
         body: &Sp<Expr>,
     ) -> Result<(), LowerError> {
-        if !params.is_empty() {
-            return Err(LowerError::ParametricFn { name: name.clone() });
-        }
         let Ty::Circuit { n, m, d, c } = self.checker.resolve_type(ret)? else {
             return Ok(());
         };
+        if !params.is_empty() {
+            return Err(LowerError::ParametricCircuitFn { name: name.clone() });
+        }
         let in_qubits = const_width(&n, "in_qubits")?;
         let out_qubits = const_width(&m, "out_qubits")?;
         let clifford = matches!(c, CliffordClass::Clifford);
@@ -228,6 +251,174 @@ impl<'c> LoweringCtx<'c> {
         )?;
         self.module.body().append_operation(func);
         Ok(())
+    }
+
+    /// Lower a quantum-monad (`Q<τ>`) function into a `quantum.circ.run` staging
+    /// op. The desugared body is a `Bind`/`Let`/`Return` chain (issue #8); we walk
+    /// it, emitting `monadic_staging` ops (`qreg`/`apply`/`measure`/`yield`) into
+    /// the run region's entry block. The monadic-lowering pass (#17) then rewrites
+    /// those to `quantum.dynamic` IR.
+    fn lower_run_fn(
+        &mut self,
+        name: &Name,
+        params: &[(Name, Sp<AstType>)],
+        ret: &Sp<AstType>,
+        body: &Sp<Expr>,
+    ) -> Result<(), LowerError> {
+        let Ok(Ty::Q(_)) = self.checker.resolve_type(ret) else {
+            return Ok(());
+        };
+        // Qubit-parameterized entry points (e.g. `teleport`) would thread their
+        // params in as run operands; the runnable entry points we compile take no
+        // qubit parameters (they allocate via `qreg`).
+        if !params.is_empty() {
+            return Err(LowerError::ParametricRunFn { name: name.clone() });
+        }
+
+        let region = Region::new();
+        let mut block = Block::new(&[]);
+        let mut env: HashMap<Name, Vec<Value<'c, 'c>>> = HashMap::new();
+        let outputs = self.lower_monadic(body, &mut block, &mut env)?;
+        block.append_operation(staging::r#yield(&outputs, self.location));
+        region.append_block(block);
+        self.module
+            .body()
+            .append_operation(staging::run(self.context, &[], region, self.location));
+        Ok(())
+    }
+
+    /// Walk a monadic expression, emitting staging ops and returning the SSA
+    /// values it produces (the monadic result).
+    fn lower_monadic(
+        &mut self,
+        expr: &Sp<Expr>,
+        block: &mut Block<'c>,
+        env: &mut HashMap<Name, Vec<Value<'c, 'c>>>,
+    ) -> Result<Vec<Value<'c, 'c>>, LowerError> {
+        match &expr.0 {
+            Expr::Bind { rhs, param, body } => {
+                let results = self.eval(rhs, block, env)?;
+                env.insert(param.clone(), results);
+                self.lower_monadic(body, block, env)
+            }
+            Expr::Let { pat, rhs, body } => {
+                let values = self.eval(rhs, block, env)?;
+                bind_pattern(pat, values, env)?;
+                self.lower_monadic(body, block, env)
+            }
+            Expr::Return(inner) => self.eval(inner, block, env),
+            // A trailing monadic action used as the block's result expression.
+            _ => self.eval(expr, block, env),
+        }
+    }
+
+    /// Evaluate a run-block expression to the SSA values it produces, emitting any
+    /// staging ops it performs. Circuit application (`<-`), pure value forms
+    /// (`let` rhs, `@` operands, `return`), and measurement all flow through here;
+    /// the monad's purity distinction is erased at the IR level since every form
+    /// either threads qubit wires or produces classical bits.
+    fn eval(
+        &mut self,
+        expr: &Sp<Expr>,
+        block: &mut Block<'c>,
+        env: &mut HashMap<Name, Vec<Value<'c, 'c>>>,
+    ) -> Result<Vec<Value<'c, 'c>>, LowerError> {
+        match &expr.0 {
+            Expr::Var(name) => env.get(name).cloned().ok_or(LowerError::Unsupported {
+                construct: "unbound run-block variable",
+            }),
+            Expr::Tuple(items) => {
+                let mut out = Vec::new();
+                for item in items {
+                    out.extend(self.eval(item, block, env)?);
+                }
+                Ok(out)
+            }
+            // `circuit @ qubits` — apply a circuit to qubits. A direct callee
+            // lowers to `apply`; an `if cond then C1 else C2` head lowers to the
+            // feed-forward `cond_apply`.
+            Expr::GateApp { gate, qubits } => {
+                let qs = self.eval(qubits, block, env)?;
+                if let Expr::If { cond, then, else_ } = &gate.0 {
+                    let condition = single_value(self.eval(cond, block, env)?)?;
+                    let then_callee = circuit_callee(then).ok_or(LowerError::Unsupported {
+                        construct: "conditional `then` branch must be a named circuit",
+                    })?;
+                    let else_callee = circuit_callee(else_).ok_or(LowerError::Unsupported {
+                        construct: "conditional `else` branch must be a named circuit",
+                    })?;
+                    let op = block.append_operation(staging::cond_apply(
+                        self.context,
+                        condition,
+                        &then_callee,
+                        &else_callee,
+                        &qs,
+                        self.location,
+                    ));
+                    return collect_results(op, qs.len());
+                }
+                let callee = circuit_callee(gate).ok_or(LowerError::Unsupported {
+                    construct: "circuit expression in `@` (adjoint not yet supported)",
+                })?;
+                let op = block.append_operation(staging::apply(
+                    self.context,
+                    &callee,
+                    &qs,
+                    self.location,
+                ));
+                collect_results(op, qs.len())
+            }
+            Expr::App(f, x) => {
+                let (head, args) = flatten_app(f, x);
+                if let Expr::Var(fname) = &head.0 {
+                    match fname.as_str() {
+                        // `qreg(n)` — allocate `n` fresh qubits.
+                        "qreg" if args.len() == 1 => {
+                            if let Expr::Int(count) = &args[0].0 {
+                                let op = block.append_operation(staging::qreg(
+                                    self.context,
+                                    *count,
+                                    self.location,
+                                ));
+                                return collect_results(op, *count as usize);
+                            }
+                        }
+                        // `measure(q)` — consume one qubit, produce one bit.
+                        "measure" if args.len() == 1 => {
+                            let qubit = single_value(self.eval(args[0], block, env)?)?;
+                            let op = block.append_operation(staging::measure(
+                                self.context,
+                                qubit,
+                                self.location,
+                            ));
+                            return collect_results(op, 1);
+                        }
+                        // `measure_all(qs)` — measure every qubit, producing one
+                        // bit each (Bernstein–Vazirani readout).
+                        "measure_all" if args.len() == 1 => {
+                            let qubits = self.eval(args[0], block, env)?;
+                            let mut bits = Vec::with_capacity(qubits.len());
+                            for qubit in qubits {
+                                let op = block.append_operation(staging::measure(
+                                    self.context,
+                                    qubit,
+                                    self.location,
+                                ));
+                                bits.extend(collect_results(op, 1)?);
+                            }
+                            return Ok(bits);
+                        }
+                        _ => {}
+                    }
+                }
+                Err(LowerError::Unsupported {
+                    construct: "run-block expression",
+                })
+            }
+            _ => Err(LowerError::Unsupported {
+                construct: "run-block expression",
+            }),
+        }
     }
 
     fn lower_circuit_block(
@@ -489,10 +680,10 @@ fn circuit_ref_op<'c>(
     Ok(operation)
 }
 
-/// A gate placement: a gate expression paired with its target-qubit expression.
-type GatePlacement = (Sp<Expr>, Sp<Expr>);
+/// A flattened sequence of `(gate, qubits)` placements from a circuit body.
+type GatePlacements = Vec<(Sp<Expr>, Sp<Expr>)>;
 
-fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<GatePlacement>, LowerError> {
+fn collect_gate_placements(expr: &Sp<Expr>) -> Result<GatePlacements, LowerError> {
     match &expr.0 {
         Expr::CircuitBlock(stmts) => {
             let Some(Stmt::Expr(last)) = stmts.last().map(|s| &s.0) else {
@@ -599,6 +790,70 @@ fn is_unit_args(args: &[&Sp<Expr>]) -> bool {
         0 => true,
         1 => matches!(args[0].0, Expr::Unit),
         _ => false,
+    }
+}
+
+/// The circuit-function name a `@` left-hand side applies, if it is a direct
+/// reference (`circuit` or `circuit()`). Adjoint / conditional forms return
+/// `None` so the caller reports them as unsupported.
+fn circuit_callee(gate: &Sp<Expr>) -> Option<String> {
+    match &gate.0 {
+        Expr::Var(name) => Some(name.clone()),
+        Expr::App(f, x) => zero_arg_callee_name_from_app(f, x),
+        _ => None,
+    }
+}
+
+/// Collect the first `count` results of a freshly-appended staging op as values.
+fn collect_results<'c>(
+    op: OperationRef<'c, 'c>,
+    count: usize,
+) -> Result<Vec<Value<'c, 'c>>, LowerError> {
+    (0..count)
+        .map(|i| {
+            op.result(i)
+                .map(Value::from)
+                .map_err(|_| LowerError::Internal("missing staging op result"))
+        })
+        .collect()
+}
+
+/// Unwrap a single-value result list (e.g. the qubit operand of `measure`).
+fn single_value<'c>(values: Vec<Value<'c, 'c>>) -> Result<Value<'c, 'c>, LowerError> {
+    match values.as_slice() {
+        [value] => Ok(*value),
+        _ => Err(LowerError::Unsupported {
+            construct: "expected a single qubit",
+        }),
+    }
+}
+
+/// Bind a `let` pattern to evaluated values, destructuring tuples positionally.
+fn bind_pattern<'c>(
+    pat: &Sp<Pat>,
+    values: Vec<Value<'c, 'c>>,
+    env: &mut HashMap<Name, Vec<Value<'c, 'c>>>,
+) -> Result<(), LowerError> {
+    match &pat.0 {
+        Pat::Var(name) => {
+            env.insert(name.clone(), values);
+            Ok(())
+        }
+        Pat::Wildcard => Ok(()),
+        Pat::Tuple(pats) => {
+            if pats.len() != values.len() {
+                return Err(LowerError::Unsupported {
+                    construct: "tuple pattern arity mismatch in run block",
+                });
+            }
+            for (p, value) in pats.iter().zip(values) {
+                bind_pattern(p, vec![value], env)?;
+            }
+            Ok(())
+        }
+        Pat::Lit(_) => Err(LowerError::Unsupported {
+            construct: "literal pattern in run-block let",
+        }),
     }
 }
 

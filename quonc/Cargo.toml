@@ -11,5 +11,6 @@ path = "src/main.rs"
 frontend    = { path = "../frontend" }
 mlir_bridge = { path = "../mlir_bridge" }
 backend     = { path = "../backend" }
+melior      = { workspace = true }
 clap        = { workspace = true }
 anyhow      = { workspace = true }
