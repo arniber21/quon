@@ -5,6 +5,7 @@
 //! [`generic_openqasm`] target or are loaded from a §8.3 JSON descriptor via
 //! [`json::load`].
 
+pub mod decompose;
 pub mod descriptor;
 pub mod error;
 pub mod gates;
@@ -12,6 +13,7 @@ pub mod generic_openqasm;
 pub mod json;
 pub mod keys;
 pub mod target;
+pub mod unitary;
 
 pub use descriptor::TargetDescriptor;
 pub use error::BackendError;
