@@ -45,3 +45,18 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace ${{ env.WORKSPACE_EXCLUDE }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Qiskit Aer verifier dependencies
+        run: python -m pip install qiskit qiskit-aer qiskit_qasm3_import
+
+      - name: Python Aer verification
+        env:
+          QUONC: target/release/quonc
+        run: |
+          python test/verify/bell.py
+          python test/verify/teleport.py
+          python test/verify/bernstein_vazirani.py
