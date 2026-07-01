@@ -1,0 +1,26 @@
+-- Quantum teleportation entry point for end-to-end emission + Aer verification
+-- (#27 feed-forward, #29). Self-contained `main`: prepares the message qubit in
+-- |1>, teleports it to `bob`, and measures `bob` (expected: "1" every shot).
+--
+-- `prep` allocates all three qubits at once: X on q0 sets the message to |1>,
+-- H/CNOT entangle the (alice, bob) pair. `bell_basis` is the self-inverse
+-- adjoint of the Bell preparation, written out so the lowering needs no adjoint
+-- synthesis. Corrections are user-defined Clifford circuits selected by `if`,
+-- which lowers to feed-forward `cond_apply`.
+
+fn prep(): Circuit<3, 3, 3, Clifford> = circuit { X @0 |> H @1 |> CNOT @(1, 2) }
+fn bell_basis(): Circuit<2, 2, 2, Clifford> = circuit { CNOT @(0, 1) |> H @0 }
+fn pauli_x(): Circuit<1, 1, 1, Clifford> = circuit { X @0 }
+fn pauli_z(): Circuit<1, 1, 1, Clifford> = circuit { Z @0 }
+fn id_one(): Circuit<1, 1, 1, Clifford> = circuit { I @0 }
+
+fn main(): Q<Bit> = run {
+    (msg, alice, bob) <- prep() @ qreg(3)
+    (m2, a2)          <- bell_basis() @ (msg, alice)
+    x_bit             <- measure(m2)
+    z_bit             <- measure(a2)
+    b2                <- (if z_bit then pauli_x() else id_one()) @ bob
+    b3                <- (if x_bit then pauli_z() else id_one()) @ b2
+    result            <- measure(b3)
+    return result
+}
