@@ -7,11 +7,11 @@ Static analysis and refinement-type checks for the Quon workspace.
 | Workflow | Trigger | What runs |
 | -------- | ------- | --------- |
 | [coverage.yml](../../.github/workflows/coverage.yml) | every PR (non-blocking) | `cargo llvm-cov` summary via `./scripts/coverage.sh` (stable, excludes `flux_verify`; needs LLVM 22 + MLIR) |
-| [ci.yml](../../.github/workflows/ci.yml) | every push and PR | `cargo fmt --check`, `clippy`, `build --release`, `test --workspace` on stable (excludes `flux_verify`; needs LLVM 22 + MLIR + z3) |
+| [ci.yml](../../.github/workflows/ci.yml) | every push and PR | `cargo fmt --check`, `clippy`, `build --release`, `test --workspace` on stable (excludes `flux_verify`; needs LLVM 22 + MLIR + z3), then Qiskit Aer verification for Bell/teleport/BV |
 | [taskless.yml](../../.github/workflows/taskless.yml) | every PR; push to `main` | diff-scoped `@taskless/cli check` (Node 22+) |
 | [flux.yml](../../.github/workflows/flux.yml) | PR when `flux_verify/` or lockfile changes; push to `main` | `cargo flux -p flux_verify` (nightly + z3) |
 
-Not in CI yet: `lit test/lit/` (FileCheck IR tests) and Python Aer end-to-end checks — run locally per [README.md](../../README.md#testing).
+Not in CI yet: `lit test/lit/` (FileCheck IR tests) — run locally per [README.md](../../README.md#testing).
 
 ## Taskless (ast-grep rules)
 

@@ -1,3 +1,14 @@
+-- Bell state entry point for end-to-end emission + Aer verification (#29).
+-- Compiles to OpenQASM 3.0 via `quonc --emit-qasm test/verify/bell.qn`.
+
 fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
     H @0 |> CNOT @(0, 1)
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- bell_state() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+    -- Expected on Aer: {"00", "11"} each ~50%
 }

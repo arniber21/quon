@@ -1,8 +1,48 @@
 #!/usr/bin/env python3
-from pathlib import Path
+"""Bernstein-Vazirani verification on Qiskit Aer (issue #29).
+
+Compiles `test/verify/bernstein_vazirani.qn` (secret s = 110 over 3 query qubits
++ 1 ancilla) and checks that a single shot recovers the secret exactly: the three
+query bits (c[0], c[1], c[2]) are constant across every shot and equal s, while
+the ancilla bit is irrelevant.
+
+Run:  QUONC=target/debug/quonc python test/verify/bernstein_vazirani.py
+"""
+
+import os
 import sys
 
-qn = Path(__file__).with_suffix(".qn")
-assert qn.is_file(), qn
-assert len(qn.read_text().strip()) > 0
-print("ok", qn.name)
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(REPO_ROOT, "python"))
+
+import quon_aer  # noqa: E402
+
+SHOTS = 4096
+SEED = 1234  # pin the Aer sampler so the run is reproducible
+SOURCE = os.path.join(REPO_ROOT, "test", "verify", "bernstein_vazirani.qn")
+SECRET = (1, 1, 0)  # (c0, c1, c2)
+
+
+def clbit(key: str, k: int, nbits: int) -> int:
+    """Value of classical bit c[k]; Qiskit prints bits high-index-first."""
+    return int(key.replace(" ", "")[nbits - 1 - k])
+
+
+def main() -> int:
+    qasm = quon_aer.compile_to_qasm(SOURCE)
+    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
+    nbits = len(next(iter(counts)).replace(" ", ""))
+
+    recovered = {tuple(clbit(key, i, nbits) for i in range(3)) for key in counts}
+
+    print(f"counts: {counts}")
+    print(f"distinct (c0,c1,c2) across shots: {recovered}")
+    if recovered != {SECRET}:
+        print(f"FAIL: query bits are not the constant secret {SECRET}")
+        return 1
+    print(f"PASS: single-shot recovery of secret {SECRET}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

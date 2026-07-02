@@ -1,12 +1,7 @@
--- Quantum teleportation entry point for end-to-end emission + Aer verification
--- (#27 feed-forward, #29). Self-contained `main`: prepares the message qubit in
--- |1>, teleports it to `bob`, and measures `bob` (expected: "1" every shot).
+-- RUN: %quonc --emit-qasm %s | %FileCheck %s
 --
--- `prep` allocates all three qubits at once: X on q0 sets the message to |1>,
--- H/CNOT entangle the (alice, bob) pair. `bell_basis` is the self-inverse
--- adjoint of the Bell preparation, written out so the lowering needs no adjoint
--- synthesis. Corrections are user-defined Clifford circuits selected by `if`,
--- which lowers to feed-forward `cond_apply`.
+-- Quantum teleportation with feed-forward corrections (issue #27). The `if`
+-- conditions render as `bit == true` for OpenQASM 3.0 importer compatibility.
 
 fn prep(): Circuit<3, 3, 3, Clifford> = circuit { X @0 |> H @1 |> CNOT @(1, 2) }
 fn bell_basis(): Circuit<2, 2, 2, Clifford> = circuit { CNOT @(0, 1) |> H @0 }
@@ -24,3 +19,13 @@ fn main(): Q<Bit> = run {
     result            <- measure(b3)
     return result
 }
+
+-- CHECK: qubit[3] q;
+-- CHECK: cx q[1], q[2];
+-- CHECK: c[0] = measure q[0];
+-- CHECK: c[1] = measure q[1];
+-- CHECK: if (c[1] == true) {
+-- CHECK: x q[2];
+-- CHECK: if (c[0] == true) {
+-- CHECK: z q[2];
+-- CHECK: c[2] = measure q[2];
