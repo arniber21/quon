@@ -1,0 +1,43 @@
+name: Coverage
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  MLIR_SYS_220_PREFIX: /usr/lib/llvm-22
+  WORKSPACE_EXCLUDE: --exclude flux_verify
+
+jobs:
+  llvm-cov:
+    name: cargo llvm-cov (summary)
+    runs-on: ubuntu-latest
+    # Informational only: coverage must never block a merge. Keep it off the
+    # required-checks list and bound its runtime so it cannot wedge CI.
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 22, MLIR, and libz3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg lsb-release software-properties-common libz3-dev
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y libmlir-22-dev mlir-22-tools llvm-22-dev libpolly-22-dev
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Coverage summary
+        run: ./scripts/coverage.sh

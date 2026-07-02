@@ -1,0 +1,24 @@
+[package]
+name = "zx-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.zx]
+path = ".."
+
+[[bin]]
+name = "fuzz_gate_ref"
+path = "fuzz_targets/fuzz_gate_ref.rs"
+test = false
+doc = false
+bench = false
