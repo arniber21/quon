@@ -422,6 +422,19 @@ pub fn elaborate_circuit_body(
                 construct: "non-exhaustive circuit-body match",
             })
         }
+        // A bare `let x = e in body` as a circuit function's whole
+        // definition (e.g. `ising_evolve`'s `let tau = t / float(n_steps) in
+        // repeat(..)`) — as opposed to a `let` *statement* inside a
+        // `circuit { }` block, handled by the `CircuitBlock` arm above. `e`
+        // is always classical (a circuit can't be `let`-bound this way,
+        // since `body` is the *only* circuit-valued expression here); `body`
+        // is circuit-valued.
+        Expr::Let { pat, rhs, body } => {
+            let value = eval_classical(rhs, classical_env, fuel)?;
+            let mut inner_env = classical_env.clone();
+            bind_classical_pat(pat, value, &mut inner_env)?;
+            elaborate_circuit_body(body, &inner_env, ctx, fuel)
+        }
         Expr::GateApp { gate, qubits } => {
             let qubits = subst_classical_vars(qubits, classical_env)?;
             // `Rzz`/`controlled(..)` have no native `quantum.circ`/QASM

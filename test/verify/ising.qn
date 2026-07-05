@@ -1,0 +1,40 @@
+-- Transverse-field Ising model, first-order Trotterization (issue #1, MVP
+-- milestone M3c). H = -J*sum(Z_i Z_{i+1}) - h*sum(X_i); one Trotter step is
+-- exp(-iH_ZZ*tau) * exp(-iH_X*tau) via zz_layer/x_layer, each a genuinely
+-- parametric circuit function exercising `for`-loop elaboration and the
+-- Rzz decomposition (frontend/src/elaborate.rs's decompose_rzz).
+--
+-- Adapted from frontend/tests/fixtures/ising.qn's structure; `ising_evolve`
+-- there uses `fold` over a circuit accumulator, which this elaborator does
+-- not yet support (see docs/plans/mvp-landing-plan.md's scope note) — since
+-- trotter_step doesn't depend on the fold's list element (only on the fixed
+-- per-step `tau`), `repeat(n_steps, trotter_step(..))` is exactly equivalent
+-- and needs no new elaborator feature.
+--
+-- Verification: at t=0, tau = t/n_steps = 0, so every Rzz/Rx rotation angle
+-- is exactly 0 — the whole evolution is the identity regardless of any
+-- sign/angle-convention question (Rz(0) = I unconditionally) — so measuring
+-- the default |0..0> initial state must give all zeros with probability 1.0.
+-- This is the PRD's stated Ising acceptance criterion (#30).
+
+fn zz_layer(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Rzz(-2.0 * j * tau) @(i, i + 1) }
+}
+
+fn x_layer(n: Nat, h: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(-2.0 * h * tau) q }
+}
+
+fn trotter_step(n: Nat, j: Float, h: Float, tau: Float): Circuit<n, n, n, Universal> = circuit {
+    zz_layer(n, j, tau) |> x_layer(n, h, tau)
+}
+
+fn ising_evolve(n: Nat, j: Float, h: Float, t: Float, n_steps: Int): Circuit<n, n, n_steps * n, Universal> =
+    let tau = t / float(n_steps)
+    in repeat(n_steps, trotter_step(n, j, h, tau))
+
+fn main(): Q<List<Bit>> = run {
+    q <- ising_evolve(4, 1.0, 1.0, 0.0, 3) @ qreg(4)
+    measure_all(q)
+    -- Expected: (0, 0, 0, 0) with probability 1.0 (t = 0 is the identity evolution)
+}

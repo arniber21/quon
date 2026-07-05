@@ -1,0 +1,43 @@
+-- QAOA (p=1), MaxCut on the complete graph K3 (issue #1, MVP milestone M3d).
+--
+-- Adapted from frontend/tests/fixtures/qaoa.qn's structure. That fixture
+-- takes a `Matrix<n,n,Float>` cost-weight parameter and folds over a
+-- `List<(Float,Float)>` of per-layer (gamma,beta) — a circuit-valued `fold`
+-- accumulator this elaborator does not yet support (see
+-- docs/plans/mvp-landing-plan.md's scope note), and `Matrix` indexing isn't
+-- elaborated either. This fixture sidesteps both by using a single layer
+-- (p=1, no fold needed) and a uniform edge weight (every pair in `pairs(n)`
+-- gets the same `Rzz(gamma)`, the standard unweighted MaxCut cost
+-- Hamiltonian — no Matrix lookup needed), while still genuinely exercising
+-- `pairs(n)` (not needed by Ising) and the same Rzz/for-loop machinery.
+--
+-- K3 has no perfect bipartition (it's an odd cycle), so its MaxCut is 2 of 3
+-- edges, achieved by every "one vs. two" partition: the 6 bitstrings with
+-- exactly one or two 1s. gamma/beta below were found by a classical sweep
+-- over the exact statevector (not re-derived analytically here) to
+-- concentrate ~99.9% of the output probability mass on those 6 states,
+-- versus <0.1% on the two non-cut bitstrings 000/111.
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn cost_layer(n: Nat, gamma: Float): Circuit<n, n, n * n, Universal> = circuit {
+    for (i, j) in pairs(n) { Rzz(gamma) @(i, j) }
+}
+
+fn mixer_layer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(beta) q }
+}
+
+fn qaoa_layer(n: Nat, gamma: Float, beta: Float): Circuit<n, n, n * n + 1, Universal> = circuit {
+    cost_layer(n, gamma) |> mixer_layer(n, beta)
+}
+
+fn main(): Q<List<Bit>> = run {
+    q  <- hadamard_all(3) @ qreg(3)
+    q2 <- qaoa_layer(3, 0.5857, 2.5026) @ q
+    measure_all(q2)
+    -- Expected: the 6 bitstrings with exactly one or two 1s (MaxCut = 2)
+    -- collectively dominate; 000 and 111 (MaxCut = 0) are strongly suppressed.
+}
