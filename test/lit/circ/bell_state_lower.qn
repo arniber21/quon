@@ -1,14 +1,14 @@
-// Lower bell_state to quantum.circ MLIR (issue #16).
-//
-// RUN: %circ-lower < %s | FileCheck %s
+-- Lower bell_state to quantum.circ MLIR (issue #16).
+--
+-- RUN: %circ-lower < %s | FileCheck %s
 
 fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
     H @0 |> CNOT @(0, 1)
 }
 
-// CHECK: "quantum.circ.func"() ({
-// CHECK: ^bb0(%{{.*}}: !quantum.qubit, %{{.*}}: !quantum.qubit):
-// CHECK: "quantum.circ.gate"({{.*}}) {clifford = true, depth_contribution = 1 : i64, gate_name = "H"}
-// CHECK: "quantum.circ.gate"({{.*}}) {clifford = true, depth_contribution = 1 : i64, gate_name = "CNOT"}
-// CHECK: "quantum.circ.return"
-// CHECK: }) {clifford = true, depth = "2", in_qubits = 2 : i64, out_qubits = 2 : i64, sym_name = "bell_state"}
+-- CHECK: "quantum.circ.func"() ({
+-- CHECK: ^bb0(%{{.*}}: !quantum.qubit, %{{.*}}: !quantum.qubit):
+-- CHECK: "quantum.circ.gate"({{.*}}) {clifford = true, depth_contribution = 1 : i64, gate_name = "H"}
+-- CHECK: "quantum.circ.gate"({{.*}}) {clifford = true, depth_contribution = 1 : i64, gate_name = "CNOT"}
+-- CHECK: "quantum.circ.return"
+-- CHECK: }) {clifford = true, depth = "2", in_qubits = 2 : i64, out_qubits = 2 : i64, sym_name = "bell_state"}

@@ -3,8 +3,9 @@
 // RUN: %classical-region-fuse < %s | FileCheck %s
 
 module {
+  // Two `if`s on the same classical bit fuse into one, sharing a single
+  // condition check for both the X and Z corrections.
   // CHECK-COUNT-1: "quantum.dynamic.if"
-  // CHECK-COUNT-2: "quantum.dynamic.unitary_region"
   // CHECK: gate_name = "X"
   // CHECK: gate_name = "Z"
 

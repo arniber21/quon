@@ -2,8 +2,8 @@
 --
 -- End-to-end OpenQASM 3.0 emission for the Bell state (issue #27). Uses `--`
 -- line comments (the Quon lexer's comment syntax) so the source still parses
--- when fed straight to quonc; FileCheck/lit find RUN:/CHECK: regardless of the
--- comment prefix.
+-- when fed straight to quonc; FileCheck/lit find the directives below no
+-- matter the comment prefix a source file uses.
 
 fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
     H @0 |> CNOT @(0, 1)

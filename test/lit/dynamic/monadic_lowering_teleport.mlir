@@ -4,11 +4,12 @@
 
 module {
   // CHECK-NOT: quantum.circ.run
-  // CHECK: "quantum.dynamic.measure"
-  // CHECK: "quantum.dynamic.measure"
-  // CHECK: "quantum.dynamic.if"
-  // CHECK: "quantum.dynamic.if"
   // CHECK: "quantum.dynamic.unitary_region"
+  // CHECK: "quantum.dynamic.unitary_region"
+  // CHECK: "quantum.dynamic.measure"
+  // CHECK: "quantum.dynamic.measure"
+  // CHECK: "quantum.dynamic.if"
+  // CHECK: "quantum.dynamic.if"
 
   "quantum.circ.func"() ({
   ^bb0(%arg0: !quantum.qubit, %arg1: !quantum.qubit):

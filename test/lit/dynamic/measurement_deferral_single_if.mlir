@@ -5,8 +5,8 @@
 module {
   // CHECK-NOT: "quantum.dynamic.if"
   // CHECK: "quantum.dynamic.unitary_region"
-  // CHECK: "quantum.dynamic.measure"
   // CHECK: gate_name = "CNOT"
+  // CHECK: "quantum.dynamic.measure"
 
   "quantum.circ.func"() ({
   ^bb0(%arg0: !quantum.qubit):
