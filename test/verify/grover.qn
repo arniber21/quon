@@ -1,0 +1,38 @@
+-- Grover's algorithm, n=2 (issue #1, MVP milestone M2/M3). Marked item |11>.
+--
+-- Exercises parametric circuit elaboration end to end (docs/plans/mvp-landing-plan.md
+-- M2): `hadamard_all`/`flip_all` are genuinely parametric (`for q in qubits(n) { .. }`,
+-- unrolled by the elaborator), and `main` calls them with a concrete literal (2) and
+-- composes the result with `repeat`.
+--
+-- N=4, M=1 is Grover's exact special case: after r=1 iteration the marked state is
+-- recovered with probability 1.0 (theta = asin(1/2) = pi/6; (2r+1)*theta = pi/2).
+-- The oracle and diffusion operator both use a single CZ, since a 2-qubit
+-- multi-controlled-Z *is* CZ — no Toffoli/CCZ decomposition needed at this size.
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn flip_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { X q }
+}
+
+-- Oracle: phase-flips |11>.
+fn oracle(): Circuit<2, 2, 1, Clifford> = circuit {
+    CZ @(0, 1)
+}
+
+-- Diffusion: reflect about the uniform superposition.
+fn diffusion(n: Nat): Circuit<n, n, 5, Clifford> = circuit {
+    hadamard_all(n) |> flip_all(n) |> CZ @(0, 1) |> flip_all(n) |> hadamard_all(n)
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- hadamard_all(2) @ qreg(2)
+    (r0, r1) <- repeat(1, oracle() |> diffusion(2)) @ (q0, q1)
+    b0       <- measure(r0)
+    b1       <- measure(r1)
+    return (b0, b1)
+    -- Expected: (1, 1) with probability 1.0
+}

@@ -16,6 +16,7 @@
 pub mod ast;
 pub mod desugar;
 pub mod diagnostics;
+pub mod elaborate;
 pub mod lexer;
 pub mod lower;
 pub mod parser;

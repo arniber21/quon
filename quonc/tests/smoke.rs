@@ -287,8 +287,20 @@ fn parameterized_teleport_fails_with_explicit_deferral() {
     );
 }
 
+/// The *reference* (general, not call-site-monomorphized) `grover.qn` /
+/// `bernstein_vazirani.qn` fixtures each take `oracle: Oracle<n>` — a
+/// circuit-*valued* entry-point parameter. Parametric circuit elaboration
+/// (issue #1 MVP milestone M2, `frontend/src/elaborate.rs`) specializes
+/// `Nat`/`Int`/`Float`-parameterized circuit *functions* called with concrete
+/// arguments (see `bernstein_vazirani_routes_and_emits_only_native_gates_on_linear_chain`
+/// and `test/verify/grover.qn` for exactly that) — a higher-order circuit
+/// parameter is a different, out-of-scope feature (a real oracle must be
+/// inlined into a concrete callee by the caller, as `test/verify/*.qn` do).
+/// So each fixture now clears the *circuit-function* parametric barrier that
+/// used to block it first, and instead fails one layer deeper, on its
+/// parametric *entry point* — `ParametricRunFn`, `frontend/src/lower.rs`.
 #[test]
-fn parameterized_bv_and_grover_fail_with_explicit_deferral() {
+fn parametric_entry_point_with_circuit_valued_param_fails_with_explicit_deferral() {
     for (name, fixture) in [
         (
             "bernstein-vazirani",
@@ -309,8 +321,8 @@ fn parameterized_bv_and_grover_fail_with_explicit_deferral() {
         assert!(!output.status.success(), "expected {name} to be deferred");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("parameterized circuit function `hadamard_all` is not supported"),
-            "expected explicit parameterized circuit deferral for {name}, got:\n{stderr}"
+            stderr.contains("parameterized run function") && stderr.contains("is not supported"),
+            "expected explicit parametric-entry-point deferral for {name}, got:\n{stderr}"
         );
     }
 }
