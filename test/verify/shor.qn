@@ -1,0 +1,70 @@
+-- Shor's algorithm quantum kernel, n=2 (issue #1, MVP milestone M3f).
+--
+-- Adapted from frontend/tests/fixtures/shor.qn (SPEC §12's other
+-- value-dependent-types kernel, #57-#60), reusing its qft/modmul/mod_exp
+-- definitions verbatim. This is the last of the five universal reference
+-- algorithms and the only one exercising `tensored`/`split` (register
+-- concatenation/splitting) together with recursion, controlled(Rz), and
+-- adjoint(qft(n)) all at once — every other individual feature (recursion,
+-- controlled(Rz), on_high, swap_reverse, adjoint) is already exercised
+-- (and Aer-verified) by test/verify/qft.qn; tensored/split are additionally
+-- unit-verified in isolation (see the elaboration PR's history) before this
+-- fixture composes everything together.
+--
+-- Known, deliberate deviation from the PRD's "period-finding peaks" Shor
+-- acceptance criterion: modmul below is the *schematic* placeholder from the
+-- reference fixture (its own comment: "schematically: a sequence of n
+-- controlled rotations") — it does not compute a real modular
+-- multiplication (its gates don't even reference `a`/`nn`), so there is no
+-- actual period to find. A physically correct modular-exponentiation
+-- circuit is a substantial undertaking in its own right (out of scope here
+-- — see docs/plans/mvp-landing-plan.md). This fixture instead verifies what
+-- is genuinely new and checkable: the full pipeline (recursion + controlled
+-- rotations + tensored + split + adjoint(qft)) compiles and executes to a
+-- well-defined output distribution over exactly {00, 01} — not a crash, not
+-- a compiler error, and reproducible run to run with a fixed sampler seed
+-- (not e.g. spread arbitrarily over all 4 outcomes, which is the signature
+-- of a linearity/wiring bug corrupting which qubit each gate actually acts
+-- on — the class of bug M1 found and fixed in sabre_routing).
+
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / (2.0 ^ (i + 1)))) @(0, i + 1) }
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+-- Modular multiplication by `a` (mod nn), schematically (reference fixture's
+-- own description): a sequence of n controlled rotations on the 2n-qubit
+-- work register.
+fn modmul(n: Nat, a: Int, nn: Int): Circuit<2 * n, 2 * n, 2 * n, Universal> = circuit {
+    for i in range(n) { controlled(Rz(PI / 4.0)) @(0, n + i) }
+}
+
+-- Modular exponentiation: n repetitions of modular multiplication.
+fn mod_exp(n: Nat, a: Int, nn: Int): Circuit<2 * n, 2 * n, 2 * n * n, Universal> =
+    repeat(n, modmul(n, a, nn))
+
+fn init_one(n: Nat): Circuit<n, n, 1, Clifford> = circuit { X @0 }
+
+fn main(): Q<List<Bit>> = run {
+    ctrl          <- hadamard_all(2) @ qreg(2)
+    tgt           <- init_one(2) @ qreg(2)
+    let both       = ctrl `tensored` tgt
+    both2         <- mod_exp(2, 7, 15) @ both
+    let (ctrl2, _) = split(2, both2)
+    est           <- adjoint(qft(2)) @ ctrl2
+    measure_all(est)
+}
