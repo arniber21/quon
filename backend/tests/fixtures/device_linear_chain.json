@@ -1,0 +1,11 @@
+{
+  "id": "linear_chain_device",
+  "num_qubits": 4,
+  "topology": {
+    "edges": [[0, 1], [1, 2], [2, 3]]
+  },
+  "native_gates": ["cx", "rz", "sx", "x"],
+  "meas_latency_us": 0.5,
+  "supports_mid_circuit_meas": true,
+  "supports_feed_forward": true
+}

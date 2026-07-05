@@ -1,0 +1,11 @@
+{
+  "id": "no_entangler_device",
+  "num_qubits": 2,
+  "topology": {
+    "edges": [[0, 1]]
+  },
+  "native_gates": ["rz", "sx", "x"],
+  "meas_latency_us": 0.5,
+  "supports_mid_circuit_meas": false,
+  "supports_feed_forward": false
+}

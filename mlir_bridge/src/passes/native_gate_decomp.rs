@@ -19,6 +19,7 @@ use mlir_sys::mlirOperationSetAttributeByName;
 use thiserror::Error;
 
 use crate::dialect::quantum_circ::{self, attr};
+use crate::dialect::quantum_dynamic;
 
 #[derive(Debug, Error)]
 pub enum DecompError {
@@ -172,23 +173,36 @@ fn decompose_gate<'c, 'a>(
         return Ok(());
     }
 
+    // `decompose_named_single` distinguishes "unrecognized gate" (`None`, a
+    // real error) from "recognized but needs zero native gates" (`Some(vec![])`
+    // — e.g. the identity — which must wire straight through, not error).
+    // `decompose_named_two` cannot yet make that distinction, so an empty
+    // two-qubit decomposition is still treated as an error.
     let decomposed = if qubits.len() == 1 {
-        decompose_named_single(&gate_name, angle, &native_names, 0)
+        match decompose_named_single(&gate_name, angle, &native_names, 0) {
+            Some(ops) => ops,
+            None => {
+                return Err(DecompError::Build {
+                    op: quantum_circ::op::GATE,
+                    message: format!("no decomposition for `{gate_name}`"),
+                });
+            }
+        }
     } else if qubits.len() == 2 {
-        decompose_named_two(&gate_name, &native_names, 0, 1)
+        let ops = decompose_named_two(&gate_name, &native_names, 0, 1);
+        if ops.is_empty() {
+            return Err(DecompError::Build {
+                op: quantum_circ::op::GATE,
+                message: format!("no decomposition for `{gate_name}`"),
+            });
+        }
+        ops
     } else {
         return Err(DecompError::Build {
             op: quantum_circ::op::GATE,
             message: format!("unsupported gate arity {}", qubits.len()),
         });
     };
-
-    if decomposed.is_empty() {
-        return Err(DecompError::Build {
-            op: quantum_circ::op::GATE,
-            message: format!("no decomposition for `{gate_name}`"),
-        });
-    }
 
     let mut wires: HashMap<usize, Value<'c, 'a>> = qubits
         .iter()
@@ -225,6 +239,50 @@ fn decompose_gate<'c, 'a>(
     Ok(())
 }
 
+/// Decomposes every `quantum.circ.gate` reachable from `block`, recursing into
+/// nested `quantum.dynamic.unitary_region` and `quantum.dynamic.if` bodies.
+///
+/// Decomposition is stateless per gate (no cross-region layout to thread), so a
+/// plain recursive walk is sound here — unlike SABRE routing or depth
+/// scheduling, which must track a qubit's physical identity *across* region
+/// boundaries (see the analogous walk in `sabre_routing`/`depth_scheduling`).
+///
+/// This must reach the module's own top-level block, not just named
+/// `quantum.circ.func`s: after `monadic_lowering`, the executed program's body
+/// (originally the `main` run block) is bare top-level ops, not wrapped in a
+/// func — only leftover, since-inlined circuit function *definitions* still
+/// use `quantum.circ.func`.
+fn decompose_block<'c, 'a>(
+    context: &'c Context,
+    target: &BackendTarget,
+    block: melior::ir::BlockRef<'c, 'a>,
+) {
+    let mut op = block.first_operation();
+    while let Some(current) = op {
+        op = current.next_in_block();
+        let name = op_name(&current);
+        if name == quantum_circ::op::GATE {
+            if let Err(error) = decompose_gate(context, target, block, current) {
+                eprintln!("native-gate-decomp: {error}");
+            }
+        } else if name == quantum_dynamic::op::UNITARY_REGION {
+            if let Ok(region) = current.region(0)
+                && let Some(inner_block) = region.first_block()
+            {
+                decompose_block(context, target, inner_block);
+            }
+        } else if name == quantum_dynamic::op::IF {
+            for region_index in 0..2 {
+                if let Ok(region) = current.region(region_index)
+                    && let Some(inner_block) = region.first_block()
+                {
+                    decompose_block(context, target, inner_block);
+                }
+            }
+        }
+    }
+}
+
 fn decompose_module<'c, 'a>(
     context: &'c Context,
     target: &BackendTarget,
@@ -238,6 +296,8 @@ fn decompose_module<'c, 'a>(
         return;
     };
 
+    decompose_block(context, target, body);
+
     let mut op = body.first_operation();
     while let Some(current) = op {
         op = current.next_in_block();
@@ -250,16 +310,7 @@ fn decompose_module<'c, 'a>(
         let Some(block) = region.first_block() else {
             continue;
         };
-        let mut inner = block.first_operation();
-        while let Some(gate) = inner {
-            inner = gate.next_in_block();
-            if op_name(&gate) != quantum_circ::op::GATE {
-                continue;
-            }
-            if let Err(error) = decompose_gate(context, target, block, gate) {
-                eprintln!("native-gate-decomp: {error}");
-            }
-        }
+        decompose_block(context, target, block);
     }
 }
 

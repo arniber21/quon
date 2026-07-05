@@ -52,6 +52,17 @@ impl WireTracker {
         *self.roots.entry(key).or_insert(key)
     }
 
+    /// Forces `value`'s root to a caller-supplied identity, overriding the
+    /// default "fresh root per unseen value" behavior of [`Self::root`].
+    ///
+    /// Used to thread a qubit's identity across a `quantum.dynamic.unitary_region`
+    /// or `quantum.dynamic.if` boundary: the region's block argument and its
+    /// corresponding outer operand are the *same* wire, so the argument must
+    /// alias the operand's already-established root rather than mint a new one.
+    pub fn alias<'c, 'a>(&mut self, value: Value<'c, 'a>, root: usize) {
+        self.roots.insert(value_key(&value), root);
+    }
+
     pub fn roots_for_operands<'c, 'a>(&mut self, operation: OperationRef<'c, 'a>) -> Vec<usize> {
         qubit_operands(operation)
             .into_iter()

@@ -18,11 +18,12 @@ def quonc_binary() -> str:
     return os.environ.get("QUONC", "quonc")
 
 
-def compile_to_qasm(source_file: str) -> str:
-    result = subprocess.run(
-        [quonc_binary(), "--emit-qasm", source_file],
-        capture_output=True, text=True, check=True,
-    )
+def compile_to_qasm(source_file: str, target: str | None = None) -> str:
+    args = [quonc_binary(), "--emit-qasm"]
+    if target is not None:
+        args += ["--target", target]
+    args.append(source_file)
+    result = subprocess.run(args, capture_output=True, text=True, check=True)
     return result.stdout
 
 
