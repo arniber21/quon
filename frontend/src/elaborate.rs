@@ -16,9 +16,14 @@
 //! Scope (see `docs/plans/mvp-landing-plan.md` §5): `for` over `qubits`/
 //! `range`/`diag`, `repeat` with a computed count, recursive circuit functions
 //! via `match n { 0 => .., _ => .. }`, and nested parametric calls are
-//! supported. `pairs`, `tensored`/`split`/`on_high`, `fold` over a circuit
-//! accumulator, and `controlled` are not yet elaborated — a program using them
-//! is rejected with [`ElabError::Unsupported`], not silently miscompiled.
+//! supported. `Rzz(theta) @ (i, j)` and `controlled(X | Z | Rz(theta)) @
+//! (control, target)` have no native gate of their own, so they are rewritten
+//! here into the existing `CNOT`/`Rz` primitives every other gate already
+//! lowers through — see `decompose_rzz`/`decompose_controlled`. `pairs`,
+//! `tensored`/`split`/`on_high`, `fold` over a circuit accumulator, and
+//! `controlled` of anything other than `X`/`Z`/`Rz` are not yet elaborated —
+//! a program using them is rejected with [`ElabError::Unsupported`], not
+//! silently miscompiled.
 
 use std::collections::HashMap;
 
@@ -356,8 +361,29 @@ pub fn elaborate_circuit_body(
             Ok((Expr::Compose(Box::new(l), Box::new(r)), span))
         }
         Expr::GateApp { gate, qubits } => {
-            let gate = subst_classical_vars(gate, classical_env)?;
             let qubits = subst_classical_vars(qubits, classical_env)?;
+            // `Rzz`/`controlled(..)` have no native `quantum.circ`/QASM
+            // representation of their own — rather than thread a new gate
+            // primitive through the dialect, decompose, and emitter, they are
+            // rewritten here into the existing CNOT/Rz primitives every other
+            // gate already lowers through (see the doc comments on
+            // `decompose_rzz`/`decompose_controlled_rz` for the identities).
+            if let Expr::App(f, x) = &gate.0 {
+                let (head, args) = flatten_app(f, x);
+                if let Expr::Var(name) = &head.0
+                    && name == "Rzz"
+                    && args.len() == 1
+                {
+                    let angle = subst_classical_vars(args[0], classical_env)?;
+                    let (q0, q1) = tuple2(&qubits)?;
+                    return Ok(decompose_rzz(&angle, &q0, &q1, span));
+                }
+            }
+            if let Expr::Controlled(inner) = &gate.0 {
+                let (control, target) = tuple2(&qubits)?;
+                return decompose_controlled(inner, &control, &target, classical_env, span);
+            }
+            let gate = subst_classical_vars(gate, classical_env)?;
             Ok((
                 Expr::GateApp {
                     gate: Box::new(gate),
@@ -525,17 +551,26 @@ fn value_to_expr(value: &Value, span: chumsky::span::SimpleSpan) -> Expr {
 /// enclosing `for`-loop variable or a specialized circuit function's own
 /// parameter (e.g. `Rz(gamma * tau)` or `@(i, i + 1)`), without attempting to
 /// evaluate the *whole* expression (`H` itself is not a classical value).
+/// Reduces `expr` to a literal at a qubit-index/rotation-angle position.
+///
+/// A qubit target or angle is frequently *arithmetic over* a bound variable
+/// (`i + 1`, `gamma * q[i][j]`), not the variable itself — bare structural
+/// substitution (replacing only `Var` nodes) would leave a `BinOp` node where
+/// `lower.rs` requires a literal `Int`/`Float` (`qubit_targets`/`gate_spec`
+/// both match on the literal variant exactly). So this tries full classical
+/// evaluation first; only an expression `eval_classical` cannot handle (a
+/// bare gate/circuit name like `H`, which is not a classical value) falls
+/// back to structural substitution, which leaves such names untouched.
 fn subst_classical_vars(expr: &Sp<Expr>, env: &ClassicalEnv) -> Result<Sp<Expr>, ElabError> {
+    let mut probe_fuel = 10_000;
+    if let Ok(value) = eval_classical(expr, env, &mut probe_fuel) {
+        return Ok((value_to_expr(&value, expr.1), expr.1));
+    }
     let span = expr.1;
     match &expr.0 {
-        Expr::Var(name) => {
-            if let Some(value) = env.get(name) {
-                Ok((value_to_expr(value, span), span))
-            } else {
-                Ok(expr.clone())
-            }
+        Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit => {
+            Ok(expr.clone())
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit => Ok(expr.clone()),
         Expr::Neg(inner) => Ok((Expr::Neg(Box::new(subst_classical_vars(inner, env)?)), span)),
         Expr::BinOp { op, lhs, rhs } => Ok((
             Expr::BinOp {
@@ -563,6 +598,155 @@ fn subst_classical_vars(expr: &Sp<Expr>, env: &ClassicalEnv) -> Result<Sp<Expr>,
         )),
         _ => Ok(expr.clone()),
     }
+}
+
+/// Extracts exactly two elements from an (already-elaborated) qubit-target
+/// expression — the shape both `Rzz(theta) @ (i, j)` and `controlled(g) @
+/// (control, target)` require.
+fn tuple2(qubits: &Sp<Expr>) -> Result<(Sp<Expr>, Sp<Expr>), ElabError> {
+    match &qubits.0 {
+        Expr::Tuple(items) if items.len() == 2 => Ok((items[0].clone(), items[1].clone())),
+        _ => Err(ElabError::Unsupported {
+            construct: "expected a 2-qubit target tuple `(a, b)`",
+        }),
+    }
+}
+
+fn gate_app(name: &str, qubit: &Sp<Expr>, span: chumsky::span::SimpleSpan) -> Sp<Expr> {
+    (
+        Expr::GateApp {
+            gate: Box::new((Expr::Var(name.to_string()), span)),
+            qubits: Box::new(qubit.clone()),
+        },
+        span,
+    )
+}
+
+fn compose(steps: Vec<Sp<Expr>>, span: chumsky::span::SimpleSpan) -> Sp<Expr> {
+    let mut iter = steps.into_iter();
+    let first = iter.next().expect("compose called with no steps");
+    iter.fold(first, |acc, step| {
+        (Expr::Compose(Box::new(acc), Box::new(step)), span)
+    })
+}
+
+/// `angle` is already a literal by this point (`decompose_controlled`'s caller
+/// ran it through `subst_classical_vars`, which evaluates fully) — `gate_spec`
+/// (`lower.rs`) requires a literal `Expr::Float` for a rotation's angle
+/// argument, not a symbolic `Neg`/`BinOp` node, so these compute directly on
+/// the literal rather than building one.
+fn angle_value(angle: &Sp<Expr>) -> f64 {
+    match &angle.0 {
+        Expr::Float(f) => *f,
+        Expr::Int(n) => *n as f64,
+        _ => unreachable!("subst_classical_vars always reduces an angle to a literal"),
+    }
+}
+
+fn negate_angle(angle: &Sp<Expr>) -> Sp<Expr> {
+    (Expr::Float(-angle_value(angle)), angle.1)
+}
+
+fn halve_angle(angle: &Sp<Expr>) -> Sp<Expr> {
+    (Expr::Float(angle_value(angle) / 2.0), angle.1)
+}
+
+/// `Rzz(theta) @ (i, j)` (exp(-iθ/2 · Z⊗Z), the ZZ-interaction used by Ising's
+/// `zz_layer` and QAOA's `cost_layer`) has no native gate of its own; it
+/// decomposes exactly as `CNOT(i,j) |> Rz(theta) @ j |> CNOT(i,j)` — verified
+/// by cases: in the `i = 0` branch CNOT no-ops so this applies `Rz(theta)` to
+/// `j` directly; in `i = 1` the two CNOTs conjugate `Rz(theta)` by `X`, and `X
+/// · Rz(θ) · X = Rz(-θ)`. Comparing all four computational-basis phases
+/// against `Rzz(θ) = diag(e^{-iθ/2}, e^{iθ/2}, e^{iθ/2}, e^{-iθ/2})`
+/// (the ±1 eigenvalues of `Z⊗Z`) confirms the match exactly.
+fn decompose_rzz(
+    angle: &Sp<Expr>,
+    q0: &Sp<Expr>,
+    q1: &Sp<Expr>,
+    span: chumsky::span::SimpleSpan,
+) -> Sp<Expr> {
+    let cnot = gate_app(
+        "CNOT",
+        &(Expr::Tuple(vec![q0.clone(), q1.clone()]), span),
+        span,
+    );
+    let rz = rz_gate_app(angle, q1, span);
+    compose(vec![cnot.clone(), rz, cnot], span)
+}
+
+/// `controlled(g) @ (control, target)` for the two forms this codebase's
+/// reference algorithms use: `controlled(X)`/`controlled(Z)` are exactly
+/// `CNOT`/`CZ` (no decomposition needed), and `controlled(Rz(theta))` (Shor's
+/// `controlled_rotations`/`modmul`) decomposes as `Rz(theta/2) @ target |>
+/// CNOT(control,target) |> Rz(-theta/2) @ target |> CNOT(control,target)` —
+/// verified by cases: `control = 0` cancels to `Rz(θ/2)·Rz(-θ/2) = I`
+/// (`CRz`'s `|0⟩⟨0|⊗I` block); `control = 1` conjugates the second `Rz` by `X`
+/// (`X·Rz(-θ/2)·X = Rz(θ/2)`), giving `Rz(θ/2)·Rz(θ/2) = Rz(θ)` (`CRz`'s
+/// `|1⟩⟨1|⊗Rz(θ)` block).
+fn decompose_controlled(
+    inner: &Sp<Expr>,
+    control: &Sp<Expr>,
+    target: &Sp<Expr>,
+    classical_env: &ClassicalEnv,
+    span: chumsky::span::SimpleSpan,
+) -> Result<Sp<Expr>, ElabError> {
+    match &inner.0 {
+        Expr::Var(name) if name == "X" => Ok(gate_app(
+            "CNOT",
+            &(Expr::Tuple(vec![control.clone(), target.clone()]), span),
+            span,
+        )),
+        Expr::Var(name) if name == "Z" => Ok(gate_app(
+            "CZ",
+            &(Expr::Tuple(vec![control.clone(), target.clone()]), span),
+            span,
+        )),
+        Expr::App(f, x) => {
+            let (head, args) = flatten_app(f, x);
+            let Expr::Var(name) = &head.0 else {
+                return Err(ElabError::Unsupported {
+                    construct: "controlled() of an unrecognized gate expression",
+                });
+            };
+            if name != "Rz" || args.len() != 1 {
+                return Err(ElabError::Unsupported {
+                    construct: "controlled() is only implemented for X, Z, and Rz",
+                });
+            }
+            let angle = subst_classical_vars(args[0], classical_env)?;
+            let cnot = gate_app(
+                "CNOT",
+                &(Expr::Tuple(vec![control.clone(), target.clone()]), span),
+                span,
+            );
+            let rz_half = rz_gate_app(&halve_angle(&angle), target, span);
+            let rz_neg_half = rz_gate_app(&negate_angle(&halve_angle(&angle)), target, span);
+            Ok(compose(
+                vec![rz_half, cnot.clone(), rz_neg_half, cnot],
+                span,
+            ))
+        }
+        _ => Err(ElabError::Unsupported {
+            construct: "controlled() is only implemented for X, Z, and Rz",
+        }),
+    }
+}
+
+/// Builds `Rz(angle) @ target`.
+fn rz_gate_app(angle: &Sp<Expr>, target: &Sp<Expr>, span: chumsky::span::SimpleSpan) -> Sp<Expr> {
+    (
+        Expr::GateApp {
+            gate: Box::new((
+                Expr::App(
+                    Box::new((Expr::Var("Rz".to_string()), span)),
+                    Box::new(angle.clone()),
+                ),
+                span,
+            )),
+            qubits: Box::new(target.clone()),
+        },
+        span,
+    )
 }
 
 /// Builds the adjoint of an already-elaborated, fully concrete circuit body:
