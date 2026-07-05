@@ -14,3 +14,4 @@ backend     = { path = "../backend" }
 melior      = { workspace = true }
 clap        = { workspace = true }
 anyhow      = { workspace = true }
+ariadne     = { workspace = true }

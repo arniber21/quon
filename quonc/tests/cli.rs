@@ -1,6 +1,5 @@
 //! CLI integration tests for `quonc` — help, flags, and clap error paths.
-//!
-//! The compiler pipeline is not wired yet (`todo!` in `main`); these tests exercise
+//! Full compile/emit behavior is covered by `smoke.rs`; these tests exercise
 //! only the clap surface.
 
 use std::process::Command;

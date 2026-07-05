@@ -21,7 +21,7 @@ _Avoid_: Q type, monadic computation
 **Linear context**: The typing context `Δ` tracking resources that must be consumed exactly once. Distinct from the unrestricted context `Γ` for classical values. Represented as a `HashMap<Name, Type>` with physical removal on use.
 _Avoid_: linear environment, usage context
 
-**DepthExpr**: A symbolic arithmetic expression over static `Nat` literals and runtime `Int` variables representing a circuit's gate depth bound. Operators: addition, multiplication, max. Defined once in the MLIR-free `quon_core` crate and shared by both `frontend` and `mlir_bridge` — the literal variant is `Nat`, the composition algebra is `seq` (sequential, `+`) / `par` (parallel, `max`) / `repeat` (`*`) / `controlled` (`+1`), and it serializes to S-expressions for MLIR attributes. Distinct from the surface `NatExpr` (full `Nat` arithmetic with holes), which the type checker normalizes into a `DepthExpr`.
+**DepthExpr**: A symbolic arithmetic expression over static `Nat` literals and runtime `Int` variables representing a circuit's gate depth bound. Operators: addition, multiplication, max, saturating subtraction, division (constant divisor only), and exponentiation (constant exponent only) — the latter three exist for recursive value-dependent kernels (QFT's `2^(i+1)` angle, Shor's register arithmetic) rather than the core composition algebra. Defined once in the MLIR-free `quon_core` crate and shared by both `frontend` and `mlir_bridge` — the literal variant is `Nat`, the composition algebra is `seq` (sequential, `+`) / `par` (parallel, `max`) / `repeat` (`*`) / `controlled` (`+1`), and it serializes to S-expressions for MLIR attributes. Distinct from the surface `NatExpr` (full `Nat` arithmetic with holes), which the type checker normalizes into a `DepthExpr`.
 _Avoid_: depth expression, depth annotation, depth index
 
 **Clifford classification**: An inferred two-valued label (`Clifford` | `Universal`) on every `Circuit` type. Inferred bottom-up from gate primitives during type checking; never annotated by the user. User-supplied annotations are checked against the inferred value.
@@ -35,6 +35,9 @@ _Avoid_: compose, then, pipe
 
 **Parallel composition**: The `par` keyword. Tensor-products two circuits on disjoint qubit sets; depth is the max of both.
 _Avoid_: tensor, parallel, par
+
+**Parametric specialization**: The mechanism (`frontend/src/elaborate.rs`) that turns a `Nat`/`Int`/`Float`-parameterized circuit function into a fully monomorphic, first-order gate tree at a concrete call site — partial evaluation of the classical parameters (loop bounds, angles, register widths), not a separate parametric IR. Memoized per call site in `LoweringCtx::specialized` so the same instantiation (e.g. `qft(3)` reached twice) is lowered once. Distinct from Z3-checked symbolic `DepthExpr`s in the type system, which stay symbolic; specialization only runs when lowering to MLIR needs a concrete gate sequence.
+_Avoid_: monomorphization, template instantiation
 
 ### IR dialects
 

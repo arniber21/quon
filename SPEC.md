@@ -1213,6 +1213,12 @@ The emitter maintains a classical bit register `c` parallel to the qubit registe
 
 Gate names in `quantum.circ.gate` ops are mapped to OpenQASM 3.0 standard gate names via a lookup table. User-defined gates are emitted as `gate` declarations at the top of the output file if they are not reducible to standard gates after optimization.
 
+#### Parametric circuit specialization
+
+`Nat`/`Int`/`Float`-parameterized circuit functions type-check polymorphically (§3.6's symbolic `DepthExpr`s stay symbolic through the checker), but code generation needs a concrete, first-order gate sequence. Lowering resolves this by **elaboration-by-partial-evaluation**: starting from `main`'s concrete arguments, the classical fragment (`Nat`/`Int`/`Float`/`List` values, `let`, `match`, recursion, builtins) is evaluated at compile time, and the circuit fragment is unrolled into a flat, fully-static gate tree at each call site — memoized per distinct argument tuple, so e.g. `qft(3)` reached twice is only lowered once. This is sufficient for every reference algorithm (all instantiate concretely: fixed register widths, fixed angles) and matches how other quantum toolchains stage parametric circuits in practice.
+
+**Scope boundary**: an entry point (`main`) whose own parameters are not compile-time constants, or whose classical inputs cannot be fully evaluated at elaboration time, type-checks but is rejected by `--emit-qasm` with a dedicated diagnostic — code generation requires a fully instantiated program. A **symbolic parametric IR** (`scf.for`-style loops and angle SSA values retained in `quantum.circ`, so hardware-parameterized circuits could be emitted once and re-targeted with different concrete parameters at runtime) is strictly more general and would let every optimization pass and the emitter reason about symbolic structure directly — but is much more invasive and was not needed for the MVP's reference algorithms. It is the deliberate post-MVP path for hardware-parameterized circuits.
+
 ### 9.2 Qiskit Aer Integration
 
 `quon_aer.py` is a thin Python verification bridge:
