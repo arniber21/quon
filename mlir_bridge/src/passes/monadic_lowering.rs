@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use melior::ir::attribute::{BoolAttribute, IntegerAttribute, StringAttribute};
+use melior::ir::attribute::{BoolAttribute, FloatAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::{OperationBuilder, OperationLike};
 use melior::ir::r#type::TypeId;
 use melior::ir::{
@@ -73,6 +73,11 @@ fn read_bool_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, attr: &st
     BoolAttribute::try_from(value)
         .ok()
         .map(|boolean| boolean.value())
+}
+
+fn read_f64_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, attr: &str) -> Option<f64> {
+    let value = operation.attribute(attr).ok()?;
+    FloatAttribute::try_from(value).ok().map(|f| f.value())
 }
 
 fn read_depth_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> quon_core::DepthExpr {
@@ -234,19 +239,42 @@ fn inline_func_as_unitary_body<'c, 'a>(
             let depth_contribution =
                 read_i64_attr(&gate_op, quantum_circ::attr::DEPTH_CONTRIBUTION).unwrap_or(1);
             let clifford = read_bool_attr(&gate_op, quantum_circ::attr::CLIFFORD).unwrap_or(true);
+            let angle = read_f64_attr(&gate_op, quantum_circ::attr::ANGLE);
             let operands: Vec<Value<'c, 'a>> = gate_op
                 .operands()
                 .filter(|operand| quantum_circ::is_qubit_type(operand.r#type()))
                 .map(|operand| map_value(&arg_map, operand))
                 .collect();
-            let built = quantum_circ::gate(
-                context,
-                &gate_name,
-                depth_contribution,
-                clifford,
-                &operands,
-                location,
-            )
+            // A rotation gate carries its angle as a separate `angle` attribute
+            // (`quantum_circ::rotation_gate`, not `quantum_circ::gate`) — losing
+            // that distinction here would silently rebuild it as an angle-less
+            // gate, inlining e.g. `Rz(theta)` as if it took no parameter at all.
+            let built = if let Some(theta) = angle {
+                let Some(&qubit) = operands.first() else {
+                    return Err(LowerError::Build {
+                        op: quantum_circ::op::GATE,
+                        message: "rotation gate has no qubit operand".to_string(),
+                    });
+                };
+                quantum_circ::rotation_gate(
+                    context,
+                    &gate_name,
+                    theta,
+                    depth_contribution,
+                    clifford,
+                    qubit,
+                    location,
+                )
+            } else {
+                quantum_circ::gate(
+                    context,
+                    &gate_name,
+                    depth_contribution,
+                    clifford,
+                    &operands,
+                    location,
+                )
+            }
             .map_err(|error| LowerError::Build {
                 op: quantum_circ::op::GATE,
                 message: error.to_string(),
