@@ -32,10 +32,6 @@ pub enum LowerError {
     #[error("lowering is not implemented for `{construct}`")]
     Unsupported { construct: &'static str },
     #[error(
-        "parameterized circuit function `{name}` is not supported by the QASM lowering pass yet (deferred under #27)"
-    )]
-    ParametricCircuitFn { name: String },
-    #[error(
         "parameterized run function `{name}` is not supported by the QASM lowering pass yet (deferred under #27)"
     )]
     ParametricRunFn { name: String },
@@ -1170,10 +1166,14 @@ pub fn lower_program<'c>(context: &'c Context, src: &str) -> Result<Module<'c>, 
     let decls = crate::desugar_program(src)?;
     let mut lowering = LoweringCtx::new(context);
     lowering.lower_decls(&decls).map_err(|err| {
-        vec![Diagnostic::new(
-            err.to_string(),
-            chumsky::span::SimpleSpan::from(0..0),
-        )]
+        // Only `LowerError::Type` carries a real source span (from the type
+        // checker); the other variants are lowering-stage internal errors
+        // with no natural token to anchor on.
+        let span = match &err {
+            LowerError::Type(type_error) => type_error.span(),
+            _ => chumsky::span::SimpleSpan::from(0..0),
+        };
+        vec![Diagnostic::new(err.to_string(), span)]
     })?;
     Ok(lowering.into_module())
 }

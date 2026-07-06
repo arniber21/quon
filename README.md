@@ -6,11 +6,11 @@ An MLIR-based optimizing compiler for quantum programs. Accepts programs in the 
 
 | Dependency | Version | Notes |
 |---|---|---|
-| Rust | stable | edition 2021+; see `rust-toolchain.toml` |
+| Rust | stable | edition 2024; see `rust-toolchain.toml` |
 | LLVM + MLIR | **22** | Build with `-DLLVM_ENABLE_PROJECTS=mlir` and the C API enabled |
 | Melior | **0.27.x** | Pinned in the workspace `Cargo.toml`; requires LLVM 22 |
 | libz3 | any recent | C API; required at link time by the `z3` crate (`frontend`) |
-| Python + Qiskit Aer | 3.10+ | Simulation verification only (Phase 6+) |
+| Python + Qiskit Aer | 3.10+ | Simulation verification (`test/verify/`) |
 | Flux (optional) | nightly + z3 | Refinement types in `flux_verify`; install via [Flux install script](https://flux-rs.github.io/flux/guide/install.html) |
 
 If LLVM 22 is not on your default search path, set:
@@ -48,12 +48,16 @@ cargo build --release
 ```bash
 cargo fmt --all -- --check   # formatting (also enforced in CI)
 cargo clippy --workspace --exclude flux_verify --all-targets -- -D warnings
-cargo test --workspace --exclude flux_verify   # unit + integration tests (stable crates)
-lit test/lit/                # IR round-trip and emission FileCheck tests (later phases)
-python test/verify/bell.py   # end-to-end Aer verification (Phase 6+)
+cargo build --examples --workspace --exclude flux_verify  # lit's FileCheck oracle binaries
+cargo test --workspace --exclude flux_verify   # unit + integration tests, and the lit suite (see below)
+python test/verify/bell.py   # end-to-end Aer verification against a known reference distribution
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same stable checks on every push and pull request. `flux_verify` is checked separately via `cargo flux` in `.github/workflows/flux.yml`.
+`cargo test` drives `test/lit/`'s IR-round-trip and emission FileCheck suite too (`quonc/tests/lit.rs`, PRD story 38) — it shells out to `lit`, which needs `lit`/`FileCheck` on `PATH` and the oracle binaries from `cargo build --examples` above; without those it skips with a message instead of failing, so a bare `cargo test` on a fresh checkout stays green. Run `lit test/lit/ -v` directly for verbose per-test output.
+
+`test/verify/*.py` Aer-verifies all 8 PRD reference algorithms (Bell, teleportation, Bernstein-Vazirani, Grover, QFT, Ising, QAOA, Shor) plus SABRE routing, each against a known theoretical output distribution.
+
+CI (`.github/workflows/ci.yml`) runs the same stable checks, the lit suite, and all `test/verify/` scripts on every push and pull request. `flux_verify` is checked separately via `cargo flux` in `.github/workflows/flux.yml`.
 
 ### Taskless validation
 
@@ -92,6 +96,7 @@ CI: `.github/workflows/flux.yml` (path-filtered to `flux_verify/`). Requires z3 
 | `zx` | ZX-graph data structure (`petgraph::StableGraph`) and rewrite engine |
 | `mlir_bridge` | Melior wrappers, dialect registration, optimization passes, OpenQASM 3.0 emitter |
 | `backend` | `BackendTarget`, noise model, connectivity graph, JSON device loader |
+| `quon_core` | MLIR-free shared types (`DepthExpr`, the OpenQASM 3.0 typed IR) used by both `frontend` and `mlir_bridge` without pulling either into the other |
 | `flux_verify` | Flux refinement-type examples (nightly; `cargo flux -p flux_verify`) |
 
 ## Documentation
@@ -99,4 +104,4 @@ CI: `.github/workflows/flux.yml` (path-filtered to `flux_verify/`). Requires z3 
 - [SPEC.md](SPEC.md) — full language and compiler specification
 - [CONTEXT.md](CONTEXT.md) — domain glossary
 - [docs/adr/](docs/adr/) — architectural decision records
-- [GitHub Issues](../../issues) — implementation tracker (issues #2–#30)
+- [GitHub Issues](../../issues) — implementation tracker; #1 is the master PRD

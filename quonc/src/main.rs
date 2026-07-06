@@ -43,15 +43,21 @@ fn main() -> Result<()> {
         .with_context(|| format!("reading {}", cli.source.display()))?;
 
     // The emitter reads only the target's native gate set and id, not its
-    // topology, so the qubit width here is immaterial; routing/decomposition
-    // (#24/#25/#26) are not yet wired and `generic_openqasm` is all-to-all.
+    // topology, so the qubit width here is immaterial; `generic_openqasm` is
+    // an all-to-all target used when the caller supplies no device JSON.
     let target = match &cli.target {
         Some(path) => backend::json::load(path)
             .map_err(|e| anyhow!("loading target {}: {e}", path.display()))?,
         None => generic_openqasm::target(64),
     };
 
-    let qasm = compile_to_qasm(&source, &target, cli.dump_ir, cli.verify_linear)?;
+    let qasm = compile_to_qasm(
+        &cli.source,
+        &source,
+        &target,
+        cli.dump_ir,
+        cli.verify_linear,
+    )?;
 
     if cli.emit_qasm {
         print!("{qasm}");
@@ -67,6 +73,7 @@ fn main() -> Result<()> {
 /// quantum.physical → OpenQASM 3.0. Pass order follows SPEC.md §7.1 (see
 /// `mlir_bridge::passes` module docs).
 fn compile_to_qasm(
+    source_path: &std::path::Path,
     source: &str,
     target: &BackendTarget,
     dump_ir: bool,
@@ -77,12 +84,12 @@ fn compile_to_qasm(
     // 1. Parse, type-check, lower circuit funcs + run blocks to quantum.circ /
     //    monadic_staging.
     let module = frontend::lower::lower_program(&context, source).map_err(|diags| {
-        let rendered = diags
-            .iter()
-            .map(|d| format!("  - {}", d.message))
-            .collect::<Vec<_>>()
-            .join("\n");
-        anyhow!("compilation failed:\n{rendered}")
+        print_diagnostics(source_path, source, &diags);
+        anyhow!(
+            "compilation failed with {} error{}",
+            diags.len(),
+            if diags.len() == 1 { "" } else { "s" }
+        )
     })?;
     if dump_ir {
         eprintln!("--- after lowering ---\n{}", module.as_operation());
@@ -133,6 +140,29 @@ fn compile_to_qasm(
     match openqasm3::emit(&module, target) {
         Ok(qasm) => Ok(qasm),
         Err(e) => bail!("OpenQASM emission failed: {e}"),
+    }
+}
+
+/// Renders frontend diagnostics with a caret at the offending source span
+/// (issue #9: "span-accurate errors") instead of a bare message list.
+fn print_diagnostics(
+    source_path: &std::path::Path,
+    source: &str,
+    diags: &[frontend::diagnostics::Diagnostic],
+) {
+    let id = source_path.display().to_string();
+    for diag in diags {
+        let span = diag.span.start..diag.span.end;
+        let report =
+            ariadne::Report::build(ariadne::ReportKind::Error, id.clone(), diag.span.start)
+                .with_message(&diag.message)
+                .with_label(
+                    ariadne::Label::new((id.clone(), span))
+                        .with_message(&diag.message)
+                        .with_color(ariadne::Color::Red),
+                )
+                .finish();
+        let _ = report.eprint((id.clone(), ariadne::Source::from(source)));
     }
 }
 
