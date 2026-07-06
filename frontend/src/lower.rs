@@ -18,6 +18,7 @@ use thiserror::Error;
 
 use crate::ast::{CliffordClass, Decl, Expr, Name, Pat, Stmt, Type as AstType};
 use crate::diagnostics::Diagnostic;
+use crate::elaborate;
 use crate::lexer::Sp;
 use crate::typecheck::circuit;
 use crate::typecheck::{TypeChecker, TypeError};
@@ -46,12 +47,16 @@ pub enum LowerError {
     NonStaticRotation { name: String },
     #[error("call to unknown circuit function `{name}`")]
     UnknownCallee { name: String },
+    #[error("could not statically determine the qubit width of a specialized circuit")]
+    UnresolvedSpecializationWidth,
     #[error("MLIR builder failed: {0}")]
     Mlir(#[from] qc::BuildError),
     #[error("internal lowering error: {0}")]
     Internal(&'static str),
     #[error("type checking failed: {0}")]
     Type(#[from] TypeError),
+    #[error("elaborating a parametric circuit call: {0}")]
+    Elab(#[from] elaborate::ElabError),
 }
 
 /// Lowers a desugared, type-checked declaration list into a `quantum.circ` module.
@@ -64,6 +69,15 @@ pub struct LoweringCtx<'c> {
     bodies: HashMap<Name, Sp<Expr>>,
     /// Metadata for each circuit function.
     func_meta: HashMap<Name, FuncMeta>,
+    /// Parametric (`Nat`/`Int`/`Float`-parameterized) circuit function
+    /// definitions, specialized on demand at a concrete call site (issue #1,
+    /// MVP milestone M2) — see `elaborate.rs`.
+    parametric: HashMap<Name, elaborate::ParametricDef>,
+    /// Memoizes specializations already emitted, keyed by a canonical
+    /// `"name(arg1,arg2,...)"` string, so the same call site (e.g.
+    /// `hadamard_all(n)` reached twice with `n = 3`) is not re-emitted.
+    specialized: HashMap<String, Name>,
+    next_synth_id: u64,
 }
 
 #[derive(Clone)]
@@ -92,6 +106,9 @@ impl<'c> LoweringCtx<'c> {
             checker: TypeChecker::new(),
             bodies: HashMap::new(),
             func_meta: HashMap::new(),
+            parametric: HashMap::new(),
+            specialized: HashMap::new(),
+            next_synth_id: 0,
         }
     }
 
@@ -111,19 +128,38 @@ impl<'c> LoweringCtx<'c> {
                 ret,
                 body,
             } = &decl.0
-                && params.is_empty()
-                && let Ok(Ty::Circuit { n, m, d, c }) = self.checker.resolve_type(ret)
+                && let Ok(ret_ty @ Ty::Circuit { .. }) = self.checker.resolve_type(ret)
             {
-                self.func_meta.insert(
-                    name.clone(),
-                    FuncMeta {
-                        depth: d,
-                        clifford: matches!(c, CliffordClass::Clifford),
-                        in_qubits: const_width(&n, "in_qubits")?,
-                        out_qubits: const_width(&m, "out_qubits")?,
-                    },
-                );
-                self.bodies.insert(name.clone(), body.clone());
+                if params.is_empty() {
+                    let Ty::Circuit { n, m, d, c } = ret_ty else {
+                        unreachable!("matched above");
+                    };
+                    self.func_meta.insert(
+                        name.clone(),
+                        FuncMeta {
+                            depth: d,
+                            clifford: matches!(c, CliffordClass::Clifford),
+                            in_qubits: const_width(&n, "in_qubits")?,
+                            out_qubits: const_width(&m, "out_qubits")?,
+                        },
+                    );
+                    self.bodies.insert(name.clone(), body.clone());
+                } else {
+                    // A parametric circuit function (e.g. `hadamard_all(n)`):
+                    // not emitted yet — every parameter must be `Nat`/`Int`/
+                    // `Float` (issue #1 MVP scope; circuit-valued parameters
+                    // are out of scope, see docs/plans/mvp-landing-plan.md
+                    // §5), specialized on demand at each concrete call site
+                    // (`specialize_named_fn`).
+                    self.parametric.insert(
+                        name.clone(),
+                        elaborate::ParametricDef {
+                            params: params.iter().map(|(p, _)| p.clone()).collect(),
+                            body: body.clone(),
+                            ret_ty,
+                        },
+                    );
+                }
             }
         }
 
@@ -171,17 +207,14 @@ impl<'c> LoweringCtx<'c> {
             return Ok(());
         };
         if !params.is_empty() {
-            return Err(LowerError::ParametricCircuitFn { name: name.clone() });
+            // Recorded in `self.parametric` during the first pass; emitted on
+            // demand by `specialize_named_fn` at each concrete call site, not
+            // eagerly here (its width/depth depend on the call-site argument).
+            return Ok(());
         }
         let in_qubits = const_width(&n, "in_qubits")?;
         let out_qubits = const_width(&m, "out_qubits")?;
         let clifford = matches!(c, CliffordClass::Clifford);
-        let meta = FuncMeta {
-            depth: d,
-            clifford,
-            in_qubits,
-            out_qubits,
-        };
 
         if let Expr::Adjoint(inner) = &body.0
             && let Some(callee) = zero_arg_callee_name(inner)
@@ -208,6 +241,36 @@ impl<'c> LoweringCtx<'c> {
             let adjoint = qc::adjoint(self.context, callee_ref, &callee_meta.depth, self.location)?;
             self.module.body().append_operation(adjoint);
         }
+
+        self.emit_circuit_func(name, in_qubits, out_qubits, &d, clifford, body)?;
+        Ok(())
+    }
+
+    /// Emits `name` as a `quantum.circ.func` with the given, already-concrete
+    /// shape, lowering `body` with the existing zero-parameter walker
+    /// (`lower_circuit_block`/`lower_circuit_body_expr`). Shared by
+    /// `lower_circuit_fn` (a source-level zero-param definition) and
+    /// `specialize_named_fn` (a monomorphic instantiation of a parametric
+    /// one) so both funnel through one MLIR-emission path.
+    fn emit_circuit_func(
+        &mut self,
+        name: &str,
+        in_qubits: i64,
+        out_qubits: i64,
+        depth: &DepthExpr,
+        clifford: bool,
+        body: &Sp<Expr>,
+    ) -> Result<(), LowerError> {
+        self.func_meta.insert(
+            name.to_string(),
+            FuncMeta {
+                depth: depth.clone(),
+                clifford,
+                in_qubits,
+                out_qubits,
+            },
+        );
+        self.bodies.insert(name.to_string(), body.clone());
 
         let region = Region::new();
         let qubit = qc::qubit_type(self.context);
@@ -246,13 +309,159 @@ impl<'c> LoweringCtx<'c> {
             name,
             in_qubits,
             out_qubits,
-            &meta.depth,
-            meta.clifford,
+            depth,
+            clifford,
             region,
             self.location,
         )?;
         self.module.body().append_operation(func);
         Ok(())
+    }
+
+    /// Specializes the parametric circuit function `name` at concrete
+    /// argument values `args` (each a classically-evaluable expression —
+    /// typically an integer literal, or an expression closed over an
+    /// enclosing parametric scope's own already-bound parameters), emitting a
+    /// fresh monomorphic `quantum.circ.func` the first time this exact
+    /// `(name, args)` pair is requested, and returning its synthesized name.
+    fn specialize_named_fn(
+        &mut self,
+        name: &str,
+        args: &[Sp<Expr>],
+        classical_env: &HashMap<Name, elaborate::Value>,
+    ) -> Result<Name, LowerError> {
+        let def = self
+            .parametric
+            .get(name)
+            .cloned()
+            .ok_or_else(|| LowerError::UnknownCallee {
+                name: name.to_string(),
+            })?;
+        if def.params.len() != args.len() {
+            return Err(LowerError::Unsupported {
+                construct: "parametric circuit call arity mismatch",
+            });
+        }
+        let mut fuel = elaborate::fresh_fuel();
+        let mut callee_env: HashMap<Name, elaborate::Value> = HashMap::new();
+        let mut cache_key = name.to_string();
+        cache_key.push('(');
+        for (i, (param, arg)) in def.params.iter().zip(args.iter()).enumerate() {
+            let value = elaborate::eval_classical(arg, classical_env, &mut fuel)?;
+            if i > 0 {
+                cache_key.push(',');
+            }
+            cache_key.push_str(&format!("{value:?}"));
+            callee_env.insert(param.clone(), value);
+        }
+        cache_key.push(')');
+
+        if let Some(existing) = self.specialized.get(&cache_key) {
+            return Ok(existing.clone());
+        }
+
+        // Reserve the cache entry before recursing so a (structurally
+        // impossible, since recursive circuit fns decrease a `Nat`) self-call
+        // at the same arguments cannot recurse into `specialize_named_fn`
+        // again and double-emit.
+        let synth_name = format!("{name}__elab{}", self.next_synth_id);
+        self.next_synth_id += 1;
+        self.specialized
+            .insert(cache_key.clone(), synth_name.clone());
+
+        let ctx = elaborate::ElabCtx {
+            parametric: self
+                .parametric
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        };
+        let elaborated =
+            elaborate::elaborate_circuit_body(&def.body, &callee_env, &ctx, &mut fuel)?;
+
+        let Ty::Circuit { n, m, d, c } = def.ret_ty.clone() else {
+            return Err(LowerError::Unsupported {
+                construct: "specialized function does not return a Circuit",
+            });
+        };
+        let nat_env: HashMap<String, DepthExpr> = callee_env
+            .iter()
+            .filter_map(|(k, v)| match v {
+                elaborate::Value::Int(i) if *i >= 0 => Some((k.clone(), DepthExpr::Nat(*i as u64))),
+                _ => None,
+            })
+            .collect();
+        let in_qubits = n
+            .subst(&nat_env)
+            .as_const()
+            .ok_or(LowerError::UnresolvedSpecializationWidth)? as i64;
+        let out_qubits = m
+            .subst(&nat_env)
+            .as_const()
+            .ok_or(LowerError::UnresolvedSpecializationWidth)? as i64;
+        let depth = d.subst(&nat_env);
+        let clifford = matches!(c, CliffordClass::Clifford);
+
+        self.emit_circuit_func(
+            &synth_name,
+            in_qubits,
+            out_qubits,
+            &depth,
+            clifford,
+            &elaborated,
+        )?;
+        Ok(synth_name)
+    }
+
+    /// Resolves a run-block `@` gate expression that [`circuit_callee`]
+    /// couldn't handle directly (a call site `circuit_callee` only recognizes
+    /// a bare name or a zero-arg call) — either a direct call to a recorded
+    /// parametric circuit function (`hadamard_all(3)`), or an arbitrary
+    /// compound circuit expression built from `|>`/`repeat`/parametric calls
+    /// (e.g. `hadamard_all(3) |> repeat(iters, oracle() |> diffusion(3))`).
+    /// Both are elaborated to a fully concrete gate sequence and emitted as a
+    /// fresh, uniquely-named `quantum.circ.func`, whose name is returned as
+    /// the callee.
+    fn resolve_circuit_callee(&mut self, gate: &Sp<Expr>) -> Result<Name, LowerError> {
+        if let Expr::App(f, x) = &gate.0 {
+            let (head, args) = flatten_app(f, x);
+            if let Expr::Var(name) = &head.0
+                && self.parametric.contains_key(name)
+            {
+                let args: Vec<Sp<Expr>> = args.into_iter().cloned().collect();
+                return self.specialize_named_fn(name, &args, &HashMap::new());
+            }
+        }
+
+        let mut fuel = elaborate::fresh_fuel();
+        let ctx = elaborate::ElabCtx {
+            parametric: self
+                .parametric
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        };
+        let elaborated = elaborate::elaborate_circuit_body(gate, &HashMap::new(), &ctx, &mut fuel)?;
+
+        let width = max_qubit_index(&elaborated)
+            .map(|max| max + 1)
+            .ok_or(LowerError::UnresolvedSpecializationWidth)?;
+        let gate_count = count_gates(&elaborated);
+        let synth_name = format!("__anon_circuit{}", self.next_synth_id);
+        self.next_synth_id += 1;
+        // A conservative depth/Clifford estimate: exact values are optimization
+        // bookkeeping (scheduling, Clifford-only rewrites), not semantically
+        // load-bearing for the emitted QASM — see mvp-landing-plan.md M1's
+        // finding that the emitter never even reads these attributes.
+        self.emit_circuit_func(
+            &synth_name,
+            width as i64,
+            width as i64,
+            &DepthExpr::Nat(gate_count as u64),
+            false,
+            &elaborated,
+        )?;
+        Ok(synth_name)
     }
 
     /// Lower a quantum-monad (`Q<τ>`) function into a `quantum.circ.run` staging
@@ -359,9 +568,10 @@ impl<'c> LoweringCtx<'c> {
                     ));
                     return collect_results(op, qs.len());
                 }
-                let callee = circuit_callee(gate).ok_or(LowerError::Unsupported {
-                    construct: "circuit expression in `@` (adjoint not yet supported)",
-                })?;
+                let callee = match circuit_callee(gate) {
+                    Some(name) => name,
+                    None => self.resolve_circuit_callee(gate)?,
+                };
                 let op = block.append_operation(staging::apply(
                     self.context,
                     &callee,
@@ -461,6 +671,12 @@ impl<'c> LoweringCtx<'c> {
         locals: &HashMap<Name, Sp<Expr>>,
     ) -> Result<(), LowerError> {
         match expr {
+            // A circuit function's own body is a `circuit { .. }` block, but
+            // only its top-level caller (`emit_circuit_func`) unwraps that —
+            // inlining a *call* to it (e.g. `oracle()` composed into another
+            // circuit expression) reaches this walker directly on the callee's
+            // un-unwrapped `CircuitBlock`, so it must be handled here too.
+            Expr::CircuitBlock(stmts) => self.lower_circuit_block(stmts, block, wires),
             Expr::Compose(lhs, rhs) => {
                 self.lower_circuit_body_expr_with_locals(&lhs.0, block, wires, locals)?;
                 self.lower_circuit_body_expr_with_locals(&rhs.0, block, wires, locals)
@@ -745,6 +961,34 @@ fn literal_usize(expr: &Expr) -> Option<usize> {
     match expr {
         Expr::Int(n) if *n >= 0 => Some(*n as usize),
         _ => None,
+    }
+}
+
+/// The highest qubit index a fully elaborated (`Compose`/`GateApp`/`Adjoint`)
+/// circuit expression places a gate on, or `None` if it places none — used to
+/// size a synthesized `quantum.circ.func` for an anonymous circuit expression
+/// with no declared `Circuit<n,...>` type of its own to read a width from.
+fn max_qubit_index(expr: &Sp<Expr>) -> Option<usize> {
+    match &expr.0 {
+        Expr::Compose(lhs, rhs) => max_qubit_index(lhs)
+            .into_iter()
+            .chain(max_qubit_index(rhs))
+            .max(),
+        Expr::GateApp { qubits, .. } => qubit_targets(qubits).into_iter().max(),
+        Expr::Adjoint(inner) => max_qubit_index(inner),
+        _ => None,
+    }
+}
+
+/// The number of gate placements in a fully elaborated circuit expression —
+/// a crude but safe depth over-estimate for a synthesized anonymous function
+/// (see `resolve_circuit_callee`).
+fn count_gates(expr: &Sp<Expr>) -> usize {
+    match &expr.0 {
+        Expr::Compose(lhs, rhs) => count_gates(lhs) + count_gates(rhs),
+        Expr::GateApp { .. } => 1,
+        Expr::Adjoint(inner) => count_gates(inner),
+        _ => 0,
     }
 }
 

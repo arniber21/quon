@@ -61,3 +61,4 @@ jobs:
           python test/verify/teleport.py
           python test/verify/bernstein_vazirani.py
           python test/verify/routing.py
+          python test/verify/grover.py
