@@ -1,7 +1,11 @@
 -- RUN: %quonc --emit-qasm %s | %FileCheck %s
 --
--- Quantum teleportation with feed-forward corrections (issue #27). The `if`
--- conditions render as `bit == true` for OpenQASM 3.0 importer compatibility.
+-- Quantum teleportation (issue #27). The classically-controlled corrections
+-- are deferred by default (measurement_deferral, SPEC §7.1) into coherent
+-- CNOT/CZ corrections applied before the final measurement, rather than
+-- literal feed-forward `if` blocks — see
+-- quonc/tests/smoke.rs::teleport_feed_forward_is_deferred_by_default, which
+-- exact-text-locks the same behavior.
 
 fn prep(): Circuit<3, 3, 3, Clifford> = circuit { X @0 |> H @1 |> CNOT @(1, 2) }
 fn bell_basis(): Circuit<2, 2, 2, Clifford> = circuit { CNOT @(0, 1) |> H @0 }
@@ -21,11 +25,13 @@ fn main(): Q<Bit> = run {
 }
 
 -- CHECK: qubit[3] q;
+-- CHECK: bit[3] c;
 -- CHECK: cx q[1], q[2];
--- CHECK: c[0] = measure q[0];
--- CHECK: c[1] = measure q[1];
--- CHECK: if (c[1] == true) {
--- CHECK: x q[2];
--- CHECK: if (c[0] == true) {
--- CHECK: z q[2];
+-- CHECK: cx q[0], q[1];
+-- CHECK: h q[0];
+-- CHECK: cx q[1], q[2];
+-- CHECK: c[0] = measure q[1];
+-- CHECK: cz q[0], q[2];
+-- CHECK: c[1] = measure q[0];
 -- CHECK: c[2] = measure q[2];
+-- CHECK-NOT: if (

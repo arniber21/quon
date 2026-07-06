@@ -3,8 +3,8 @@
 // RUN: %rotation-merge < %s | FileCheck %s
 
 module {
-  // CHECK: angle = 0.8
-  // CHECK-NOT: angle = 0.5
+  // CHECK: angle = 8.000000e-01
+  // CHECK-NOT: angle = 5.000000e-01
 
   "quantum.circ.func"() ({
   ^bb0(%arg0: !quantum.qubit):

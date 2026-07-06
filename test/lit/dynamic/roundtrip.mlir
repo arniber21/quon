@@ -33,6 +33,7 @@ module {
   ^bb0(%arg0: !quantum.qubit):
     // CHECK-NEXT: "quantum.dynamic.yield"(%arg0) : (!quantum.qubit) -> ()
     "quantum.dynamic.yield"(%arg0) : (!quantum.qubit) -> ()
+  // CHECK-NEXT: }, {
   }, {
   // CHECK-NEXT: ^bb0(%arg0: !quantum.qubit):
   ^bb0(%arg0: !quantum.qubit):
