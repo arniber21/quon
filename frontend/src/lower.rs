@@ -512,6 +512,36 @@ impl<'c> LoweringCtx<'c> {
                 env.insert(param.clone(), results);
                 self.lower_monadic(body, block, env)
             }
+            // `let (hi, lo) = split(k, q)` (SPEC §5, Shor's modular
+            // exponentiation): splits a register's *wire list* into two
+            // sublists of k and (len-k) qubits. This can't go through the
+            // ordinary `eval` + `bind_pattern` path below: `bind_pattern`'s
+            // `Pat::Tuple` case zips one *value* per pattern element (the
+            // right model for e.g. `(msg, alice, bob) <- prep() @ qreg(3)`,
+            // where each name is one qubit) — but here each half of the
+            // pattern must bind to a whole *sublist* of qubits instead.
+            Expr::Let {
+                pat: (Pat::Tuple(pats), _),
+                rhs,
+                body,
+            } if pats.len() == 2 && is_split_call(rhs) => {
+                let (k_expr, q_expr) = split_call_args(rhs)?;
+                let Expr::Int(k) = k_expr.0 else {
+                    return Err(LowerError::Unsupported {
+                        construct: "split() count must be a literal integer",
+                    });
+                };
+                let qubits = self.eval(&q_expr, block, env)?;
+                if k < 0 || k as usize > qubits.len() {
+                    return Err(LowerError::Unsupported {
+                        construct: "split() count out of range",
+                    });
+                }
+                let (hi, lo) = qubits.split_at(k as usize);
+                bind_pattern(&pats[0], hi.to_vec(), env)?;
+                bind_pattern(&pats[1], lo.to_vec(), env)?;
+                self.lower_monadic(body, block, env)
+            }
             Expr::Let { pat, rhs, body } => {
                 let values = self.eval(rhs, block, env)?;
                 bind_pattern(pat, values, env)?;
@@ -604,6 +634,15 @@ impl<'c> LoweringCtx<'c> {
                                 self.location,
                             ));
                             return collect_results(op, 1);
+                        }
+                        // `a `tensored` b` (SPEC §5): concatenate two
+                        // registers' wire lists into one, `QReg<n+m>`. No
+                        // MLIR op of its own — the wires are already live
+                        // SSA values, so this is exactly list concatenation.
+                        "tensored" if args.len() == 2 => {
+                            let mut wires = self.eval(args[0], block, env)?;
+                            wires.extend(self.eval(args[1], block, env)?);
+                            return Ok(wires);
                         }
                         // `measure_all(qs)` — measure every qubit, producing one
                         // bit each (Bernstein–Vazirani readout).
@@ -1001,6 +1040,32 @@ fn flatten_app<'a>(f: &'a Sp<Expr>, x: &'a Sp<Expr>) -> (&'a Sp<Expr>, Vec<&'a S
     }
     args.reverse();
     (head, args)
+}
+
+/// Whether `expr` is a call to the `split` builtin (`split(k, q)`) — used to
+/// route a `let (hi, lo) = split(k, q)` binding through its own handling in
+/// `lower_monadic` rather than the ordinary `eval` + `bind_pattern` path.
+fn is_split_call(expr: &Sp<Expr>) -> bool {
+    match &expr.0 {
+        Expr::App(f, x) => {
+            let (head, args) = flatten_app(f, x);
+            matches!(&head.0, Expr::Var(name) if name == "split") && args.len() == 2
+        }
+        _ => false,
+    }
+}
+
+/// The `(k, q)` arguments of a `split(k, q)` call already confirmed by
+/// [`is_split_call`].
+fn split_call_args(expr: &Sp<Expr>) -> Result<(Sp<Expr>, Sp<Expr>), LowerError> {
+    let Expr::App(f, x) = &expr.0 else {
+        return Err(LowerError::Internal("split_call_args on a non-App"));
+    };
+    let (_, args) = flatten_app(f, x);
+    let [k, q] = args[..] else {
+        return Err(LowerError::Internal("split_call_args arity"));
+    };
+    Ok((k.clone(), q.clone()))
 }
 
 fn zero_arg_callee_name(expr: &Sp<Expr>) -> Option<String> {
