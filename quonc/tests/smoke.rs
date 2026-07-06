@@ -58,12 +58,15 @@ c[1] = measure q[1];
 }
 
 /// Issue #27 acceptance: a gate that is not native to the selected target must be
-/// a hard error, never silently-emitted invalid QASM. `device_5q.json`'s native
-/// set is `{cx, rz, sx, x}` — it has no `h`, so the Bell `H` cannot resolve.
+/// a hard error, never silently-emitted invalid QASM. `device_no_entangler.json`
+/// has no two-qubit native gate at all (no `cx`/`cz`/`swap`), so the Bell
+/// `CNOT` has no decomposition path — unlike `device_5q.json`, whose `{rz, sx}`
+/// pair lets native gate decomposition (#24) synthesize `H` successfully, so it
+/// no longer demonstrates a hard emission failure.
 #[test]
 fn non_native_gate_fails_loudly() {
     let source = workspace_path("../frontend/tests/fixtures/bell_state.qn");
-    let target = workspace_path("../backend/tests/fixtures/device_5q.json");
+    let target = workspace_path("../backend/tests/fixtures/device_no_entangler.json");
     let output = quonc()
         .arg("--emit-qasm")
         .arg("--target")
@@ -89,8 +92,105 @@ fn non_native_gate_fails_loudly() {
     );
 }
 
+/// End-to-end acceptance for the M1 pipeline-wiring milestone (issue #1): on a
+/// topology-constrained target, the driver must reach the *actually executed*
+/// circuit (not just dead, pre-inlining `quantum.circ.func` definitions — see
+/// `native_gate_decomp::decompose_block`'s doc comment) and route it so that
+/// only the target's native gates are emitted. `device_linear_chain.json` (a
+/// bare 0-1-2-3 chain, no shortcuts) forces real SWAP insertion for BV's
+/// `CNOT @(0, 3)`. This exact output is a regression lock for three
+/// correctness bugs found wiring this milestone (all in `sabre_routing.rs`):
+/// a bystander qubit displaced by an unrelated swap kept a stale SSA operand
+/// on its next gate and on the block terminator, and `wires[logical]` was
+/// never updated to a gate's own result — see git history on this test for
+/// the full analysis. Verified against Qiskit Aer to recover the BV secret
+/// (1,1,0) unchanged from the unrouted `generic_openqasm` result.
 #[test]
-fn teleport_feed_forward_emits_integer_conditions() {
+fn bernstein_vazirani_routes_and_emits_only_native_gates_on_linear_chain() {
+    let source = workspace_path("../test/verify/bernstein_vazirani.qn");
+    let target = workspace_path("../backend/tests/fixtures/device_linear_chain.json");
+    let output = quonc()
+        .arg("--emit-qasm")
+        .arg("--target")
+        .arg(&target)
+        .arg(&source)
+        .output()
+        .expect("failed to run quonc");
+
+    assert!(
+        output.status.success(),
+        "quonc failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let qasm = String::from_utf8_lossy(&output.stdout);
+    let expected = "\
+OPENQASM 3.0;
+include \"stdgates.inc\";
+qubit[4] q;
+bit[4] c;
+x q[3];
+rz(3.141592653589793) q[0];
+sx q[0];
+rz(4.71238898038469) q[0];
+sx q[0];
+rz(3.141592653589793) q[0];
+rz(3.141592653589793) q[1];
+sx q[1];
+rz(4.71238898038469) q[1];
+sx q[1];
+rz(3.141592653589793) q[1];
+rz(3.141592653589793) q[3];
+sx q[3];
+rz(4.71238898038469) q[3];
+sx q[3];
+rz(3.141592653589793) q[3];
+cx q[0], q[1];
+cx q[1], q[0];
+cx q[0], q[1];
+cx q[1], q[2];
+cx q[2], q[1];
+cx q[1], q[2];
+cx q[2], q[3];
+cx q[0], q[1];
+cx q[1], q[0];
+cx q[0], q[1];
+cx q[1], q[2];
+cx q[2], q[1];
+cx q[1], q[2];
+cx q[2], q[3];
+rz(3.141592653589793) q[1];
+sx q[1];
+rz(4.71238898038469) q[1];
+sx q[1];
+rz(3.141592653589793) q[1];
+rz(3.141592653589793) q[2];
+sx q[2];
+rz(4.71238898038469) q[2];
+sx q[2];
+rz(3.141592653589793) q[2];
+c[0] = measure q[1];
+c[1] = measure q[2];
+c[2] = measure q[0];
+c[3] = measure q[3];
+";
+    assert_eq!(qasm, expected);
+    for gate in ["h", "cnot", "swap", "id"] {
+        assert!(
+            !qasm.to_lowercase().contains(gate),
+            "only device_linear_chain's native gates (cx, rz, sx, x) may appear:\n{qasm}"
+        );
+    }
+}
+
+/// Since the measurement deferral pass (#22) is now wired into the default
+/// pipeline (issue #1 MVP milestone M1), a mid-circuit measurement whose bit
+/// feeds exactly one terminal `if` is rewritten into a terminal measurement
+/// plus a controlled correction — no literal `if` survives in the emitted
+/// QASM. This supersedes the pass's pre-wiring behaviour (raw feed-forward
+/// `if` blocks), which is still exercised directly against the MLIR passes in
+/// `mlir_bridge/tests/measurement_deferral.rs`.
+#[test]
+fn teleport_feed_forward_is_deferred_by_default() {
     let source = write_temp_source(
         "teleport-feed-forward",
         r#"
@@ -138,17 +238,28 @@ fn teleport_demo(): Q<Qubit> = run {
         String::from_utf8_lossy(&output.stderr)
     );
     let qasm = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        qasm.contains("if (c[0] == 1) {\n  x q[2];\n}"),
-        "missing X feed-forward correction:\n{qasm}"
+    let expected = "\
+OPENQASM 3.0;
+include \"stdgates.inc\";
+qubit[3] q;
+bit[2] c;
+h q[1];
+cx q[1], q[2];
+cx q[0], q[1];
+h q[0];
+cx q[0], q[2];
+c[0] = measure q[0];
+cz q[1], q[2];
+c[1] = measure q[1];
+";
+    assert_eq!(
+        qasm, expected,
+        "deferred X correction (cx q[0], q[2]) and Z correction (cz q[1], q[2]) \
+         should replace the literal feed-forward `if` blocks"
     );
     assert!(
-        qasm.contains("if (c[1] == 1) {\n  z q[2];\n}"),
-        "missing Z feed-forward correction:\n{qasm}"
-    );
-    assert!(
-        !qasm.contains("true"),
-        "QASM conditions must use integer comparisons:\n{qasm}"
+        !qasm.contains("if ("),
+        "no literal feed-forward `if` should survive default measurement deferral:\n{qasm}"
     );
 }
 

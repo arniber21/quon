@@ -135,18 +135,24 @@ pub fn decompose_single_qubit(u: M2, native: &[String]) -> Vec<GateOp> {
 }
 
 /// Decompose a named single-qubit gate into native ops on qubit `q`.
+///
+/// Returns `None` when `name` does not resolve to any known single-qubit
+/// unitary. Returns `Some(vec![])` when it resolves but needs **zero** native
+/// gates to realize (e.g. the identity, or a rotation whose total angle is a
+/// multiple of 2π) — this is a legitimate decomposition, not a failure, and
+/// callers must not conflate it with the `None` case.
 pub fn decompose_named_single(
     name: &str,
     angle: Option<f64>,
     native: &[String],
     q: usize,
-) -> Vec<GateOp> {
+) -> Option<Vec<GateOp>> {
     if is_native(native, name) {
-        return vec![GateOp {
+        return Some(vec![GateOp {
             name: name.to_lowercase(),
             qubits: vec![q],
             params: angle.map(|a| vec![a]).unwrap_or_default(),
-        }];
+        }]);
     }
 
     let u = if let Some(a) = angle {
@@ -155,15 +161,13 @@ pub fn decompose_named_single(
         gate_unitary(name)
     };
 
-    let Some(matrix) = u else {
-        return vec![];
-    };
+    let matrix = u?;
 
     let mut ops = decompose_single_qubit(matrix, native);
     for op in &mut ops {
         op.qubits = vec![q];
     }
-    ops
+    Some(ops)
 }
 
 /// Decompose a two-qubit unitary into native gates on qubits `(q0, q1)`.
@@ -194,10 +198,10 @@ pub fn decompose_two_qubit(u: M4, native: &[String], q0: usize, q1: usize) -> Ve
         && is_native(native, "cx")
     {
         let mut out = Vec::new();
-        let mut h_before = decompose_named_single("H", None, native, q1);
+        let mut h_before = decompose_named_single("H", None, native, q1).unwrap_or_default();
         out.append(&mut h_before);
         push_cx(&mut out, q0, q1);
-        let mut h_after = decompose_named_single("H", None, native, q1);
+        let mut h_after = decompose_named_single("H", None, native, q1).unwrap_or_default();
         out.append(&mut h_after);
         return out;
     }

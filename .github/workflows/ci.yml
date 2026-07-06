@@ -60,3 +60,4 @@ jobs:
           python test/verify/bell.py
           python test/verify/teleport.py
           python test/verify/bernstein_vazirani.py
+          python test/verify/routing.py

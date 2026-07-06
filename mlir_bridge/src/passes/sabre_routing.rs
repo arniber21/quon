@@ -17,7 +17,7 @@ use melior::{Context, ContextRef};
 use mlir_sys::{mlirOperationSetAttributeByName, mlirOperationSetOperand};
 use thiserror::Error;
 
-use crate::dialect::quantum_circ;
+use crate::dialect::{quantum_circ, quantum_dynamic};
 use crate::passes::qubit_wiring::{self, WireTracker};
 
 fn set_i32_attr<'c>(context: &'c Context, op: OperationRef<'c, '_>, key: &str, value: i32) {
@@ -205,6 +205,7 @@ fn route_two_qubit<'c, 'a>(
     logical_a: usize,
     logical_b: usize,
     wires: &mut HashMap<usize, Value<'c, 'a>>,
+    tracker: &mut WireTracker,
 ) -> Result<(), RouteError> {
     let location = gate.location();
     let mut p_a = layout.phys(logical_a)?;
@@ -219,8 +220,23 @@ fn route_two_qubit<'c, 'a>(
         let wire_v = wires[&logical_v];
         let (out_u, out_v) = append_swap(context, block, gate, wire_u, wire_v, location)?;
         let (new_u, new_v) = layout.swap_phys(u, v)?;
-        wires.insert(new_u, out_u);
-        wires.insert(new_v, out_v);
+        // A register slot is a fixed physical location: SWAP exchanges the
+        // *contents* of slots u and v, it does not relabel the slots
+        // themselves — so `out_u` (the SWAP result continuing slot u) is
+        // where `logical_v`'s state now lives, and `out_v` (slot v) is where
+        // `logical_u`'s state now lives. `wires[logical]` must track "the
+        // value to use as this logical qubit's next operand", which is the
+        // *other* result — assigning it positionally (`out_u` to `logical_u`)
+        // would silently hand every later gate the wrong qubit's state.
+        wires.insert(new_u, out_v);
+        wires.insert(new_v, out_u);
+        // The SWAP's results are freshly-built SSA values with no established
+        // root yet; without this, any later gate reading them would fall
+        // through `WireTracker::root`'s "unseen value" default (its own raw
+        // pointer key) instead of resolving back to the correct logical qubit,
+        // silently fabricating an extra logical qubit past the device's count.
+        tracker.alias(out_v, new_u);
+        tracker.alias(out_u, new_v);
         p_a = layout.phys(logical_a)?;
         p_b = layout.phys(logical_b)?;
     }
@@ -279,43 +295,109 @@ fn noise_penalty(target: &BackendTarget, a: usize, b: usize) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Physical-qubit-continuity state threaded across an entire module traversal.
+///
+/// A qubit's physical assignment is a hardware fact, not a per-block one: the
+/// same logical qubit must resolve to the same physical index whether it's
+/// referenced inside a top-level block, a nested `quantum.dynamic.unitary_region`,
+/// or either arm of a `quantum.dynamic.if`. This bundles the state that must
+/// therefore survive across those region boundaries rather than reset at each
+/// one (see `recurse_region`, which aliases a region's block arguments to the
+/// caller's already-established roots instead of seeding fresh ones).
+struct RouteState<'c, 'a> {
+    layout: Layout,
+    wires: HashMap<usize, Value<'c, 'a>>,
+    tracker: WireTracker,
+    next_phys: usize,
+}
+
+impl<'c, 'a> RouteState<'c, 'a> {
+    fn new(num_qubits: usize) -> Self {
+        Self {
+            layout: Layout::new(num_qubits),
+            wires: HashMap::new(),
+            tracker: WireTracker::new(),
+            next_phys: 0,
+        }
+    }
+}
+
 fn route_block<'c, 'a>(
     context: &'c Context,
     target: &BackendTarget,
     cost: SabreCost,
     block: melior::ir::BlockRef<'c, 'a>,
+    state: &mut RouteState<'c, 'a>,
 ) {
-    let mut layout = Layout::new(target.num_qubits);
-    let mut next_phys = 0usize;
-    let mut wires: HashMap<usize, Value<'c, 'a>> = HashMap::new();
-    let mut tracker = WireTracker::new();
-    tracker.seed_block_args(&block);
-
     let mut op = block.first_operation();
     while let Some(current) = op {
         op = current.next_in_block();
-        if op_name(&current) == quantum_circ::op::RETURN {
+        let name = op_name(&current);
+        if name == quantum_circ::op::RETURN || name == quantum_dynamic::op::YIELD {
+            // A qubit that is never a gate operand within this block (a pure
+            // pass-through, e.g. an unused register threaded straight to the
+            // return) still has a `wires` entry once `recurse_region` (or a
+            // swap that displaced it as a bystander) has touched it — but
+            // nothing else in this loop resyncs a value that's *only* ever
+            // consumed by the terminator. Without this, the terminator keeps
+            // referencing the pre-swap value, silently returning/measuring
+            // the wrong physical qubit's state.
+            let raw_operands = qubit_wiring::qubit_operands(current);
+            let raw_roots = state.tracker.roots_for_operands(current);
+            let synced: Vec<Value<'c, 'a>> = raw_roots
+                .iter()
+                .zip(raw_operands.iter())
+                .map(|(root, value)| state.wires.get(root).copied().unwrap_or(*value))
+                .collect();
+            set_qubit_operands(current, &synced);
             break;
         }
-        if op_name(&current) != quantum_circ::op::GATE {
+        if name == quantum_dynamic::op::UNITARY_REGION {
+            recurse_region(context, target, cost, current, 0, state);
+            continue;
+        }
+        if name == quantum_dynamic::op::IF {
+            recurse_region(context, target, cost, current, 0, state);
+            recurse_region(context, target, cost, current, 1, state);
+            continue;
+        }
+        if name != quantum_circ::op::GATE {
             continue;
         }
 
-        let operands = qubit_wiring::qubit_operands(current);
-        let roots = tracker.roots_for_operands(current);
-        let qubits: Vec<(usize, Value<'c, 'a>)> = roots.into_iter().zip(operands).collect();
+        // This gate's operands, as they stand in the IR, may be stale: an
+        // earlier 2-qubit gate's routing can have swapped a *different*
+        // ("bystander") logical qubit's physical position while walking past
+        // it, which produces a fresh SSA value for that logical qubit (see
+        // `route_two_qubit`) without touching gates further down the block
+        // that still reference the pre-swap value. Resync every qubit operand
+        // to the authoritative `wires` entry for its root before using it —
+        // otherwise this gate would silently operate on a value the inserted
+        // SWAP has already consumed, corrupting the circuit's semantics
+        // without tripping the linearity verifier (both are still each used
+        // exactly once — just the wrong one, at the wrong point in time).
+        let raw_operands = qubit_wiring::qubit_operands(current);
+        let raw_roots = state.tracker.roots_for_operands(current);
+        let synced: Vec<Value<'c, 'a>> = raw_roots
+            .iter()
+            .zip(raw_operands.iter())
+            .map(|(root, value)| state.wires.get(root).copied().unwrap_or(*value))
+            .collect();
+        set_qubit_operands(current, &synced);
+
+        let qubits: Vec<(usize, Value<'c, 'a>)> = raw_roots.into_iter().zip(synced).collect();
 
         for (logical, _) in &qubits {
-            if !layout.mapping.contains_key(logical) {
-                if let Err(error) = layout.assign(*logical, next_phys) {
+            if !state.layout.mapping.contains_key(logical) {
+                if let Err(error) = state.layout.assign(*logical, state.next_phys) {
                     eprintln!("sabre-routing: {error}");
                     return;
                 }
-                next_phys += 1;
+                state.next_phys += 1;
             }
         }
         for (logical, value) in &qubits {
-            wires.insert(*logical, *value);
+            state.wires.insert(*logical, *value);
         }
 
         if qubits.len() == 2 {
@@ -325,23 +407,82 @@ fn route_block<'c, 'a>(
                 context,
                 target,
                 cost,
-                &mut layout,
+                &mut state.layout,
                 block,
                 current,
                 la,
                 lb,
-                &mut wires,
+                &mut state.wires,
+                &mut state.tracker,
             ) {
                 eprintln!("sabre-routing: {error}");
             }
         }
 
         if let Some((logical, _)) = qubits.first()
-            && let Ok(phys) = layout.phys(*logical)
+            && let Ok(phys) = state.layout.phys(*logical)
         {
             set_i32_attr(context, current, "phys_qubit", phys as i32);
         }
-        tracker.observe_operation(current);
+        state.tracker.observe_operation(current);
+        // `wires[logical]` must track each root's latest live value — this
+        // gate's own *result*, not the operand it just consumed. Without
+        // this, the next gate on the same logical qubit would resync (via
+        // the staleness check above) back to a value this gate has already
+        // consumed, double-using it and silently corrupting the circuit.
+        for (index, (logical, _)) in qubits.iter().enumerate() {
+            if let Ok(result) = current.result(index) {
+                state.wires.insert(*logical, Value::from(result));
+            }
+        }
+    }
+}
+
+/// Recurses into region `region_index` of a `quantum.dynamic.unitary_region`
+/// or `quantum.dynamic.if` op, aliasing the region's block arguments to the
+/// *caller's* already-established logical roots for the op's qubit operands
+/// (rather than the fresh per-block roots `WireTracker::seed_block_args` would
+/// assign) so physical qubit identity survives the boundary. After the region
+/// is processed, the op's own qubit results are aliased back to those same
+/// roots so the surrounding block sees a continuous wire.
+fn recurse_region<'c, 'a>(
+    context: &'c Context,
+    target: &BackendTarget,
+    cost: SabreCost,
+    op: OperationRef<'c, 'a>,
+    region_index: usize,
+    state: &mut RouteState<'c, 'a>,
+) {
+    let operand_roots = state.tracker.roots_for_operands(op);
+    for root in &operand_roots {
+        if !state.layout.mapping.contains_key(root) {
+            if let Err(error) = state.layout.assign(*root, state.next_phys) {
+                eprintln!("sabre-routing: {error}");
+                return;
+            }
+            state.next_phys += 1;
+        }
+    }
+    let Ok(region) = op.region(region_index) else {
+        return;
+    };
+    let Some(inner_block) = region.first_block() else {
+        return;
+    };
+    for (index, root) in operand_roots.iter().enumerate() {
+        if let Ok(argument) = inner_block.argument(index) {
+            let value = Value::from(argument);
+            state.tracker.alias(value, *root);
+            state.wires.insert(*root, value);
+        }
+    }
+    route_block(context, target, cost, inner_block, state);
+    for (result, root) in qubit_wiring::qubit_results(op)
+        .into_iter()
+        .zip(operand_roots.iter())
+    {
+        state.tracker.alias(result, *root);
+        state.wires.insert(*root, result);
     }
 }
 
@@ -359,6 +500,18 @@ fn route_module<'c, 'a>(
         return;
     };
 
+    // One shared `RouteState` for the module's own top-level block (the real,
+    // executed program after `monadic_lowering` — see `native_gate_decomp`'s
+    // `decompose_block` doc comment for why this must be walked directly, not
+    // just each named `quantum.circ.func`).
+    let mut top_level_state = RouteState::new(target.num_qubits);
+    top_level_state.tracker.seed_block_args(&body);
+    route_block(context, target, cost, body, &mut top_level_state);
+
+    // Each named `quantum.circ.func` is an independent circuit (its own qubit
+    // register), so it gets a fresh `RouteState`. Post-inlining these are dead
+    // code for `main`'s callees, but standalone `quantum.circ.func`-only
+    // modules (e.g. this pass's own lit tests) rely on this path.
     let mut op = body.first_operation();
     while let Some(current) = op {
         op = current.next_in_block();
@@ -371,7 +524,9 @@ fn route_module<'c, 'a>(
         let Some(block) = region.first_block() else {
             continue;
         };
-        route_block(context, target, cost, block);
+        let mut state = RouteState::new(target.num_qubits);
+        state.tracker.seed_block_args(&block);
+        route_block(context, target, cost, block, &mut state);
     }
 }
 

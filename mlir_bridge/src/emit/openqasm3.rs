@@ -124,7 +124,7 @@ fn check_arity(name: &str, expected: usize, found: usize) -> Result<(), EmitErro
 }
 
 fn is_rotation(name: &str) -> bool {
-    matches!(name, "Rx" | "Ry" | "Rz")
+    matches!(name.to_uppercase().as_str(), "RX" | "RY" | "RZ")
 }
 
 fn gate_keyword(gate: &QasmGate) -> &'static str {
@@ -214,24 +214,27 @@ impl Reifier<'_> {
         angle: f64,
         qs: &[QubitId],
     ) -> Result<Option<QasmGate>, EmitError> {
-        let gate = match name {
+        // Case-insensitive: canonical Quon primitives ("H", "Rz", ...) and the
+        // lowercase QASM-keyword spellings `native_gate_decomp` synthesizes
+        // ("h", "rz", "sx", "cx", ...) name the same gates.
+        let gate = match name.to_uppercase().as_str() {
             "I" => return Ok(None),
             "H" => one(name, OneQubitGate::H, qs)?,
             "X" => one(name, OneQubitGate::X, qs)?,
             "Y" => one(name, OneQubitGate::Y, qs)?,
             "Z" => one(name, OneQubitGate::Z, qs)?,
             "S" => one(name, OneQubitGate::S, qs)?,
-            "S_dag" => one(name, OneQubitGate::Sdg, qs)?,
+            "S_DAG" | "SDG" => one(name, OneQubitGate::Sdg, qs)?,
             "SX" => one(name, OneQubitGate::Sx, qs)?,
             "T" => one(name, OneQubitGate::T, qs)?,
-            "T_dag" => one(name, OneQubitGate::Tdg, qs)?,
+            "T_DAG" | "TDG" => one(name, OneQubitGate::Tdg, qs)?,
             "CNOT" | "CX" => two(name, TwoQubitGate::Cx, qs)?,
             "CY" => two(name, TwoQubitGate::Cy, qs)?,
             "CZ" => two(name, TwoQubitGate::Cz, qs)?,
             "SWAP" => two(name, TwoQubitGate::Swap, qs)?,
-            "Rx" => rotation(name, RotationGate::Rx, angle, qs)?,
-            "Ry" => rotation(name, RotationGate::Ry, angle, qs)?,
-            "Rz" => rotation(name, RotationGate::Rz, angle, qs)?,
+            "RX" => rotation(name, RotationGate::Rx, angle, qs)?,
+            "RY" => rotation(name, RotationGate::Ry, angle, qs)?,
+            "RZ" => rotation(name, RotationGate::Rz, angle, qs)?,
             _ => return Err(self.unsupported(name)),
         };
         // The native-set gate: every emitted keyword must be supported by the
@@ -287,6 +290,14 @@ impl Reifier<'_> {
                     if let Some(g) = self.resolve_gate(&gate_name, angle, &qs)? {
                         stmts.push(Stmt::Gate(g));
                     }
+                    // A register index names a fixed physical slot, and no
+                    // gate — including SWAP — relabels its own slot; SWAP's
+                    // effect is to exchange the *contents* of two fixed slots,
+                    // not to rename them. So result[i] always continues
+                    // operand[i]'s slot, uniformly across every gate: which
+                    // logical qubit's state that slot now holds is a routing
+                    // concern (`sabre_routing`'s `wires` map), not this
+                    // emitter's — it only threads slot identity.
                     for (i, q) in qs.iter().enumerate() {
                         if let Ok(result) = current.result(i) {
                             self.thread(&result, *q);
