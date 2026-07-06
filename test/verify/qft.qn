@@ -1,0 +1,59 @@
+-- Recursive Quantum Fourier Transform, n=3 (issue #1, MVP milestones M2/M3).
+--
+-- `qft` is the value-dependent-types "headline" program (#57-#60): its
+-- recursion `match n { 0 => identity(0), _ => .. qft(n-1) `on_high` n .. }`
+-- is elaborated by frontend/src/elaborate.rs (partial evaluation), including
+-- `on_high` (embed a smaller circuit into the high qubits of a larger
+-- register) and `swap_reverse` (the bit-reversal permutation).
+--
+-- `controlled_rotations`' angle is genuinely geometric (PI / 2^(i+1)) —
+-- unlike the type-checker-only stress-test fixture this is adapted from
+-- (frontend/tests/fixtures/corpus/recursive_qft.qn, which fixes the angle at
+-- PI/4 regardless of distance purely to exercise the type checker's
+-- value-dependent machinery, not to compute a physically meaningful QFT).
+--
+-- Verification strategy: a measurement histogram cannot observe QFT's output
+-- phases directly (see docs/plans/mvp-landing-plan.md M3's documented
+-- deviation from the original "matches theoretical DFT" acceptance
+-- criterion), so this instead checks the *round trip* qft(n) |> adjoint(qft(n))
+-- returns any prepared computational-basis input unchanged with P = 1.0 —
+-- the only way that round trip can hold for every basis state is if `qft`
+-- and its elaborated `adjoint` are exact inverses of each other, which
+-- exercises the same recursive/on_high/swap_reverse/controlled(Rz) machinery
+-- as `qft` alone. (In practice the optimizer proves this structurally: `gate
+-- cancellation`/`rotation merging`, running to fixpoint, cancel the entire
+-- qft |> adjoint(qft) sequence down to nothing — see test/verify/qft.py.)
+
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / (2.0 ^ (i + 1)))) @(0, i + 1) }
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+-- Prepares |101>: X on qubits 0 and 2. A non-trivial, asymmetric basis state
+-- so the round trip is checking more than "the all-zeros state is a fixed
+-- point" (which every unitary trivially satisfies up to global phase — no,
+-- it doesn't, but |101> is a stronger, less degenerate check regardless).
+fn prep_101(): Circuit<3, 3, 2, Clifford> = circuit {
+    X @0 |> X @2
+}
+
+fn qft_roundtrip(n: Nat): Circuit<n, n, 4 * n * n, Universal> = circuit {
+    qft(n) |> adjoint(qft(n))
+}
+
+fn main(): Q<List<Bit>> = run {
+    q  <- prep_101() @ qreg(3)
+    q2 <- qft_roundtrip(3) @ q
+    measure_all(q2)
+    -- Expected: (1, 0, 1) with probability 1.0
+}

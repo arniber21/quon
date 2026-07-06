@@ -14,23 +14,26 @@
 //! shape, which the existing lowering path then handles unchanged.
 //!
 //! Scope (see `docs/plans/mvp-landing-plan.md` §5): `for` over `qubits`/
-//! `range`/`diag`, `repeat` with a computed count, recursive circuit functions
-//! via `match n { 0 => .., _ => .. }`, and nested parametric calls are
+//! `range`/`diag`/`pairs`, `repeat` with a computed count, recursive circuit
+//! functions via `match n { 0 => .., _ => .. }` (including as a *bare* body,
+//! not just inside `circuit { }` — `qft`'s own definition), `identity`,
+//! `on_high`/`on_low`, `swap_reverse`, and nested parametric calls are
 //! supported. `Rzz(theta) @ (i, j)` and `controlled(X | Z | Rz(theta)) @
 //! (control, target)` have no native gate of their own, so they are rewritten
 //! here into the existing `CNOT`/`Rz` primitives every other gate already
-//! lowers through — see `decompose_rzz`/`decompose_controlled`. `pairs`,
-//! `tensored`/`split`/`on_high`, `fold` over a circuit accumulator, and
-//! `controlled` of anything other than `X`/`Z`/`Rz` are not yet elaborated —
-//! a program using them is rejected with [`ElabError::Unsupported`], not
-//! silently miscompiled.
+//! lowers through — see `decompose_rzz`/`decompose_controlled`. `tensored`/
+//! `split`, `fold` over a circuit accumulator, and `controlled` of anything
+//! other than `X`/`Z`/`Rz` are not yet elaborated — a program using them is
+//! rejected with [`ElabError::Unsupported`], not silently miscompiled.
 
 use std::collections::HashMap;
+
+use quon_core::DepthExpr;
+use thiserror::Error;
 
 use crate::ast::{BinOp, Expr, LitPat, Pat};
 use crate::lexer::Sp;
 use crate::typecheck::circuit;
-use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ElabError {
@@ -257,6 +260,21 @@ fn eval_builtin(name: &str, args: &[Value]) -> Result<Option<Value>, ElabError> 
             })?;
             Some(Value::List((0..count).map(Value::Int).collect()))
         }
+        // All unique unordered index pairs `(i, j)`, `0 <= i < j < n` — the
+        // canonical choice for a symmetric cost matrix (QAOA's `cost_layer`:
+        // applying both `(i,j)` and `(j,i)` would double the interaction).
+        ("pairs", [n]) => {
+            let count = n.as_i64().ok_or(ElabError::NotClassical {
+                name: "pairs count",
+            })?;
+            let mut out = Vec::new();
+            for i in 0..count {
+                for j in (i + 1)..count {
+                    out.push(Value::Tuple(vec![Value::Int(i), Value::Int(j)]));
+                }
+            }
+            Some(Value::List(out))
+        }
         ("sqrt", [x]) => Some(Value::Float(
             x.as_f64()
                 .ok_or(ElabError::NotClassical {
@@ -358,7 +376,51 @@ pub fn elaborate_circuit_body(
         Expr::Compose(lhs, rhs) => {
             let l = elaborate_circuit_body(lhs, classical_env, ctx, fuel)?;
             let r = elaborate_circuit_body(rhs, classical_env, ctx, fuel)?;
+            // `identity(0)` (recursion's base case, e.g. `qft`'s `match n { 0
+            // => identity(0), .. }`) elaborates to the empty-circuit sentinel
+            // (see `empty_circuit`) — composing with it is a no-op, and
+            // `Expr::Compose` has no way to represent "the other side, with
+            // nothing on this side" directly.
+            if is_empty_circuit(&l) {
+                return Ok(r);
+            }
+            if is_empty_circuit(&r) {
+                return Ok(l);
+            }
             Ok((Expr::Compose(Box::new(l), Box::new(r)), span))
+        }
+        Expr::Match { scrutinee, arms } => {
+            let value = eval_classical(scrutinee, classical_env, fuel)?;
+            let scrutinee_int = value.as_i64();
+            for (pat, body) in arms {
+                match &pat.0 {
+                    Pat::Lit(LitPat::Int(k)) if scrutinee_int == Some(*k) => {
+                        return elaborate_circuit_body(body, classical_env, ctx, fuel);
+                    }
+                    Pat::Lit(_) => continue,
+                    // A wildcard/var arm binds nothing new for the *value* —
+                    // per the type checker's `push_arm_refinement`
+                    // (`frontend/src/typecheck/mod.rs`), only a proof-context
+                    // refinement (e.g. `n != 0`) is added there; `n` itself
+                    // stays the same outer binding, so `Var` re-binds it to
+                    // its own already-known value (a no-op) rather than
+                    // shadowing it with something new.
+                    Pat::Wildcard => return elaborate_circuit_body(body, classical_env, ctx, fuel),
+                    Pat::Var(name) => {
+                        let mut inner = classical_env.clone();
+                        inner.insert(name.clone(), value);
+                        return elaborate_circuit_body(body, &inner, ctx, fuel);
+                    }
+                    Pat::Tuple(_) => {
+                        return Err(ElabError::Unsupported {
+                            construct: "tuple pattern in circuit-body match",
+                        });
+                    }
+                }
+            }
+            Err(ElabError::Unsupported {
+                construct: "non-exhaustive circuit-body match",
+            })
         }
         Expr::GateApp { gate, qubits } => {
             let qubits = subst_classical_vars(qubits, classical_env)?;
@@ -403,19 +465,22 @@ pub fn elaborate_circuit_body(
                     construct: "for-loop iterator (expected qubits/range/diag)",
                 });
             };
-            let mut composed: Option<Sp<Expr>> = None;
+            // A zero-iteration loop (e.g. `controlled_rotations(1)`'s `for i
+            // in range(n - 1)` at `n = 1`, a real case in a recursive
+            // circuit function's base case) elaborates to the empty-circuit
+            // sentinel, not an error — see `empty_circuit`.
+            let mut composed = empty_circuit(span);
             for item in items {
                 let mut inner_env = classical_env.clone();
                 bind_classical_pat(pat, item, &mut inner_env)?;
                 let step = elaborate_circuit_body(body, &inner_env, ctx, fuel)?;
-                composed = Some(match composed {
-                    None => step,
-                    Some(acc) => (Expr::Compose(Box::new(acc), Box::new(step)), span),
-                });
+                composed = if is_empty_circuit(&composed) {
+                    step
+                } else {
+                    (Expr::Compose(Box::new(composed), Box::new(step)), span)
+                };
             }
-            composed.ok_or(ElabError::Unsupported {
-                construct: "empty for-loop (zero iterations)",
-            })
+            Ok(composed)
         }
         Expr::App(f, x) => elaborate_app(&expr.0, span, f, x, classical_env, ctx, fuel),
         Expr::Var(name) => {
@@ -485,16 +550,76 @@ fn elaborate_app(
                         name: "repeat count",
                     })?;
                 let body = elaborate_circuit_body(args[1], classical_env, ctx, fuel)?;
-                let mut composed: Option<Sp<Expr>> = None;
+                let mut composed = empty_circuit(span);
                 for _ in 0..count {
-                    composed = Some(match composed {
-                        None => body.clone(),
-                        Some(acc) => (Expr::Compose(Box::new(acc), Box::new(body.clone())), span),
-                    });
+                    composed = if is_empty_circuit(&composed) {
+                        body.clone()
+                    } else {
+                        (
+                            Expr::Compose(Box::new(composed), Box::new(body.clone())),
+                            span,
+                        )
+                    };
                 }
-                return composed.ok_or(ElabError::Unsupported {
-                    construct: "repeat with a zero count",
-                });
+                return Ok(composed);
+            }
+            // `identity(n)` (SPEC §5.7): the base case of a recursive circuit
+            // function (`qft`'s `match n { 0 => identity(0), .. }`) and
+            // `fold`'s starting accumulator. Elaborates to the empty-circuit
+            // sentinel regardless of `n` — this elaborator tracks a
+            // specialization's width from its declared `Circuit<n,m,d,C>`
+            // type (`on_high_width`), not by re-deriving it from the gate
+            // sequence, so `n` itself is only needed for type-checking
+            // (already done) and is not otherwise consulted here.
+            ("identity", 1) => return Ok(empty_circuit(span)),
+            // `c `on_high` n` (SPEC §5): embeds `c` (of some width `k`) into
+            // the *high* `k` qubits of an `n`-qubit register — i.e. shift
+            // every qubit index `c` places by `n - k`, leaving qubits
+            // `0..n-k` untouched. `k` comes from `c`'s own declared
+            // `Circuit<k,k,..>` type (`on_high_width`), which is exact even
+            // when `c` elaborates to the empty sentinel (`identity(0)`, the
+            // recursive base case, whose declared width is still `0`).
+            ("on_high" | "on_low", 2) => {
+                let target_width = eval_classical(args[1], classical_env, fuel)?
+                    .as_i64()
+                    .ok_or(ElabError::NotClassical {
+                        name: "on_high/on_low register width",
+                    })?;
+                let inner_width = on_high_width(args[0], classical_env, ctx, fuel)?;
+                let elaborated = elaborate_circuit_body(args[0], classical_env, ctx, fuel)?;
+                let offset = if name == "on_high" {
+                    target_width - inner_width
+                } else {
+                    0
+                };
+                return Ok(shift_qubits(&elaborated, offset));
+            }
+            // `swap_reverse(n)` (SPEC §5): the bit-reversal permutation QFT's
+            // recursive definition applies to its output register —
+            // `SWAP(i, n-1-i)` for each `i < n/2`.
+            ("swap_reverse", 1) => {
+                let n = eval_classical(args[0], classical_env, fuel)?
+                    .as_i64()
+                    .ok_or(ElabError::NotClassical {
+                        name: "swap_reverse width",
+                    })?;
+                let mut composed = empty_circuit(span);
+                for i in 0..(n / 2) {
+                    let step = gate_app(
+                        "SWAP",
+                        &(
+                            Expr::Tuple(vec![(Expr::Int(i), span), (Expr::Int(n - 1 - i), span)]),
+                            span,
+                        ),
+                        span,
+                    );
+                    composed = if is_empty_circuit(&composed) {
+                        step
+                    } else {
+                        (Expr::Compose(Box::new(composed), Box::new(step)), span)
+                    };
+                }
+                return Ok(composed);
             }
             _ => {
                 if let Some(def) = ctx.parametric.get(name) {
@@ -597,6 +722,109 @@ fn subst_classical_vars(expr: &Sp<Expr>, env: &ClassicalEnv) -> Result<Sp<Expr>,
             span,
         )),
         _ => Ok(expr.clone()),
+    }
+}
+
+/// The elaborated form of `identity(n)` for any `n` (SPEC §5.7's zero-gate
+/// circuit): an empty `CircuitBlock` is never otherwise produced by this
+/// elaborator (every other path immediately unwraps a source `CircuitBlock`
+/// via its match arm above), so it is a safe, easily-recognized sentinel for
+/// "no gates" — needed because `Expr::Compose` has no way to represent one
+/// empty side directly.
+fn empty_circuit(span: chumsky::span::SimpleSpan) -> Sp<Expr> {
+    (Expr::CircuitBlock(Vec::new()), span)
+}
+
+fn is_empty_circuit(expr: &Sp<Expr>) -> bool {
+    matches!(&expr.0, Expr::CircuitBlock(stmts) if stmts.is_empty())
+}
+
+/// The declared qubit width (`Circuit<k,k,..>`'s `k`) of a circuit expression
+/// in `on_high`/`on_low` position — read from the type the checker already
+/// validated, rather than re-derived by scanning the elaborated gate
+/// sequence, so it is exact even for `identity(0)` (which elaborates to zero
+/// gates and would otherwise look indistinguishable from "unknown width").
+fn on_high_width(
+    expr: &Sp<Expr>,
+    classical_env: &ClassicalEnv,
+    ctx: &ElabCtx,
+    fuel: &mut u32,
+) -> Result<i64, ElabError> {
+    if let Expr::App(f, x) = &expr.0 {
+        let (head, args) = flatten_app(f, x);
+        if let Expr::Var(name) = &head.0 {
+            if name == "identity" && args.len() == 1 {
+                return eval_classical(args[0], classical_env, fuel)?
+                    .as_i64()
+                    .ok_or(ElabError::NotClassical {
+                        name: "identity width",
+                    });
+            }
+            if let Some(def) = ctx.parametric.get(name) {
+                let crate::types::Ty::Circuit { n, .. } = &def.ret_ty else {
+                    return Err(ElabError::Unsupported {
+                        construct: "on_high/on_low of a non-Circuit-returning call",
+                    });
+                };
+                let mut nat_env: HashMap<String, DepthExpr> = HashMap::new();
+                for (param, arg) in def.params.iter().zip(args.iter()) {
+                    if let Some(v) = eval_classical(arg, classical_env, fuel)?.as_i64()
+                        && v >= 0
+                    {
+                        nat_env.insert(param.clone(), DepthExpr::Nat(v as u64));
+                    }
+                }
+                return n.subst(&nat_env).as_const().map(|w| w as i64).ok_or(
+                    ElabError::Unsupported {
+                        construct: "on_high/on_low of a call with an unresolved width",
+                    },
+                );
+            }
+        }
+    }
+    Err(ElabError::Unsupported {
+        construct: "on_high/on_low of an expression with no statically known width",
+    })
+}
+
+/// Adds `offset` to every literal qubit index in an already-elaborated
+/// circuit expression — `on_high`'s embedding step.
+fn shift_qubits(expr: &Sp<Expr>, offset: i64) -> Sp<Expr> {
+    let span = expr.1;
+    match &expr.0 {
+        Expr::Compose(lhs, rhs) => (
+            Expr::Compose(
+                Box::new(shift_qubits(lhs, offset)),
+                Box::new(shift_qubits(rhs, offset)),
+            ),
+            span,
+        ),
+        Expr::GateApp { gate, qubits } => (
+            Expr::GateApp {
+                gate: gate.clone(),
+                qubits: Box::new(shift_qubit_targets(qubits, offset)),
+            },
+            span,
+        ),
+        Expr::Adjoint(inner) => (Expr::Adjoint(Box::new(shift_qubits(inner, offset))), span),
+        _ => expr.clone(),
+    }
+}
+
+fn shift_qubit_targets(qubits: &Sp<Expr>, offset: i64) -> Sp<Expr> {
+    let span = qubits.1;
+    match &qubits.0 {
+        Expr::Int(n) => (Expr::Int(n + offset), span),
+        Expr::Tuple(items) => (
+            Expr::Tuple(
+                items
+                    .iter()
+                    .map(|item| shift_qubit_targets(item, offset))
+                    .collect(),
+            ),
+            span,
+        ),
+        _ => qubits.clone(),
     }
 }
 
@@ -753,19 +981,40 @@ fn rz_gate_app(angle: &Sp<Expr>, target: &Sp<Expr>, span: chumsky::span::SimpleS
 /// reverse gate order and invert each gate (mirrors `lower.rs`'s
 /// `inline_inverted_body`, at the AST level so it composes with elaboration).
 fn reverse_and_invert(expr: &Sp<Expr>) -> Result<Sp<Expr>, ElabError> {
+    if is_empty_circuit(expr) {
+        return Ok(expr.clone());
+    }
     let placements = collect_gate_placements(expr)?;
     let span = expr.1;
     let mut result: Option<Sp<Expr>> = None;
     for (gate, qubits) in placements.into_iter().rev() {
-        let inv_name = match &gate.0 {
-            Expr::Var(name) => inverse_gate_name(name),
+        let inv_gate = match &gate.0 {
+            Expr::Var(name) => (Expr::Var(inverse_gate_name(name)), gate.1),
+            // A rotation (`Rz(theta)`, from a source rotation gate or a
+            // decomposed `Rzz`/`controlled(Rz(..))`): its adjoint is the same
+            // gate at the negated angle (`Rz(θ)† = Rz(-θ)`), not a different
+            // gate name.
+            Expr::App(f, x) => {
+                let (head, args) = flatten_app(f, x);
+                let (Expr::Var(name), [angle]) = (&head.0, args.as_slice()) else {
+                    return Err(ElabError::Unsupported {
+                        construct: "adjoint of an unrecognized rotation gate",
+                    });
+                };
+                (
+                    Expr::App(
+                        Box::new((Expr::Var(name.clone()), head.1)),
+                        Box::new(negate_angle(angle)),
+                    ),
+                    gate.1,
+                )
+            }
             _ => {
                 return Err(ElabError::Unsupported {
                     construct: "adjoint of a non-primitive gate",
                 });
             }
         };
-        let inv_gate = (Expr::Var(inv_name), gate.1);
         let step = (
             Expr::GateApp {
                 gate: Box::new(inv_gate),

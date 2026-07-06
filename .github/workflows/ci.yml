@@ -62,3 +62,4 @@ jobs:
           python test/verify/bernstein_vazirani.py
           python test/verify/routing.py
           python test/verify/grover.py
+          python test/verify/qft.py
