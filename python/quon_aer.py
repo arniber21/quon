@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Qiskit Aer verification bridge — see issue #29, SPEC.md §9.2
 
