@@ -10,16 +10,26 @@ default = ["mlir"]
 # build never compiles `flux-rs`; enabled by `cargo flux -p quon_na
 # --no-default-features --features flux` (nightly).
 flux = ["dep:flux-rs"]
-mlir = ["dep:mlir_bridge"]
+mlir = ["dep:melior", "dep:mlir_bridge"]
 
 [dependencies]
 flux-rs    = { workspace = true, optional = true }
+melior      = { workspace = true, optional = true }
 mlir_bridge = { path = "../mlir_bridge", optional = true }
 quon_core   = { path = "../quon_core" }
 serde       = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
 
 [package.metadata.flux]
 enabled = true
+
+[[test]]
+name = "quantum_na_dialect"
+path = "tests/quantum_na_dialect.rs"
+required-features = ["mlir"]
+
+[[example]]
+name = "na_roundtrip"
+path = "examples/na_roundtrip.rs"
+required-features = ["mlir"]
