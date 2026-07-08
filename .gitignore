@@ -26,3 +26,5 @@ out/
 # Python
 __pycache__/
 *.pyc
+# CocoIndex Code (ccc)
+/.cocoindex_code/

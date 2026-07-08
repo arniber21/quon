@@ -1,0 +1,144 @@
+-- Dense weighted spin-glass QAOA workload.
+--
+-- This is a deliberately non-toy verification fixture: a p=10 QAOA ansatz for
+-- a 12-spin fully connected Ising objective
+--
+--     C(z) = sum_i h_i z_i + sum_{i<j} J_ij z_i z_j,  z_i in {-1, +1}
+--
+-- which is the standard phase-separator form used for weighted MaxCut,
+-- number-partitioning, and Sherrington-Kirkpatrick-style spin-glass instances.
+-- Each QAOA layer applies exp(-i gamma C) followed by the transverse-field
+-- mixer exp(-i beta sum_i X_i). With Quon's gate conventions this becomes
+-- Rz(2 gamma h_i), Rzz(2 gamma J_ij), and Rx(2 beta).
+--
+-- Why this file is intentionally explicit instead of elegant:
+--   * A realistic weighted dense problem wants a Matrix/List of instance data
+--     and a List<(gamma,beta)> of variational parameters.
+--   * The current elaborator does not yet lower Matrix indexing or circuit
+--     folds over list-valued parameters in the e2e path.
+--   * Spelling the 12 local fields, 66 couplings, and 10 parameterized layers
+--     out by hand keeps this fixture inside the implemented language while
+--     making that missing data-driven IR path painfully visible.
+--
+-- The compiler expands this compact algorithm into thousands of OpenQASM
+-- statements because every weighted Rzz is decomposed into CNOT/Rz/CNOT, and
+-- every distinct gamma specializes the weighted phase separator independently.
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(2.0 * beta) q }
+}
+
+fn local_fields(gamma: Float): Circuit<12, 12, 12, Universal> = circuit {
+    Rz(2.0 * gamma * 0.317) @0
+    |> Rz(2.0 * gamma * -0.194) @1
+    |> Rz(2.0 * gamma * 0.071) @2
+    |> Rz(2.0 * gamma * -0.523) @3
+    |> Rz(2.0 * gamma * 0.409) @4
+    |> Rz(2.0 * gamma * 0.286) @5
+    |> Rz(2.0 * gamma * -0.348) @6
+    |> Rz(2.0 * gamma * 0.156) @7
+    |> Rz(2.0 * gamma * -0.267) @8
+    |> Rz(2.0 * gamma * 0.438) @9
+    |> Rz(2.0 * gamma * -0.112) @10
+    |> Rz(2.0 * gamma * 0.229) @11
+}
+
+fn weighted_couplers(gamma: Float): Circuit<12, 12, 66, Universal> = circuit {
+    Rzz(2.0 * gamma * -0.731) @(0, 1)
+    |> Rzz(2.0 * gamma * 0.244) @(0, 2)
+    |> Rzz(2.0 * gamma * -0.386) @(0, 3)
+    |> Rzz(2.0 * gamma * 0.519) @(0, 4)
+    |> Rzz(2.0 * gamma * -0.128) @(0, 5)
+    |> Rzz(2.0 * gamma * 0.674) @(0, 6)
+    |> Rzz(2.0 * gamma * -0.452) @(0, 7)
+    |> Rzz(2.0 * gamma * 0.337) @(0, 8)
+    |> Rzz(2.0 * gamma * -0.591) @(0, 9)
+    |> Rzz(2.0 * gamma * 0.183) @(0, 10)
+    |> Rzz(2.0 * gamma * -0.274) @(0, 11)
+    |> Rzz(2.0 * gamma * 0.612) @(1, 2)
+    |> Rzz(2.0 * gamma * -0.049) @(1, 3)
+    |> Rzz(2.0 * gamma * -0.508) @(1, 4)
+    |> Rzz(2.0 * gamma * 0.296) @(1, 5)
+    |> Rzz(2.0 * gamma * -0.663) @(1, 6)
+    |> Rzz(2.0 * gamma * 0.421) @(1, 7)
+    |> Rzz(2.0 * gamma * -0.217) @(1, 8)
+    |> Rzz(2.0 * gamma * 0.575) @(1, 9)
+    |> Rzz(2.0 * gamma * -0.344) @(1, 10)
+    |> Rzz(2.0 * gamma * 0.086) @(1, 11)
+    |> Rzz(2.0 * gamma * -0.157) @(2, 3)
+    |> Rzz(2.0 * gamma * 0.703) @(2, 4)
+    |> Rzz(2.0 * gamma * -0.429) @(2, 5)
+    |> Rzz(2.0 * gamma * 0.118) @(2, 6)
+    |> Rzz(2.0 * gamma * 0.364) @(2, 7)
+    |> Rzz(2.0 * gamma * -0.626) @(2, 8)
+    |> Rzz(2.0 * gamma * 0.251) @(2, 9)
+    |> Rzz(2.0 * gamma * -0.538) @(2, 10)
+    |> Rzz(2.0 * gamma * 0.492) @(2, 11)
+    |> Rzz(2.0 * gamma * 0.069) @(3, 4)
+    |> Rzz(2.0 * gamma * -0.584) @(3, 5)
+    |> Rzz(2.0 * gamma * 0.331) @(3, 6)
+    |> Rzz(2.0 * gamma * -0.246) @(3, 7)
+    |> Rzz(2.0 * gamma * 0.647) @(3, 8)
+    |> Rzz(2.0 * gamma * -0.392) @(3, 9)
+    |> Rzz(2.0 * gamma * 0.205) @(3, 10)
+    |> Rzz(2.0 * gamma * -0.718) @(3, 11)
+    |> Rzz(2.0 * gamma * 0.456) @(4, 5)
+    |> Rzz(2.0 * gamma * -0.315) @(4, 6)
+    |> Rzz(2.0 * gamma * 0.024) @(4, 7)
+    |> Rzz(2.0 * gamma * -0.671) @(4, 8)
+    |> Rzz(2.0 * gamma * 0.389) @(4, 9)
+    |> Rzz(2.0 * gamma * -0.143) @(4, 10)
+    |> Rzz(2.0 * gamma * 0.527) @(4, 11)
+    |> Rzz(2.0 * gamma * -0.472) @(5, 6)
+    |> Rzz(2.0 * gamma * 0.694) @(5, 7)
+    |> Rzz(2.0 * gamma * -0.221) @(5, 8)
+    |> Rzz(2.0 * gamma * 0.136) @(5, 9)
+    |> Rzz(2.0 * gamma * -0.609) @(5, 10)
+    |> Rzz(2.0 * gamma * 0.278) @(5, 11)
+    |> Rzz(2.0 * gamma * 0.517) @(6, 7)
+    |> Rzz(2.0 * gamma * -0.365) @(6, 8)
+    |> Rzz(2.0 * gamma * 0.081) @(6, 9)
+    |> Rzz(2.0 * gamma * -0.557) @(6, 10)
+    |> Rzz(2.0 * gamma * 0.433) @(6, 11)
+    |> Rzz(2.0 * gamma * -0.702) @(7, 8)
+    |> Rzz(2.0 * gamma * 0.312) @(7, 9)
+    |> Rzz(2.0 * gamma * -0.096) @(7, 10)
+    |> Rzz(2.0 * gamma * 0.641) @(7, 11)
+    |> Rzz(2.0 * gamma * 0.226) @(8, 9)
+    |> Rzz(2.0 * gamma * -0.487) @(8, 10)
+    |> Rzz(2.0 * gamma * 0.354) @(8, 11)
+    |> Rzz(2.0 * gamma * -0.118) @(9, 10)
+    |> Rzz(2.0 * gamma * 0.589) @(9, 11)
+    |> Rzz(2.0 * gamma * -0.401) @(10, 11)
+}
+
+fn phase_separator(gamma: Float): Circuit<12, 12, 78, Universal> = circuit {
+    local_fields(gamma) |> weighted_couplers(gamma)
+}
+
+fn qaoa_layer(gamma: Float, beta: Float): Circuit<12, 12, 79, Universal> = circuit {
+    phase_separator(gamma) |> mixer(12, beta)
+}
+
+fn spin_glass_qaoa(): Circuit<12, 12, 790, Universal> = circuit {
+    qaoa_layer(0.114, 0.742)
+    |> qaoa_layer(0.271, 0.683)
+    |> qaoa_layer(0.389, 0.611)
+    |> qaoa_layer(0.472, 0.537)
+    |> qaoa_layer(0.548, 0.463)
+    |> qaoa_layer(0.621, 0.391)
+    |> qaoa_layer(0.704, 0.318)
+    |> qaoa_layer(0.812, 0.244)
+    |> qaoa_layer(0.936, 0.171)
+    |> qaoa_layer(1.073, 0.097)
+}
+
+fn main(): Q<List<Bit>> = run {
+    q  <- hadamard_all(12) @ qreg(12)
+    q2 <- spin_glass_qaoa() @ q
+    measure_all(q2)
+}

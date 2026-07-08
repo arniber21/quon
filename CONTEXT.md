@@ -52,8 +52,11 @@ _Avoid_: physical dialect, hardware dialect
 
 ### Backend
 
-**BackendTarget**: A hardware descriptor combining a connectivity graph, native gate set, noise model (per-gate fidelity, T1/T2 times, readout error), and capability flags (`supports_mid_circuit_meas`, `supports_feed_forward`).
+**BackendTarget**: A hardware descriptor, discriminated by `TargetKind`. The `Fixed` kind (gate-model hardware) combines a connectivity graph, native gate set, noise model (per-gate fidelity, T1/T2 times, readout error), and capability flags (`supports_mid_circuit_meas`, `supports_feed_forward`). Other kinds (e.g. `NeutralAtomReconfigurable`) carry an independent field set with no forced overlap — only an `id` is shared across all kinds.
 _Avoid_: target, device, backend
+
+**TargetKind**: The discriminant on `BackendTarget` separating architecture families (gate-model `Fixed`, `NeutralAtomReconfigurable`, and future families) whose descriptors have genuinely different shapes. Each kind owns its own payload rather than sharing fields — deliberately, so adding a new architecture family never forces awkward unused fields onto existing kinds.
+_Avoid_: architecture kind, target type
 
 **Native gate**: A gate in the BackendTarget's supported gate set. Gates not in the native set must be decomposed before emission. Tracked via the `native_gate : BoolAttr` attribute on `quantum.circ.gate` ops.
 _Avoid_: supported gate, hardware gate
@@ -62,3 +65,17 @@ _Avoid_: supported gate, hardware gate
 
 **ZX-graph**: An auxiliary graph representation of a `quantum.circ` circuit used for non-local algebraic simplification. Nodes are Z- or X-spiders with phase angles; edges are wires or Hadamard boxes. Built on `petgraph::StableGraph`.
 _Avoid_: ZX-diagram, spider graph
+
+### Neutral-atom backend
+
+**Logical qubit**: A backend-only, IR-level identifier assigned to a `quantum.dynamic` qubit after lowering, used to track its expansion into a code block of atoms. Has no representation in Quon source syntax — a user cannot annotate a source-level `Qubit` with error-correction properties. Distinct from the source-level `Qubit`, which is checked for linearity by the frontend independently of any backend expansion.
+_Avoid_: QEC qubit
+
+**Atom**: A single physical site occupant in the neutral-atom architecture-aware schedule — the physical unit that a logical qubit's code block expands into. Exists only in the neutral-atom backend (`quon_na`), below the frontend's linear type system.
+_Avoid_: physical qubit
+
+**Code block**: A group of atoms jointly implementing one or more logical qubits under a given error-correcting code family. A backend-only concept produced during neutral-atom lowering, never visible at the source-language level.
+_Avoid_: code patch, logical block
+
+**AOD movement**: The neutral-atom movement model where atoms move in row/column-coupled groups (as driven by acousto-optic deflectors), not freely and independently. The movement constraint that placement-routing scheduling in `quon_na` is built against — deliberately not a free-grid Manhattan-distance simplification, to stay faithful to the reproduced literature.
+_Avoid_: grid movement, Manhattan movement
