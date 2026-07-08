@@ -124,21 +124,22 @@ fn qaoa_layer(gamma: Float, beta: Float): Circuit<12, 12, 79, Universal> = circu
     phase_separator(gamma) |> mixer(12, beta)
 }
 
-fn spin_glass_qaoa(): Circuit<12, 12, 790, Universal> = circuit {
-    qaoa_layer(0.114, 0.742)
-    |> qaoa_layer(0.271, 0.683)
-    |> qaoa_layer(0.389, 0.611)
-    |> qaoa_layer(0.472, 0.537)
-    |> qaoa_layer(0.548, 0.463)
-    |> qaoa_layer(0.621, 0.391)
-    |> qaoa_layer(0.704, 0.318)
-    |> qaoa_layer(0.812, 0.244)
-    |> qaoa_layer(0.936, 0.171)
-    |> qaoa_layer(1.073, 0.097)
-}
-
 fn main(): Q<List<Bit>> = run {
     q  <- hadamard_all(12) @ qreg(12)
-    q2 <- spin_glass_qaoa() @ q
+    -- Keep the p=10 composition at the run-block application site: today the
+    -- lowerer can specialize compound parametric circuit expressions here,
+    -- but not when the same expression is hidden behind a zero-arg circuit
+    -- wrapper. That is another useful stress-fixture wart, not an algorithmic
+    -- requirement.
+    q2 <- (qaoa_layer(0.114, 0.742)
+           |> qaoa_layer(0.271, 0.683)
+           |> qaoa_layer(0.389, 0.611)
+           |> qaoa_layer(0.472, 0.537)
+           |> qaoa_layer(0.548, 0.463)
+           |> qaoa_layer(0.621, 0.391)
+           |> qaoa_layer(0.704, 0.318)
+           |> qaoa_layer(0.812, 0.244)
+           |> qaoa_layer(0.936, 0.171)
+           |> qaoa_layer(1.073, 0.097)) @ q
     measure_all(q2)
 }

@@ -36,6 +36,8 @@ def op_counts(qasm: str) -> dict[str, int]:
         line = raw.strip()
         if not line or line.startswith("//"):
             continue
+        if " measure " in f" {line} ":
+            counts["measure"] = counts.get("measure", 0) + 1
         match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\b", line)
         if match:
             counts[match.group(1)] = counts.get(match.group(1), 0) + 1
@@ -73,19 +75,27 @@ def main() -> int:
 
     # Qiskit's OpenQASM 3 importer is much faster than simulating this workload,
     # and still catches malformed output from the emitter.
+    parsed_with_qiskit = False
     try:
         from qiskit import qasm3
-
-        qasm3.loads(qasm)
-    except Exception as exc:  # pragma: no cover - only used for CLI diagnostics
-        failures.append(f"Qiskit failed to parse emitted OpenQASM 3: {exc}")
+    except ImportError:
+        print("NOTE: qiskit is not installed; skipped OpenQASM importer parse check")
+    else:
+        try:
+            qasm3.loads(qasm)
+            parsed_with_qiskit = True
+        except Exception as exc:  # pragma: no cover - only used for CLI diagnostics
+            failures.append(f"Qiskit failed to parse emitted OpenQASM 3: {exc}")
 
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}")
         return 1
 
-    print("PASS: dense spin-glass QAOA emitted a large, parseable OpenQASM workload")
+    if parsed_with_qiskit:
+        print("PASS: dense spin-glass QAOA emitted a large, parseable OpenQASM workload")
+    else:
+        print("PASS: dense spin-glass QAOA emitted a large OpenQASM workload")
     return 0
 
 
