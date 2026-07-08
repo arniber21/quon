@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use crate::descriptor::TargetDescriptor;
+use crate::descriptor::{FixedTargetDescriptor, NeutralAtomTargetDescriptor, TargetDescriptor};
 use crate::error::BackendError;
 use crate::target::BackendTarget;
 
@@ -19,6 +19,17 @@ pub fn load(path: &Path) -> Result<BackendTarget, BackendError> {
 /// Parse a target descriptor from a JSON string. Primary entry point for tests
 /// and fuzzing.
 pub fn from_str(src: &str) -> Result<BackendTarget, BackendError> {
-    let descriptor: TargetDescriptor = serde_json::from_str(src)?;
+    let value: serde_json::Value = serde_json::from_str(src)?;
+    let descriptor = match value.get("kind").and_then(serde_json::Value::as_str) {
+        Some("neutral_atom_reconfigurable") => {
+            TargetDescriptor::NeutralAtomReconfigurable(serde_json::from_value::<
+                NeutralAtomTargetDescriptor,
+            >(value)?)
+        }
+        Some("fixed") | None => {
+            TargetDescriptor::Fixed(serde_json::from_value::<FixedTargetDescriptor>(value)?)
+        }
+        Some(kind) => return Err(BackendError::UnknownTargetKind(kind.to_owned())),
+    };
     BackendTarget::try_from(descriptor)
 }

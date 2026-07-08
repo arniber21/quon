@@ -115,16 +115,18 @@ fn asap_parallel_gates_share_minimum_depth() {
 fn short_t1_selects_alap_mode() {
     let mut noise = backend::NoiseModel::default();
     noise.t1_us.insert(0, 0.01);
-    let target = backend::BackendTarget {
-        id: "short".into(),
-        num_qubits: 2,
-        topology: backend::ConnectivityGraph::all_to_all(2),
-        native_gates: vec![backend::NativeGate::passthrough("x", 1)],
-        noise,
-        meas_latency_us: 0.0,
-        supports_mid_circuit_meas: true,
-        supports_feed_forward: true,
-    };
+    let target = backend::BackendTarget::fixed(
+        "short",
+        backend::FixedTarget {
+            num_qubits: 2,
+            topology: backend::ConnectivityGraph::all_to_all(2),
+            native_gates: vec![backend::NativeGate::passthrough("x", 1)],
+            noise,
+            meas_latency_us: 0.0,
+            supports_mid_circuit_meas: true,
+            supports_feed_forward: true,
+        },
+    );
     let context = context();
     let module = parallel_module(&context);
     mlir_bridge::passes::depth_scheduling::run_on_module(&context, &target, &module);
