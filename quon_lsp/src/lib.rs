@@ -33,6 +33,6 @@ pub mod span;
 
 pub use analysis::AnalysisScheduler;
 pub use diagnostics::{check_to_lsp_diags, diagnostic_to_lsp};
-pub use document::{Document, DocumentStore};
+pub use document::{Document, DocumentError, DocumentStore};
 pub use server::QuonLanguageServer;
 pub use span::LineIndex;

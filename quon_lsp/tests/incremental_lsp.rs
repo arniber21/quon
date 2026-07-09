@@ -9,10 +9,7 @@ const TEST_URI: &str = "file:///test.qn";
 const INVALID_SRC: &str = "fn f(x: Int): Int = x + y\n";
 const VALID_SRC: &str = "fn f(x: Int): Int = x + x\n";
 
-#[test]
-fn incremental_diagnostics_update() {
-    let mut client = LspClient::spawn_with_env(&[("QUON_LSP_DEBOUNCE_MS", "0")]);
-
+fn init_client(client: &mut LspClient) {
     client.send_request_with_response(
         "initialize",
         Some(json!({
@@ -22,6 +19,12 @@ fn incremental_diagnostics_update() {
         })),
     );
     client.send_notification("initialized", json!({}));
+}
+
+#[test]
+fn incremental_diagnostics_update() {
+    let mut client = LspClient::spawn_with_env(&[("QUON_LSP_DEBOUNCE_MS", "0")]);
+    init_client(&mut client);
 
     client.send_notification(
         "textDocument/didOpen",
@@ -38,6 +41,11 @@ fn incremental_diagnostics_update() {
     let params = client
         .wait_publish_diagnostics(TEST_URI, Duration::from_secs(5))
         .expect("diagnostics after didOpen");
+    assert_eq!(
+        params["version"].as_i64(),
+        Some(1),
+        "didOpen diagnostics should carry version 1"
+    );
     let diags = params["diagnostics"].as_array().expect("diagnostics array");
     assert!(!diags.is_empty(), "expected type error diagnostics");
 
@@ -65,17 +73,15 @@ fn incremental_diagnostics_update() {
     let params = client
         .wait_publish_diagnostics(TEST_URI, Duration::from_secs(5))
         .expect("diagnostics after fix");
+    assert_eq!(
+        params["version"].as_i64(),
+        Some(2),
+        "fixed buffer diagnostics should carry version 2"
+    );
     let diags = params["diagnostics"].as_array().expect("diagnostics array");
     assert!(
         diags.is_empty(),
         "expected no errors after fix, got {diags:?}"
-    );
-
-    client.send_notification(
-        "textDocument/didClose",
-        json!({
-            "textDocument": { "uri": TEST_URI },
-        }),
     );
 
     client.shutdown_and_exit();
@@ -84,11 +90,7 @@ fn incremental_diagnostics_update() {
 #[test]
 fn did_change_full_sync_replaces_buffer() {
     let mut client = LspClient::spawn_with_env(&[("QUON_LSP_DEBOUNCE_MS", "0")]);
-    client.send_request_with_response(
-        "initialize",
-        Some(json!({ "processId": std::process::id(), "capabilities": {}, "rootUri": null })),
-    );
-    client.send_notification("initialized", json!({}));
+    init_client(&mut client);
 
     client.send_notification(
         "textDocument/didOpen",
@@ -101,7 +103,10 @@ fn did_change_full_sync_replaces_buffer() {
             }
         }),
     );
-    let _ = client.wait_publish_diagnostics(TEST_URI, Duration::from_secs(5));
+    let params = client
+        .wait_publish_diagnostics(TEST_URI, Duration::from_secs(5))
+        .expect("diagnostics after didOpen");
+    assert_eq!(params["version"].as_i64(), Some(1));
 
     client.send_notification(
         "textDocument/didChange",
@@ -114,10 +119,56 @@ fn did_change_full_sync_replaces_buffer() {
     let params = client
         .wait_publish_diagnostics(TEST_URI, Duration::from_secs(5))
         .expect("diagnostics after full sync");
+    assert_eq!(
+        params["version"].as_i64(),
+        Some(2),
+        "full-sync diagnostics should carry version 2"
+    );
     let diags = params["diagnostics"].as_array().expect("diagnostics array");
     assert!(
         diags.is_empty(),
         "expected clean diagnostics after full replace"
+    );
+
+    client.shutdown_and_exit();
+}
+
+#[test]
+fn did_close_clears_diagnostics() {
+    let mut client = LspClient::spawn_with_env(&[("QUON_LSP_DEBOUNCE_MS", "0")]);
+    init_client(&mut client);
+
+    client.send_notification(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": TEST_URI,
+                "languageId": "quon",
+                "version": 1,
+                "text": INVALID_SRC,
+            }
+        }),
+    );
+    let params = client
+        .wait_publish_diagnostics(TEST_URI, Duration::from_secs(5))
+        .expect("diagnostics after didOpen");
+    let diags = params["diagnostics"].as_array().expect("diagnostics array");
+    assert!(!diags.is_empty(), "precondition: error diagnostics present");
+
+    client.send_notification(
+        "textDocument/didClose",
+        json!({
+            "textDocument": { "uri": TEST_URI },
+        }),
+    );
+
+    let params = client
+        .wait_publish_diagnostics(TEST_URI, Duration::from_secs(5))
+        .expect("diagnostics after didClose");
+    let diags = params["diagnostics"].as_array().expect("diagnostics array");
+    assert!(
+        diags.is_empty(),
+        "didClose should publish empty diagnostics to clear squiggles"
     );
 
     client.shutdown_and_exit();

@@ -6,7 +6,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use crate::analysis::{AnalysisScheduler, debounce_from_env};
-use crate::document::DocumentStore;
+use crate::document::{DocumentError, DocumentStore};
 
 pub struct QuonLanguageServer {
     client: Client,
@@ -72,19 +72,18 @@ impl LanguageServer for QuonLanguageServer {
         let uri = params.text_document.uri;
         let version = params.text_document.version;
         let changes = params.content_changes;
-        let applied = {
-            let Ok(mut docs) = self.documents.write() else {
-                tracing::error!("document store write lock poisoned");
-                return;
-            };
-            if docs.apply_changes(&uri, Some(version), &changes).is_none() {
-                tracing::debug!(%uri, "did_change for unknown document");
-                return;
-            }
-            true
+        let Ok(mut docs) = self.documents.write() else {
+            tracing::error!("document store write lock poisoned");
+            return;
         };
-        if applied {
-            self.scheduler.request_analysis(uri);
+        match docs.apply_changes(&uri, Some(version), &changes) {
+            Ok(()) => self.scheduler.request_analysis(uri),
+            Err(DocumentError::NotOpen(_)) => {
+                tracing::debug!(%uri, "did_change for unknown document");
+            }
+            Err(DocumentError::InvalidEdit(_)) => {
+                // Warn already logged in DocumentStore; skip analysis on rejected edit.
+            }
         }
     }
 

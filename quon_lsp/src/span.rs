@@ -15,7 +15,7 @@ impl LineIndex {
     }
 
     /// LSP Position → byte offset (for incremental edit application).
-    pub fn offset(&self, pos: Position) -> usize {
+    pub fn offset(&self, pos: Position) -> Option<usize> {
         let wide = WideLineCol {
             line: pos.line,
             col: pos.character,
@@ -24,7 +24,7 @@ impl LineIndex {
             .inner
             .to_utf8(WideEncoding::Utf16, wide)
             .and_then(|lc| self.inner.offset(lc));
-        utf8.map(usize::from).unwrap_or(0)
+        utf8.map(usize::from)
     }
 
     /// Byte offset → LSP Position (for diagnostic mapping).

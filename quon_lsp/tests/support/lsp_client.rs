@@ -1,4 +1,5 @@
 //! JSON-RPC framing client for integration tests.
+#![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
@@ -32,7 +33,7 @@ impl LspClient {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_quon_lsp"));
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::null());
         for (key, value) in extra_env {
             cmd.env(key, value);
         }
@@ -93,10 +94,10 @@ impl LspClient {
     pub fn wait_notification(&self, method: &str, timeout: Duration) -> Option<LspMessage> {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
-            if let Ok(msg) = self.notifications.recv_timeout(Duration::from_millis(50)) {
-                if msg.method == method {
-                    return Some(msg);
-                }
+            if let Ok(msg) = self.notifications.recv_timeout(Duration::from_millis(50))
+                && msg.method == method
+            {
+                return Some(msg);
             }
         }
         None
@@ -105,12 +106,12 @@ impl LspClient {
     pub fn wait_publish_diagnostics(&self, uri: &str, timeout: Duration) -> Option<Value> {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
-            if let Ok(msg) = self.notifications.recv_timeout(Duration::from_millis(50)) {
-                if msg.method == "textDocument/publishDiagnostics" {
-                    let doc_uri = msg.params["uri"].as_str().unwrap_or("");
-                    if doc_uri == uri {
-                        return Some(msg.params);
-                    }
+            if let Ok(msg) = self.notifications.recv_timeout(Duration::from_millis(50))
+                && msg.method == "textDocument/publishDiagnostics"
+            {
+                let doc_uri = msg.params["uri"].as_str().unwrap_or("");
+                if doc_uri == uri {
+                    return Some(msg.params);
                 }
             }
         }
@@ -129,13 +130,13 @@ impl LspClient {
     fn wait_response(&self, id: i64) -> Value {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
-            if let Ok(msg) = self.responses.recv_timeout(Duration::from_millis(50)) {
-                if msg.get("id") == Some(&json!(id)) {
-                    if let Some(err) = msg.get("error") {
-                        panic!("LSP error for id {id}: {err}");
-                    }
-                    return msg.get("result").cloned().unwrap_or(Value::Null);
+            if let Ok(msg) = self.responses.recv_timeout(Duration::from_millis(50))
+                && msg.get("id") == Some(&json!(id))
+            {
+                if let Some(err) = msg.get("error") {
+                    panic!("LSP error for id {id}: {err}");
                 }
+                return msg.get("result").cloned().unwrap_or(Value::Null);
             }
         }
         panic!("timed out waiting for response id {id}");

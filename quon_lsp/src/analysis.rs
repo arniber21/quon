@@ -56,7 +56,7 @@ impl AnalysisScheduler {
                     tracing::error!("document store read lock poisoned");
                     return;
                 };
-                let Some(doc) = docs.open.get(&uri) else {
+                let Some(doc) = docs.get(&uri) else {
                     tracing::debug!(%uri, "analysis skipped: document closed");
                     return;
                 };
@@ -84,9 +84,7 @@ impl AnalysisScheduler {
                     tracing::error!("document store read lock poisoned");
                     return;
                 };
-                docs.open
-                    .get(&uri)
-                    .is_some_and(|doc| doc.version == version)
+                docs.get(&uri).is_some_and(|doc| doc.version == version)
             };
 
             if !should_publish {
