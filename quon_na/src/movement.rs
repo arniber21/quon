@@ -1681,9 +1681,10 @@ fn detect_bank_pairs(
 }
 
 fn bank_origin_for_detect(layout: &NeutralAtomLayout, params: &MovementParams) -> (f64, f64) {
-    // Placement bbox from initial bindings only. Do **not** treat pair_gap-spaced
-    // placement sites as bank (skip fixtures / isolated pairs use gap == pair_gap_um).
-    // Bank sites are always appended to the right of this bbox (B14).
+    // Placement bbox from **initial bindings only**. Never scan all `layout.sites`:
+    // after `append_bank_pairs`, that would inflate `max_x` and make detect miss
+    // the bank just appended. Also do not treat pair_gap-spaced placement sites
+    // as "already bank" — skip fixtures use gap == `pair_gap_um` (B14).
     let mut max_x = f64::NEG_INFINITY;
     let mut min_y = f64::INFINITY;
     let mut max_y = f64::NEG_INFINITY;
@@ -1693,14 +1694,6 @@ fn bank_origin_for_detect(layout: &NeutralAtomLayout, params: &MovementParams) -
             TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
         };
         if let Some(s) = layout.sites.iter().find(|x| x.id == site) {
-            any = true;
-            max_x = max_x.max(s.position.x_um);
-            min_y = min_y.min(s.position.y_um);
-            max_y = max_y.max(s.position.y_um);
-        }
-    }
-    if !any {
-        for s in &layout.sites {
             any = true;
             max_x = max_x.max(s.position.x_um);
             min_y = min_y.min(s.position.y_um);
