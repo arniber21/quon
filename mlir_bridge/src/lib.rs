@@ -7,4 +7,5 @@
 pub mod diagnostics;
 pub mod dialect;
 pub mod emit;
+pub mod metrics;
 pub mod passes;

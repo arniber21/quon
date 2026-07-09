@@ -73,6 +73,12 @@ fn help_lists_all_documented_flags() {
         "--print-target",
         "--dump-ir",
         "--verify-linear",
+        "--metrics",
+        "--metrics-json",
+        "--metrics-snapshot",
+        "--regression-config",
+        "--watch",
+        "--watch-debounce-ms",
     ] {
         assert!(stdout.contains(flag), "missing {flag} in --help");
     }

@@ -8,6 +8,7 @@
 
 pub mod depth;
 pub mod linearity;
+pub mod metrics;
 pub mod optimization;
 pub mod qasm;
 
@@ -15,6 +16,12 @@ pub use depth::{DepthExpr, DepthParseError};
 pub use linearity::{
     LINEAR_USE_COUNT, UseCountViolation, barrier_identity_ok, classify_use_count,
     if_qubit_threading_ok, is_linear_use_count, is_reuse_after_measure, unitary_region_boundary_ok,
+};
+pub use metrics::{
+    CircuitMetrics, ComparisonReport, CompileInfo, CompileStatus, MetricTolerance,
+    MetricTolerances, MetricsError, MetricsSnapshot, ProgramInfo, RegressionConfig, SCHEMA_VERSION,
+    TargetInfo, ToolchainInfo, Violation, compare, format_comparison_table, format_metrics_line,
+    format_tolerance, format_watch_metrics_line, load_snapshot, save_snapshot,
 };
 pub use optimization::{
     arity_preserved, depth_after_removal, par_depth, seq_depth, single_qubit_pair,
