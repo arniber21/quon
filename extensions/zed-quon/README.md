@@ -45,6 +45,7 @@ Do **not** use absolute `file://…` paths or `rev = "local"`. After grammar upd
 3. **Worktree targets** — only if the opened folder is a Quon checkout (`Cargo.toml` workspace members include `quon_lsp` and `frontend`, plus a marker such as `frontend/src/lib.rs`, `SPEC.md`, or `tree-sitter-quon/`):
    - `{root}/target/release/quon_lsp`
    - `{root}/target/debug/quon_lsp`
+   Existence is probed via Zed’s **host** `process` API (`test -x` / Windows `if exist`), not guest `Path::is_file` — Zed’s WASM sandbox only preopens the extension work dir, so guest FS checks cannot see monorepo `target/`.
 4. **Clear error** — build instructions + settings JSON snippet
 
 Override example (also in `settings.example.json`):

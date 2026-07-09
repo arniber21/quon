@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use zed_extension_api::{
-    self as zed, settings::LspSettings, LanguageServerId, Result,
-};
+use zed_extension_api::{self as zed, settings::LspSettings, LanguageServerId, Result};
 
 struct QuonExtension;
 
@@ -56,8 +54,45 @@ impl QuonExtension {
 
         worktree.read_text_file("frontend/src/lib.rs").is_ok()
             || worktree.read_text_file("SPEC.md").is_ok()
-            || worktree.read_text_file("tree-sitter-quon/grammar.js").is_ok()
-            || worktree.read_text_file("tree-sitter-quon/package.json").is_ok()
+            || worktree
+                .read_text_file("tree-sitter-quon/grammar.js")
+                .is_ok()
+            || worktree
+                .read_text_file("tree-sitter-quon/package.json")
+                .is_ok()
+    }
+
+    /// Candidate absolute paths under a Quon checkout (`release`, then `debug`).
+    fn worktree_target_candidates(root: &Path, binary_name: &str) -> [PathBuf; 2] {
+        [
+            root.join("target").join("release").join(binary_name),
+            root.join("target").join("debug").join(binary_name),
+        ]
+    }
+
+    /// Host-side executable probe.
+    ///
+    /// Zed's WASI context only preopens the extension work dir, so guest
+    /// `std::path::Path::is_file` / `std::fs` cannot see `{worktree}/target/...`.
+    /// `zed::process::Command` runs on the host and can.
+    fn host_path_is_executable(path: &str) -> bool {
+        let output = match zed::current_platform().0 {
+            zed::Os::Windows => {
+                // Escape double-quotes in the path for `cmd /C if exist "..."`.
+                let escaped = path.replace('"', "");
+                zed::process::Command::new("cmd")
+                    .args([
+                        "/C",
+                        &format!("if exist \"{escaped}\" (exit 0) else (exit 1)"),
+                    ])
+                    .output()
+            }
+            _ => zed::process::Command::new("test")
+                .arg("-x")
+                .arg(path)
+                .output(),
+        };
+        output.is_ok_and(|o| o.status == Some(0))
     }
 
     fn worktree_target_binary(worktree: &zed::Worktree) -> Option<String> {
@@ -66,10 +101,12 @@ impl QuonExtension {
         }
         let root = PathBuf::from(worktree.root_path());
         let name = Self::binary_name();
-        for profile in ["release", "debug"] {
-            let candidate = root.join("target").join(profile).join(&name);
-            if candidate.is_file() {
-                return Some(candidate.to_string_lossy().into_owned());
+        for candidate in Self::worktree_target_candidates(&root, &name) {
+            let path = candidate.to_string_lossy();
+            // Do NOT use Path::is_file here — it false-greens under host
+            // `cargo test` and fails under Zed's WASM sandbox.
+            if Self::host_path_is_executable(&path) {
+                return Some(path.into_owned());
             }
         }
         None
@@ -92,15 +129,10 @@ impl QuonExtension {
         )
     }
 
-    fn resolve_command(
-        &self,
-        worktree: &zed::Worktree,
-    ) -> Result<zed::Command> {
+    fn resolve_command(&self, worktree: &zed::Worktree) -> Result<zed::Command> {
         let settings = LspSettings::for_worktree(Self::LANGUAGE_SERVER_ID, worktree).ok();
         let binary = settings.as_ref().and_then(|s| s.binary.as_ref());
-        let args = binary
-            .and_then(|b| b.arguments.clone())
-            .unwrap_or_default();
+        let args = binary.and_then(|b| b.arguments.clone()).unwrap_or_default();
         let settings_env = binary.and_then(|b| b.env.clone());
         let env = Self::merge_env(worktree.shell_env(), settings_env);
 
@@ -217,13 +249,49 @@ members = [
     }
 
     #[test]
-    fn worktree_target_paths_exist_in_repo_layout() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .expect("repo root");
-        // Detection helpers only — full discovery needs Worktree at runtime.
-        assert!(root.join("Cargo.toml").is_file());
-        assert!(root.join("frontend/src/lib.rs").is_file());
+    fn worktree_target_candidates_release_then_debug() {
+        let root = Path::new("/repo/quon");
+        let candidates = QuonExtension::worktree_target_candidates(root, "quon_lsp");
+        assert_eq!(
+            candidates[0],
+            PathBuf::from("/repo/quon/target/release/quon_lsp")
+        );
+        assert_eq!(
+            candidates[1],
+            PathBuf::from("/repo/quon/target/debug/quon_lsp")
+        );
+    }
+
+    /// Regression: guest `Path::is_file` on worktree-absolute paths is NOT a
+    /// valid existence check under Zed WASM (only the extension work dir is
+    /// preopened). Discovery must use `host_path_is_executable` (host
+    /// `test -x` / `cmd if exist`) instead. This test documents the contract
+    /// without calling WIT imports unavailable in host `cargo test`.
+    #[test]
+    fn worktree_discovery_must_not_rely_on_guest_is_file() {
+        let source = include_str!("lib.rs");
+        // The live discovery path must call the host probe.
+        assert!(
+            source.contains("host_path_is_executable"),
+            "worktree discovery must probe via host_path_is_executable"
+        );
+        assert!(
+            source.contains("zed::process::Command::new(\"test\")"),
+            "Unix host probe must use `test` (runs outside WASI sandbox)"
+        );
+        // Guard against reintroducing guest FS checks on candidate paths.
+        let discovery_fn = source
+            .split("fn worktree_target_binary")
+            .nth(1)
+            .and_then(|rest| rest.split("fn missing_binary_error").next())
+            .expect("worktree_target_binary present");
+        assert!(
+            !discovery_fn.contains("is_file()"),
+            "worktree_target_binary must not call Path::is_file (WASM-blind)"
+        );
+        assert!(
+            !discovery_fn.contains("fs::metadata"),
+            "worktree_target_binary must not call fs::metadata on worktree paths"
+        );
     }
 }
