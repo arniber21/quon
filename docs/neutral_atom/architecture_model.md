@@ -392,6 +392,11 @@ atoms by an exact per-`CodeFamily` formula. N below counts **atoms per logical
 qubit including syndrome/check ancillas** unless stated otherwise. These
 formulas are normative for #109 ("implement exactly what's documented there").
 
+**Implementation:** `quon_na::qec` (`quon_na/src/qec.rs`) — `CodeFamily`,
+`CodeBlock`, `LogicalOp`, `atoms_per_logical`, and `expand_code_block`. Toy
+demo: `quon_na/examples/repetition_code_toy.rs`. No source-language syntax;
+frontend linearity is unaffected.
+
 ### 10.1 `SurfaceCodeLike`
 
 ```

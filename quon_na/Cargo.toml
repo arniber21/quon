@@ -41,3 +41,7 @@ required-features = ["mlir"]
 name = "na_roundtrip"
 path = "examples/na_roundtrip.rs"
 required-features = ["mlir"]
+
+[[example]]
+name = "repetition_code_toy"
+path = "examples/repetition_code_toy.rs"
