@@ -11,19 +11,21 @@ use support::context;
 
 fn linear_5q() -> backend::BackendTarget {
     let edges: Vec<(usize, usize)> = (0..4).map(|i| (i, i + 1)).collect();
-    backend::BackendTarget {
-        id: "linear5".into(),
-        num_qubits: 5,
-        topology: backend::ConnectivityGraph::try_from_edges(5, edges).expect("topology"),
-        native_gates: vec![
-            backend::NativeGate::passthrough("cx", 2),
-            backend::NativeGate::passthrough("swap", 2),
-        ],
-        noise: backend::NoiseModel::default(),
-        meas_latency_us: 0.0,
-        supports_mid_circuit_meas: true,
-        supports_feed_forward: true,
-    }
+    backend::BackendTarget::fixed(
+        "linear5",
+        backend::FixedTarget {
+            num_qubits: 5,
+            topology: backend::ConnectivityGraph::try_from_edges(5, edges).expect("topology"),
+            native_gates: vec![
+                backend::NativeGate::passthrough("cx", 2),
+                backend::NativeGate::passthrough("swap", 2),
+            ],
+            noise: backend::NoiseModel::default(),
+            meas_latency_us: 0.0,
+            supports_mid_circuit_meas: true,
+            supports_feed_forward: true,
+        },
+    )
 }
 
 fn bell_module(context: &melior::Context) -> Module<'_> {

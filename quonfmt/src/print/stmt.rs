@@ -113,30 +113,29 @@ fn format_stmt(s: &Stmt, ctx: &mut Context<'_>, max_lhs: usize) -> String {
             format!("let {p} = {rhs_s}")
         }
         Stmt::Expr(e) => {
-            let doc = if ctx.block_kind == BlockKind::Circuit && circuit_stmt_needs_parens(&e.0) {
-                Doc::concat([
-                    Doc::text("("),
-                    expr::print_expr(e, ctx, expr::Prec::Top),
-                    Doc::text(")"),
-                ])
-            } else {
-                expr::print_expr(e, ctx, expr::Prec::Top)
-            };
-            if let frontend::ast::Expr::Return(inner) = &e.0 {
-                if ctx.block_kind == BlockKind::Run {
-                    render(&doc, ctx.config.max_width, ctx.config.indent)
-                } else if ctx.block_kind == BlockKind::Circuit {
-                    render(
-                        &expr::print_expr(inner, ctx, expr::Prec::Top),
-                        ctx.config.max_width,
-                        ctx.config.indent,
-                    )
+            // In `circuit { }`, `return e` is sugar for statement `e` (issue #8). Strip the
+            // keyword, but still parenthesize forms that need it as bare circuit stmts
+            // (`match`, `let`, …) so reparse keeps the same shape.
+            let printed = if let frontend::ast::Expr::Return(inner) = &e.0 {
+                if ctx.block_kind == BlockKind::Circuit {
+                    inner
                 } else {
-                    render(&doc, ctx.config.max_width, ctx.config.indent)
+                    e
                 }
             } else {
-                render(&doc, ctx.config.max_width, ctx.config.indent)
-            }
+                e
+            };
+            let doc =
+                if ctx.block_kind == BlockKind::Circuit && circuit_stmt_needs_parens(&printed.0) {
+                    Doc::concat([
+                        Doc::text("("),
+                        expr::print_expr(printed, ctx, expr::Prec::Top),
+                        Doc::text(")"),
+                    ])
+                } else {
+                    expr::print_expr(printed, ctx, expr::Prec::Top)
+                };
+            render(&doc, ctx.config.max_width, ctx.config.indent)
         }
     }
 }

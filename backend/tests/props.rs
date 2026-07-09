@@ -132,6 +132,8 @@ proptest! {
             &serde_json::to_string(&target.to_descriptor()).unwrap(),
         )
         .unwrap();
+        let target = target.fixed_target().unwrap();
+        let reloaded = reloaded.fixed_target().unwrap();
 
         prop_assert_eq!(&reloaded.topology.edges, &target.topology.edges);
         let mut got: Vec<&str> = reloaded.native_gates.iter().map(|g| g.name.as_str()).collect();

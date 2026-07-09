@@ -103,14 +103,32 @@ fn layout(doc: &Doc, width: usize, indent_unit: &str, col: usize, out: &mut Stri
         },
         Doc::Group(inner) => {
             let mut flat = String::new();
-            let flat_col = layout_with_col(inner, width, indent_unit, col, &mut flat, Mode::Flat);
-            if flat_col <= width {
+            layout(inner, width, indent_unit, col, &mut flat, Mode::Flat);
+            // Flat fit must reject *any* over-width line, not just the final column.
+            // Docs with hard newlines (e.g. `match` arms) otherwise look short at the
+            // end while an earlier line already exceeded `width`.
+            if flat_fits(col, &flat, width) {
                 out.push_str(&flat);
             } else {
                 layout(inner, width, indent_unit, col, out, Mode::Broken);
             }
         }
     }
+}
+
+fn flat_fits(start_col: usize, flat: &str, width: usize) -> bool {
+    let mut col = start_col;
+    for ch in flat.chars() {
+        if ch == '\n' {
+            col = 0;
+        } else {
+            col += 1;
+            if col > width {
+                return false;
+            }
+        }
+    }
+    col <= width
 }
 
 fn layout_with_col(
@@ -123,7 +141,16 @@ fn layout_with_col(
 ) -> usize {
     let start_len = out.len();
     layout(doc, width, indent_unit, col, out, mode);
-    col + out.len().saturating_sub(start_len)
+    // Column after layout is the length of the *last* line, not the byte delta:
+    // embedded newlines (e.g. from `match` arms) must reset the column.
+    end_column(col, &out[start_len..])
+}
+
+fn end_column(start_col: usize, written: &str) -> usize {
+    match written.rfind('\n') {
+        Some(i) => written[i + 1..].chars().count(),
+        None => start_col + written.chars().count(),
+    }
 }
 
 fn layout_nested(

@@ -63,19 +63,21 @@ fn gate_names(module: &Module<'_>) -> Vec<String> {
 #[test]
 fn hadamard_decomposes_on_rz_sx_target() {
     let context = context();
-    let target = backend::BackendTarget {
-        id: "test".into(),
-        num_qubits: 2,
-        topology: backend::ConnectivityGraph::all_to_all(2),
-        native_gates: vec![
-            backend::NativeGate::passthrough("rz", 1),
-            backend::NativeGate::passthrough("sx", 1),
-        ],
-        noise: backend::NoiseModel::default(),
-        meas_latency_us: 0.0,
-        supports_mid_circuit_meas: true,
-        supports_feed_forward: true,
-    };
+    let target = backend::BackendTarget::fixed(
+        "test",
+        backend::FixedTarget {
+            num_qubits: 2,
+            topology: backend::ConnectivityGraph::all_to_all(2),
+            native_gates: vec![
+                backend::NativeGate::passthrough("rz", 1),
+                backend::NativeGate::passthrough("sx", 1),
+            ],
+            noise: backend::NoiseModel::default(),
+            meas_latency_us: 0.0,
+            supports_mid_circuit_meas: true,
+            supports_feed_forward: true,
+        },
+    );
     let location = Location::unknown(&context);
     let qubit = qc::qubit_type(&context);
     let block = Block::new(&[(qubit, location)]);

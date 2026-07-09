@@ -229,7 +229,7 @@ fn schedule_segment<'c, 'a>(
     *times.iter().max().unwrap_or(&0) + 1
 }
 
-fn select_mode(target: &BackendTarget, circuit_depth: i64) -> ScheduleMode {
+fn select_mode(target: &backend::target::FixedTarget, circuit_depth: i64) -> ScheduleMode {
     let depth_time = f64::from(circuit_depth as u32) * GATE_TIME_US;
     for t1 in target.noise.t1_us.values() {
         if *t1 < depth_time {
@@ -243,7 +243,7 @@ fn select_mode(target: &BackendTarget, circuit_depth: i64) -> ScheduleMode {
 /// each barrier-free segment in sequence.
 fn schedule_gates<'c, 'a>(
     context: &'c Context,
-    target: &BackendTarget,
+    target: &backend::target::FixedTarget,
     gates: Vec<GateStep<'c, 'a>>,
 ) {
     let mut segments: Vec<Vec<GateStep<'c, 'a>>> = vec![vec![]];
@@ -269,7 +269,7 @@ fn schedule_gates<'c, 'a>(
 
 fn schedule_module<'c, 'a>(
     context: &'c Context,
-    target: &BackendTarget,
+    target: &backend::target::FixedTarget,
     module: OperationRef<'c, 'a>,
 ) {
     let Some(body) = module
@@ -319,6 +319,9 @@ pub fn run_on_module<'c>(
     target: &BackendTarget,
     module: &melior::ir::Module<'c>,
 ) {
+    let Some(target) = target.fixed_target() else {
+        return;
+    };
     schedule_module(context, target, module.as_operation());
 }
 
@@ -352,8 +355,11 @@ impl<'c> RunExternalPass<'c> for DepthScheduling {
             pass.signal_failure();
             return;
         }
+        let Some(target) = self.target.fixed_target() else {
+            return;
+        };
         let context = unsafe { &*(self.context as *const Context) };
-        schedule_module(context, &self.target, operation);
+        schedule_module(context, target, operation);
     }
 }
 
