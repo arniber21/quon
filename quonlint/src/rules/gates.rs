@@ -155,6 +155,12 @@ fn is_rotation_gate(name: &str) -> bool {
     matches!(name, "Rz" | "Rx" | "Ry")
 }
 
+struct RotationWalkState {
+    prev_qubit: Option<String>,
+    run_start: Option<frontend::lexer::SimpleSpan>,
+    run_len: u32,
+}
+
 fn check_rotation_runs(
     ctx: &LintContext<'_>,
     stmts: &[Sp<frontend::ast::Stmt>],
@@ -162,62 +168,53 @@ fn check_rotation_runs(
     default: Severity,
     emit: &mut dyn FnMut(LintDiagnostic),
 ) {
-    let mut prev_qubit: Option<String> = None;
-    let mut run_start: Option<frontend::lexer::SimpleSpan> = None;
-    let mut run_len = 0u32;
+    let mut state = RotationWalkState {
+        prev_qubit: None,
+        run_start: None,
+        run_len: 0,
+    };
 
     for stmt in stmts {
         match &stmt.0 {
-            frontend::ast::Stmt::Expr(e) => walk_rotation_expr(
-                ctx,
-                e,
-                &mut prev_qubit,
-                &mut run_start,
-                &mut run_len,
-                rule,
-                default,
-                emit,
-            ),
+            frontend::ast::Stmt::Expr(e) => {
+                walk_rotation_expr(ctx, e, &mut state, rule, default, emit)
+            }
             _ => {
-                if let Some(start) = run_start.take() {
-                    flush(ctx, start, run_len, rule, default, emit);
+                if let Some(start) = state.run_start.take() {
+                    flush(ctx, start, state.run_len, rule, default, emit);
                 }
-                prev_qubit = None;
-                run_len = 0;
+                state.prev_qubit = None;
+                state.run_len = 0;
             }
         }
     }
-    if let Some(start) = run_start {
-        flush(ctx, start, run_len, rule, default, emit);
+    if let Some(start) = state.run_start {
+        flush(ctx, start, state.run_len, rule, default, emit);
     }
 }
 
 fn walk_rotation_expr(
     ctx: &LintContext<'_>,
     expr: &Sp<Expr>,
-    prev_qubit: &mut Option<String>,
-    run_start: &mut Option<frontend::lexer::SimpleSpan>,
-    run_len: &mut u32,
+    state: &mut RotationWalkState,
     rule: &str,
     default: Severity,
     emit: &mut dyn FnMut(LintDiagnostic),
 ) {
     match &expr.0 {
         Expr::Compose(a, b) => {
-            walk_rotation_expr(ctx, a, prev_qubit, run_start, run_len, rule, default, emit);
-            walk_rotation_expr(ctx, b, prev_qubit, run_start, run_len, rule, default, emit);
+            walk_rotation_expr(ctx, a, state, rule, default, emit);
+            walk_rotation_expr(ctx, b, state, rule, default, emit);
         }
         Expr::GateApp { gate, qubits } => {
-            record_rotation_gate(
-                ctx, gate, qubits, prev_qubit, run_start, run_len, rule, default, emit,
-            );
+            record_rotation_gate(ctx, gate, qubits, state, rule, default, emit);
         }
         _ => {
-            if let Some(start) = run_start.take() {
-                flush(ctx, start, *run_len, rule, default, emit);
+            if let Some(start) = state.run_start.take() {
+                flush(ctx, start, state.run_len, rule, default, emit);
             }
-            *prev_qubit = None;
-            *run_len = 0;
+            state.prev_qubit = None;
+            state.run_len = 0;
         }
     }
 }
@@ -226,9 +223,7 @@ fn record_rotation_gate(
     ctx: &LintContext<'_>,
     gate: &Sp<Expr>,
     qubits: &Sp<Expr>,
-    prev_qubit: &mut Option<String>,
-    run_start: &mut Option<frontend::lexer::SimpleSpan>,
-    run_len: &mut u32,
+    state: &mut RotationWalkState,
     rule: &str,
     default: Severity,
     emit: &mut dyn FnMut(LintDiagnostic),
@@ -239,20 +234,20 @@ fn record_rotation_gate(
         && is_rotation_gate(name)
         && let Some(q) = qubit
     {
-        if prev_qubit.as_deref() == Some(q.as_str()) {
-            *run_len += 1;
+        if state.prev_qubit.as_deref() == Some(q.as_str()) {
+            state.run_len += 1;
         } else {
-            if let Some(start) = run_start.take() {
-                flush(ctx, start, *run_len, rule, default, emit);
+            if let Some(start) = state.run_start.take() {
+                flush(ctx, start, state.run_len, rule, default, emit);
             }
-            *prev_qubit = Some(q);
-            *run_start = Some(gate.1);
-            *run_len = 1;
+            state.prev_qubit = Some(q);
+            state.run_start = Some(gate.1);
+            state.run_len = 1;
         }
-    } else if let Some(start) = run_start.take() {
-        flush(ctx, start, *run_len, rule, default, emit);
-        *prev_qubit = None;
-        *run_len = 0;
+    } else if let Some(start) = state.run_start.take() {
+        flush(ctx, start, state.run_len, rule, default, emit);
+        state.prev_qubit = None;
+        state.run_len = 0;
     }
 }
 
