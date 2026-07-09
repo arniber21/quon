@@ -5,7 +5,7 @@
 //! gate-frequency formula `Σ γ^l` ([Atomique] Sec. III-A; default
 //! [`DEFAULT_GAMMA`] = 0.8). Segments preserve Enola's distinction between
 //! commutation groups and ordered dependency DAGs ([Enola] Sec. 3) so later
-//! edge-coloring (#105) can apply the right bound.
+//! Misra–Gries edge-coloring (#105) can apply the right bound.
 //!
 //! See `docs/neutral_atom/architecture_model.md` §4.
 

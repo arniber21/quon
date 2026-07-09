@@ -57,7 +57,7 @@ minutes with ~5.9× fidelity gain over [OLSQ-DPQA].
 
 **What this backend takes from it.**
 - The staged pipeline shape and the reduction *scheduling = edge coloring* —
-  the direct blueprint for #105 (greedy edge-coloring entangling-layer
+  the direct blueprint for #105 (Misra–Gries edge-coloring entangling-layer
   scheduler) and the interaction-graph extraction of #103.
 - The move-conflict formulation of AOD constraints (its Sec. 5: moves as
   (src, dst) 4-tuples; three conflict types per axis encoding coupling,
