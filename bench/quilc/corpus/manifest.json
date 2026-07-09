@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "description": "Shared corpus for quonc vs quilc (#116). Each entry has a Quil source for quilc and either a Quon source or a note that quonc uses the same logical circuit via .qn.",
+  "target": {
+    "quonc": "target/linear5_cx.json",
+    "quilc": "target/linear5_cnot.qpu",
+    "topology": "linear 5q",
+    "native_2q": "CX/CNOT",
+    "native_1q_quonc": ["rz", "sx", "x"],
+    "native_1q_quilc": ["RZ", "RX(±π/2,±π)", "MEASURE"]
+  },
+  "circuits": [
+    {
+      "id": "bell",
+      "size": "small",
+      "qn": "corpus/qn/bell.qn",
+      "quil": "corpus/quil/bell.quil",
+      "notes": "Bell pair H+CNOT"
+    },
+    {
+      "id": "bernstein_vazirani",
+      "size": "small",
+      "qn": "corpus/qn/bernstein_vazirani.qn",
+      "quil": "corpus/quil/bernstein_vazirani.quil",
+      "notes": "BV s=110, 4 qubits"
+    },
+    {
+      "id": "grover",
+      "size": "small",
+      "qn": "corpus/qn/grover.qn",
+      "quil": "corpus/quil/grover.quil",
+      "notes": "Grover n=2, one iteration"
+    },
+    {
+      "id": "ghz_4",
+      "size": "small",
+      "qn": "corpus/qn/ghz_4.qn",
+      "quil": "corpus/quil/ghz_4.quil",
+      "notes": "Linear GHZ on 4 qubits"
+    },
+    {
+      "id": "cnot_ladder_5",
+      "size": "small",
+      "qn": "corpus/qn/cnot_ladder_5.qn",
+      "quil": "corpus/quil/cnot_ladder_5.quil",
+      "notes": "Topology-aligned CNOT ladder on 5q"
+    },
+    {
+      "id": "qft_3",
+      "size": "medium",
+      "qn": "corpus/qn/qft_3.qn",
+      "quil": "corpus/quil/qft_3.quil",
+      "notes": "Forward QFT n=3 (no adjoint cancel)"
+    },
+    {
+      "id": "ising_step",
+      "size": "medium",
+      "qn": "corpus/qn/ising_step.qn",
+      "quil": "corpus/quil/ising_step.quil",
+      "notes": "One TFIM Trotter step, n=4, nonzero tau"
+    },
+    {
+      "id": "qaoa_k3",
+      "size": "medium",
+      "qn": "corpus/qn/qaoa_k3.qn",
+      "quil": "corpus/quil/qaoa_k3.quil",
+      "notes": "QAOA p=1 MaxCut K3"
+    },
+    {
+      "id": "clifford_t_phase",
+      "size": "small",
+      "qn": "corpus/qn/clifford_t_phase.qn",
+      "quil": "corpus/quil/clifford_t_phase.quil",
+      "notes": "Explicit T gates for T-count comparison"
+    },
+    {
+      "id": "rx_rz_network",
+      "size": "medium",
+      "qn": "corpus/qn/rx_rz_network.qn",
+      "quil": "corpus/quil/rx_rz_network.quil",
+      "notes": "Rotation-heavy 3q network"
+    },
+    {
+      "id": "swap_via_cnot",
+      "size": "small",
+      "qn": "corpus/qn/swap_via_cnot.qn",
+      "quil": "corpus/quil/swap_via_cnot.quil",
+      "notes": "Logical SWAP as 3 CNOTs across non-adjacent pair (forces routing)"
+    },
+    {
+      "id": "deutsch_jozsa",
+      "size": "small",
+      "qn": "corpus/qn/deutsch_jozsa.qn",
+      "quil": "corpus/quil/deutsch_jozsa.quil",
+      "notes": "DJ balanced oracle on 3+1 qubits"
+    }
+  ]
+}

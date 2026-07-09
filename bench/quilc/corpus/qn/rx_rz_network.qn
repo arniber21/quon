@@ -1,0 +1,21 @@
+-- Rotation-heavy 3-qubit network (#116).
+
+fn rx_rz_network(): Circuit<3, 3, 9, Universal> = circuit {
+    Rx(0.3) @0
+    |> Rz(0.7) @1
+    |> CNOT @(0, 1)
+    |> Rx(1.1) @1
+    |> Rz(0.4) @2
+    |> CNOT @(1, 2)
+    |> Rz(0.9) @0
+    |> CNOT @(0, 2)
+    |> Rx(0.2) @2
+}
+
+fn main(): Q<(Bit, Bit, Bit)> = run {
+    (q0, q1, q2) <- rx_rz_network() @ qreg(3)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    return (b0, b1, b2)
+}

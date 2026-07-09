@@ -1,0 +1,435 @@
+{
+  "manifest": "Shared corpus for quonc vs quilc (#116). Each entry has a Quil source for quilc and either a Quon source or a note that quonc uses the same logical circuit via .qn.",
+  "target": {
+    "quonc": "target/linear5_cx.json",
+    "quilc": "target/linear5_cnot.qpu",
+    "topology": "linear 5q",
+    "native_2q": "CX/CNOT",
+    "native_1q_quonc": [
+      "rz",
+      "sx",
+      "x"
+    ],
+    "native_1q_quilc": [
+      "RZ",
+      "RX(\u00b1\u03c0/2,\u00b1\u03c0)",
+      "MEASURE"
+    ]
+  },
+  "skip_quilc": false,
+  "within_pct": 20.0,
+  "rows": [
+    {
+      "id": "bell",
+      "size": "small",
+      "quonc": {
+        "depth": 6,
+        "gate_count": 6,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 1,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 4,
+        "gate_count": 4,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 0,
+        "two_qubit_count": 1,
+        "multiqubit_depth": 1,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+0.0%",
+        "depth": "+50.0%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": true,
+        "depth": false
+      }
+    },
+    {
+      "id": "bernstein_vazirani",
+      "size": "small",
+      "quonc": {
+        "depth": 23,
+        "gate_count": 40,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 14,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 21,
+        "gate_count": 38,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 1,
+        "two_qubit_count": 5,
+        "multiqubit_depth": 5,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+180.0%",
+        "depth": "+9.5%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": false,
+        "depth": true
+      }
+    },
+    {
+      "id": "grover",
+      "size": "small",
+      "quonc": {
+        "depth": 23,
+        "gate_count": 40,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 4,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 3,
+        "gate_count": 6,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 0,
+        "two_qubit_count": 0,
+        "multiqubit_depth": 0,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "n/a",
+        "depth": "+666.7%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": false,
+        "depth": false
+      }
+    },
+    {
+      "id": "ghz_4",
+      "size": "small",
+      "quonc": {
+        "depth": 8,
+        "gate_count": 8,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 3,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 6,
+        "gate_count": 6,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 0,
+        "two_qubit_count": 3,
+        "multiqubit_depth": 3,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+0.0%",
+        "depth": "+33.3%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": true,
+        "depth": false
+      }
+    },
+    {
+      "id": "cnot_ladder_5",
+      "size": "small",
+      "quonc": {
+        "depth": 4,
+        "gate_count": 4,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 4,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 4,
+        "gate_count": 4,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 0,
+        "two_qubit_count": 4,
+        "multiqubit_depth": 4,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+0.0%",
+        "depth": "+0.0%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": true,
+        "depth": true
+      }
+    },
+    {
+      "id": "qft_3",
+      "size": "medium",
+      "quonc": {
+        "depth": 36,
+        "gate_count": 42,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 21,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 55,
+        "gate_count": 85,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 2,
+        "two_qubit_count": 15,
+        "multiqubit_depth": 15,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+40.0%",
+        "depth": "-34.5%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": false,
+        "depth": false
+      }
+    },
+    {
+      "id": "ising_step",
+      "size": "medium",
+      "quonc": {
+        "depth": 15,
+        "gate_count": 33,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 6,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 14,
+        "gate_count": 29,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 0,
+        "two_qubit_count": 6,
+        "multiqubit_depth": 6,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+0.0%",
+        "depth": "+7.1%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": true,
+        "depth": true
+      }
+    },
+    {
+      "id": "qaoa_k3",
+      "size": "medium",
+      "quonc": {
+        "depth": 26,
+        "gate_count": 48,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 12,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 32,
+        "gate_count": 54,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 1,
+        "two_qubit_count": 9,
+        "multiqubit_depth": 9,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+33.3%",
+        "depth": "-18.8%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": false,
+        "depth": true
+      }
+    },
+    {
+      "id": "clifford_t_phase",
+      "size": "small",
+      "quonc": {
+        "depth": 10,
+        "gate_count": 16,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 2,
+        "ok": true,
+        "input_t_count": 4
+      },
+      "quilc": {
+        "depth": 7,
+        "gate_count": 10,
+        "t_count": 0,
+        "input_t_count": 4,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 0,
+        "two_qubit_count": 2,
+        "multiqubit_depth": 2,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+0.0%",
+        "depth": "+42.9%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": true,
+        "depth": false
+      }
+    },
+    {
+      "id": "rx_rz_network",
+      "size": "medium",
+      "quonc": {
+        "depth": 24,
+        "gate_count": 27,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 6,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 28,
+        "gate_count": 42,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 1,
+        "two_qubit_count": 6,
+        "multiqubit_depth": 6,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+0.0%",
+        "depth": "-14.3%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": true,
+        "depth": true
+      }
+    },
+    {
+      "id": "swap_via_cnot",
+      "size": "small",
+      "quonc": {
+        "depth": 6,
+        "gate_count": 6,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 6,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 3,
+        "gate_count": 3,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 0,
+        "two_qubit_count": 3,
+        "multiqubit_depth": 3,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+100.0%",
+        "depth": "+100.0%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": false,
+        "depth": false
+      }
+    },
+    {
+      "id": "deutsch_jozsa",
+      "size": "small",
+      "quonc": {
+        "depth": 23,
+        "gate_count": 40,
+        "t_count": 0,
+        "swap_count": 0,
+        "two_qubit_count": 14,
+        "ok": true,
+        "input_t_count": 0
+      },
+      "quilc": {
+        "depth": 21,
+        "gate_count": 38,
+        "t_count": 0,
+        "input_t_count": 0,
+        "t_count_input_note": "post-native; T\u2192RZ under Xhalves ISA",
+        "swap_count": 1,
+        "two_qubit_count": 5,
+        "multiqubit_depth": 5,
+        "ok": true
+      },
+      "delta": {
+        "two_qubit_count": "+180.0%",
+        "depth": "+9.5%",
+        "t_count": "0%"
+      },
+      "within_20pct": {
+        "two_qubit_count": false,
+        "depth": true
+      }
+    }
+  ],
+  "competitive": [
+    "cnot_ladder_5",
+    "ising_step",
+    "rx_rz_network"
+  ],
+  "lagging": [
+    "bell (depth +50.0%)",
+    "bernstein_vazirani (2Q +180.0%)",
+    "grover (2Q n/a, depth +666.7%)",
+    "ghz_4 (depth +33.3%)",
+    "qft_3 (2Q +40.0%, depth -34.5%)",
+    "qaoa_k3 (2Q +33.3%)",
+    "clifford_t_phase (depth +42.9%)",
+    "swap_via_cnot (2Q +100.0%, depth +100.0%)",
+    "deutsch_jozsa (2Q +180.0%)"
+  ]
+}

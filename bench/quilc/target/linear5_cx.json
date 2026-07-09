@@ -1,0 +1,11 @@
+{
+  "id": "bench_linear5_cx",
+  "num_qubits": 5,
+  "topology": {
+    "edges": [[0, 1], [1, 2], [2, 3], [3, 4]]
+  },
+  "native_gates": ["cx", "rz", "sx", "x"],
+  "meas_latency_us": 0.5,
+  "supports_mid_circuit_meas": true,
+  "supports_feed_forward": true
+}

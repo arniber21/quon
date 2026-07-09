@@ -1,0 +1,25 @@
+-- Forward QFT n=3 for quilc bench (#116). Unlike test/verify/qft.qn this does
+-- not compose with adjoint(qft), so the circuit survives optimization.
+
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / (2.0 ^ (i + 1)))) @(0, i + 1) }
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+fn main(): Q<(Bit, Bit, Bit)> = run {
+    (q0, q1, q2) <- qft(3) @ qreg(3)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    return (b0, b1, b2)
+}

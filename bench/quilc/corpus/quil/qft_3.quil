@@ -1,0 +1,8 @@
+# QFT n=3 (standard textbook, bit-reversed output)
+H 0
+CPHASE(pi/2) 1 0
+CPHASE(pi/4) 2 0
+H 1
+CPHASE(pi/2) 2 1
+H 2
+SWAP 0 2

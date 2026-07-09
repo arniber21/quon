@@ -1,0 +1,22 @@
+-- One TFIM Trotter step with nonzero tau (#116).
+
+fn zz_layer(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Rzz(-2.0 * j * tau) @(i, i + 1) }
+}
+
+fn x_layer(n: Nat, h: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(-2.0 * h * tau) q }
+}
+
+fn trotter_step(n: Nat, j: Float, h: Float, tau: Float): Circuit<n, n, n, Universal> = circuit {
+    zz_layer(n, j, tau) |> x_layer(n, h, tau)
+}
+
+fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, q3) <- trotter_step(4, 1.0, 1.0, 0.25) @ qreg(4)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    b3 <- measure(q3)
+    return (b0, b1, b2, b3)
+}

@@ -1,0 +1,63 @@
+{
+  "metadata": {
+    "name": "bench_linear5_cnot",
+    "version": 1.0,
+    "description": "Matched 5-qubit linear topology with CNOT 2Q native (quilc counterpart of linear5_cx.json)."
+  },
+  "isa": {
+    "1Q": {
+      "0": {},
+      "1": {},
+      "2": {},
+      "3": {},
+      "4": {}
+    },
+    "2Q": {
+      "0-1": {
+        "gates": [
+          {
+            "operator": "CNOT",
+            "parameters": [],
+            "arguments": ["_", "_"],
+            "duration": 100,
+            "fidelity": 0.99
+          }
+        ]
+      },
+      "1-2": {
+        "gates": [
+          {
+            "operator": "CNOT",
+            "parameters": [],
+            "arguments": ["_", "_"],
+            "duration": 100,
+            "fidelity": 0.99
+          }
+        ]
+      },
+      "2-3": {
+        "gates": [
+          {
+            "operator": "CNOT",
+            "parameters": [],
+            "arguments": ["_", "_"],
+            "duration": 100,
+            "fidelity": 0.99
+          }
+        ]
+      },
+      "3-4": {
+        "gates": [
+          {
+            "operator": "CNOT",
+            "parameters": [],
+            "arguments": ["_", "_"],
+            "duration": 100,
+            "fidelity": 0.99
+          }
+        ]
+      }
+    }
+  },
+  "specs": {}
+}

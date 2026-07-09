@@ -1,0 +1,26 @@
+-- QAOA p=1 MaxCut K3 for quilc bench (#116).
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn cost_layer(n: Nat, gamma: Float): Circuit<n, n, n * n, Universal> = circuit {
+    for (i, j) in pairs(n) { Rzz(gamma) @(i, j) }
+}
+
+fn mixer_layer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(beta) q }
+}
+
+fn qaoa_layer(n: Nat, gamma: Float, beta: Float): Circuit<n, n, n * n + 1, Universal> = circuit {
+    cost_layer(n, gamma) |> mixer_layer(n, beta)
+}
+
+fn main(): Q<(Bit, Bit, Bit)> = run {
+    (q0, q1, q2) <- hadamard_all(3) @ qreg(3)
+    (r0, r1, r2) <- qaoa_layer(3, 0.5857, 2.5026) @ (q0, q1, q2)
+    b0 <- measure(r0)
+    b1 <- measure(r1)
+    b2 <- measure(r2)
+    return (b0, b1, b2)
+}

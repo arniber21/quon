@@ -1,0 +1,15 @@
+-- Logical SWAP of qubits 0 and 2 via three CNOTs; forces routing on linear5 (#116).
+
+fn swap_via_cnot(): Circuit<3, 3, 3, Clifford> = circuit {
+    CNOT @(0, 2)
+    |> CNOT @(2, 0)
+    |> CNOT @(0, 2)
+}
+
+fn main(): Q<(Bit, Bit, Bit)> = run {
+    (q0, q1, q2) <- swap_via_cnot() @ qreg(3)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    return (b0, b1, b2)
+}
