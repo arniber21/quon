@@ -19,7 +19,12 @@
 //!
 //! Zoned routing-aware placement (#107) follows [RAP] (placement cost = routing
 //! cost, Eqs. (1)–(2)); see `docs/neutral_atom/architecture_model.md` §7.
+//!
+//! Schedule compaction (#108) is engineering glue: exclusive-cycle ASAP baseline
+//! plus greedy E0 merge — **not** Enola-optimal true ASAP; see
+//! [`compaction`] and `docs/neutral_atom/architecture_model.md` §4.
 
+pub mod compaction;
 #[cfg(feature = "mlir")]
 pub mod dialect;
 pub mod entangling_schedule;
@@ -34,6 +39,11 @@ pub mod schedule;
 pub mod schedule_entry;
 pub mod zoned;
 
+pub use compaction::{
+    CompactionError, CompactionOptions, CompactionResult, CriticalPathReport, LegalityLimits,
+    ScheduleDependency, ScheduleDependencyKind, asap_schedule_layers, compact_schedule,
+    feed_forward_dependencies, infer_atom_dependencies,
+};
 pub use entangling_schedule::{
     EntanglingScheduleError, EntanglingScheduleResult, LayerUtilization, capacity_layer_count,
     schedule_entangling_layers,

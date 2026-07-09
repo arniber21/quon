@@ -4,8 +4,9 @@
 //! It validates the graph and returns a [`GraphScheduleRequest`] with empty
 //! schedule layers and no layout — a stable extension point for placement
 //! ([`crate::placement::place`], #104), Misra–Gries entangling-layer scheduling
-//! ([`crate::entangling_schedule::schedule_entangling_layers`], #105), and AOD
-//! movement (#106).
+//! ([`crate::entangling_schedule::schedule_entangling_layers`], #105), AOD
+//! movement (#106), zoned RAP (#107), and schedule compaction
+//! ([`crate::compaction::compact_schedule`], #108) as a post-pass.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -20,13 +21,15 @@ use crate::schedule::ScheduleLayer;
 /// [`schedule_from_graph`], `layers` is empty and `layout` is `None` until
 /// #104–#106 populate them. Call
 /// [`crate::entangling_schedule::schedule_entangling_layers`] to fill `layers`
-/// via Misra–Gries / ASAP (does not require `layout`).
+/// via Misra–Gries / ASAP (does not require `layout`). Optionally compact with
+/// [`crate::compaction::compact_schedule`] (#108) after #105/#107.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphScheduleRequest {
     pub graph: InteractionGraph,
     /// Empty after [`schedule_from_graph`]; filled by
-    /// [`crate::entangling_schedule::schedule_entangling_layers`] (#105).
+    /// [`crate::entangling_schedule::schedule_entangling_layers`] (#105);
+    /// may be rewritten by [`crate::compaction::compact_schedule`] (#108).
     pub layers: Vec<ScheduleLayer>,
     /// Filled by [`crate::placement::place`] (#104); `None` after [`schedule_from_graph`].
     pub layout: Option<NeutralAtomLayout>,
