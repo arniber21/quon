@@ -123,6 +123,9 @@ proptest! {
             occ_atom.iter().map(|(&a, &s)| (s, a)).collect();
 
         for layer in &result.request.layers {
+            // Replay non-entangle actions, then check once with the full partner
+            // set for this layer (matches planner B11 — co-scheduled pairs are partners).
+            let mut layer_gates: Vec<(AtomId, AtomId)> = Vec::new();
             for action in &layer.actions {
                 match action {
                     NeutralAtomAction::Transfer(t) => {
@@ -141,24 +144,27 @@ proptest! {
                         }
                     }
                     NeutralAtomAction::Entangle2 { atoms, .. } => {
-                        let gates = [(atoms[0], atoms[1])];
-                        // R1: partners ≤ r_b; R2/R3: all occupied isolation (B11).
-                        prop_assert!(
-                            check_entangling_geometry(
-                                layer.cycle,
-                                &gates,
-                                &occ_atom,
-                                &site_pos,
-                                &p
-                            )
-                            .is_ok()
-                        );
-                        let sa = occ_atom[&atoms[0]];
-                        let sb = occ_atom[&atoms[1]];
-                        let d = euclidean_um(site_pos[&sa], site_pos[&sb]);
-                        prop_assert!(d <= p.rydberg_range_um);
+                        layer_gates.push((atoms[0], atoms[1]));
                     }
                     _ => {}
+                }
+            }
+            if !layer_gates.is_empty() {
+                prop_assert!(
+                    check_entangling_geometry(
+                        layer.cycle,
+                        &layer_gates,
+                        &occ_atom,
+                        &site_pos,
+                        &p
+                    )
+                    .is_ok()
+                );
+                for &(a, b) in &layer_gates {
+                    let sa = occ_atom[&a];
+                    let sb = occ_atom[&b];
+                    let d = euclidean_um(site_pos[&sa], site_pos[&sb]);
+                    prop_assert!(d <= p.rydberg_range_um);
                 }
             }
         }
@@ -229,5 +235,81 @@ proptest! {
             .filter(|a| matches!(a, NeutralAtomAction::Entangle2 { .. }))
             .count() as u64;
         prop_assert!(result.skipped_already_adjacent <= entangles);
+    }
+}
+
+#[test]
+fn debug_seed0_n5() {
+    let result = plan_random(0, 5, true).expect("plan ok");
+    let layout = result.request.layout.as_ref().unwrap();
+    let site_pos: BTreeMap<SiteId, Position> =
+        layout.sites.iter().map(|s| (s.id, s.position)).collect();
+    let p = MovementParams::generic_rna_v0();
+    let mut initial: BTreeMap<AtomId, SiteId> = layout
+        .initial_bindings
+        .iter()
+        .map(|b| {
+            let site = match b.trap {
+                TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
+            };
+            (b.atom, site)
+        })
+        .collect();
+    for layer in result.request.layers.iter().rev() {
+        for action in &layer.actions {
+            if let NeutralAtomAction::Move(g) = action {
+                for m in &g.moves {
+                    initial.insert(m.atom, m.from);
+                }
+            }
+        }
+    }
+    eprintln!("initial={initial:?}");
+    let mut occ_atom = initial;
+    let mut occ_site: BTreeMap<SiteId, AtomId> = occ_atom.iter().map(|(&a, &s)| (s, a)).collect();
+    for layer in &result.request.layers {
+        eprintln!(
+            "--- layer cycle={} actions={}",
+            layer.cycle,
+            layer.actions.len()
+        );
+        for action in &layer.actions {
+            match action {
+                NeutralAtomAction::Transfer(t) => {
+                    eprintln!("  xfer {:?} {:?} site {:?}", t.atom, t.direction, t.site);
+                    if t.direction == TransferDirection::SlmToAod {
+                        if occ_site.get(&t.site) == Some(&t.atom) {
+                            occ_site.remove(&t.site);
+                        }
+                    } else {
+                        occ_site.insert(t.site, t.atom);
+                        occ_atom.insert(t.atom, t.site);
+                    }
+                }
+                NeutralAtomAction::Move(g) => {
+                    for m in &g.moves {
+                        eprintln!("  move {:?} {:?} -> {:?}", m.atom, m.from, m.to);
+                        occ_atom.insert(m.atom, m.to);
+                    }
+                }
+                NeutralAtomAction::Entangle2 { atoms, .. } => {
+                    eprintln!("  entangle {:?} occ={occ_atom:?}", atoms);
+                }
+                _ => {}
+            }
+        }
+        let gates: Vec<_> = layer
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                NeutralAtomAction::Entangle2 { atoms, .. } => Some((atoms[0], atoms[1])),
+                _ => None,
+            })
+            .collect();
+        if !gates.is_empty() {
+            let geo = check_entangling_geometry(layer.cycle, &gates, &occ_atom, &site_pos, &p);
+            eprintln!("  geometry gates={gates:?} => {geo:?}");
+            assert!(geo.is_ok(), "geometry must pass with full gate set");
+        }
     }
 }
