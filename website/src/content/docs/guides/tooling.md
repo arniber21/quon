@@ -3,9 +3,11 @@ title: Developer tooling
 description: Run Quon's language server, formatter, and linter from a source checkout.
 ---
 
-Quon ships a language server, formatter, and linter in the repository. First-party
-editor extensions are still in development, but you can build the tools and connect
-them to an editor today.
+Quon ships a language server, formatter, and linter in the repository, plus
+first-party editor packages for VS Code (`extensions/vscode-quon/`), Neovim
+(`nvim-quon/`), and Zed (`extensions/zed-quon/`). Build the tools from source
+and use those packages (or wire the binaries into another editor) as described
+below.
 
 ## Build the tools
 
@@ -147,12 +149,23 @@ local sweep over the repository's `.qn` fixtures, run:
 
 ## Editor integration status
 
-No first-party editor package is published yet. Until one is available, configure the
-stdio language server command above and wire `quonfmt --check` or `quonfmt -w` and
-`quonlint` into editor tasks or save hooks.
+- **VS Code:** first-party extension at [`extensions/vscode-quon/`](https://github.com/arniber21/quon/tree/main/extensions/vscode-quon)
+  ([#131](https://github.com/arniber21/quon/issues/131)). Install from a built `.vsix` or run
+  the Extension Development Host. It starts `quon_lsp` over stdio and formats via `quonfmt`
+  (format-on-save default **off** — `quonfmt` strips comments).
+- **Neovim:** first-party Lua module at [`nvim-quon/`](https://github.com/arniber21/quon/tree/main/nvim-quon)
+  ([#133](https://github.com/arniber21/quon/issues/133)). Load via lazy.nvim (`ft = "quon"`) or
+  packer from a monorepo checkout; see the [nvim-quon README](https://github.com/arniber21/quon/blob/main/nvim-quon/README.md).
+  Uses `vim.lsp.config` / `vim.lsp.enable` with catalog entry `lsp/quon_lsp.lua`, shared
+  Tree-sitter from `tree-sitter-quon/`, and conform.nvim → `quonfmt`.
+- **Shared Tree-sitter grammar:** [`tree-sitter-quon/`](https://github.com/arniber21/quon/tree/main/tree-sitter-quon)
+  (corpus at `tree-sitter-quon/test/corpus/`) for Zed/Neovim consumers.
+- **Zed:** dev extension at [`extensions/zed-quon/`](https://github.com/arniber21/quon/tree/main/extensions/zed-quon)
+  ([#132](https://github.com/arniber21/quon/issues/132)). Install via Zed → Extensions →
+  Install Dev Extension; see the [zed-quon README](https://github.com/arniber21/quon/blob/main/extensions/zed-quon/README.md).
+  Uses shared Tree-sitter from `tree-sitter-quon/`, `quon_lsp` over stdio, and
+  format-on-save via external `quonfmt`.
 
-Packaging and editor-specific defaults are tracked separately:
-
-- [VS Code extension (#131)](https://github.com/arniber21/quon/issues/131)
-- [Zed extension (#132)](https://github.com/arniber21/quon/issues/132)
-- [Neovim support (#133)](https://github.com/arniber21/quon/issues/133)
+You can also configure the stdio language server command above and wire
+`quonfmt --check` or `quonfmt -w` and `quonlint` into editor tasks or save hooks without
+an extension.

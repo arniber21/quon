@@ -1,0 +1,32 @@
+{
+  "grammars": [
+    {
+      "name": "quon",
+      "camelcase": "Quon",
+      "scope": "source.quon",
+      "path": ".",
+      "file-types": ["qn"],
+      "highlights": "queries/highlights.scm",
+      "indents": "queries/indents.scm",
+      "locals": "queries/locals.scm",
+      "injection-regex": "^quon$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "Apache-2.0",
+    "description": "Tree-sitter grammar for Quon",
+    "links": {
+      "repository": "https://github.com/arniber21/quon"
+    }
+  },
+  "bindings": {
+    "c": false,
+    "go": false,
+    "node": false,
+    "python": false,
+    "rust": false,
+    "swift": false,
+    "zig": false
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "name": "quon-vscode",
+  "displayName": "Quon",
+  "description": "Quon language support — syntax highlighting, LSP, and quonfmt",
+  "version": "0.1.0",
+  "publisher": "quon",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arniber21/quon.git",
+    "directory": "extensions/vscode-quon"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters",
+    "Linters"
+  ],
+  "activationEvents": [
+    "onLanguage:quon"
+  ],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "quon",
+        "aliases": [
+          "Quon"
+        ],
+        "extensions": [
+          ".qn"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "quon",
+        "scopeName": "source.quon",
+        "path": "./syntaxes/quon.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[quon]": {
+        "editor.defaultFormatter": "quon.quon-vscode",
+        "editor.formatOnSave": false
+      }
+    },
+    "configuration": {
+      "title": "Quon",
+      "properties": {
+        "quon.lsp.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the quon_lsp executable (absolute or workspace-relative). Empty = auto-discover."
+        },
+        "quon.lsp.debounceMs": {
+          "type": "number",
+          "default": 100,
+          "description": "Analysis debounce in milliseconds (maps to QUON_LSP_DEBOUNCE_MS)."
+        },
+        "quon.lsp.logLevel": {
+          "type": "string",
+          "enum": [
+            "off",
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "default": "info",
+          "description": "Server log level (maps to QUON_LOG / RUST_LOG)."
+        },
+        "quon.lsp.trace": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Language client LSP trace level."
+        },
+        "quon.fmt.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the quonfmt executable (absolute or workspace-relative). Also honors QUON_FMT_PATH."
+        },
+        "quon.fmt.formatOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Informational only. Authoritative default is configurationDefaults [quon].editor.formatOnSave = false (quonfmt strips comments)."
+        },
+        "quon.lint.configPath": {
+          "type": "string",
+          "default": "",
+          "description": "Reserved. Today quon_lsp discovers quonlint.toml by walking up from the file path; this setting is documentation-only until a server override lands."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "quon.restartServer",
+        "title": "Quon: Restart Language Server"
+      },
+      {
+        "command": "quon.showServerStatus",
+        "title": "Quon: Show Server Status"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "tsc -p ./ --noEmit",
+    "package": "npm run compile && mkdir -p dist && vsce package --out dist/quon-vscode.vsix",
+    "test": "node ./out/test/runTest.js",
+    "pretest": "npm run compile",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.2.1",
+    "mocha": "^11.0.1",
+    "typescript": "^5.7.2"
+  },
+  "allowScripts": {
+    "@vscode/vsce-sign@2.0.9": true,
+    "keytar@7.9.0": true
+  }
+}

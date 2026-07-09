@@ -65,8 +65,8 @@ minutes with ~5.9× fidelity gain over [OLSQ-DPQA].
   planner (#106), where a parallel movement round = an independent set of
   compatible moves.
 - The fidelity model shape (its Eq. (1)): per-gate, per-transfer, idle-
-  excitation, and 1 − t/T decoherence factors — informs the resource
-  estimator's fidelity estimate (#110) and the cost-model terms (§9).
+  excitation, and 1 − t/T decoherence factors — informs a deferred fidelity
+  estimate (future; not #110) and the cost-model terms (§9).
 - Parameter values: transfer 15 µs at 99.9%, CZ 360 ns at 99.5%, 1Q 625 ns at
   99.97%, idle-excitation 99.75% per stage, a = 2750 m/s², T2 = 1.5 s.
 - The argument that *minimizing Rydberg stages* is the correct flat-array
