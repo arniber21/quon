@@ -1,34 +1,25 @@
--- QAOA for MaxSAT: clause-penalty cost Hamiltonian over a clause-incidence matrix.
--- Stresses: two-body clause couplings + single-body literal biases, depth p*(n*n+2).
-
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
-fn maxsat_cost(n: Nat, gamma: Float, c: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 1, Universal> = circuit {
-    for (i, j) in pairs(n) { Rzz(gamma * c[i][j]) @(i, j) }
-    |> for i in diag(n)    { Rz(0.5 * gamma * c[i][i]) @i }
+fn maxsat_cost(n: Nat, gamma: Float, c: Matrix<n, n, Float>): Circuit<n, n, n * n + 1, Universal> = circuit {
+        for (i, j) in (pairs n) { (Rzz(gamma * (index(index(c, i), j)))) @(i, j) }
+|> for i in (diag n) { (Rz((0.5 * gamma) * (index(index(c, i), i)))) @i }
 }
 
 fn maxsat_mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rx(2.0 * beta) q }
+        (for q in (qubits n) { Rx(2.0 * beta, q) })
 }
 
-fn maxsat_layer(n: Nat, gamma: Float, beta: Float, c: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 2, Universal> = circuit {
-    maxsat_cost(n, gamma, c) |> maxsat_mixer(n, beta)
+fn maxsat_layer(n: Nat, gamma: Float, beta: Float, c: Matrix<n, n, Float>): Circuit<n, n, n * n + 2, Universal> = circuit {
+        maxsat_cost(n, gamma, c) |> maxsat_mixer(n, beta)
 }
 
-fn maxsat_qaoa(n: Nat, p: Int, params: List<(Float, Float)>, c: Matrix<n, n, Float>)
-    : Circuit<n, n, p * (n*n + 2), Universal> =
-    fold(take(p, params), identity(n), fn(acc, (gamma, beta)) ->
-        acc |> maxsat_layer(n, gamma, beta, c)
-    )
+fn maxsat_qaoa(n: Nat, p: Int, params: List<(Float, Float)>, c: Matrix<n, n, Float>): Circuit<n, n, p * (n * n + 2), Universal> = fold(take(p, params), identity n, fn(acc, (gamma, beta)) -> acc
+|> maxsat_layer(n, gamma, beta, c))
 
-fn maxsat_shot(n: Nat, p: Int, params: List<(Float, Float)>, c: Matrix<n, n, Float>)
-    : Q<List<Bit>> = run {
-    let circ = hadamard_all(n) |> maxsat_qaoa(n, p, params, c)
-    reg     <- circ @ qreg(n)
-    measure_all(reg)
+fn maxsat_shot(n: Nat, p: Int, params: List<(Float, Float)>, c: Matrix<n, n, Float>): Q<List<Bit>> = run {
+        let circ = hadamard_all n |> maxsat_qaoa(n, p, params, c)
+        reg <- circ @ (qreg n)
+        measure_all reg
 }

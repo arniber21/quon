@@ -1,19 +1,16 @@
--- Cuccaro-style ripple-carry adder: a Toffoli carry chain (controlled-CNOT) plus a CNOT sum chain.
--- Stresses: `controlled(CNOT)` as a depth-2 three-qubit gate, composed sequential chains.
-
 fn carry_chain(n: Nat): Circuit<n, n, 2 * (n - 2), Clifford> = circuit {
-    for i in range(n - 2) { controlled(CNOT) @(i, i + 1, i + 2) }
+        (for i in (range(n - 2)) { controlled(CNOT) @(i, i + 1, i + 2) })
 }
 
 fn sum_chain(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
-    for i in range(n - 1) { CNOT @(i, i + 1) }
+        (for i in (range(n - 1)) { CNOT @(i, i + 1) })
 }
 
 fn ripple_add(n: Nat): Circuit<n, n, 2 * (n - 2) + (n - 1), Clifford> = circuit {
-    carry_chain(n) |> sum_chain(n)
+        carry_chain n |> sum_chain n
 }
 
 fn run_adder(n: Nat): Q<List<Bit>> = run {
-    q <- ripple_add(n) @ qreg(n)
-    measure_all(q)
+        q <- (ripple_add n) @ (qreg n)
+        measure_all q
 }

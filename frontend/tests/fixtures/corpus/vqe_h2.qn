@@ -1,25 +1,20 @@
--- VQE ansatz for the H₂ molecule: hardware-efficient Ry rotations + a CNOT entangling ladder.
--- Stresses: rotation layer (parallel) composed with a sequential CNOT ladder, folded over p blocks.
-
 fn ry_layer(n: Nat, theta: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Ry(theta) q }
+        (for q in (qubits n) { Ry(theta, q) })
 }
 
 fn cnot_ladder(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
-    for i in range(n - 1) { CNOT @(i, i + 1) }
+        (for i in (range(n - 1)) { CNOT @(i, i + 1) })
 }
 
 fn vqe_block(n: Nat, theta: Float): Circuit<n, n, n, Universal> = circuit {
-    ry_layer(n, theta) |> cnot_ladder(n)
+        ry_layer(n, theta) |> cnot_ladder n
 }
 
-fn vqe_h2_ansatz(n: Nat, p: Int, thetas: List<Float>): Circuit<n, n, p * n, Universal> =
-    fold(take(p, thetas), identity(n), fn(acc, theta) ->
-        acc |> vqe_block(n, theta)
-    )
+fn vqe_h2_ansatz(n: Nat, p: Int, thetas: List<Float>): Circuit<n, n, p * n, Universal> = fold(take(p, thetas), identity n, fn(acc, theta) -> acc
+|> vqe_block(n, theta))
 
 fn vqe_h2_energy_sample(n: Nat, p: Int, thetas: List<Float>): Q<List<Bit>> = run {
-    let circ = ry_layer(n, 0.0) |> vqe_h2_ansatz(n, p, thetas)
-    reg     <- circ @ qreg(n)
-    measure_all(reg)
+        let circ = ry_layer(n, 0.0) |> vqe_h2_ansatz(n, p, thetas)
+        reg <- circ @ (qreg n)
+        measure_all reg
 }

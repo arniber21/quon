@@ -1,34 +1,25 @@
--- QAOA for Portfolio Optimization: risk covariance (two-body) + expected-return bias (one-body).
--- Stresses: a risk-aversion-scaled covariance cost with a return-and-budget diagonal, depth p*(n*n+2).
-
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
-fn portfolio_cost(n: Nat, gamma: Float, risk: Float, sigma: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 1, Universal> = circuit {
-    for (i, j) in pairs(n) { Rzz(gamma * risk * sigma[i][j]) @(i, j) }
-    |> for i in diag(n)    { Rz(gamma * sigma[i][i]) @i }
+fn portfolio_cost(n: Nat, gamma: Float, risk: Float, sigma: Matrix<n, n, Float>): Circuit<n, n, n * n + 1, Universal> = circuit {
+        for (i, j) in (pairs n) { (Rzz((gamma * risk) * (index(index(sigma, i), j)))) @(i, j) }
+|> for i in (diag n) { (Rz(gamma * (index(index(sigma, i), i)))) @i }
 }
 
 fn portfolio_mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rx(2.0 * beta) q }
+        (for q in (qubits n) { Rx(2.0 * beta, q) })
 }
 
-fn portfolio_layer(n: Nat, gamma: Float, beta: Float, risk: Float, sigma: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 2, Universal> = circuit {
-    portfolio_cost(n, gamma, risk, sigma) |> portfolio_mixer(n, beta)
+fn portfolio_layer(n: Nat, gamma: Float, beta: Float, risk: Float, sigma: Matrix<n, n, Float>): Circuit<n, n, n * n + 2, Universal> = circuit {
+        portfolio_cost(n, gamma, risk, sigma) |> portfolio_mixer(n, beta)
 }
 
-fn portfolio_qaoa(n: Nat, p: Int, risk: Float, params: List<(Float, Float)>, sigma: Matrix<n, n, Float>)
-    : Circuit<n, n, p * (n*n + 2), Universal> =
-    fold(take(p, params), identity(n), fn(acc, (gamma, beta)) ->
-        acc |> portfolio_layer(n, gamma, beta, risk, sigma)
-    )
+fn portfolio_qaoa(n: Nat, p: Int, risk: Float, params: List<(Float, Float)>, sigma: Matrix<n, n, Float>): Circuit<n, n, p * (n * n + 2), Universal> = fold(take(p, params), identity n, fn(acc, (gamma, beta)) -> acc
+|> portfolio_layer(n, gamma, beta, risk, sigma))
 
-fn portfolio_shot(n: Nat, p: Int, risk: Float, params: List<(Float, Float)>, sigma: Matrix<n, n, Float>)
-    : Q<List<Bit>> = run {
-    let circ = hadamard_all(n) |> portfolio_qaoa(n, p, risk, params, sigma)
-    reg     <- circ @ qreg(n)
-    measure_all(reg)
+fn portfolio_shot(n: Nat, p: Int, risk: Float, params: List<(Float, Float)>, sigma: Matrix<n, n, Float>): Q<List<Bit>> = run {
+        let circ = hadamard_all n |> portfolio_qaoa(n, p, risk, params, sigma)
+        reg <- circ @ (qreg n)
+        measure_all reg
 }
