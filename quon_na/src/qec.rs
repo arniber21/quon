@@ -133,8 +133,10 @@ pub fn atoms_per_logical(family: &CodeFamily) -> Result<u32, QecError> {
 /// Expand `logical_qubits` under `family` into a [`CodeBlock`] with consecutive
 /// [`AtomId`]s starting at `first_atom_id`.
 ///
-/// Total atom count is `atoms_per_logical(family) * logical_qubits.len()`.
-/// For [`CodeFamily::AbstractBlockCode`], `logical_qubits.len()` must equal `k`.
+/// Total atom count:
+/// - [`CodeFamily::AbstractBlockCode`]: exactly `n` (one `[[n, k, d]]` block;
+///   `logical_qubits.len()` must equal `k`).
+/// - Other families: `atoms_per_logical(family) * logical_qubits.len()`.
 pub fn expand_code_block(
     id: CodeBlockId,
     family: CodeFamily,
@@ -145,22 +147,28 @@ pub fn expand_code_block(
         return Err(QecError::EmptyLogicalQubits);
     }
 
-    if let CodeFamily::AbstractBlockCode { k, .. } = &family {
-        let actual = logical_qubits.len();
-        if actual != usize::try_from(*k).map_err(|_| QecError::AtomCountOverflow)? {
-            return Err(QecError::LogicalQubitCountMismatch {
-                expected: *k,
-                actual,
-            });
+    let total = match &family {
+        CodeFamily::AbstractBlockCode { n, k, .. } => {
+            // Validate n/k via the per-logical formula, then size the block to n.
+            let _ = atoms_per_logical(&family)?;
+            let actual = logical_qubits.len();
+            if actual != usize::try_from(*k).map_err(|_| QecError::AtomCountOverflow)? {
+                return Err(QecError::LogicalQubitCountMismatch {
+                    expected: *k,
+                    actual,
+                });
+            }
+            *n
         }
-    }
-
-    let per_logical = atoms_per_logical(&family)?;
-    let logical_count =
-        u32::try_from(logical_qubits.len()).map_err(|_| QecError::AtomCountOverflow)?;
-    let total = per_logical
-        .checked_mul(logical_count)
-        .ok_or(QecError::AtomCountOverflow)?;
+        _ => {
+            let per_logical = atoms_per_logical(&family)?;
+            let logical_count =
+                u32::try_from(logical_qubits.len()).map_err(|_| QecError::AtomCountOverflow)?;
+            per_logical
+                .checked_mul(logical_count)
+                .ok_or(QecError::AtomCountOverflow)?
+        }
+    };
     let last_exclusive = first_atom_id
         .checked_add(total)
         .ok_or(QecError::AtomCountOverflow)?;
@@ -336,8 +344,28 @@ mod tests {
             Ok(block) => block,
             Err(error) => panic!("expand failed: {error}"),
         };
-        // ceil(6/2) = 3 per logical × 2 logicals = 6 atoms
+        // One [[6, 2, d]] block → exactly n = 6 atoms (not ceil(n/k)*k).
         assert_eq!(block.atoms.len(), 6);
+    }
+
+    #[test]
+    fn expand_abstract_block_uses_n_when_n_not_divisible_by_k() {
+        // ceil(7/3) = 3 per-logical estimate, but the block still has n = 7 atoms.
+        assert_eq!(
+            atoms_per_logical(&CodeFamily::AbstractBlockCode { n: 7, k: 3, d: 2 }),
+            Ok(3)
+        );
+        let block = expand_code_block(
+            CodeBlockId(2),
+            CodeFamily::AbstractBlockCode { n: 7, k: 3, d: 2 },
+            vec![LogicalQubitId(0), LogicalQubitId(1), LogicalQubitId(2)],
+            0,
+        );
+        let block = match block {
+            Ok(block) => block,
+            Err(error) => panic!("expand failed: {error}"),
+        };
+        assert_eq!(block.atoms.len(), 7);
     }
 
     #[test]
