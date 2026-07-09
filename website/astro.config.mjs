@@ -8,6 +8,12 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'quon',
+			sidebar: [
+				{
+					label: 'Cookbook',
+					items: [{ autogenerate: { directory: 'cookbook' } }],
+				},
+			],
 		}),
 	],
 });

@@ -1,0 +1,36 @@
+---
+title: Grover search
+description: Amplify the marked state in the exact two-qubit search case.
+sidebar:
+  order: 5
+---
+
+import source from '../../../../../test/verify/grover.qn?raw';
+
+Grover's algorithm alternates a phase oracle with diffusion about the uniform
+superposition. This version uses parameterized `for` loops and `repeat`; see
+[value-dependent circuit widths and bounded repetition](/language/#value-dependent-circuits).
+
+## Source
+
+This page embeds the Aer-tested
+[`test/verify/grover.qn`](https://github.com/arniber21/quon/blob/main/test/verify/grover.qn)
+program. A more general frontend form lives at
+[`frontend/tests/fixtures/grover.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/grover.qn).
+
+<pre><code>{source}</code></pre>
+
+## Compile and simulate
+
+```sh
+./target/release/quonc test/verify/grover.qn --emit-qasm > /tmp/grover.qasm
+QUONC=target/release/quonc python test/verify/grover.py
+```
+
+## Expected result
+
+The oracle marks `|11>`. With four candidates, one marked item, and one Grover
+iteration, this is an exact special case: an ideal run returns `11` with
+probability 1. The
+[`grover.py`](https://github.com/arniber21/quon/blob/main/test/verify/grover.py)
+regression check requires the marked-state frequency to exceed 90%.

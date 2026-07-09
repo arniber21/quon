@@ -1,0 +1,36 @@
+---
+title: Bernstein–Vazirani
+description: Recover a hidden three-bit string with one oracle query.
+sidebar:
+  order: 4
+---
+
+import source from '../../../../../test/verify/bernstein_vazirani.qn?raw';
+
+This concrete oracle hides `s = 110`. Hadamard gates turn the oracle's phase
+kickback into three measurable bits. The program also shows a fixed-width
+[`Circuit` applied inside a `run` block](/language/#circuits-and-quantum-computations).
+
+## Source
+
+The embedded source is
+[`test/verify/bernstein_vazirani.qn`](https://github.com/arniber21/quon/blob/main/test/verify/bernstein_vazirani.qn);
+the typechecker reference is
+[`frontend/tests/fixtures/bernstein_vazirani.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/bernstein_vazirani.qn).
+
+<pre><code>{source}</code></pre>
+
+## Compile and simulate
+
+```sh
+./target/release/quonc test/verify/bernstein_vazirani.qn --emit-qasm > /tmp/bernstein_vazirani.qasm
+QUONC=target/release/quonc python test/verify/bernstein_vazirani.py
+```
+
+## Expected result
+
+For every shot, classical bits `(c0, c1, c2)` should equal `(1, 1, 0)`. The
+ancilla measurement is irrelevant. The
+[`bernstein_vazirani.py`](https://github.com/arniber21/quon/blob/main/test/verify/bernstein_vazirani.py)
+verifier checks that the set of recovered query-bit triples contains exactly
+the hidden string.
