@@ -329,7 +329,8 @@ fn merge_deps(
         if seen.insert(key) {
             deps.push(d.clone());
         }
-        // Barrier cut: every pre-barrier layer → barrier, and barrier → every post.
+        // Barrier cut: every pre → barrier, barrier → every post, and every
+        // pre → every post (so side-merges across the cut are still ordered).
         if d.kind == ScheduleDependencyKind::Barrier {
             for i in 0..d.before {
                 let key = (i, d.before, ScheduleDependencyKind::Barrier);
@@ -349,6 +350,18 @@ fn merge_deps(
                         after: j,
                         kind: ScheduleDependencyKind::Barrier,
                     });
+                }
+            }
+            for i in 0..d.before {
+                for j in (d.before + 1)..n {
+                    let key = (i, j, ScheduleDependencyKind::Barrier);
+                    if seen.insert(key) {
+                        deps.push(ScheduleDependency {
+                            before: i,
+                            after: j,
+                            kind: ScheduleDependencyKind::Barrier,
+                        });
+                    }
                 }
             }
         }
@@ -673,6 +686,16 @@ fn classify_merge(a: &ScheduleLayer, b: &ScheduleLayer) -> MergeClass {
     MergeClass::Forbidden
 }
 
+fn is_hard_order_dep(kind: ScheduleDependencyKind) -> bool {
+    matches!(
+        kind,
+        ScheduleDependencyKind::Barrier
+            | ScheduleDependencyKind::Measurement
+            | ScheduleDependencyKind::FeedForward
+    )
+}
+
+/// Fast path: same-cycle merge of both hard-edge endpoints is always illegal.
 fn hard_dep_forbids_same_cycle(
     lineage_i: &[u32],
     lineage_j: &[u32],
@@ -681,13 +704,7 @@ fn hard_dep_forbids_same_cycle(
     let set_i: BTreeSet<u32> = lineage_i.iter().copied().collect();
     let set_j: BTreeSet<u32> = lineage_j.iter().copied().collect();
     for d in deps {
-        let hard = matches!(
-            d.kind,
-            ScheduleDependencyKind::Barrier
-                | ScheduleDependencyKind::Measurement
-                | ScheduleDependencyKind::FeedForward
-        );
-        if !hard {
+        if !is_hard_order_dep(d.kind) {
             continue;
         }
         let crosses = (set_i.contains(&d.before) && set_j.contains(&d.after))
@@ -696,10 +713,44 @@ fn hard_dep_forbids_same_cycle(
             return true;
         }
     }
-    // Also AtomHazard: merging into same cycle is ok only if atoms disjoint —
-    // checked separately via validate_conflicts. Soft AtomHazard across layers
-    // with disjoint atoms after merge is fine; shared atoms fail conflicts.
+    // AtomHazard same-cycle is ok only if atoms disjoint — checked via
+    // validate_conflicts. Soft AtomHazard across layers with disjoint atoms
+    // after merge is fine; shared atoms fail conflicts.
     false
+}
+
+/// Post-merge invariant: every Barrier / Measurement / FeedForward edge must
+/// satisfy `cycle(vertex(before)) < cycle(vertex(after))`.
+///
+/// Same-cycle checks alone are insufficient — a side-merge can pull the
+/// successor onto an earlier cycle than the predecessor (e.g. merge an
+/// independent early entangle with a feed-forward correction).
+fn hard_dep_cycle_order_ok(
+    layers: &[ScheduleLayer],
+    lineage: &[Vec<u32>],
+    deps: &[ScheduleDependency],
+) -> bool {
+    let mut pre_to_vertex: BTreeMap<u32, usize> = BTreeMap::new();
+    for (v, ids) in lineage.iter().enumerate() {
+        for &id in ids {
+            pre_to_vertex.insert(id, v);
+        }
+    }
+    for d in deps {
+        if !is_hard_order_dep(d.kind) {
+            continue;
+        }
+        let Some(&u) = pre_to_vertex.get(&d.before) else {
+            continue;
+        };
+        let Some(&v) = pre_to_vertex.get(&d.after) else {
+            continue;
+        };
+        if layers[u].cycle >= layers[v].cycle {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -970,6 +1021,19 @@ fn try_merge_pair(
         if let Err(e) = validate_zone_constraints(&probe, layout, arch) {
             return Ok(MergeAttempt::HardFail(CompactionError::Zone(e.to_string())));
         }
+    }
+
+    // Side-merge safety: after union + dense renumber, every hard order edge
+    // must still satisfy cycle(before) < cycle(after). Same-cycle endpoint
+    // merges are already rejected above; this catches e.g. merging an early
+    // independent layer with a feed-forward correction so the correction
+    // lands at or before the measure cycle.
+    let mut sim_layers = layers.to_vec();
+    let mut sim_lineage = lineage.to_vec();
+    apply_merge(&mut sim_layers, &mut sim_lineage, i, j)?;
+    renumber_dense(&mut sim_layers);
+    if !hard_dep_cycle_order_ok(&sim_layers, &sim_lineage, deps) {
+        return Ok(MergeAttempt::HardFail(CompactionError::DependencyViolation));
     }
 
     Ok(MergeAttempt::Ok)

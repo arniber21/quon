@@ -283,6 +283,59 @@ fn measure_feed_forward_disjoint() {
     assert!(c_meas < c_corr);
 }
 
+/// FeedForward side-merge: greedy must not pull the correction onto/before the
+/// measure cycle by merging an early independent entangle with the correction.
+///
+/// Fixture: L0 Entangle(2,3)@0, L1 Measure(0)@1, L2 Entangle(4,5)@2 with
+/// FeedForward(1→2). Without a post-merge cycle-order check, merging L0∥L2
+/// would place the correction at cycle 0 while measure stays at cycle 1.
+#[test]
+fn feed_forward_side_merge_preserves_order() {
+    let mut req = empty_req(6);
+    req.layers = vec![
+        layer(0, vec![entangle(2, 3)]),
+        layer(1, vec![measure(0)]),
+        layer(2, vec![entangle(4, 5)]),
+    ];
+    let ff = feed_forward_dependencies(1, &[2]);
+    let opts = CompactionOptions {
+        greedy: true,
+        ..Default::default()
+    };
+    let result = compact_schedule(req, &ff, &opts).expect("compact");
+
+    let cycle_of = |pred: &dyn Fn(&NeutralAtomAction) -> bool| -> u32 {
+        result
+            .request
+            .layers
+            .iter()
+            .find(|l| l.actions.iter().any(pred))
+            .map(|l| l.cycle)
+            .expect("layer")
+    };
+    let c_meas = cycle_of(&|a| matches!(a, NeutralAtomAction::Measure { atom, .. } if atom.0 == 0));
+    let c_corr = cycle_of(&|a| {
+        matches!(
+            a,
+            NeutralAtomAction::Entangle2 { atoms, .. }
+                if atoms[0] == AtomId(4) && atoms[1] == AtomId(5)
+        )
+    });
+    assert!(
+        c_meas < c_corr,
+        "FeedForward side-merge must not put correction before measure (meas={c_meas}, corr={c_corr})"
+    );
+    // Forced L0∥L2 merge must HardFail with DependencyViolation.
+    let mut req2 = empty_req(6);
+    req2.layers = vec![
+        layer(0, vec![entangle(2, 3)]),
+        layer(1, vec![measure(0)]),
+        layer(2, vec![entangle(4, 5)]),
+    ];
+    let err = force_merge_layers(req2, &ff, 0, 2, &opts).unwrap_err();
+    assert!(matches!(err, CompactionError::DependencyViolation));
+}
+
 #[test]
 fn cannot_merge_measure_with_correction() {
     let mut req = empty_req(5);
@@ -373,6 +426,56 @@ fn barrier_blocks_cross_merge() {
         })
     };
     assert_ne!(cycle_of_pair(0, 1), cycle_of_pair(2, 3));
+}
+
+/// Barrier pre∥post: an independent mid-barrier layer must not side-merge with
+/// a post-barrier layer in a way that inverts `cycle(pre) < cycle(post)`.
+///
+/// L0 pre Entangle(0,1), L1 mid Entangle(2,3), L2 post Entangle(4,5), Barrier
+/// cut at L1 (`before: 1` → expands to pre→post edges including 0→2). Merging
+/// L0∥L2 would place post at the pre cycle.
+#[test]
+fn barrier_side_merge_preserves_pre_post_order() {
+    let mut req = empty_req(6);
+    req.layers = vec![
+        layer(0, vec![entangle(0, 1)]),
+        layer(1, vec![entangle(2, 3)]),
+        layer(2, vec![entangle(4, 5)]),
+    ];
+    let deps = vec![ScheduleDependency {
+        before: 1,
+        after: 2,
+        kind: ScheduleDependencyKind::Barrier,
+    }];
+    let opts = CompactionOptions {
+        greedy: true,
+        ..Default::default()
+    };
+    let result = compact_schedule(req.clone(), &deps, &opts).expect("compact");
+    let cycle_of_pair = |layers: &[ScheduleLayer], a: u32, b: u32| -> u32 {
+        layers
+            .iter()
+            .find_map(|l| {
+                l.actions.iter().find_map(|action| match action {
+                    NeutralAtomAction::Entangle2 { atoms, .. }
+                        if atoms[0] == AtomId(a) && atoms[1] == AtomId(b) =>
+                    {
+                        Some(l.cycle)
+                    }
+                    _ => None,
+                })
+            })
+            .expect("pair")
+    };
+    let c_pre = cycle_of_pair(&result.request.layers, 0, 1);
+    let c_post = cycle_of_pair(&result.request.layers, 4, 5);
+    assert!(
+        c_pre < c_post,
+        "Barrier side-merge must keep pre before post (pre={c_pre}, post={c_post})"
+    );
+
+    let err = force_merge_layers(req, &deps, 0, 2, &opts).unwrap_err();
+    assert!(matches!(err, CompactionError::DependencyViolation));
 }
 
 #[test]
