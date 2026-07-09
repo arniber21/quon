@@ -6,7 +6,6 @@ edition = "2024"
 [features]
 default = ["full"]
 full = ["dep:z3", "dep:quon_core", "dep:mlir_bridge", "dep:melior", "dep:anyhow"]
-parser-only = []
 
 [dependencies]
 chumsky   = { workspace = true }

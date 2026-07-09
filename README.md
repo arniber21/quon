@@ -46,6 +46,27 @@ cargo build --release
 ./target/release/quonc program.qn --watch --target device.json --metrics
 ```
 
+## Developer tooling
+
+| Tool | Purpose |
+|------|---------|
+| `quon_lsp` | Language server (diagnostics, hover, completion, go-to-definition, semantic tokens) |
+| `quonfmt` | Canonical Quon formatter (`quonfmt --check`, `-w`) — see [docs/quonfmt-style.md](docs/quonfmt-style.md) |
+| `quonlint` | Algorithm-quality linter (`quonlint`, `quonlint.toml`) |
+
+```bash
+# Format check (CI corpus)
+./target/release/quonfmt --check $(grep -v '^#' test/tooling/ci-corpus.txt)
+
+# Lint
+./target/release/quonlint --config .quonlint.toml --fail-on error $(grep -v '^#' test/tooling/ci-corpus.txt)
+
+# All tooling gates (mirrors CI tooling job)
+./scripts/tooling-check.sh --ci
+```
+
+See [docs/agents/validation.md](docs/agents/validation.md) for the full pre-PR checklist.
+
 ## Testing
 
 ```bash

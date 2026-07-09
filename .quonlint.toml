@@ -1,0 +1,10 @@
+# CI lint baseline for tooling gates (issue #49).
+# Invoked explicitly via: quonlint --config .quonlint.toml --fail-on error …
+
+[quonlint]
+level = "info"
+fail_on = "error"
+
+[rules]
+"depth/sequential-for-blowup" = "info"
+"monad/circuit-bind-without-apply" = "error"

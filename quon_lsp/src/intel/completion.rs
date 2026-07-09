@@ -1,6 +1,7 @@
+use std::collections::HashSet;
+
 use frontend::analysis::{
     DocumentAnalysis, SymbolKind, classical_builtins, gate_type, gates, keywords, partial_ident,
-    resolve_at,
 };
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, CompletionResponse, InsertTextFormat, Position,
@@ -16,22 +17,36 @@ pub fn completions_at(
     let (_start, _end, prefix) = partial_ident(&analysis.src, offset);
     let mut items = Vec::new();
 
+    let mut seen_labels = HashSet::new();
+
     for kw in keywords() {
         if prefix.is_empty() || kw.starts_with(prefix.as_str()) {
-            items.push(item(kw, CompletionItemKind::KEYWORD, None));
+            push_item(
+                &mut items,
+                &mut seen_labels,
+                item(kw, CompletionItemKind::KEYWORD, None),
+            );
         }
     }
 
     for name in gates() {
         if prefix.is_empty() || name.starts_with(prefix.as_str()) {
             let detail = gate_type(name).map(|t| t.to_string());
-            items.push(item(name, CompletionItemKind::FUNCTION, detail));
+            push_item(
+                &mut items,
+                &mut seen_labels,
+                item(name, CompletionItemKind::FUNCTION, detail),
+            );
         }
     }
 
     for name in classical_builtins() {
         if prefix.is_empty() || name.starts_with(prefix.as_str()) {
-            items.push(item(name, CompletionItemKind::FUNCTION, None));
+            push_item(
+                &mut items,
+                &mut seen_labels,
+                item(name, CompletionItemKind::FUNCTION, None),
+            );
         }
     }
 
@@ -39,22 +54,36 @@ pub fn completions_at(
         if sym.name_span.start == sym.name_span.end {
             continue;
         }
-        if matches!(
+        if !matches!(
             sym.kind,
             SymbolKind::LocalBinding | SymbolKind::Parameter | SymbolKind::Function
-        ) && (prefix.is_empty() || sym.name.starts_with(prefix.as_str()))
-        {
-            items.push(item(
+        ) {
+            continue;
+        }
+        if !(prefix.is_empty() || sym.name.starts_with(prefix.as_str())) {
+            continue;
+        }
+        if analysis.symbols.resolve_name_at(&sym.name, offset) != Some(sym.id) {
+            continue;
+        }
+        push_item(
+            &mut items,
+            &mut seen_labels,
+            item(
                 &sym.name,
                 CompletionItemKind::VARIABLE,
                 sym.ty.as_ref().map(|t| t.to_string()),
-            ));
-        }
+            ),
+        );
     }
 
     for alias in analysis.symbols.alias_names() {
         if prefix.is_empty() || alias.starts_with(prefix.as_str()) {
-            items.push(item(alias, CompletionItemKind::CLASS, None));
+            push_item(
+                &mut items,
+                &mut seen_labels,
+                item(alias, CompletionItemKind::CLASS, None),
+            );
         }
     }
 
@@ -64,22 +93,35 @@ pub fn completions_at(
     ];
     for ty in TYPE_NAMES {
         if prefix.is_empty() || ty.starts_with(prefix.as_str()) {
-            items.push(item(ty, CompletionItemKind::TYPE_PARAMETER, None));
+            push_item(
+                &mut items,
+                &mut seen_labels,
+                item(ty, CompletionItemKind::TYPE_PARAMETER, None),
+            );
         }
     }
 
     if prefix.is_empty() || "fn".starts_with(prefix.as_str()) {
-        items.push(CompletionItem {
-            label: "fn".into(),
-            kind: Some(CompletionItemKind::SNIPPET),
-            insert_text: Some("fn ${1:name}(${2:params}): ${3:Ret} = ${0:body}".into()),
-            insert_text_format: Some(InsertTextFormat::SNIPPET),
-            ..Default::default()
-        });
+        push_item(
+            &mut items,
+            &mut seen_labels,
+            CompletionItem {
+                label: "fn".into(),
+                kind: Some(CompletionItemKind::SNIPPET),
+                insert_text: Some("fn ${1:name}(${2:params}): ${3:Ret} = ${0:body}".into()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            },
+        );
     }
 
-    let _ = resolve_at(analysis, offset);
     Some(CompletionResponse::Array(items))
+}
+
+fn push_item(items: &mut Vec<CompletionItem>, seen: &mut HashSet<String>, item: CompletionItem) {
+    if seen.insert(item.label.clone()) {
+        items.push(item);
+    }
 }
 
 fn item(label: &str, kind: CompletionItemKind, detail: Option<String>) -> CompletionItem {

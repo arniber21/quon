@@ -17,7 +17,7 @@ fn diffusion(n: Nat): Circuit<n, n, 3, Clifford> = circuit {
 }
 
 fn grover(n: Nat, oracle: Oracle<n>): Q<List<Bit>> = run {
-        let iters = round(PI / 4.0 * sqrt(2.0 ^ n))
+        let iters = round((PI / 4.0) * (sqrt(2.0 ^ n)))
         let search = hadamard_all n |> repeat(iters, oracle |> diffusion n)
         q <- search @ (qreg n)
         measure_all q

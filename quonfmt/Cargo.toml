@@ -8,7 +8,7 @@ name = "quonfmt"
 path = "src/main.rs"
 
 [dependencies]
-frontend = { path = "../frontend", default-features = false, features = ["parser-only"] }
+frontend = { path = "../frontend", default-features = false }
 thiserror = { workspace = true }
 clap      = { workspace = true }
 anyhow    = { workspace = true }
@@ -18,4 +18,4 @@ ariadne   = { workspace = true }
 insta     = { workspace = true }
 proptest  = { workspace = true }
 arbitrary = { workspace = true }
-frontend  = { path = "../frontend", default-features = false, features = ["parser-only"] }
+frontend  = { path = "../frontend", default-features = false }

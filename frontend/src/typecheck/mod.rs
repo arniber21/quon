@@ -23,7 +23,7 @@
 //!   [`Table::unify`]. Metavariables are zonked away before a type is returned to a caller.
 //! * **Exhaustiveness** is delegated to the [`exhaust`] usefulness algorithm.
 
-mod builtins;
+pub(crate) mod builtins;
 pub(crate) mod circuit;
 mod error;
 mod exhaust;
@@ -2684,6 +2684,14 @@ impl TypeChecker {
                 span,
             });
         };
+        if let Some(index) = &self.symbol_index {
+            for sym in &index.symbols {
+                if sym.kind == crate::analysis::SymbolKind::TypeAlias && sym.name == name {
+                    self.record_resolution(span, ResolvedTarget::TypeAlias(sym.id));
+                    break;
+                }
+            }
+        }
         // A name already on the expansion path is a cyclic alias — reject before it blows up.
         if visiting.iter().any(|n| n == name) {
             return Err(TypeError::Unsupported {

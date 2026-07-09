@@ -245,6 +245,17 @@ fn linear_discard_fixes(
         return Vec::new();
     };
     let edit_end = start + pattern.len();
+
+    // Only offer a fix for statement `let _ = x` inside `run { }`, not `let _ = x in e`.
+    let after = source[edit_end..].trim_start();
+    if after.starts_with("in") {
+        return Vec::new();
+    }
+    let prefix = &source[..start];
+    if !prefix.contains("run {") && !prefix.contains("run{") {
+        return Vec::new();
+    }
+
     vec![QuickFix {
         title: format!("Replace _ with discard({bound_name})"),
         kind: QuickFixKind::QuickFix,

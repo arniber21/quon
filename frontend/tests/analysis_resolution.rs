@@ -1,4 +1,4 @@
-use frontend::analysis::{ResolvedTarget, SymbolKind, analyze_program};
+use frontend::analysis::{ResolvedTarget, SymbolKind, analyze_program, format_hover, resolve_at};
 
 #[test]
 fn gate_resolves_to_gate_target() {
@@ -35,5 +35,49 @@ fn unbound_ident_has_no_resolution() {
             .resolutions
             .entries()
             .any(|(_, t)| matches!(t, ResolvedTarget::Symbol(_)))
+    );
+}
+
+#[test]
+fn local_use_site_hover_shows_inferred_type() {
+    let src = "fn f(): Int = let x = 1 in x\n";
+    let analysis = analyze_program(src);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+    let x_use = src.find("in x").expect("x use") + 3;
+    let query = resolve_at(&analysis, x_use).expect("resolve x");
+    let md = format_hover(&query, &analysis);
+    assert!(md.contains("Int"), "hover should show Int: {md}");
+}
+
+#[test]
+fn completion_scope_excludes_outer_fn_binding() {
+    let src = "fn f(): Int = let x = 1 in x\nfn g(): Int = 0\n";
+    let analysis = analyze_program(src);
+    let g_body = src.find("fn g").expect("g") + "fn g(): Int = ".len();
+    assert!(
+        analysis.symbols.resolve_name_at("x", g_body).is_none(),
+        "x should not resolve inside g"
+    );
+}
+
+#[test]
+fn type_alias_use_records_resolution() {
+    let src = "type T = Int\nfn f(): T = 1\n";
+    let analysis = analyze_program(src);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+    assert!(
+        analysis
+            .resolutions
+            .entries()
+            .any(|(_, t)| matches!(t, ResolvedTarget::TypeAlias(_))),
+        "expected type alias resolution entry"
     );
 }

@@ -13,8 +13,8 @@ fn parity(): Circuit<2, 2, 1, Clifford> = circuit {
 fn syndrome_measure(q: QReg<3>): Q<(QReg<3>, Bit, Bit)> = run {
         let (q0, q1, q2) = destructure q
         borrow a1: Qubit, a2: Qubit in {
-            (q0a, a1b) <- parity() @ (tensored(q0, a1))
-            (q1a, a2b) <- parity() @ (tensored(q1, a2))
+            (q0a, a1b) <- (parity()) @ (tensored(q0, a1))
+            (q1a, a2b) <- (parity()) @ (tensored(q1, a2))
             s1         <- measure a1b
             s2         <- measure a2b
             return (tensored(tensored(q0a, q1a), q2), s1, s2)
@@ -36,14 +36,14 @@ fn x_at_2(): Circuit<3, 3, 1, Clifford> = circuit {
 fn correct(q: QReg<3>, s1: Bit, s2: Bit): Q<QReg<3>> = run {
         return match (s1, s2) {
 (0, 0) => q,
-(1, 0) => x_at_0() @q,
-(1, 1) => x_at_1() @q,
-(0, 1) => x_at_2() @q
+(1, 0) => (x_at_0()) @q,
+(1, 1) => (x_at_1()) @q,
+(0, 1) => (x_at_2()) @q
 }
 }
 
 fn bit_flip_round(logical: Qubit): Q<QReg<1>> = run {
-        encoded        <- encode() @logical
+        encoded        <- (encode()) @logical
         (data, s1, s2) <- syndrome_measure encoded
         corrected      <- correct(data, s1, s2)
         decoded        <- adjoint(encode()) @corrected

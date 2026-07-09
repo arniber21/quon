@@ -19,84 +19,46 @@ pub mod lexer;
 pub mod parser;
 pub mod pretty;
 
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod analysis;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod desugar;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod elaborate;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod lower;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod refinement;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod typecheck;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod types;
 
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub use analysis::DocumentAnalysis;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub use analysis::TypedProgram;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub use analysis::analyze_program;
+#[cfg(feature = "full")]
+pub use analysis::analyze_with_rich;
 
 use crate::ast::Decl;
 use crate::diagnostics::Diagnostic;
 use crate::lexer::Sp;
 
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub use crate::diagnostics::fixes::apply_fixes;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub use crate::diagnostics::{
     AnalysisResult, DiagnosticCode, DiagnosticSeverity, QuickFix, QuickFixKind, RelatedInfo,
     RichDiagnostic, TextEdit,
 };
 
-#[cfg(not(feature = "parser-only"))]
-use crate::typecheck::TypeChecker;
-
 /// IDE-oriented analysis: lex → parse → desugar → typecheck. Does not lower to MLIR.
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub fn analyze(source: &str) -> AnalysisResult {
-    let intelligence = analyze_program(source);
-    let tokens = match crate::lexer::lex_rich(source) {
-        Ok(t) => t,
-        Err(diags) => {
-            return AnalysisResult {
-                diagnostics: diags,
-                intelligence,
-            };
-        }
-    };
-    let decls = match crate::parser::parse_rich(&tokens) {
-        Ok(d) => d,
-        Err(diags) => {
-            return AnalysisResult {
-                diagnostics: diags,
-                intelligence,
-            };
-        }
-    };
-    let decls = match crate::desugar::desugar_decls_rich(decls) {
-        Ok(d) => d,
-        Err(diags) => {
-            return AnalysisResult {
-                diagnostics: diags,
-                intelligence,
-            };
-        }
-    };
-    match TypeChecker::new().check_decls(&decls) {
-        Ok(()) => AnalysisResult {
-            diagnostics: Vec::new(),
-            intelligence,
-        },
-        Err(errs) => AnalysisResult {
-            diagnostics: errs.iter().map(|e| e.to_rich_diagnostic(source)).collect(),
-            intelligence,
-        },
-    }
+    analyze_with_rich(source)
 }
 
 /// The frontend's single entry point for turning source text into an AST.
@@ -106,14 +68,14 @@ pub fn parse_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
 }
 
 /// Parse `src` and run the `run { }` desugaring pass (issue #8).
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub fn desugar_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
     let decls = parse_program(src)?;
     desugar::desugar_decls(decls)
 }
 
 /// Parse, desugar, and type-check a program (issues #9–#14).
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
     let result = analyze(src);
     if result.diagnostics.is_empty() {
@@ -124,7 +86,7 @@ pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
 }
 
 /// Parse, desugar, type-check, and lower circuit functions to `quantum.circ` MLIR (issue #16).
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub fn lower_program_to_mlir(src: &str) -> Result<String, Vec<Diagnostic>> {
     let context = melior::Context::new();
     let module = lower::lower_program(&context, src)?;

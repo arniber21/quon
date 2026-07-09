@@ -7,5 +7,5 @@ fn bell(): Circuit<2, 2, 1, Clifford> = circuit {
 }
 
 fn long_chain(): Circuit<3, 3, 3, Clifford> = circuit {
-        H @0 |> CNOT @(0, 1) |> Rz 0.5 @1 |> CNOT @(1, 2) |> H @2
+        H @0 |> CNOT @(0, 1) |> (Rz 0.5) @1 |> CNOT @(1, 2) |> H @2
 }

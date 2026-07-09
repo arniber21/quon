@@ -12,7 +12,8 @@ Run these before opening or updating a PR (same order CI uses):
 2. **Clippy** — `cargo clippy --workspace --exclude flux_verify --all-targets -- -D warnings`
 3. **Tests** — `cargo test --workspace --exclude flux_verify`
 4. **Taskless** — `npx @taskless/cli@latest check $(git diff --name-only main...HEAD)` (or full scan)
-5. **Flux (if needed)** — `cargo flux -p flux_verify` when you touch refinement specs or the `flux` feature (see below)
+5. **Tooling** — `./scripts/tooling-check.sh --ci` (or full script without flags)
+6. **Flux (if needed)** — `cargo flux -p flux_verify` when you touch refinement specs or the `flux` feature (see below)
 
 Optional but valuable before large IR or emitter changes:
 

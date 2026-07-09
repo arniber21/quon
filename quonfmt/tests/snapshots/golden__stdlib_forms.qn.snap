@@ -9,7 +9,7 @@ fn bell_gate(): Bell = circuit {
 }
 
 fn phase_kickback(theta: Float): Circuit<2, 2, 3, Universal> = circuit {
-        CNOT @(0, 1) |> Rz theta @1 |> CNOT @(0, 1)
+        CNOT @(0, 1) |> (Rz theta) @1 |> CNOT @(0, 1)
 }
 
 fn basis_measures(q1: Qubit, q2: Qubit): Q<(Bit, Bit)> = run {

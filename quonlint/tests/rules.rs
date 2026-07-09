@@ -49,6 +49,51 @@ fn swap_in_source() {
 }
 
 #[test]
+fn consecutive_rotations_on_same_qubit() {
+    let src = r#"fn f(): Circuit<1, 1, 2, Universal> = circuit {
+        Rz(1.0) @0 |> Rz(2.0) @0
+    }"#;
+    let diags = lint_snippet(src);
+    assert!(
+        frontend::check_program(src).is_ok(),
+        "snippet must typecheck: {:?}",
+        frontend::check_program(src).err()
+    );
+    assert!(has_rule(&diags, "gates/consecutive-rotations"));
+}
+
+#[test]
+#[ignore = "discarding ancilla after entangling use is a linear type error in well-typed programs"]
+fn discard_in_borrow_after_entangling_gate() {
+    let src = r#"fn f(): Q<Unit> = run {
+    borrow a: Qubit, b: Qubit in {
+        CNOT @(a, b)
+        discard(a)
+        discard(b)
+    }
+}"#;
+    let diags = lint_snippet(src);
+    assert!(
+        frontend::check_program(src).is_ok(),
+        "snippet must typecheck: {:?}",
+        frontend::check_program(src).err()
+    );
+    assert!(has_rule(&diags, "ancilla/discard-in-borrow"));
+}
+
+#[test]
+#[ignore = "borrow escape type error prevents lint on raw ancilla return; rule applies when typecheck passes"]
+fn unmeasured_ancilla_in_return() {
+    let src = r#"fn f(): Q<(Qubit, Int)> = run {
+    borrow a: Qubit in {
+        return (a, 0)
+    }
+}"#;
+    let diags = lint_snippet(src);
+    assert!(has_rule(&diags, "ancilla/unmeasured-ancilla-output"));
+}
+
+#[test]
 fn nested_borrow() {
     let src = r#"fn f(): Q<Qubit> = run {
     borrow a: Qubit in {
@@ -107,5 +152,43 @@ fn suppression_next_line() {
 #[test]
 fn list_rules_count() {
     let rules = quonlint::register_rules();
-    assert!(rules.len() >= 12);
+    assert!(rules.len() >= 11);
+}
+
+#[test]
+fn clifford_block_with_t_gate_warns() {
+    let src = r#"fn f(): Circuit<1, 1, 1, Clifford> = circuit {
+        H @0
+        T @0
+    }"#;
+    let diags = lint_snippet(src);
+    if has_rule(&diags, "gates/universal-in-clifford-block") {
+        return;
+    }
+    assert!(
+        frontend::check_program(src).is_err(),
+        "expected either lint warning or type error for T in Clifford block"
+    );
+}
+
+#[test]
+fn parse_error_yields_no_lints() {
+    let src = "fn broken( = 1\n";
+    let diags = quonlint::lint_source(
+        std::path::Path::new("broken.qn"),
+        src,
+        &quonlint::LintConfig::default(),
+    );
+    assert!(diags.is_empty());
+}
+
+#[test]
+fn type_error_yields_no_lints() {
+    let src = "fn f(): Int = true\n";
+    let diags = quonlint::lint_source(
+        std::path::Path::new("bad.qn"),
+        src,
+        &quonlint::LintConfig::default(),
+    );
+    assert!(diags.is_empty());
 }

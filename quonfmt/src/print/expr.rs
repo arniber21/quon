@@ -36,9 +36,9 @@ pub fn print_expr(e: &Sp<Expr>, ctx: &mut Context<'_>, min_prec: Prec) -> Doc {
                 BinOp::Pow => Prec::Pow,
             };
             Doc::concat([
-                print_expr(lhs, ctx, self_prec),
+                print_binop_operand(lhs, ctx, self_prec),
                 Doc::text(format!(" {} ", binop_str(*op))),
-                print_expr(rhs, ctx, self_prec),
+                print_binop_operand(rhs, ctx, self_prec),
             ])
         }
         Expr::Neg(x) => Doc::concat([Doc::text("- "), print_expr(x, ctx, Prec::Neg)]),
@@ -93,7 +93,7 @@ pub fn print_expr(e: &Sp<Expr>, ctx: &mut Context<'_>, min_prec: Prec) -> Doc {
                 .collect();
             Doc::concat([
                 Doc::text("match "),
-                print_expr(scrutinee, ctx, Prec::Atom),
+                print_match_scrutinee(scrutinee, ctx),
                 Doc::text(" {\n"),
                 Doc::nest(
                     1,
@@ -139,7 +139,7 @@ pub fn print_expr(e: &Sp<Expr>, ctx: &mut Context<'_>, min_prec: Prec) -> Doc {
             Doc::text("par { "),
             expr_in_circuit_context(body, ctx),
             Doc::text(" } * "),
-            print_expr(count, ctx, Prec::Mul),
+            print_as_atom(count, ctx),
         ])),
 
         Expr::Adjoint(x) => Doc::concat([
@@ -153,7 +153,7 @@ pub fn print_expr(e: &Sp<Expr>, ctx: &mut Context<'_>, min_prec: Prec) -> Doc {
             Doc::text(")"),
         ]),
         Expr::GateApp { gate, qubits } => Doc::concat([
-            print_expr(gate, ctx, Prec::GateApp),
+            print_as_atom(gate, ctx),
             Doc::text(" @"),
             print_expr_qubit_target(qubits, ctx),
         ]),
@@ -183,9 +183,9 @@ pub fn print_expr(e: &Sp<Expr>, ctx: &mut Context<'_>, min_prec: Prec) -> Doc {
 fn print_expr_qubit_target(e: &Sp<Expr>, ctx: &mut Context<'_>) -> Doc {
     match &e.0 {
         Expr::Int(_) | Expr::Var(_) | Expr::Tuple(_) | Expr::List(_) | Expr::Unit => {
-            print_expr(e, ctx, Prec::Atom)
+            print_as_atom(e, ctx)
         }
-        _ => Doc::concat([Doc::text(" "), print_expr(e, ctx, Prec::Atom)]),
+        _ => Doc::concat([Doc::text(" "), print_as_atom(e, ctx)]),
     }
 }
 
@@ -212,7 +212,7 @@ fn print_for(
         Doc::text("for "),
         pat::print_pat(pat, ctx),
         Doc::text(" in "),
-        print_expr(iter, ctx, Prec::Atom),
+        print_as_atom(iter, ctx),
         Doc::text(" { "),
         body_doc,
         Doc::text(" }"),
@@ -241,6 +241,51 @@ fn print_borrow(
         Doc::text(" in "),
         stmt::print_stmt_block("", body, &mut inner),
     ])
+}
+
+fn print_binop_operand(e: &Sp<Expr>, ctx: &mut Context<'_>, parent_prec: Prec) -> Doc {
+    if is_parse_atom(&e.0) {
+        print_expr(e, ctx, parent_prec)
+    } else {
+        print_as_atom(e, ctx)
+    }
+}
+
+fn print_match_scrutinee(e: &Sp<Expr>, ctx: &mut Context<'_>) -> Doc {
+    print_as_atom(e, ctx)
+}
+
+/// Emit an expression in a position that must parse as a single atom (operand).
+/// Mirrors `frontend::pretty::atom` for idempotent re-parse.
+fn print_as_atom(e: &Sp<Expr>, ctx: &mut Context<'_>) -> Doc {
+    let inner = print_expr(e, ctx, Prec::Top);
+    if is_parse_atom(&e.0) {
+        inner
+    } else {
+        Doc::concat([Doc::text("("), inner, Doc::text(")")])
+    }
+}
+
+/// Forms that re-parse as a single atom (operand) without wrapping parens.
+/// Mirrors `frontend::pretty::atom` so `match` scrutinees stay stable under re-format.
+fn is_parse_atom(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Bool(_)
+            | Expr::Unit
+            | Expr::Var(_)
+            | Expr::Tuple(_)
+            | Expr::List(_)
+            | Expr::CircuitBlock(_)
+            | Expr::RunBlock(_)
+            | Expr::Borrow { .. }
+            | Expr::For { .. }
+            | Expr::Match { .. }
+            | Expr::Adjoint(_)
+            | Expr::Controlled(_)
+    )
 }
 
 fn print_compose_chain(a: &Sp<Expr>, b: &Sp<Expr>, ctx: &mut Context<'_>) -> Doc {
@@ -302,7 +347,7 @@ fn print_app(e: &Sp<Expr>, ctx: &mut Context<'_>) -> Doc {
             return Doc::concat([
                 print_expr(&func, ctx, Prec::App),
                 Doc::text(" "),
-                print_expr(arg, ctx, Prec::Atom),
+                print_as_atom(arg, ctx),
             ]);
         }
     }
@@ -329,7 +374,6 @@ fn is_juxta_atom(e: &Sp<Expr>) -> bool {
             | Expr::Unit
             | Expr::Var(_)
             | Expr::Tuple(_)
-            | Expr::List(_)
             | Expr::Adjoint(_)
             | Expr::Controlled(_)
     ) || matches!(&e.0, Expr::GateApp { .. })

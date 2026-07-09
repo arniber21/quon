@@ -3,7 +3,7 @@ source: quonfmt/tests/golden.rs
 expression: formatted
 ---
 fn teleport(msg: Qubit, alice: Qubit, bob: Qubit): Q<Qubit> = run {
-        (a, b)   <- bell_state() @(alice, bob)
+        (a, b)   <- (bell_state()) @(alice, bob)
         (m2, a2) <- adjoint(bell_state()) @(msg, a)
         x_bit    <- measure m2
         z_bit    <- measure a2

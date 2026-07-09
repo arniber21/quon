@@ -213,7 +213,8 @@ fn walk_expr(expr: &Sp<Expr>, b: &mut Builder) {
         Expr::Match { scrutinee, arms } => {
             walk_expr(scrutinee, b);
             for (pat, arm) in arms {
-                b.stack.push(pat.1);
+                let arm_span = pat.1.start..arm.1.end;
+                b.stack.push(SimpleSpan::from(arm_span));
                 bind_pat(pat, SymbolKind::LocalBinding, b);
                 walk_expr(arm, b);
                 b.stack.pop();
@@ -269,17 +270,22 @@ fn walk_expr(expr: &Sp<Expr>, b: &mut Builder) {
 }
 
 fn walk_stmts(stmts: &[Sp<Stmt>], b: &mut Builder) {
-    for (stmt, span) in stmts {
+    if stmts.is_empty() {
+        return;
+    }
+    let block_start = stmts.first().map(|(_, s)| s.start).unwrap_or(0);
+    let block_end = stmts.last().map(|(_, s)| s.end).unwrap_or(0);
+    b.stack.push(SimpleSpan::from(block_start..block_end));
+    for (stmt, _) in stmts {
         match stmt {
             Stmt::Bind { pat, rhs } | Stmt::Let { pat, rhs } => {
                 walk_expr(rhs, b);
-                b.stack.push(*span);
                 bind_pat(pat, SymbolKind::LocalBinding, b);
-                b.stack.pop();
             }
             Stmt::Expr(e) => walk_expr(e, b),
         }
     }
+    b.stack.pop();
 }
 
 fn bind_pat(pat: &Sp<Pat>, kind: SymbolKind, b: &mut Builder) {
@@ -299,18 +305,38 @@ fn bind_pat(pat: &Sp<Pat>, kind: SymbolKind, b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desugar_program;
 
     #[test]
     fn top_level_fn_symbol() {
         let src = "fn f(): Int = 1\n";
-        let decls = desugar_program(src).expect("parse");
+        let decls = crate::desugar_program(src).expect("parse");
         let index = build_symbol_index(&decls, src.len());
         assert!(
             index
                 .symbols
                 .iter()
                 .any(|s| s.kind == SymbolKind::Function && s.name == "f")
+        );
+    }
+
+    #[test]
+    fn circuit_block_later_stmt_sees_earlier_binding() {
+        let src = r#"
+fn f(): Circuit<1, 1, 1, Clifford> = circuit {
+  let x = 0
+  H @ x
+}
+"#;
+        let decls = crate::desugar_program(src).expect("parse");
+        let index = build_symbol_index(&decls, src.len());
+        let h_offset = src.find("H @").expect("H");
+        assert_eq!(
+            index.resolve_name_at("x", h_offset),
+            index
+                .symbols
+                .iter()
+                .find(|s| s.name == "x" && s.kind == SymbolKind::LocalBinding)
+                .map(|s| s.id)
         );
     }
 }

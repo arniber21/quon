@@ -1,0 +1,22 @@
+# CI corpus for quonfmt / quonlint tooling gates (issue #49).
+# One path per line; `#` comments and blank lines are ignored.
+
+# SPEC §12 reference algorithms
+frontend/tests/fixtures/bell_state.qn
+frontend/tests/fixtures/bernstein_vazirani.qn
+frontend/tests/fixtures/grover.qn
+frontend/tests/fixtures/shor.qn
+frontend/tests/fixtures/qaoa.qn
+frontend/tests/fixtures/ising.qn
+frontend/tests/fixtures/error_correction.qn
+frontend/tests/fixtures/stdlib_forms.qn
+frontend/tests/fixtures/teleport.qn
+
+# Corpus representatives (syntax / domain diversity)
+frontend/tests/fixtures/corpus/deutsch_jozsa.qn
+frontend/tests/fixtures/corpus/recursive_qft.qn
+frontend/tests/fixtures/corpus/qaoa_maxcut.qn
+frontend/tests/fixtures/corpus/phase_flip_code.qn
+frontend/tests/fixtures/corpus/fermi_hubbard.qn
+frontend/tests/fixtures/corpus/amplitude_amplification.qn
+frontend/tests/fixtures/corpus/graph_state.qn

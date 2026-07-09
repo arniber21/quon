@@ -4,7 +4,7 @@
 //! [`Diagnostic`] type is the legacy currency for `quonc` / ariadne; [`RichDiagnostic`]
 //! preserves stable codes, severity, related spans, and quick fixes for IDE use.
 
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod fixes;
 
 use crate::lexer::{SimpleSpan, Sp};
@@ -159,7 +159,7 @@ impl RichDiagnostic {
 }
 
 /// Result of IDE-oriented analysis (parse + desugar + typecheck; no lowering).
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 #[derive(Debug, Clone, Default)]
 pub struct AnalysisResult {
     pub diagnostics: Vec<RichDiagnostic>,
@@ -206,13 +206,26 @@ pub(crate) fn from_stage(errors: Vec<Sp<String>>) -> Vec<Diagnostic> {
 }
 
 /// Classify a lexer error message into a stable code.
-pub(crate) fn classify_lex_error(message: &str, span: SimpleSpan) -> RichDiagnostic {
-    let code = if message.contains("comment") && message.contains("unclosed") {
+pub(crate) fn classify_lex_error(src: &str, message: &str, span: SimpleSpan) -> RichDiagnostic {
+    let code = if (message.contains("comment") && message.contains("unclosed"))
+        || unterminated_block_comment_at(src, span)
+    {
         DiagnosticCode::LEX_UNTERMINATED_COMMENT
     } else {
         DiagnosticCode::LEX_INVALID_CHAR
     };
     RichDiagnostic::new(code, DiagnosticSeverity::Error, message.to_owned(), span)
+}
+
+/// True when `{-` opens before `span` and no matching `-}` appears in the remainder.
+fn unterminated_block_comment_at(src: &str, span: SimpleSpan) -> bool {
+    let start = span.start.min(src.len());
+    let before = &src[..start];
+    let Some(open) = before.rfind("{-") else {
+        return false;
+    };
+    let after_open = &src[open + 2..];
+    !after_open.contains("-}")
 }
 
 /// Classify a parser error message (v1: single default bucket).

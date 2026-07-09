@@ -77,22 +77,31 @@ impl DocumentStore {
         version: Option<i32>,
         changes: &[TextDocumentContentChangeEvent],
     ) -> Result<(), DocumentError> {
-        if !self.documents.contains_key(uri) {
+        let Some(doc) = self.documents.get_mut(uri) else {
             return Err(DocumentError::NotOpen(uri.clone()));
-        }
+        };
+
+        let mut next_text = doc.text.clone();
+        let mut next_line_index = doc.line_index.clone();
 
         for change in changes {
-            let doc = self.documents.get_mut(uri).expect("checked above");
-            if !apply_change(&mut doc.text, change.range, &change.text, &doc.line_index) {
+            if !apply_change(
+                &mut next_text,
+                change.range,
+                change.range_length,
+                &change.text,
+                &next_line_index,
+            ) {
                 tracing::warn!(%uri, ?change.range, "rejected incremental edit");
                 return Err(DocumentError::InvalidEdit(uri.clone()));
             }
-            doc.line_index = LineIndex::new(&doc.text);
-            doc.cached_analysis = None;
+            next_line_index = LineIndex::new(&next_text);
         }
 
+        doc.text = next_text;
+        doc.line_index = next_line_index;
+        doc.cached_analysis = None;
         if let Some(v) = version {
-            let doc = self.documents.get_mut(uri).expect("checked above");
             doc.version = v;
         }
 
@@ -103,6 +112,7 @@ impl DocumentStore {
 fn apply_change(
     full: &mut String,
     range: Option<Range>,
+    range_length: Option<u32>,
     new_text: &str,
     line_index: &LineIndex,
 ) -> bool {
@@ -115,8 +125,13 @@ fn apply_change(
             let Some(start) = line_index.offset(r.start) else {
                 return false;
             };
-            let Some(end) = line_index.offset(r.end) else {
-                return false;
+            let end = if let Some(len) = range_length {
+                start.saturating_add(len as usize)
+            } else {
+                let Some(end) = line_index.offset(r.end) else {
+                    return false;
+                };
+                end
             };
             if start <= end && end <= full.len() {
                 full.replace_range(start..end, new_text);
