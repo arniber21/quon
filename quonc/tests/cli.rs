@@ -1,6 +1,5 @@
 //! CLI integration tests for `quonc` — help, flags, and clap error paths.
-//! Full compile/emit behavior is covered by `smoke.rs`; these tests exercise
-//! only the clap surface.
+//! Full compile/emit behavior is covered by `smoke.rs` / `na_pipeline.rs`.
 
 use std::path::Path;
 use std::process::Command;
@@ -14,12 +13,15 @@ fn help_shows_usage() {
     let out = quonc().arg("--help").output().expect("spawn");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Quon quantum compiler"));
+    assert!(stdout.contains("Quon quantum compiler") || stdout.contains("OpenQASM"));
     assert!(stdout.contains("emit-qasm"));
+    assert!(stdout.contains("emit-na-schedule"));
     assert!(stdout.contains("target"));
     assert!(stdout.contains("dump-ir"));
     assert!(stdout.contains("verify-linear"));
     assert!(stdout.contains("print-target"));
+    assert!(stdout.contains("list-passes"));
+    assert!(stdout.contains("Examples:"));
 }
 
 #[test]
@@ -36,7 +38,7 @@ fn missing_source_is_error() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("required") || stderr.contains("USAGE") || stderr.contains("source"),
+        stderr.contains("required") || stderr.contains("Usage") || stderr.contains("source"),
         "stderr: {stderr}"
     );
 }
@@ -57,10 +59,9 @@ fn short_help_matches_long() {
     let short = quonc().arg("-h").output().expect("spawn");
     let long = quonc().arg("--help").output().expect("spawn");
     assert_eq!(short.status, long.status);
-    assert_eq!(
-        String::from_utf8_lossy(&short.stdout),
-        String::from_utf8_lossy(&long.stdout)
-    );
+    // Long help includes examples; short is a summary — both must succeed.
+    assert!(short.status.success());
+    assert!(long.status.success());
 }
 
 #[test]
@@ -69,37 +70,40 @@ fn help_lists_all_documented_flags() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     for flag in [
         "--emit-qasm",
+        "--emit-na-schedule",
+        "--emit-resource-report",
+        "--resource-report-format",
         "--target",
         "--print-target",
         "--dump-ir",
         "--verify-linear",
+        "--list-passes",
         "--metrics",
         "--metrics-json",
         "--metrics-snapshot",
         "--regression-config",
         "--watch",
         "--watch-debounce-ms",
-        "--emit-resource-report",
+        "--na-backend",
+        "--na-placer",
+        "--no-na-compact",
+        "--na-placement",
+        "--color",
+        "--quiet",
+        "--sabre-gamma",
     ] {
         assert!(stdout.contains(flag), "missing {flag} in --help");
     }
 }
 
 #[test]
-fn emit_resource_report_is_not_wired_yet() {
-    let source =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../frontend/tests/fixtures/bell_state.qn");
-    let out = quonc()
-        .arg(&source)
-        .arg("--emit-resource-report")
-        .output()
-        .expect("spawn");
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("not wired") && stderr.contains("#112"),
-        "stderr: {stderr}"
-    );
+fn list_passes_exits_successfully() {
+    let out = quonc().arg("--list-passes").output().expect("spawn");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Neutral-atom path"));
+    assert!(stdout.contains("extract_interaction_graph"));
+    assert!(stdout.contains("OpenQASM"));
 }
 
 #[test]
@@ -118,4 +122,41 @@ fn print_target_does_not_require_source() {
     assert!(stdout.contains("generic_reconfigurable_neutral_atom_v0"));
     assert!(stdout.contains("kind: neutral_atom_reconfigurable"));
     assert!(stdout.contains("max_parallel_pairs=340"));
+}
+
+#[test]
+fn emit_na_flags_require_na_target() {
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../frontend/tests/fixtures/bell_state.qn");
+    let out = quonc()
+        .arg(&source)
+        .arg("--emit-resource-report")
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("neutral_atom_reconfigurable") || stderr.contains("neutral-atom"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn emit_qasm_rejects_na_target() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/na/bell.qn");
+    let target =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../targets/neutral_atom/generic_rna_v0.json");
+    let out = quonc()
+        .arg(&source)
+        .arg("--target")
+        .arg(target)
+        .arg("--emit-qasm")
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("emit-qasm") && stderr.contains("fixed"),
+        "stderr: {stderr}"
+    );
 }

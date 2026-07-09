@@ -1,0 +1,28 @@
+-- 3-regular MaxCut-style interaction layer (n=4) for the NA path.
+-- Uses Rzz edges like QAOA cost layers; Δ≈3 ⇒ few Misra–Gries stages.
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+        (for q in (qubits n) { H q })
+}
+
+fn maxcut_cost_4(gamma: Float): Circuit<4, 4, 6, Universal> = circuit {
+        (Rzz(gamma)) @(0, 1)
+|> (Rzz(gamma)) @(1, 2)
+|> (Rzz(gamma)) @(2, 3)
+|> (Rzz(gamma)) @(3, 0)
+|> (Rzz(gamma)) @(0, 2)
+|> (Rzz(gamma)) @(1, 3)
+}
+
+fn mixer_4(beta: Float): Circuit<4, 4, 1, Universal> = circuit {
+        (for q in (qubits 4) { Rx(beta, q) })
+}
+
+fn qaoa_layer(gamma: Float, beta: Float): Circuit<4, 4, 8, Universal> = circuit {
+        hadamard_all 4 |> maxcut_cost_4(gamma) |> mixer_4(beta)
+}
+
+fn qaoa_graph(): Q<List<Bit>> = run {
+        reg <- (qaoa_layer(0.7, 0.3)) @ (qreg 4)
+        measure_all reg
+}

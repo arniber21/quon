@@ -1,0 +1,19 @@
+-- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-schedule - --quiet | %FileCheck %s
+--
+-- Neutral-atom Bell schedule FileCheck (#112). Schedule emit is JSON of
+-- ScheduleLayer (not quantum.na MLIR yet — no ScheduleLayer→ScheduleSpec converter).
+
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+        H @0 |> CNOT @(0, 1)
+}
+
+fn bell_na(): Q<(Bit, Bit)> = run {
+        (q0, q1) <- (bell_state()) @ (qreg 2)
+        b0 <- measure q0
+        b1 <- measure q1
+        return (b0, b1)
+}
+
+-- CHECK: "cycle"
+-- CHECK: "Entangle2"
+-- CHECK: "atoms"

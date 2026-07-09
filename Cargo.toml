@@ -42,7 +42,7 @@ insta     = "1"
 arbitrary = { version = "1", features = ["derive"] }
 
 # Driver
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "color", "wrap_help", "env", "string"] }
 notify = "7"
 sha2 = "0.10"
 
