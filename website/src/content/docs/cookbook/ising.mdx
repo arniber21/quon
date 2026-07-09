@@ -1,0 +1,38 @@
+---
+title: Transverse-field Ising
+description: Express first-order Trotter evolution with parameterized circuit layers.
+sidebar:
+  order: 7
+---
+
+import source from '../../../../../test/verify/ising.qn?raw';
+
+The program factors a first-order Trotter step into nearest-neighbor `Rzz`
+interactions and single-qubit `Rx` rotations, then repeats that step. It
+demonstrates [parameterized circuits, loops, composition, and depth
+bounds](/language/#parameterized-circuits-and-depth).
+
+## Source
+
+This is
+[`test/verify/ising.qn`](https://github.com/arniber21/quon/blob/main/test/verify/ising.qn),
+the executable adaptation of
+[`frontend/tests/fixtures/ising.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/ising.qn).
+
+<pre><code>{source}</code></pre>
+
+## Compile and simulate
+
+```sh
+./target/release/quonc test/verify/ising.qn --emit-qasm > /tmp/ising.qasm
+QUONC=target/release/quonc python test/verify/ising.py
+```
+
+## Expected result
+
+The checked entry point deliberately sets `t = 0`, making every rotation angle
+zero. Evolution is therefore the identity and Aer should recover `0000` with
+more than 99% fidelity. This verifies the compiler pipeline and the model's
+zero-time boundary; it does not validate nonzero-time Ising dynamics. See
+[`ising.py`](https://github.com/arniber21/quon/blob/main/test/verify/ising.py)
+for the exact assertion.

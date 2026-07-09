@@ -1,23 +1,18 @@
--- Discrete-time coined quantum walk on a line: a coin flip (Hadamard) followed by a
--- conditional shift, iterated `steps` times.
--- Stresses: repeat over a coin·shift step, Clifford classification preserved, depth steps*n.
-
 fn coin_flip(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
 fn shift(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
-    for i in range(n - 1) { CNOT @(i, i + 1) }
+        (for i in (range(n - 1)) { CNOT @(i, i + 1) })
 }
 
 fn walk_step(n: Nat): Circuit<n, n, n, Clifford> = circuit {
-    coin_flip(n) |> shift(n)
+        coin_flip n |> shift n
 }
 
-fn quantum_walk(n: Nat, steps: Int): Circuit<n, n, steps * n, Clifford> =
-    repeat(steps, walk_step(n))
+fn quantum_walk(n: Nat, steps: Int): Circuit<n, n, steps * n, Clifford> = repeat(steps, walk_step n)
 
 fn run_walk(n: Nat, steps: Int): Q<List<Bit>> = run {
-    q <- quantum_walk(n, steps) @ qreg(n)
-    measure_all(q)
+        q <- (quantum_walk(n, steps)) @ (qreg n)
+        measure_all q
 }

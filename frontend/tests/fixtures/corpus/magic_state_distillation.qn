@@ -1,20 +1,16 @@
--- Magic-state distillation block (15-to-1 Reed–Muller): a transversal T layer between Clifford
--- encode/decode, purifying noisy |T⟩ ancillas into one higher-fidelity magic state.
--- Stresses: a fixed 15-qubit register, a transversal T (Universal) layer between Clifford layers.
-
 fn rm_encode(): Circuit<15, 15, 1, Clifford> = circuit {
-    for q in qubits(15) { H q }
+        (for q in (qubits 15) { H q })
 }
 
 fn transversal_t(): Circuit<15, 15, 1, Universal> = circuit {
-    for q in qubits(15) { T q }
+        (for q in (qubits 15) { T q })
 }
 
 fn distill_block(): Circuit<15, 15, 3, Universal> = circuit {
-    rm_encode() |> transversal_t() |> adjoint(rm_encode())
+        rm_encode() |> transversal_t() |> adjoint(rm_encode())
 }
 
 fn run_distillation(): Q<List<Bit>> = run {
-    q <- distill_block() @ qreg(15)
-    measure_all(q)
+        q <- (distill_block()) @ (qreg 15)
+        measure_all q
 }

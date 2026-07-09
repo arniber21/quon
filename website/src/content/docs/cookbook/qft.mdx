@@ -1,0 +1,39 @@
+---
+title: Quantum Fourier transform
+description: Build a recursive QFT and verify it through an inverse round trip.
+sidebar:
+  order: 6
+---
+
+import source from '../../../../../test/verify/qft.qn?raw';
+
+The QFT is Quon's headline example for [recursion and value-dependent circuit
+types](/language/#recursion-and-value-dependent-types). `on_high` embeds the
+recursive circuit, while `swap_reverse` restores conventional output order.
+
+## Source
+
+The page embeds
+[`test/verify/qft.qn`](https://github.com/arniber21/quon/blob/main/test/verify/qft.qn).
+Unlike the typechecker stress fixture
+[`frontend/tests/fixtures/corpus/recursive_qft.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/corpus/recursive_qft.qn),
+this program uses geometrically decreasing controlled-rotation angles.
+
+<pre><code>{source}</code></pre>
+
+## Compile and simulate
+
+```sh
+./target/release/quonc test/verify/qft.qn --emit-qasm > /tmp/qft.qasm
+QUONC=target/release/quonc python test/verify/qft.py
+```
+
+## Expected result
+
+A computational-basis histogram cannot directly reveal the phases produced by
+a QFT. The fixture therefore prepares `|101>`, applies
+`qft(3) |> adjoint(qft(3))`, and checks that the round trip returns `101` with
+more than 99% fidelity. The
+[`qft.py`](https://github.com/arniber21/quon/blob/main/test/verify/qft.py)
+verifier also reports whether optimization structurally cancels the inverse
+pair.

@@ -1,31 +1,23 @@
--- Mixed-field Ising chain: H = -J Σ ZᵢZᵢ₊₁ - hz Σ Zᵢ - hx Σ Xᵢ (non-integrable for hx,hz ≠ 0).
--- Stresses: a two-body ZZ layer plus two single-body fields, depth n_steps*(n+1).
-
 fn coupling_layer(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { Rzz(-2.0 * j * tau) @(i, i + 1) }
+        (for i in (range(n - 1)) { (Rzz(((- 2.0) * j) * tau)) @(i, i + 1) })
 }
 
 fn longitudinal_layer(n: Nat, hz: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rz(-2.0 * hz * tau) q }
+        (for q in (qubits n) { Rz(((- 2.0) * hz) * tau, q) })
 }
 
 fn transverse_layer(n: Nat, hx: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rx(-2.0 * hx * tau) q }
+        (for q in (qubits n) { Rx(((- 2.0) * hx) * tau, q) })
 }
 
-fn mixed_field_step(n: Nat, j: Float, hz: Float, hx: Float, tau: Float)
-    : Circuit<n, n, n + 1, Universal> = circuit {
-    coupling_layer(n, j, tau) |> longitudinal_layer(n, hz, tau) |> transverse_layer(n, hx, tau)
+fn mixed_field_step(n: Nat, j: Float, hz: Float, hx: Float, tau: Float): Circuit<n, n, n + 1, Universal> = circuit {
+        coupling_layer(n, j, tau) |> longitudinal_layer(n, hz, tau) |> transverse_layer(n, hx, tau)
 }
 
-fn mixed_field_evolve(n: Nat, j: Float, hz: Float, hx: Float, t: Float, n_steps: Int)
-    : Circuit<n, n, n_steps * (n + 1), Universal> =
-    let tau = t / float(n_steps)
-    in fold(range(n_steps), identity(n), fn(acc, _) ->
-        acc |> mixed_field_step(n, j, hz, hx, tau)
-    )
+fn mixed_field_evolve(n: Nat, j: Float, hz: Float, hx: Float, t: Float, n_steps: Int): Circuit<n, n, n_steps * (n + 1), Universal> = let tau = t / (float n_steps) in fold(range n_steps, identity n, fn(acc, _) -> acc
+|> mixed_field_step(n, j, hz, hx, tau))
 
 fn simulate_mixed_field(n: Nat, j: Float, hz: Float, hx: Float, t: Float, n_steps: Int): Q<List<Bit>> = run {
-    q <- mixed_field_evolve(n, j, hz, hx, t, n_steps) @ qreg(n)
-    measure_all(q)
+        q <- (mixed_field_evolve(n, j, hz, hx, t, n_steps)) @ (qreg n)
+        measure_all q
 }
