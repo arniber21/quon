@@ -1,18 +1,14 @@
--- 1D cluster state: Hadamard every qubit, then apply CZ along the chain (measurement-based QC
--- resource state).
--- Stresses: Clifford H + CZ chain, depth n.
-
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
 fn cz_chain(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
-    for i in range(n - 1) { CZ @(i, i + 1) }
+        (for i in (range(n - 1)) { CZ @(i, i + 1) })
 }
 
-fn cluster_state(n: Nat): Circuit<n, n, n, Clifford> = hadamard_all(n) |> cz_chain(n)
+fn cluster_state(n: Nat): Circuit<n, n, n, Clifford> = hadamard_all n |> cz_chain n
 
 fn make_cluster(n: Nat): Q<List<Bit>> = run {
-    q <- cluster_state(n) @ qreg(n)
-    measure_all(q)
+        q <- (cluster_state n) @ (qreg n)
+        measure_all q
 }

@@ -16,6 +16,10 @@ export default defineConfig({
 						{ label: 'Quickstart', slug: 'getting-started/quickstart' },
 					],
 				},
+				{
+					label: 'Language guide',
+					items: [{ label: 'Language fundamentals', link: '/language/' }],
+				},
 			],
 		}),
 	],

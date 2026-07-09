@@ -31,20 +31,22 @@ fn counts_gates_in_linear_module() {
     let q2 = append_gate(&context, &body, "X", q1, location);
     let _q3 = append_gate(&context, &body, "Z", q2, location);
 
-    let target = backend::BackendTarget {
-        id: "test".into(),
-        num_qubits: 1,
-        topology: backend::ConnectivityGraph::all_to_all(1),
-        native_gates: vec![
-            backend::NativeGate::passthrough("H", 1),
-            backend::NativeGate::passthrough("X", 1),
-            backend::NativeGate::passthrough("Z", 1),
-        ],
-        noise: backend::NoiseModel::default(),
-        meas_latency_us: 0.0,
-        supports_mid_circuit_meas: true,
-        supports_feed_forward: true,
-    };
+    let target = backend::BackendTarget::fixed(
+        "test",
+        backend::FixedTarget {
+            num_qubits: 1,
+            topology: backend::ConnectivityGraph::all_to_all(1),
+            native_gates: vec![
+                backend::NativeGate::passthrough("H", 1),
+                backend::NativeGate::passthrough("X", 1),
+                backend::NativeGate::passthrough("Z", 1),
+            ],
+            noise: backend::NoiseModel::default(),
+            meas_latency_us: 0.0,
+            supports_mid_circuit_meas: true,
+            supports_feed_forward: true,
+        },
+    );
     let metrics = collect_module_metrics(&module, &target);
     assert_eq!(metrics.gate_count, 3);
 }
@@ -89,19 +91,21 @@ fn dynamic_if_counts_both_branches() {
         .expect("if"),
     );
 
-    let target = backend::BackendTarget {
-        id: "test".into(),
-        num_qubits: 2,
-        topology: backend::ConnectivityGraph::all_to_all(2),
-        native_gates: vec![
-            backend::NativeGate::passthrough("H", 1),
-            backend::NativeGate::passthrough("T", 1),
-        ],
-        noise: backend::NoiseModel::default(),
-        meas_latency_us: 0.0,
-        supports_mid_circuit_meas: true,
-        supports_feed_forward: true,
-    };
+    let target = backend::BackendTarget::fixed(
+        "test",
+        backend::FixedTarget {
+            num_qubits: 2,
+            topology: backend::ConnectivityGraph::all_to_all(2),
+            native_gates: vec![
+                backend::NativeGate::passthrough("H", 1),
+                backend::NativeGate::passthrough("T", 1),
+            ],
+            noise: backend::NoiseModel::default(),
+            meas_latency_us: 0.0,
+            supports_mid_circuit_meas: true,
+            supports_feed_forward: true,
+        },
+    );
     let metrics = collect_module_metrics(&module, &target);
     // Conservative upper bound: both branches contribute to gate/t counts.
     assert_eq!(

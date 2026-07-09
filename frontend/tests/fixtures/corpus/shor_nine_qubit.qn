@@ -1,20 +1,13 @@
--- Shor 9-qubit code: concatenation of the phase-flip code (outer) with the bit-flip code (inner),
--- protecting against an arbitrary single-qubit error.
--- Stresses: a width-growing 1 → 9 encode and its adjoint, `split` of the recovered logical.
-
 fn shor9_encode(): Circuit<1, 9, 12, Clifford> = circuit {
-    CNOT @(0, 3) |> CNOT @(0, 6)
-    |> H @0 |> H @3 |> H @6
-    |> CNOT @(0, 1) |> CNOT @(0, 2)
-    |> CNOT @(3, 4) |> CNOT @(3, 5)
-    |> CNOT @(6, 7) |> CNOT @(6, 8)
+        CNOT @(0, 3) |> CNOT @(0, 6) |> H @0 |> H @3 |> H @6 |> CNOT @(0, 1) |> CNOT @(0, 2) |> CNOT @(3, 4)
+|> CNOT @(3, 5) |> CNOT @(6, 7) |> CNOT @(6, 8)
 }
 
 fn shor9_decode(): Circuit<9, 1, 12, Clifford> = adjoint(shor9_encode())
 
 fn protect_shor9(logical: Qubit): Q<QReg<1>> = run {
-    enc              <- shor9_encode() @ logical
-    dec              <- shor9_decode() @ enc
-    let (out, _rest)  = split(1, dec)
-    return out
+        enc <- (shor9_encode()) @logical
+        dec <- (shor9_decode()) @enc
+        let (out, _rest) = split(1, dec)
+        return out
 }

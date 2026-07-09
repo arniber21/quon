@@ -1,17 +1,14 @@
--- General graph state: Hadamard every qubit, then CZ on every pair (fully-connected graph).
--- Stresses: dense all-pairs CZ entanglement, depth n*n + 1.
-
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
-fn cz_all_pairs(n: Nat): Circuit<n, n, n*n, Clifford> = circuit {
-    for (i, j) in pairs(n) { CZ @(i, j) }
+fn cz_all_pairs(n: Nat): Circuit<n, n, n * n, Clifford> = circuit {
+        (for (i, j) in (pairs n) { CZ @(i, j) })
 }
 
-fn graph_state(n: Nat): Circuit<n, n, n*n + 1, Clifford> = hadamard_all(n) |> cz_all_pairs(n)
+fn graph_state(n: Nat): Circuit<n, n, n * n + 1, Clifford> = hadamard_all n |> cz_all_pairs n
 
 fn make_graph_state(n: Nat): Q<List<Bit>> = run {
-    q <- graph_state(n) @ qreg(n)
-    measure_all(q)
+        q <- (graph_state n) @ (qreg n)
+        measure_all q
 }

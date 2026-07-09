@@ -1,18 +1,13 @@
--- Givens-rotation network: a recursive triangular sweep of two-qubit Givens rotations that
--- realizes an arbitrary single-particle (orbital) basis change. Recursive on n.
--- Stresses: value-dependent recursion (#57–#60) with an n*n depth bound, `on_low` embedding.
-
 fn givens_sweep(n: Nat, theta: Float): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { Ryy(theta) @(i, i + 1) }
+        (for i in (range(n - 1)) { (Ryy theta) @(i, i + 1) })
 }
 
-fn givens_network(n: Nat, theta: Float): Circuit<n, n, n*n, Universal> =
-    match n {
-        0 => identity(0),
-        _ => givens_sweep(n, theta) |> (givens_network(n - 1, theta) `on_low` n)
-    }
+fn givens_network(n: Nat, theta: Float): Circuit<n, n, n * n, Universal> = match n {
+0 => identity 0,
+_ => givens_sweep(n, theta) |> on_low(givens_network(n - 1, theta), n)
+}
 
 fn run_givens(n: Nat, theta: Float): Q<List<Bit>> = run {
-    q <- givens_network(n, theta) @ qreg(n)
-    measure_all(q)
+        q <- (givens_network(n, theta)) @ (qreg n)
+        measure_all q
 }
