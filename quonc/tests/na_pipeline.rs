@@ -57,6 +57,15 @@ fn bell_emits_na_schedule_and_resource_report() {
         stderr.contains("\"entangle2_count\""),
         "missing entangle2_count: {stderr}"
     );
+    // Extract must not double-count leftover quantum.circ.func callees.
+    assert!(
+        stderr.contains("\"logical_qubits\": 2"),
+        "expected 2 logical qubits, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"entangle2_count\": 1"),
+        "expected one Entangle2, got: {stderr}"
+    );
 }
 
 #[test]
