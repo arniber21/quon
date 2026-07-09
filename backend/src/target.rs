@@ -164,11 +164,26 @@ impl ConnectivityGraph {
     }
 }
 
-/// A hardware descriptor: connectivity, native gates, noise, and capability
-/// flags (SPEC.md §8.1, glossary `BackendTarget`).
+/// A backend target descriptor with one architecture-specific payload.
+///
+/// Only `id` is shared at this outer level. The concrete architecture family
+/// owns every other field through [`TargetKind`], following ADR-0009.
 #[derive(Debug)]
 pub struct BackendTarget {
     pub id: String,
+    pub kind: TargetKind,
+}
+
+#[derive(Debug)]
+pub enum TargetKind {
+    Fixed(FixedTarget),
+    NeutralAtomReconfigurable(NeutralAtomTarget),
+}
+
+/// Today's fixed-connectivity gate-model hardware descriptor: connectivity,
+/// native gates, noise, and dynamic-circuit capability flags.
+#[derive(Debug)]
+pub struct FixedTarget {
     pub num_qubits: usize,
     pub topology: ConnectivityGraph,
     pub native_gates: Vec<NativeGate>,
@@ -179,10 +194,200 @@ pub struct BackendTarget {
 }
 
 impl BackendTarget {
+    pub fn fixed(id: impl Into<String>, fixed: FixedTarget) -> Self {
+        Self {
+            id: id.into(),
+            kind: TargetKind::Fixed(fixed),
+        }
+    }
+
+    pub fn neutral_atom_reconfigurable(
+        id: impl Into<String>,
+        neutral_atom: NeutralAtomTarget,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind: TargetKind::NeutralAtomReconfigurable(neutral_atom),
+        }
+    }
+
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            TargetKind::Fixed(_) => "fixed",
+            TargetKind::NeutralAtomReconfigurable(_) => "neutral_atom_reconfigurable",
+        }
+    }
+
+    pub fn fixed_target(&self) -> Option<&FixedTarget> {
+        match &self.kind {
+            TargetKind::Fixed(target) => Some(target),
+            TargetKind::NeutralAtomReconfigurable(_) => None,
+        }
+    }
+
+    pub fn neutral_atom_target(&self) -> Option<&NeutralAtomTarget> {
+        match &self.kind {
+            TargetKind::Fixed(_) => None,
+            TargetKind::NeutralAtomReconfigurable(target) => Some(target),
+        }
+    }
+
     /// True if a gate with this name is in the native set.
+    pub fn is_native(&self, gate: &str) -> bool {
+        match &self.kind {
+            TargetKind::Fixed(target) => target.is_native(gate),
+            TargetKind::NeutralAtomReconfigurable(target) => target.is_native(gate),
+        }
+    }
+
+    pub fn native_gate_names(&self) -> Vec<&str> {
+        match &self.kind {
+            TargetKind::Fixed(target) => target
+                .native_gates
+                .iter()
+                .map(|g| g.name.as_str())
+                .collect(),
+            TargetKind::NeutralAtomReconfigurable(target) => {
+                target.native_gates.iter().map(String::as_str).collect()
+            }
+        }
+    }
+}
+
+impl FixedTarget {
+    /// True if a gate with this name is in the fixed target's native set.
     pub fn is_native(&self, gate: &str) -> bool {
         self.native_gates.iter().any(|g| g.name == gate)
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NeutralAtomTarget {
+    pub grid: NeutralAtomGrid,
+    pub zones: Vec<NeutralAtomZone>,
+    pub movement: AodMovement,
+    pub interaction: RydbergInteraction,
+    pub native_gates: Vec<String>,
+    pub timing: NeutralAtomTiming,
+    pub fidelity: NeutralAtomFidelity,
+    pub cost_model: NeutralAtomCostModel,
+}
+
+impl NeutralAtomTarget {
+    pub fn is_native(&self, gate: &str) -> bool {
+        self.native_gates.iter().any(|g| g == gate)
+    }
+
+    pub fn zone_capacity(&self, kind: ZoneKind) -> u64 {
+        self.zones
+            .iter()
+            .filter(|zone| zone.kind == kind)
+            .map(|zone| u64::from(zone.rows) * u64::from(zone.cols))
+            .sum()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeutralAtomGrid {
+    pub width_um: f64,
+    pub height_um: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NeutralAtomZone {
+    pub zone_id: u32,
+    pub kind: ZoneKind,
+    pub rows: u32,
+    pub cols: u32,
+    pub origin_um: (f64, f64),
+    pub site_pitch_um: (f64, f64),
+    pub pair_gap_um: Option<f64>,
+}
+
+impl NeutralAtomZone {
+    pub fn width_um(&self) -> f64 {
+        f64::from(self.cols) * self.site_pitch_um.0
+    }
+
+    pub fn height_um(&self) -> f64 {
+        f64::from(self.rows) * self.site_pitch_um.1
+    }
+
+    pub fn bounds_um(&self) -> (f64, f64, f64, f64) {
+        let x_min = self.origin_um.0;
+        let y_min = self.origin_um.1;
+        (
+            x_min,
+            y_min,
+            x_min + self.width_um(),
+            y_min + self.height_um(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ZoneKind {
+    Storage,
+    Entanglement,
+    Readout,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AodMovement {
+    pub model: AodMovementModel,
+    pub aod_rows: u32,
+    pub aod_cols: u32,
+    pub num_aods: u32,
+    pub min_row_col_separation_um: f64,
+    pub speed_model: AodSpeedModel,
+    pub trap_transfer_us: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AodMovementModel {
+    RowColumnCoupled,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AodSpeedModel {
+    pub kind: AodSpeedModelKind,
+    pub acceleration_m_s2: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AodSpeedModelKind {
+    Sqrt,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RydbergInteraction {
+    pub rydberg_range_um: f64,
+    pub min_rydberg_spacing_um: f64,
+    pub max_parallel_entangling_pairs: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NeutralAtomTiming {
+    pub cz_us: f64,
+    pub single_qubit_us: f64,
+    pub measurement_us: f64,
+    pub reset_us: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NeutralAtomFidelity {
+    pub cz: f64,
+    pub single_qubit: f64,
+    pub atom_transfer: f64,
+    pub coherence_time_us: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NeutralAtomCostModel {
+    pub rydberg_stage_weight: f64,
+    pub movement_time_weight: f64,
+    pub trap_transfer_weight: f64,
+    pub idle_time_weight: f64,
 }
 
 /// True iff `q` is a valid qubit index for a device with `n` qubits.

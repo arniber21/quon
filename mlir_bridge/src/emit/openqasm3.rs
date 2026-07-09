@@ -388,7 +388,11 @@ pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitErr
         num_bits,
         next_qubit: 0,
         next_bit: 0,
-        native: target.native_gates.iter().map(|g| g.name.clone()).collect(),
+        native: target
+            .native_gate_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
         target_id: &target.id,
     };
 

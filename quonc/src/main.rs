@@ -3,7 +3,7 @@ use clap::Parser;
 use melior::ir::operation::OperationLike;
 use melior::ir::{BlockLike, RegionLike};
 
-use backend::{BackendTarget, generic_openqasm};
+use backend::{BackendTarget, TargetKind, generic_openqasm};
 use mlir_bridge::emit::openqasm3;
 use mlir_bridge::passes::{
     classical_region_fusion, clifford_t_opt, compiler_uncomputation, depth_scheduling,
@@ -16,8 +16,8 @@ use mlir_bridge::passes::{
 #[derive(Parser)]
 #[command(name = "quonc", about = "Quon quantum compiler", version)]
 struct Cli {
-    /// Source file to compile (.qn)
-    source: std::path::PathBuf,
+    /// Source file to compile (.qn). Optional when using --print-target.
+    source: Option<std::path::PathBuf>,
 
     /// Emit OpenQASM 3.0 to stdout
     #[arg(long)]
@@ -26,6 +26,10 @@ struct Cli {
     /// Backend target descriptor (JSON). Defaults to generic_openqasm.
     #[arg(long)]
     target: Option<std::path::PathBuf>,
+
+    /// Print the loaded backend target summary and exit.
+    #[arg(long)]
+    print_target: bool,
 
     /// Dump MLIR after each pass (debug)
     #[arg(long)]
@@ -39,9 +43,6 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let source = std::fs::read_to_string(&cli.source)
-        .with_context(|| format!("reading {}", cli.source.display()))?;
-
     // The emitter reads only the target's native gate set and id, not its
     // topology, so the qubit width here is immaterial; `generic_openqasm` is
     // an all-to-all target used when the caller supplies no device JSON.
@@ -51,8 +52,28 @@ fn main() -> Result<()> {
         None => generic_openqasm::target(64),
     };
 
+    if cli.print_target {
+        print!("{}", render_target_summary(&target));
+        return Ok(());
+    }
+
+    if target.fixed_target().is_none() {
+        bail!(
+            "target `{}` has kind `{}`; the OpenQASM pipeline currently supports only fixed targets (use --print-target to inspect this target)",
+            target.id,
+            target.kind_name()
+        );
+    }
+
+    let source_path = cli
+        .source
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing source file; pass a .qn source or use --print-target"))?;
+    let source = std::fs::read_to_string(source_path)
+        .with_context(|| format!("reading {}", source_path.display()))?;
+
     let qasm = compile_to_qasm(
-        &cli.source,
+        source_path,
         &source,
         &target,
         cli.dump_ir,
@@ -67,6 +88,76 @@ fn main() -> Result<()> {
         eprintln!("(compiled successfully; pass --emit-qasm to print OpenQASM 3.0)");
     }
     Ok(())
+}
+
+fn render_target_summary(target: &BackendTarget) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("target: {}\n", target.id));
+    out.push_str(&format!("kind: {}\n", target.kind_name()));
+
+    match &target.kind {
+        TargetKind::Fixed(fixed) => {
+            out.push_str(&format!("num_qubits: {}\n", fixed.num_qubits));
+            out.push_str(&format!("topology_edges: {}\n", fixed.topology.edges.len()));
+            out.push_str(&format!(
+                "native_gates: {}\n",
+                fixed
+                    .native_gates
+                    .iter()
+                    .map(|gate| gate.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            out.push_str(&format!(
+                "measurement_latency_us: {}\n",
+                fixed.meas_latency_us
+            ));
+            out.push_str(&format!(
+                "supports_mid_circuit_meas: {}\n",
+                fixed.supports_mid_circuit_meas
+            ));
+            out.push_str(&format!(
+                "supports_feed_forward: {}\n",
+                fixed.supports_feed_forward
+            ));
+        }
+        TargetKind::NeutralAtomReconfigurable(na) => {
+            out.push_str(&format!(
+                "grid_um: {} x {}\n",
+                na.grid.width_um, na.grid.height_um
+            ));
+            out.push_str(&format!("zones: {}\n", na.zones.len()));
+            out.push_str(&format!(
+                "zone_capacity: storage={}, entanglement={}, readout={}\n",
+                na.zone_capacity(backend::ZoneKind::Storage),
+                na.zone_capacity(backend::ZoneKind::Entanglement),
+                na.zone_capacity(backend::ZoneKind::Readout)
+            ));
+            out.push_str(&format!(
+                "movement: aod_row_column_coupled, rows={}, cols={}, aods={}, trap_transfer_us={}\n",
+                na.movement.aod_rows,
+                na.movement.aod_cols,
+                na.movement.num_aods,
+                na.movement.trap_transfer_us
+            ));
+            out.push_str(&format!(
+                "rydberg: range_um={}, min_spacing_um={}, max_parallel_pairs={}\n",
+                na.interaction.rydberg_range_um,
+                na.interaction.min_rydberg_spacing_um,
+                na.interaction.max_parallel_entangling_pairs
+            ));
+            out.push_str(&format!(
+                "timing_us: cz={}, single_qubit={}, measurement={}, reset={}\n",
+                na.timing.cz_us,
+                na.timing.single_qubit_us,
+                na.timing.measurement_us,
+                na.timing.reset_us
+            ));
+            out.push_str(&format!("native_gates: {}\n", na.native_gates.join(", ")));
+        }
+    }
+
+    out
 }
 
 /// Front-to-back compile: source → quantum.circ → quantum.dynamic →
