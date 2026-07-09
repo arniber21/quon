@@ -1,18 +1,13 @@
--- Binary-tree amplitude loader (Grover–Rudolph style): recursively load a probability
--- distribution by controlled rotations, halving the subtree at each level.
--- Stresses: value-dependent recursion (#57–#60) with an n*n depth bound.
-
 fn load_level(n: Nat): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { CRz(PI / 5.0) @(0, i + 1) }
+        (for i in (range(n - 1)) { (CRz(PI / 5.0)) @(0, i + 1) })
 }
 
-fn tree_loader(n: Nat): Circuit<n, n, n*n, Universal> =
-    match n {
-        0 => identity(0),
-        _ => load_level(n) |> (tree_loader(n - 1) `on_high` n)
-    }
+fn tree_loader(n: Nat): Circuit<n, n, n * n, Universal> = match n {
+0 => identity 0,
+_ => load_level n |> on_high(tree_loader(n - 1), n)
+}
 
 fn run_loader(n: Nat): Q<List<Bit>> = run {
-    q <- tree_loader(n) @ qreg(n)
-    measure_all(q)
+        q <- (tree_loader n) @ (qreg n)
+        measure_all q
 }

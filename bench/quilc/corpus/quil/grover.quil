@@ -1,0 +1,17 @@
+# Grover-like n=2 with CNOT+Z oracle (matched to corpus/qn/grover.qn)
+H 0
+H 1
+CNOT 0 1
+Z 1
+CNOT 0 1
+H 0
+H 1
+X 0
+X 1
+CNOT 0 1
+Z 1
+CNOT 0 1
+X 0
+X 1
+H 0
+H 1

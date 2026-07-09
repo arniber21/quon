@@ -1,0 +1,8 @@
+H 0
+T 0
+CNOT 0 1
+T 1
+H 2
+T 2
+CNOT 1 2
+T 1

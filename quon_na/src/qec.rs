@@ -1,9 +1,11 @@
 //! QEC logical-op layer: code blocks and per-family overhead formulas.
 //!
-//! Backend-only IR concepts (`LogicalQubitId`, `CodeBlock`, `LogicalOp`) with
+//! Backend-only IR concepts ([`LogicalQubitId`], [`CodeBlock`], [`LogicalOp`]) with
 //! no Quon source-language representation. Overhead formulas are normative in
 //! [`docs/neutral_atom/architecture_model.md`](../../docs/neutral_atom/architecture_model.md)
 //! §10 (issue #109).
+//!
+//! [`LogicalQubitId`] is shared with the interaction-graph layer ([`crate::graph`]).
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -13,10 +15,7 @@ use crate::layout::AtomId;
 #[cfg(feature = "flux")]
 use flux_rs::attrs::*;
 
-/// Backend-only identifier for a logical qubit after lowering to `quantum.dynamic`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LogicalQubitId(pub u32);
+pub use crate::graph::LogicalQubitId;
 
 /// Identifier for a code block grouping atoms under one [`CodeFamily`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

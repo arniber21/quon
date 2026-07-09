@@ -1,5 +1,7 @@
 // ZX-graph data structure — see issue #20, SPEC.md §7.2
 
+use std::f64::consts::PI;
+
 use petgraph::Direction;
 use petgraph::stable_graph::{NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
@@ -106,7 +108,17 @@ pub fn circuit_to_zx(gates: &[GateRef]) -> ZXGraph {
                 zx.connect(wires[q], mid, WireKind::Hadamard);
                 wires[q] = mid;
             }
-            "Z" | "Rz" => {
+            "Z" => {
+                let q = gate.qubits[0];
+                // Pauli Z ≡ Z-spider with phase π (not phase 0, which is identity).
+                let spider = zx.graph.add_node(Spider {
+                    color: SpiderColor::Z,
+                    phase: PI,
+                });
+                zx.connect(wires[q], spider, WireKind::Regular);
+                wires[q] = spider;
+            }
+            "Rz" => {
                 let q = gate.qubits[0];
                 let phase = gate.angle.unwrap_or(0.0);
                 let spider = zx.graph.add_node(Spider {
@@ -116,7 +128,19 @@ pub fn circuit_to_zx(gates: &[GateRef]) -> ZXGraph {
                 zx.connect(wires[q], spider, WireKind::Regular);
                 wires[q] = spider;
             }
-            "X" | "Rx" => {
+            "X" => {
+                let q = gate.qubits[0];
+                // Pauli X ≡ X-spider with phase π. Encoding X as phase 0 made
+                // `zx_to_circuit` drop it (identity spiders are elided), which
+                // silently deleted X from rewritten circuits (issue #118).
+                let spider = zx.graph.add_node(Spider {
+                    color: SpiderColor::X,
+                    phase: PI,
+                });
+                zx.connect(wires[q], spider, WireKind::Regular);
+                wires[q] = spider;
+            }
+            "Rx" => {
                 let q = gate.qubits[0];
                 let phase = gate.angle.unwrap_or(0.0);
                 let spider = zx.graph.add_node(Spider {
@@ -235,6 +259,22 @@ mod tests {
         let gates = vec![GateRef::new("H", vec![0]), GateRef::new("CNOT", vec![0, 1])];
         let zx = circuit_to_zx(&gates);
         assert!(zx_to_circuit(&zx).is_empty());
+    }
+
+    #[test]
+    fn pauli_x_is_not_elided_as_identity() {
+        // Regression for issue #118: bare X must round-trip as Rx(π), not vanish.
+        let gates = vec![
+            GateRef::rotation("Rx", 0, PI / 4.0),
+            GateRef::new("X", vec![0]),
+        ];
+        let zx = circuit_to_zx(&gates);
+        let recovered = zx_to_circuit(&zx);
+        assert_eq!(recovered.len(), 2);
+        assert_eq!(recovered[0].name, "Rx");
+        assert!((recovered[0].angle.unwrap() - PI / 4.0).abs() < 1e-9);
+        assert_eq!(recovered[1].name, "Rx");
+        assert!((recovered[1].angle.unwrap() - PI).abs() < 1e-9);
     }
 
     #[test]

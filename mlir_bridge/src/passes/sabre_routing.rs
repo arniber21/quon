@@ -285,13 +285,85 @@ fn best_swap(
     })
 }
 
+/// Noise cost for swapping / using the physical edge `(a, b)`.
+///
+/// Looks up two-qubit fidelity for any native 2Q gate in either direction
+/// (`(a,b)` or `(b,a)`), falls back to `cx` when the native set is empty of
+/// named 2Q entries in the noise map, and adds a light readout-error influence
+/// so noisy measurement qubits are slightly disfavored as SWAP endpoints.
 fn noise_penalty(target: &FixedTarget, a: usize, b: usize) -> f64 {
+    let gate_penalty = two_qubit_noise_penalty(target, a, b);
+    let readout_penalty = 0.5 * (readout_penalty(target, a) + readout_penalty(target, b));
+    gate_penalty + readout_penalty
+}
+
+fn fidelity_to_penalty(fidelity: f64) -> f64 {
+    if fidelity <= 0.0 {
+        // Treat non-positive fidelity as maximally bad without panicking on ln.
+        f64::INFINITY
+    } else if fidelity >= 1.0 {
+        0.0
+    } else {
+        -fidelity.ln()
+    }
+}
+
+fn two_qubit_noise_penalty(target: &FixedTarget, a: usize, b: usize) -> f64 {
+    if let Some(f) = best_two_qubit_fidelity(target, a, b) {
+        return fidelity_to_penalty(f);
+    }
+    0.0
+}
+
+fn best_two_qubit_fidelity(target: &FixedTarget, a: usize, b: usize) -> Option<f64> {
+    let mut best: Option<f64> = None;
+    let native_two_qubit: Vec<&str> = target
+        .native_gates
+        .iter()
+        .filter(|g| g.num_qubits == 2)
+        .map(|g| g.name.as_str())
+        // SWAP is a routing primitive; noise models publish entangling-gate
+        // fidelities (cx/ecr/cz/…), not SWAP error rates.
+        .filter(|name| !name.eq_ignore_ascii_case("swap"))
+        .collect();
+
+    let gate_names: Vec<&str> = if native_two_qubit.is_empty() {
+        vec!["cx"]
+    } else {
+        native_two_qubit
+    };
+
+    for gate in gate_names {
+        for &(u, v) in &[(a, b), (b, a)] {
+            if let Some(f) = target
+                .noise
+                .two_qubit_fidelity
+                .get(&(gate.to_string(), u, v))
+                .copied()
+            {
+                best = Some(best.map_or(f, |cur| cur.max(f)));
+            }
+        }
+    }
+    best
+}
+
+fn readout_penalty(target: &FixedTarget, q: usize) -> f64 {
     target
         .noise
-        .two_qubit_fidelity
-        .get(&("cx".to_string(), a, b))
+        .readout_error
+        .get(&q)
         .copied()
-        .map(|f| -f.ln())
+        .map(|e| {
+            // Map readout error e ∈ [0,1] onto a soft penalty comparable to
+            // -ln(fidelity) for typical CX fidelities (~0.005–0.02).
+            let e = e.clamp(0.0, 1.0);
+            if e <= 0.0 {
+                0.0
+            } else {
+                -((1.0 - e).max(1e-12)).ln()
+            }
+        })
         .unwrap_or(0.0)
 }
 

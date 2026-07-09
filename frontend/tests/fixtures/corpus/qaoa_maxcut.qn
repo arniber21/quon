@@ -1,32 +1,24 @@
--- QAOA for MaxCut on a weighted graph (adjacency in a Matrix<n,n,Float>).
--- Stresses: pairs/diag iteration, Rzz cost edges, symbolic depth p*(n*n+1).
-
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
-fn maxcut_cost(n: Nat, gamma: Float, w: Matrix<n, n, Float>): Circuit<n, n, n*n, Universal> = circuit {
-    for (i, j) in pairs(n) { Rzz(gamma * w[i][j]) @(i, j) }
+fn maxcut_cost(n: Nat, gamma: Float, w: Matrix<n, n, Float>): Circuit<n, n, n * n, Universal> = circuit {
+        (for (i, j) in (pairs n) { (Rzz(gamma * (index(index(w, i), j)))) @(i, j) })
 }
 
 fn maxcut_mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rx(2.0 * beta) q }
+        (for q in (qubits n) { Rx(2.0 * beta, q) })
 }
 
-fn maxcut_layer(n: Nat, gamma: Float, beta: Float, w: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 1, Universal> = circuit {
-    maxcut_cost(n, gamma, w) |> maxcut_mixer(n, beta)
+fn maxcut_layer(n: Nat, gamma: Float, beta: Float, w: Matrix<n, n, Float>): Circuit<n, n, n * n + 1, Universal> = circuit {
+        maxcut_cost(n, gamma, w) |> maxcut_mixer(n, beta)
 }
 
-fn maxcut_qaoa(n: Nat, p: Int, params: List<(Float, Float)>, w: Matrix<n, n, Float>)
-    : Circuit<n, n, p * (n*n + 1), Universal> =
-    fold(take(p, params), identity(n), fn(acc, (gamma, beta)) ->
-        acc |> maxcut_layer(n, gamma, beta, w)
-    )
+fn maxcut_qaoa(n: Nat, p: Int, params: List<(Float, Float)>, w: Matrix<n, n, Float>): Circuit<n, n, p * (n * n + 1), Universal> = fold(take(p, params), identity n, fn(acc, (gamma, beta)) -> acc
+|> maxcut_layer(n, gamma, beta, w))
 
-fn maxcut_shot(n: Nat, p: Int, params: List<(Float, Float)>, w: Matrix<n, n, Float>)
-    : Q<List<Bit>> = run {
-    let circ = hadamard_all(n) |> maxcut_qaoa(n, p, params, w)
-    reg     <- circ @ qreg(n)
-    measure_all(reg)
+fn maxcut_shot(n: Nat, p: Int, params: List<(Float, Float)>, w: Matrix<n, n, Float>): Q<List<Bit>> = run {
+        let circ = hadamard_all n |> maxcut_qaoa(n, p, params, w)
+        reg <- circ @ (qreg n)
+        measure_all reg
 }

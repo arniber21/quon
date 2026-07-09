@@ -1,14 +1,11 @@
--- Simon's algorithm: find the hidden period s of a 2-to-1 function with O(n) queries.
--- Uses a 2n-qubit register (n input + n output). Stresses: 2n-width oracle, H on the full register.
-
-type SimonOracle<n> = Circuit<2*n, 2*n, _, Universal>
+type SimonOracle<n> = Circuit<2 * n, 2 * n, _, Universal>
 
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
 fn simon(n: Nat, oracle: SimonOracle<n>): Q<List<Bit>> = run {
-    let circ = hadamard_all(2*n) |> oracle |> hadamard_all(2*n)
-    q       <- circ @ qreg(2*n)
-    measure_all(q)
+        let circ = hadamard_all(2 * n) |> oracle |> hadamard_all(2 * n)
+        q <- circ @ (qreg(2 * n))
+        measure_all q
 }

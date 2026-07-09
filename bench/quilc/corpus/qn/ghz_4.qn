@@ -1,0 +1,17 @@
+-- Linear GHZ on 4 qubits for quilc bench (#116).
+
+fn ghz_4(): Circuit<4, 4, 4, Clifford> = circuit {
+    H @0
+    |> CNOT @(0, 1)
+    |> CNOT @(1, 2)
+    |> CNOT @(2, 3)
+}
+
+fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, q3) <- ghz_4() @ qreg(4)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    b3 <- measure(q3)
+    return (b0, b1, b2, b3)
+}

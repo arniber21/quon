@@ -157,6 +157,13 @@ fn rebuild_func_body<'c, 'a>(
 /// independent single-qubit chains. Outside that regime the encode/extract
 /// round trip is not faithful, so we decline rather than risk emitting a
 /// shorter-but-different circuit. Multi-qubit ZX extraction is a follow-up.
+/// Gates the ZX encode/extract path can handle without silently dropping ops.
+/// Unsupported names (S, T, Y, SWAP, …) are ignored by `circuit_to_zx`, so a
+/// rewrite that only checked `simplified.len() < before` could delete them.
+fn zx_encodable(name: &str) -> bool {
+    matches!(name, "H" | "X" | "Z" | "Rx" | "Rz" | "CNOT" | "CX")
+}
+
 pub fn simplify_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) -> bool {
     if func_qubit_count(func) != 1 {
         return false;
@@ -165,10 +172,14 @@ pub fn simplify_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) -
     if gates.len() < 2 {
         return false;
     }
+    if gates.iter().any(|gate| !zx_encodable(&gate.name)) {
+        return false;
+    }
     let mut zx = circuit_to_zx(&gates);
     let before = gates.len();
     simplify(&mut zx);
     let simplified = zx_to_circuit(&zx);
+    // Empty means extract declined (H edges / branching); never treat as identity.
     if simplified.is_empty() || simplified.len() >= before {
         return false;
     }

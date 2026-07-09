@@ -1,23 +1,17 @@
--- The recursive Quantum Fourier Transform in isolation (SPEC §12 kernel).
--- Stresses the full value-dependent machinery (#57–#60): call-site substitution `qft(n-1)`,
--- the dependent-match base case `n = 0`, the well-founded `n` measure, and the `2*n*n` bound.
-
-fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
-
-fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
-    for i in range(n - 1) { controlled(Rz(PI / 4.0)) @(0, i + 1) }
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+        H @0
 }
 
-fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
-    match n {
-        0 => identity(0),
-        _ => apply_hadamard(n)
-             |> controlled_rotations(n)
-             |> (qft(n - 1) `on_high` n)
-             |> swap_reverse(n)
-    }
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+        (for i in (range(n - 1)) { controlled(Rz(PI / 4.0)) @(0, i + 1) })
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> = match n {
+0 => identity 0,
+_ => apply_hadamard n |> controlled_rotations n |> on_high(qft(n - 1), n) |> swap_reverse n
+}
 
 fn run_qft(n: Nat): Q<List<Bit>> = run {
-    q <- qft(n) @ qreg(n)
-    measure_all(q)
+        q <- (qft n) @ (qreg n)
+        measure_all q
 }
