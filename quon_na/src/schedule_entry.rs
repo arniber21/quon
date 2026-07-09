@@ -1,0 +1,52 @@
+//! Debug / stress-test entry point that accepts a raw interaction graph.
+//!
+//! [`schedule_from_graph`] bypasses Quon source and `quantum.dynamic` entirely.
+//! It validates the graph and returns a [`GraphScheduleRequest`] with empty
+//! schedule layers and no layout — a stable extension point for placement
+//! (#104), edge-coloring (#105), and AOD movement (#106).
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::graph::{GraphError, InteractionGraph};
+use crate::layout::NeutralAtomLayout;
+use crate::schedule::ScheduleLayer;
+
+/// Validated interaction graph plus the schedule slots later slices fill.
+///
+/// Distinct from the full Quon → `quantum.dynamic` pipeline. After
+/// [`schedule_from_graph`], `layers` is empty and `layout` is `None` until
+/// #104–#106 populate them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GraphScheduleRequest {
+    pub graph: InteractionGraph,
+    /// Always empty after [`schedule_from_graph`] until #105/#106 populate it.
+    pub layers: Vec<ScheduleLayer>,
+    /// Reserved for #104; always `None` in #103.
+    pub layout: Option<NeutralAtomLayout>,
+}
+
+/// Errors from [`schedule_from_graph`].
+#[derive(Debug, Error, Clone, PartialEq)]
+pub enum ScheduleFromGraphError {
+    #[error(transparent)]
+    InvalidGraph(#[from] GraphError),
+}
+
+/// Thin public entry: validate `graph`, wrap as a schedule request with empty
+/// layers/layout.
+///
+/// Documented as a debug/stress-test path for property tests and
+/// literature-comparable random graphs (e.g. 3-regular), not the production
+/// Quon-program pipeline.
+pub fn schedule_from_graph(
+    graph: InteractionGraph,
+) -> Result<GraphScheduleRequest, ScheduleFromGraphError> {
+    graph.validate()?;
+    Ok(GraphScheduleRequest {
+        graph,
+        layers: Vec::new(),
+        layout: None,
+    })
+}

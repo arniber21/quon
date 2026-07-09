@@ -1487,6 +1487,7 @@ dependencies = [
  "flux-rs",
  "melior",
  "mlir_bridge",
+ "proptest",
  "quon_core",
  "serde",
  "serde_json",

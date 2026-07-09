@@ -102,7 +102,7 @@ this table is our own engineering glue, not a literature claim.
 | Movement time t = √(d/a) | [OLSQ-DPQA] (as t = T0·√(D/D0)); [Enola]; [RAP] | App. A.2; [Enola] Sec. 2; [RAP] Sec. VI-B |
 | Trap transfer as a costed action (15 µs) | [Enola]; [RAP] | [Enola] Sec. 2; [RAP] Sec. VI-B |
 | Entangling-layer scheduling as edge coloring (#105) | [Enola] | Sec. 3, Theorem 1 (Misra–Gries, ≤ S_opt + 1 stages) |
-| Interaction-graph extraction from the circuit (#103) | [Enola] (interaction graph); [Atomique] (layer-decayed gate-frequency graph) | [Enola] Sec. 3; [Atomique] Sec. III-A |
+| Interaction-graph extraction from the circuit (#103) | [Enola] (interaction graph + dependency/commutation segments); [Atomique] (layer-decayed gate-frequency weights `Σ γ^l`, default γ = 0.8 in `quon_na::graph`) | [Enola] Sec. 3; [Atomique] Sec. III-A / Alg. 1 |
 | Placement heuristics: load-balance / interaction-clustering (#104) | [Atomique] (load-balance + aligned mapping); [Enola] (SA placement) | [Atomique] Sec. III-B; [Enola] Sec. 4 |
 | Flat movement planner: greedy maximal compatible move sets (#106) | [Enola] (routing = maximal independent sets in a move-conflict graph); [Atomique] (greedy maximal legal parallel gate set) | [Enola] Sec. 5; [Atomique] Sec. III-C |
 | Storage/entanglement/readout zone taxonomy | [AbstractModel]; experimentally [Bluvstein24] | [AbstractModel] Sec. III-A; [Bluvstein24] Fig. 1a |
