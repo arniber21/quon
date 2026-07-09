@@ -24,19 +24,21 @@
 //!
 //! | Mode | Params | Transfers / moved atom |
 //! | --- | --- | --- |
-//! | **Quon reuse (default)** | `return_home=false`, `transfers_per_moved_atom=2` | SLM→AOD load + AOD→SLM store onto pair; atoms stay; B8/B13 between layers |
-//! | **Enola-comparable** | `return_home=true`, `transfers_per_moved_atom=4` | load/store to pair, then load/store home each layer |
+//! | **Quon reuse (default)** | `return_home=false` | SLM→AOD load + AOD→SLM store onto pair (2 xfers); atoms stay; B8/B13 between layers |
+//! | **Enola-comparable** | `return_home=true` | load/store to pair, then load/store home each layer (4 xfers) |
 //!
+//! Only [`MovementParams::return_home`] selects the 2- vs 4-transfer policy.
 //! Do **not** document the default as Enola Sec. 2/6.1.
 //!
 //! # Geometry / legality
 //!
 //! - Bank origin (B14): `x0 = max_placement_x + pair_pitch_um + BANK_ISOLATION_EPS_UM`.
 //! - Geometry-gated skip (B10): skip moves only when partners ≤ `rydberg_range_um`
-//!   **and** full R1–R3 over all occupied atoms would pass.
-//! - R1–R3 (B11): dialect-identical `≤` reject predicates; scope = all occupied atoms.
-//!   Idle spectators on dense `#104` grids are moved to isolated parking sites
-//!   (below the placement bbox) before each entangle so R2/R3 can pass.
+//!   **and** full R1–R3 over all occupied atoms would pass; otherwise relocate gate
+//!   atoms onto the pair bank (or fail closed).
+//! - R1–R3 (B11): dialect-identical `≤` reject predicates; scope = **all occupied**
+//!   atoms (including dense `#104` idles). No spectator-parking workaround — dense
+//!   multi-atom grids with idle–idle R2/R3 violations fail [`MovementPlanError::EntanglingGeometry`].
 //! - Conflict oracle (B12): Enola three types + M3 dest separation
 //!   (`|dst_i − dst_j| < min_row_col_separation_um`).
 //! - AOD indices (B4): dense row/col overlay from unique site coordinates;
@@ -82,9 +84,9 @@ pub struct MovementParams {
     /// Center-to-center pitch between distinct interaction pairs.
     /// May equal `min_rydberg_spacing_um`; bank origin adds [`BANK_ISOLATION_EPS_UM`] (B14).
     pub pair_pitch_um: f64,
-    /// Quon reuse default: 2 transfers per moved atom. Not Enola Sec. 2/6.1.
-    pub transfers_per_moved_atom: u32,
     /// When true, return bank occupants home after each entangle (Enola-comparable 4-xfer).
+    /// When false (default), Quon reuse: 2 transfers per moved atom (load+store); B8/B13
+    /// reclaim between layers. This flag alone selects the 2- vs 4-transfer policy (B6).
     pub return_home: bool,
 }
 
@@ -102,7 +104,6 @@ impl MovementParams {
             num_aods: 1,
             pair_gap_um: 2.0,
             pair_pitch_um: 18.75,
-            transfers_per_moved_atom: 2,
             return_home: false,
         }
     }
@@ -275,73 +276,6 @@ pub fn ensure_interaction_pairs(
         .ok_or_else(|| MovementPlanError::Conflict("failed to create pair bank".into()))
 }
 
-/// Isolated parking sites for spectators (idle atoms) so dense `#104` placement
-/// does not leave R2/R3 violations among non-partners at entangle time (B11).
-///
-/// Sites are placed below the placement bbox at pitch `pair_pitch_um + BANK_ISOLATION_EPS_UM`
-/// so every parking↔parking and parking↔bank/placement distance is dialect-strict `>` min.
-fn ensure_parking_sites(
-    layout: &mut NeutralAtomLayout,
-    params: &MovementParams,
-    count: usize,
-) -> Result<Vec<SiteId>, MovementPlanError> {
-    params.validate()?;
-    let count = count.max(1);
-    let pitch = params.pair_pitch_um + BANK_ISOLATION_EPS_UM;
-    // Detect existing parking: sites tagged by y below placement min_y - pitch/2
-    // with x spaced by pitch. Simpler: append fresh each plan if not enough.
-    let mut min_y = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut any = false;
-    for b in &layout.initial_bindings {
-        let site = match b.trap {
-            TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
-        };
-        if let Some(s) = layout.sites.iter().find(|x| x.id == site) {
-            any = true;
-            min_y = min_y.min(s.position.y_um);
-            max_x = max_x.max(s.position.x_um);
-        }
-    }
-    if !any {
-        min_y = 0.0;
-        max_x = 0.0;
-    }
-    let y0 = min_y - pitch;
-    let x0 = 0.0;
-
-    // Reuse existing parking sites if present (same y0 row).
-    let mut existing: Vec<SiteId> = layout
-        .sites
-        .iter()
-        .filter(|s| (s.position.y_um - y0).abs() < POS_EPS_UM)
-        .map(|s| s.id)
-        .collect();
-    existing.sort();
-    if existing.len() >= count {
-        return Ok(existing.into_iter().take(count).collect());
-    }
-
-    let start_id = match layout.sites.iter().map(|s| s.id.0).max() {
-        Some(max_id) => max_id.saturating_add(1),
-        None => 0,
-    };
-    let start = existing.len();
-    for (offset, i) in (start..count).enumerate() {
-        let id = SiteId(start_id + offset as u32);
-        layout.sites.push(AtomSite {
-            id,
-            position: Position {
-                x_um: x0 + (i as f64) * pitch,
-                y_um: y0,
-            },
-        });
-        existing.push(id);
-    }
-    let _ = max_x;
-    Ok(existing)
-}
-
 /// Expand entangling layers with AOD-legal movement (Quon pair-bank duals +
 /// Enola-inspired conflict types / greedy longest-first IS; see B9).
 pub fn plan_aod_movement(
@@ -358,9 +292,7 @@ pub fn plan_aod_movement(
     }
 
     let w_max = max_entangle2_width(&req.layers);
-    let n_atoms = layout.initial_bindings.len();
     let pairs = ensure_interaction_pairs(layout, params, w_max.max(1))?;
-    let parking = ensure_parking_sites(layout, params, n_atoms.max(1))?;
     let pair_sites: BTreeSet<SiteId> = pairs.iter().flat_map(|p| [p.left, p.right]).collect();
 
     let home: BTreeMap<AtomId, SiteId> = layout
@@ -374,7 +306,7 @@ pub fn plan_aod_movement(
         })
         .collect();
 
-    // Rebuild maps after bank + parking append.
+    // Rebuild maps after bank append.
     let site_pos = site_position_map(layout)?;
     let aod_grid = AodGrid::from_layout(layout);
 
@@ -504,29 +436,7 @@ pub fn plan_aod_movement(
             }
         }
 
-        // Park spectators so dense #104 idle atoms do not violate R2/R3 (B11).
-        {
-            let gate_atoms = gate_atom_set(&gates);
-            let mut planner = EmitCtx {
-                params,
-                site_pos: &site_pos,
-                aod_grid: &aod_grid,
-                home: &home,
-                pair_sites: &pair_sites,
-                pairs: &pairs,
-                occ_site: &mut occ_site,
-                occ_atom: &mut occ_atom,
-                out_layers: &mut out_layers,
-                next_cycle: &mut next_cycle,
-                rearrangement_steps: &mut rearrangement_steps,
-                rearrangement_time_us: &mut rearrangement_time_us,
-                trap_transfers: &mut trap_transfers,
-                transfer_time_us: &mut transfer_time_us,
-            };
-            planner.park_spectators(&gate_atoms, &parking, layer.cycle)?;
-        }
-
-        // R1–R3 before entangle (B11).
+        // R1–R3 before entangle (B11): all occupied atoms, no spectator parking.
         check_entangling_geometry(layer.cycle, &gates, &occ_atom, &site_pos, params)?;
 
         let mut entangle_actions = Vec::new();
@@ -680,11 +590,6 @@ pub fn check_entangling_geometry(
     site_pos: &BTreeMap<SiteId, Position>,
     params: &MovementParams,
 ) -> Result<(), MovementPlanError> {
-    let partner_pairs: BTreeSet<(AtomId, AtomId)> = partner_gates
-        .iter()
-        .map(|&(a, b)| ordered_pair(a, b))
-        .collect();
-
     let mut atoms: Vec<(AtomId, Position)> = Vec::new();
     for (&atom, &site) in occ_atom {
         let pos = site_pos
@@ -694,17 +599,51 @@ pub fn check_entangling_geometry(
         atoms.push((atom, pos));
     }
     atoms.sort_by_key(|(a, _)| *a);
+    verify_entangling_geometry_predicates(
+        cycle,
+        partner_gates,
+        &atoms,
+        params.rydberg_range_um,
+        params.min_rydberg_spacing_um,
+    )
+}
+
+/// Dialect-identical R1–R3 predicates (`dialect.rs` `verify_entangling_geometry`).
+///
+/// Rejects partner distance `>` `rydberg_range_um` (R1) and non-partner distance
+/// `≤` `rydberg_range_um` (R2) / `≤` `min_rydberg_spacing_um` (R3). The MLIR dialect
+/// path only feeds entangle-layer atoms; the planner passes **all occupied** atoms
+/// via [`check_entangling_geometry`].
+pub fn verify_entangling_geometry_predicates(
+    cycle: u32,
+    partner_gates: &[(AtomId, AtomId)],
+    atoms: &[(AtomId, Position)],
+    rydberg_range_um: f64,
+    min_rydberg_spacing_um: f64,
+) -> Result<(), MovementPlanError> {
+    let partner_pairs: BTreeSet<(AtomId, AtomId)> = partner_gates
+        .iter()
+        .map(|&(a, b)| ordered_pair(a, b))
+        .collect();
+
+    let pos_of_atom = |id: AtomId| -> Result<Position, MovementPlanError> {
+        atoms
+            .iter()
+            .find(|(a, _)| *a == id)
+            .map(|(_, p)| *p)
+            .ok_or(MovementPlanError::MissingAtom(id))
+    };
 
     for &(a, b) in partner_gates {
-        let pa = pos_of(a, occ_atom, site_pos)?;
-        let pb = pos_of(b, occ_atom, site_pos)?;
+        let pa = pos_of_atom(a)?;
+        let pb = pos_of_atom(b)?;
         let d = euclidean_um(pa, pb);
-        if d > params.rydberg_range_um {
+        if d > rydberg_range_um {
             return Err(MovementPlanError::EntanglingGeometry {
                 cycle,
                 detail: format!(
-                    "R1: partners {:?}–{:?} distance {d} > rydberg_range_um {}",
-                    a, b, params.rydberg_range_um
+                    "R1: partners {:?}–{:?} distance {d} > rydberg_range_um {rydberg_range_um}",
+                    a, b
                 ),
             });
         }
@@ -718,21 +657,21 @@ pub fn check_entangling_geometry(
                 continue;
             }
             let d = euclidean_um(pa, pb);
-            if d <= params.rydberg_range_um {
+            if d <= rydberg_range_um {
                 return Err(MovementPlanError::EntanglingGeometry {
                     cycle,
                     detail: format!(
-                        "R2: non-partners {:?}–{:?} distance {d} ≤ rydberg_range_um {}",
-                        a, b, params.rydberg_range_um
+                        "R2: non-partners {:?}–{:?} distance {d} ≤ rydberg_range_um {rydberg_range_um}",
+                        a, b
                     ),
                 });
             }
-            if d <= params.min_rydberg_spacing_um {
+            if d <= min_rydberg_spacing_um {
                 return Err(MovementPlanError::EntanglingGeometry {
                     cycle,
                     detail: format!(
-                        "R3: non-partners {:?}–{:?} distance {d} ≤ min_rydberg_spacing_um {}",
-                        a, b, params.min_rydberg_spacing_um
+                        "R3: non-partners {:?}–{:?} distance {d} ≤ min_rydberg_spacing_um {min_rydberg_spacing_um}",
+                        a, b
                     ),
                 });
             }
@@ -995,145 +934,6 @@ impl EmitCtx<'_> {
         Ok(())
     }
 
-    /// Move non-gate atoms onto isolated parking sites when their current
-    /// positions would fail R2/R3 against partners or each other (B11).
-    fn park_spectators(
-        &mut self,
-        gate_atoms: &BTreeSet<AtomId>,
-        parking: &[SiteId],
-        cycle: u32,
-    ) -> Result<(), MovementPlanError> {
-        let spectators: Vec<AtomId> = self
-            .occ_atom
-            .keys()
-            .copied()
-            .filter(|a| !gate_atoms.contains(a))
-            .collect();
-        if spectators.is_empty() {
-            return Ok(());
-        }
-
-        // Check whether current geometry already passes for gate partners alone
-        // with spectators in place — if yes, nothing to do.
-        let gates: Vec<(AtomId, AtomId)> = {
-            // Reconstruct partner pairs from gate_atoms is incomplete; caller
-            // already will check. Park if any spectator is within min spacing
-            // of any occupied atom that is a gate atom, or of another spectator.
-            let mut need = false;
-            for &s in &spectators {
-                let ps = pos_of(s, self.occ_atom, self.site_pos)?;
-                for (&other, _) in self.occ_atom.iter() {
-                    if other == s {
-                        continue;
-                    }
-                    let po = pos_of(other, self.occ_atom, self.site_pos)?;
-                    let d = euclidean_um(ps, po);
-                    if d <= self.params.min_rydberg_spacing_um {
-                        need = true;
-                        break;
-                    }
-                }
-                if need {
-                    break;
-                }
-            }
-            if !need {
-                return Ok(());
-            }
-            Vec::new()
-        };
-        let _ = gates;
-
-        let mut free_parking: Vec<SiteId> = parking
-            .iter()
-            .copied()
-            .filter(|s| !self.occ_site.contains_key(s))
-            .collect();
-        // Also free parking currently held by spectators we will move (reuse).
-        for &atom in &spectators {
-            if let Some(&site) = self.occ_atom.get(&atom)
-                && parking.contains(&site)
-            {
-                // Already parked — keep if isolated enough.
-                let ps = pos_of(atom, self.occ_atom, self.site_pos)?;
-                let mut ok = true;
-                for (&other, _) in self.occ_atom.iter() {
-                    if other == atom {
-                        continue;
-                    }
-                    let po = pos_of(other, self.occ_atom, self.site_pos)?;
-                    if euclidean_um(ps, po) <= self.params.min_rydberg_spacing_um {
-                        ok = false;
-                        break;
-                    }
-                }
-                if ok {
-                    continue;
-                }
-            }
-        }
-
-        let mut legs = Vec::new();
-        for &atom in &spectators {
-            let from = *self
-                .occ_atom
-                .get(&atom)
-                .ok_or(MovementPlanError::MissingAtom(atom))?;
-            // Skip if already sufficiently isolated.
-            {
-                let ps = pos_of(atom, self.occ_atom, self.site_pos)?;
-                let mut ok = true;
-                for (&other, _) in self.occ_atom.iter() {
-                    if other == atom {
-                        continue;
-                    }
-                    let po = pos_of(other, self.occ_atom, self.site_pos)?;
-                    if euclidean_um(ps, po) <= self.params.min_rydberg_spacing_um {
-                        ok = false;
-                        break;
-                    }
-                }
-                if ok {
-                    continue;
-                }
-            }
-            let Some(to) = free_parking.pop() else {
-                return Err(MovementPlanError::EntanglingGeometry {
-                    cycle,
-                    detail: "insufficient parking sites for spectators (R2/R3)".into(),
-                });
-            };
-            if to == from {
-                continue;
-            }
-            let from_pos = *self
-                .site_pos
-                .get(&from)
-                .ok_or(MovementPlanError::MissingSite(from))?;
-            let to_pos = *self
-                .site_pos
-                .get(&to)
-                .ok_or(MovementPlanError::MissingSite(to))?;
-            let (row, col) = self.aod_grid.indices(from)?;
-            legs.push(CandidateLeg {
-                atom,
-                from,
-                to,
-                from_pos,
-                to_pos,
-                aod_id: 0,
-                row,
-                col,
-                dual_id: u64::MAX,
-                distance_um: euclidean_um(from_pos, to_pos),
-            });
-        }
-        if !legs.is_empty() {
-            self.emit_legs_packed(legs, cycle)?;
-        }
-        Ok(())
-    }
-
     fn emit_duals_b7(
         &mut self,
         selected: &[DualCandidate],
@@ -1356,6 +1156,71 @@ impl EmitCtx<'_> {
         let _ = self.pair_sites;
         Ok(())
     }
+}
+
+/// Exercise the B5 cross-cycle store-into-occupied reject on the real emit path.
+///
+/// Attempts load → move → store of `mover` from `from` to `to` while `to` is already
+/// held by a different atom in the occupancy maps. Returns
+/// [`MovementPlanError::TransferIntoOccupied`] without relying solely on
+/// per-layer `validate_occupancy`.
+pub fn try_transfer_into_occupied(
+    layout: &NeutralAtomLayout,
+    params: &MovementParams,
+    mover: AtomId,
+    from: SiteId,
+    to: SiteId,
+    occ_site: &mut BTreeMap<SiteId, AtomId>,
+    occ_atom: &mut BTreeMap<AtomId, SiteId>,
+) -> Result<(), MovementPlanError> {
+    params.validate()?;
+    let site_pos = site_position_map(layout)?;
+    let aod_grid = AodGrid::from_layout(layout);
+    let home = BTreeMap::new();
+    let pairs: Vec<InteractionPair> = Vec::new();
+    let pair_sites = BTreeSet::new();
+    let mut out_layers = Vec::new();
+    let mut next_cycle = 0u32;
+    let mut rearrangement_steps = 0u64;
+    let mut rearrangement_time_us = 0u64;
+    let mut trap_transfers = 0u64;
+    let mut transfer_time_us = 0u64;
+    let from_pos = *site_pos
+        .get(&from)
+        .ok_or(MovementPlanError::MissingSite(from))?;
+    let to_pos = *site_pos
+        .get(&to)
+        .ok_or(MovementPlanError::MissingSite(to))?;
+    let (row, col) = aod_grid.indices(from)?;
+    let leg = CandidateLeg {
+        atom: mover,
+        from,
+        to,
+        from_pos,
+        to_pos,
+        aod_id: 0,
+        row,
+        col,
+        dual_id: u64::MAX,
+        distance_um: euclidean_um(from_pos, to_pos),
+    };
+    let mut ctx = EmitCtx {
+        params,
+        site_pos: &site_pos,
+        aod_grid: &aod_grid,
+        home: &home,
+        pair_sites: &pair_sites,
+        pairs: &pairs,
+        occ_site,
+        occ_atom,
+        out_layers: &mut out_layers,
+        next_cycle: &mut next_cycle,
+        rearrangement_steps: &mut rearrangement_steps,
+        rearrangement_time_us: &mut rearrangement_time_us,
+        trap_transfers: &mut trap_transfers,
+        transfer_time_us: &mut transfer_time_us,
+    };
+    ctx.emit_load_move_store(&[leg], 0)
 }
 
 fn layout_from_sites(site_pos: &BTreeMap<SiteId, Position>) -> NeutralAtomLayout {

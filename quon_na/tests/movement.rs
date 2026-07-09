@@ -11,7 +11,8 @@ use quon_na::{
     ResourceReport, SITE_PITCH_UM, ScheduleLayer, SegmentKind, SiteId, TransferDirection,
     TrapBinding, atom_moves_to_move_specs, check_entangling_geometry, ensure_interaction_pairs,
     euclidean_um, legs_conflict, movement_duration_us, place, plan_aod_movement,
-    schedule_entangling_layers, schedule_from_graph, verify_aod_legality,
+    schedule_entangling_layers, schedule_from_graph, try_transfer_into_occupied,
+    verify_aod_legality, verify_entangling_geometry_predicates,
 };
 
 fn cz(id: u32, a: u32, b: u32) -> Interaction {
@@ -51,6 +52,43 @@ fn place_and_schedule(graph: InteractionGraph) -> quon_na::GraphScheduleRequest 
     schedule_entangling_layers(placed.request, 340)
         .expect("entangle")
         .request
+}
+
+/// Pitch strictly above `min_rydberg_spacing_um` so idle–idle R3 can pass without parking.
+const ISOLATED_PITCH_UM: f64 = 20.0;
+
+/// Remap occupied placement sites onto an isolated grid (pitch > min R3).
+/// Dense `#104` pitch (5 µm) leaves idle–idle R2/R3 violations; Ok fixtures must isolate.
+fn stretch_occupied_isolated(req: &mut quon_na::GraphScheduleRequest) {
+    let layout = req.layout.as_mut().expect("layout");
+    let bindings: Vec<(AtomId, SiteId)> = layout
+        .initial_bindings
+        .iter()
+        .map(|b| {
+            let site = match b.trap {
+                TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
+            };
+            (b.atom, site)
+        })
+        .collect();
+    let n = bindings.len().max(1);
+    let cols = (n as f64).sqrt().ceil() as usize;
+    for (i, (_atom, site)) in bindings.iter().enumerate() {
+        let row = i / cols;
+        let col = i % cols;
+        if let Some(s) = layout.sites.iter_mut().find(|s| s.id == *site) {
+            s.position = Position {
+                x_um: (col as f64) * ISOLATED_PITCH_UM,
+                y_um: (row as f64) * ISOLATED_PITCH_UM,
+            };
+        }
+    }
+}
+
+fn place_schedule_isolated(graph: InteractionGraph) -> quon_na::GraphScheduleRequest {
+    let mut req = place_and_schedule(graph);
+    stretch_occupied_isolated(&mut req);
+    req
 }
 
 fn params() -> MovementParams {
@@ -158,6 +196,7 @@ fn pair_pitch_isolates_non_partners() {
 
 #[test]
 fn bank_outside_placement_isolated() {
+    // Dense #104 pitch is fine here — only measures placement↔bank gap (B14).
     let graph = graph_from_edges(4, &[(0, 1), (2, 3)]);
     let mut req = place_and_schedule(graph);
     let layout = req.layout.as_mut().expect("layout");
@@ -191,7 +230,7 @@ fn bank_outside_placement_isolated() {
 fn partner_reachable_under_defaults() {
     // Far gate on placement grid → plan Ok under generic_rna defaults.
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("plan");
     assert!(result.rearrangement_steps >= 1);
 }
@@ -199,7 +238,7 @@ fn partner_reachable_under_defaults() {
 #[test]
 fn dual_moves_both_atoms_onto_pair() {
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("plan");
     let moves = all_atom_moves(&result.request.layers);
     let moved: BTreeSet<_> = moves.iter().map(|m| m.atom).collect();
@@ -210,7 +249,7 @@ fn dual_moves_both_atoms_onto_pair() {
 #[test]
 fn dual_dest_is_existing_site_id() {
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("plan");
     let sites: BTreeSet<_> = result
         .request
@@ -246,7 +285,7 @@ fn params_include_min_rydberg_spacing() {
     let mut p = params();
     p.min_rydberg_spacing_um = 0.0;
     let graph = graph_from_edges(2, &[(0, 1)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let err = plan_aod_movement(req, &p).unwrap_err();
     assert!(matches!(
         err,
@@ -257,8 +296,23 @@ fn params_include_min_rydberg_spacing() {
 #[test]
 fn default_transfer_policy_is_quon_reuse() {
     let p = params();
-    assert!(!p.return_home);
-    assert_eq!(p.transfers_per_moved_atom, 2);
+    assert!(
+        !p.return_home,
+        "Quon reuse: return_home=false ⇒ 2 xfers/atom"
+    );
+    // B6: only return_home selects 2- vs 4-xfer; no transfers_per_moved_atom field.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/movement.rs");
+    let src = fs::read_to_string(&path).expect("read");
+    assert!(
+        !src.contains("transfers_per_moved_atom"),
+        "dead transfers_per_moved_atom must stay deleted"
+    );
+    assert!(
+        src.contains("Only [`MovementParams::return_home`] selects the 2- vs 4-transfer policy")
+            || src.contains("only `return_home` selects")
+            || src.contains("This flag alone selects the 2- vs 4-transfer policy"),
+        "docs must state return_home selects transfer policy"
+    );
 }
 
 #[test]
@@ -330,7 +384,7 @@ fn empty_layers_errors() {
 #[test]
 fn unsupported_entangle_n_errors() {
     let graph = graph_from_edges(3, &[(0, 1)]);
-    let mut req = place_and_schedule(graph);
+    let mut req = place_schedule_isolated(graph);
     req.layers = vec![ScheduleLayer {
         cycle: 0,
         actions: vec![NeutralAtomAction::EntangleN {
@@ -348,7 +402,7 @@ fn unsupported_entangle_n_errors() {
 #[test]
 fn explicit_transfer_layers_around_move() {
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("plan");
     let layers = &result.request.layers;
     // Find a Move and assert neighbors are Transfer load/store pattern.
@@ -385,7 +439,7 @@ fn explicit_transfer_layers_around_move() {
 #[test]
 fn grouped_move_single_action() {
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("plan");
     for layer in &result.request.layers {
         let moves: Vec<_> = layer
@@ -400,7 +454,7 @@ fn grouped_move_single_action() {
 #[test]
 fn resource_report_counts_rounds() {
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("plan");
     let report = ResourceReport::from_layers(&result.request.layers);
     assert_eq!(report.rearrangement_steps, result.rearrangement_steps);
@@ -412,7 +466,7 @@ fn resource_report_counts_rounds() {
 fn unequal_y_partners_pass_aod_verifier() {
     // #104 place puts atoms on different rows for a 2×2 grid: 0@(0,0), 1@(5,0), 2@(0,5), 3@(5,5)
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let layout = req.layout.as_ref().unwrap();
     let pos = |id: u32| {
         let site = match layout
@@ -504,7 +558,7 @@ fn verifier_accepts_emitted_group() {
 #[test]
 fn aod_indices_from_site_coords() {
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("plan");
     let layout = result.request.layout.as_ref().unwrap();
     // Same site → same (row,col) across groups via source-site rule.
@@ -730,8 +784,9 @@ fn occupancy_collision_rejected() {
 
 #[test]
 fn check_geometry_matches_dialect_leq() {
+    // Same fixture: planner check_entangling_geometry and shared dialect-predicate
+    // helper must agree (exact min spacing → R3 reject under dialect `≤`).
     let p = params();
-    // Exact min spacing → reject (dialect ≤)
     let mut occ = BTreeMap::new();
     occ.insert(AtomId(0), SiteId(0));
     occ.insert(AtomId(1), SiteId(1));
@@ -750,21 +805,67 @@ fn check_geometry_matches_dialect_leq() {
             x_um: 2.0,
             y_um: 0.0,
         },
-    ); // partners within rb
+    );
     site_pos.insert(
         SiteId(2),
         Position {
             x_um: 18.75,
             y_um: 0.0,
         },
-    ); // exactly min from atom 0
-    let err = check_entangling_geometry(0, &[(AtomId(0), AtomId(1))], &occ, &site_pos, &p);
-    assert!(err.is_err(), "exact 18.75 must fail R3");
+    );
+    let gates = [(AtomId(0), AtomId(1))];
+    let planner = check_entangling_geometry(0, &gates, &occ, &site_pos, &p);
+    let atoms: Vec<_> = occ.iter().map(|(&a, &s)| (a, site_pos[&s])).collect();
+    let dialect = verify_entangling_geometry_predicates(
+        0,
+        &gates,
+        &atoms,
+        p.rydberg_range_um,
+        p.min_rydberg_spacing_um,
+    );
+    assert!(planner.is_err(), "planner must reject exact 18.75 (R3)");
+    assert!(
+        dialect.is_err(),
+        "dialect predicates must reject exact 18.75"
+    );
+    assert_eq!(
+        planner.is_err(),
+        dialect.is_err(),
+        "planner ↔ dialect Ok/Err parity"
+    );
 }
 
 #[test]
 fn r3_isolation_spacing_fails() {
-    check_geometry_matches_dialect_leq();
+    let p = params();
+    let mut occ = BTreeMap::new();
+    occ.insert(AtomId(0), SiteId(0));
+    occ.insert(AtomId(1), SiteId(1));
+    occ.insert(AtomId(2), SiteId(2));
+    let mut site_pos = BTreeMap::new();
+    site_pos.insert(
+        SiteId(0),
+        Position {
+            x_um: 0.0,
+            y_um: 0.0,
+        },
+    );
+    site_pos.insert(
+        SiteId(1),
+        Position {
+            x_um: 2.0,
+            y_um: 0.0,
+        },
+    );
+    site_pos.insert(
+        SiteId(2),
+        Position {
+            x_um: 18.75,
+            y_um: 0.0,
+        },
+    );
+    let err = check_entangling_geometry(0, &[(AtomId(0), AtomId(1))], &occ, &site_pos, &p);
+    assert!(err.is_err(), "exact 18.75 must fail R3");
 }
 
 #[test]
@@ -802,25 +903,79 @@ fn r2_non_partner_too_close_fails() {
 
 #[test]
 fn geometry_scope_includes_idle_atoms() {
-    r2_non_partner_too_close_fails();
+    // Idle atom ∉ gate list but within min spacing of a partner → fail (B11 all-occupied).
+    // Distinct from r2: idle is outside r_b of partners but ≤ min_rydberg_spacing (R3 only).
+    let p = params();
+    let mut occ = BTreeMap::new();
+    occ.insert(AtomId(0), SiteId(0));
+    occ.insert(AtomId(1), SiteId(1));
+    occ.insert(AtomId(99), SiteId(99)); // idle, not in gate
+    let mut site_pos = BTreeMap::new();
+    site_pos.insert(
+        SiteId(0),
+        Position {
+            x_um: 0.0,
+            y_um: 0.0,
+        },
+    );
+    site_pos.insert(
+        SiteId(1),
+        Position {
+            x_um: 2.0,
+            y_um: 0.0,
+        },
+    );
+    site_pos.insert(
+        SiteId(99),
+        Position {
+            x_um: 18.75,
+            y_um: 0.0,
+        },
+    ); // exactly min from atom 0; > rb so not R2
+    let err = check_entangling_geometry(0, &[(AtomId(0), AtomId(1))], &occ, &site_pos, &p);
+    match err {
+        Err(MovementPlanError::EntanglingGeometry { detail, .. }) => {
+            assert!(
+                detail.contains("R3") && detail.contains("99"),
+                "must cite idle atom 99 in R3: {detail}"
+            );
+        }
+        other => panic!("expected EntanglingGeometry with idle in scope, got {other:?}"),
+    }
 }
 
 #[test]
 fn dense_placement_skip_not_ok() {
-    // #104 pitch 5µm: neighbors within rb and inside R3 — must not skip in place.
+    // Dense #104 pitch 5µm + idle neighbors: no spectator parking.
+    // Must not emit illegal in-place entangle — either EntanglingGeometry or
+    // bank relocation without claiming skip (B10/B11).
     let graph = graph_from_edges(4, &[(0, 1)]);
-    let req = place_and_schedule(graph);
-    let result = plan_aod_movement(req, &params()).expect("must relocate or ok with moves");
-    // With idle neighbors on dense grid, skip is forbidden → rearrangement expected.
-    assert!(
-        result.rearrangement_steps >= 1 || result.skipped_already_adjacent == 0,
-        "dense in-place skip illegal"
-    );
-    // Stronger: if there are idle atoms within spacing, we must have moved.
-    assert!(
-        result.rearrangement_steps >= 1,
-        "dense placement must relocate to bank"
-    );
+    let req = place_and_schedule(graph); // keep dense pitch
+    let p = params();
+    match plan_aod_movement(req, &p) {
+        Ok(result) => {
+            assert_eq!(
+                result.skipped_already_adjacent, 0,
+                "dense in-place skip forbidden"
+            );
+            assert!(
+                result.rearrangement_steps >= 1,
+                "if Ok, must have relocated gate atoms to bank"
+            );
+            // No parking sites: every site y must be ≥ placement min_y - ε
+            // (parking was below bbox). Stronger: final geometry must pass.
+            let layout = result.request.layout.as_ref().unwrap();
+            let occ = occ_from_layout(layout);
+            let map = site_map(layout);
+            let gates = [(AtomId(0), AtomId(1))];
+            check_entangling_geometry(0, &gates, &occ, &map, &p)
+                .expect("Ok plan must leave legal geometry without parking");
+        }
+        Err(MovementPlanError::EntanglingGeometry { .. }) => {
+            // Fail-closed under all-occupied R2/R3 — allowed by plan.
+        }
+        Err(other) => panic!("unexpected error: {other:?}"),
+    }
 }
 
 #[test]
@@ -918,7 +1073,7 @@ fn multi_layer_reuse_default_no_exhaustion() {
         quon_na::DEFAULT_GAMMA,
     )
     .unwrap();
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     assert!(req.layers.len() >= 2);
     let result = plan_aod_movement(req, &params()).expect("B8 eviction");
     assert!(result.request.layers.iter().any(|l| {
@@ -949,7 +1104,7 @@ fn multi_layer_same_atom_reuse_no_eviction() {
     )
     .unwrap();
     // Isolate: only two atoms — after first move to bank, second skips.
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("reuse");
     assert!(
         result.skipped_already_adjacent >= 1,
@@ -959,7 +1114,7 @@ fn multi_layer_same_atom_reuse_no_eviction() {
 
 #[test]
 fn partial_overlap_pair_reclaimed() {
-    // Layer1 (0,1); Layer2 (0,2) — B13 whole-pair vacate.
+    // Layer1 (0,1); Layer2 (0,2) — B13 whole-pair vacate before layer-2 duals.
     let interactions = vec![cz(0, 0, 1), cz(1, 0, 2)];
     let graph = InteractionGraph::from_interactions(
         (0..3).map(LogicalQubitId).collect(),
@@ -977,18 +1132,100 @@ fn partial_overlap_pair_reclaimed() {
         quon_na::DEFAULT_GAMMA,
     )
     .unwrap();
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
+    let mut occ_site: BTreeMap<SiteId, AtomId> = BTreeMap::new();
+    let mut occ_atom: BTreeMap<AtomId, SiteId> = BTreeMap::new();
+    for b in &req.layout.as_ref().unwrap().initial_bindings {
+        let site = match b.trap {
+            TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
+        };
+        occ_atom.insert(b.atom, site);
+        occ_site.insert(site, b.atom);
+    }
+    // Capture bank pairs before plan (post-plan bindings sit on bank → detect breaks).
+    let mut layout_for_pairs = req.layout.clone().expect("layout");
+    let pairs = ensure_interaction_pairs(&mut layout_for_pairs, &params(), 2).expect("bank");
     let result = plan_aod_movement(req, &params()).expect("B13 reclaim");
     assert!(result.rearrangement_steps >= 1);
+
+    let map = site_map(result.request.layout.as_ref().unwrap());
+    let mut pair_after_l1: Option<quon_na::InteractionPair> = None;
+    let mut vacated_before_l2 = false;
+    let mut entangle_idx = 0u32;
+
+    for layer in &result.request.layers {
+        for a in &layer.actions {
+            match a {
+                NeutralAtomAction::Transfer(t) => {
+                    if t.direction == TransferDirection::SlmToAod {
+                        if occ_site.get(&t.site) == Some(&t.atom) {
+                            occ_site.remove(&t.site);
+                        }
+                    } else {
+                        occ_site.insert(t.site, t.atom);
+                        occ_atom.insert(t.atom, t.site);
+                    }
+                }
+                NeutralAtomAction::Move(g) => {
+                    for m in &g.moves {
+                        occ_atom.insert(m.atom, m.to);
+                    }
+                }
+                NeutralAtomAction::Entangle2 { atoms, .. } => {
+                    entangle_idx += 1;
+                    if entangle_idx == 1 {
+                        let s0 = *occ_atom.get(&atoms[0]).expect("a");
+                        let s1 = *occ_atom.get(&atoms[1]).expect("b");
+                        pair_after_l1 = pairs.iter().copied().find(|p| {
+                            (p.left == s0 && p.right == s1) || (p.left == s1 && p.right == s0)
+                        });
+                        assert!(
+                            pair_after_l1.is_some(),
+                            "layer-1 partners must occupy a bank pair; sites {s0:?},{s1:?}"
+                        );
+                    } else if entangle_idx == 2 {
+                        let p = pair_after_l1.expect("P from layer 1");
+                        let left_owner = occ_site.get(&p.left).copied();
+                        let right_owner = occ_site.get(&p.right).copied();
+                        let still_01 = matches!(
+                            (left_owner, right_owner),
+                            (Some(AtomId(0)), Some(AtomId(1))) | (Some(AtomId(1)), Some(AtomId(0)))
+                        );
+                        assert!(
+                            !still_01,
+                            "B13: pair P must be vacated/reassigned before layer-2 entangle"
+                        );
+                        assert!(
+                            !(left_owner.is_some() ^ right_owner.is_some()),
+                            "B13: must not leave half-occupied pair P"
+                        );
+                        vacated_before_l2 = true;
+                        let sa = *occ_atom.get(&atoms[0]).expect("a");
+                        let sb = *occ_atom.get(&atoms[1]).expect("c");
+                        let on_pair = pairs.iter().any(|q| {
+                            (q.left == sa && q.right == sb) || (q.left == sb && q.right == sa)
+                        });
+                        assert!(on_pair, "layer-2 partners must sit on a bank pair");
+                        let d = euclidean_um(map[&sa], map[&sb]);
+                        assert!(d <= params().rydberg_range_um);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        vacated_before_l2,
+        "must observe layer-2 entangle after reclaim"
+    );
 }
 
 #[test]
 fn enola_comparable_return_home_four_transfers() {
     let mut p = params();
     p.return_home = true;
-    p.transfers_per_moved_atom = 4;
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &p).expect("return home");
     // Each moved atom: load+store to pair + load+store home = 4 transfers.
     // At least 2 atoms moved → ≥ 8 transfers.
@@ -1001,31 +1238,67 @@ fn enola_comparable_return_home_four_transfers() {
 
 #[test]
 fn transfer_into_occupied_rejected() {
-    // Direct API: emit store into occupied via vacate conflict.
-    // Construct occupancy where home is blocked — use planner error path.
+    // Real emit path: store into a site still held by a non-moving atom (B5).
     let p = params();
+    let layout = NeutralAtomLayout {
+        sites: vec![
+            AtomSite {
+                id: SiteId(0),
+                position: Position {
+                    x_um: 0.0,
+                    y_um: 0.0,
+                },
+            },
+            AtomSite {
+                id: SiteId(1),
+                position: Position {
+                    x_um: 20.0,
+                    y_um: 0.0,
+                },
+            },
+            AtomSite {
+                id: SiteId(2),
+                position: Position {
+                    x_um: 40.0,
+                    y_um: 0.0,
+                },
+            },
+        ],
+        initial_bindings: vec![],
+    };
     let mut occ_site = BTreeMap::new();
+    let mut occ_atom = BTreeMap::new();
+    // Atom 1 occupies destination site 1; atom 0 tries to store there from site 0.
     occ_site.insert(SiteId(0), AtomId(0));
     occ_site.insert(SiteId(1), AtomId(1));
-    // Simulate TransferIntoOccupied by calling check on store target.
-    // Unit-level: if dest occupied by other atom, plan_aod_movement fails closed.
-    // Build a pathological layout where bank site coincides with placement — not possible
-    // under B14. Instead assert the error variant exists and can be constructed.
-    let err = MovementPlanError::TransferIntoOccupied {
-        cycle: 3,
-        site: SiteId(9),
-    };
-    assert!(matches!(
-        err,
-        MovementPlanError::TransferIntoOccupied { .. }
-    ));
-    let _ = (p, occ_site);
+    occ_atom.insert(AtomId(0), SiteId(0));
+    occ_atom.insert(AtomId(1), SiteId(1));
+    let err = try_transfer_into_occupied(
+        &layout,
+        &p,
+        AtomId(0),
+        SiteId(0),
+        SiteId(1),
+        &mut occ_site,
+        &mut occ_atom,
+    )
+    .expect_err("store into occupied must fail");
+    assert!(
+        matches!(
+            err,
+            MovementPlanError::TransferIntoOccupied {
+                site: SiteId(1),
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
 }
 
 #[test]
 fn dual_exclusion_one_atom_moves() {
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("plan");
     // At most one dual per gate: both atoms end on same pair (gap ≤ rb).
     let layout = result.request.layout.as_ref().unwrap();
@@ -1039,7 +1312,7 @@ fn dual_exclusion_one_atom_moves() {
 fn sortis_longest_first_rounds() {
     // Smoke: multi-gate layer plans without panic; longer moves preferred in packing.
     let graph = graph_from_edges(6, &[(0, 1), (2, 3), (4, 5)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("plan");
     assert!(result.rearrangement_steps >= 1);
 }
@@ -1048,7 +1321,7 @@ fn sortis_longest_first_rounds() {
 fn no_partner_stationary_parking() {
     // Destinations must be bank pair sites, not placement neighbors of stationary partner.
     let graph = graph_from_edges(4, &[(0, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let placement_sites: BTreeSet<_> = req
         .layout
         .as_ref()
@@ -1075,7 +1348,7 @@ fn no_partner_stationary_parking() {
 #[test]
 fn integration_smoke_place_bank_entangle_move() {
     let graph = graph_from_edges(4, &[(0, 1), (2, 3)]);
-    let req = place_and_schedule(graph);
+    let req = place_schedule_isolated(graph);
     let result = plan_aod_movement(req, &params()).expect("e2e");
     for layer in &result.request.layers {
         layer.validate_occupancy().expect("occ");

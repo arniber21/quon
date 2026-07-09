@@ -1,14 +1,19 @@
 //! Property tests for flat AOD movement (#106).
 
+use std::collections::BTreeMap;
+
 use proptest::prelude::*;
 use quon_na::{
-    MovementParams, NeutralAtomAction, PlacementStrategy, ResourceReport, SITE_PITCH_UM,
+    AtomId, MovementParams, NeutralAtomAction, PlacementStrategy, Position, ResourceReport,
+    SITE_PITCH_UM, SiteId, TransferDirection, TrapBinding, check_entangling_geometry,
     cubic_commutation_graph, erdos_renyi_commutation_graph, euclidean_um, place, plan_aod_movement,
     schedule_entangling_layers, schedule_from_graph, verify_aod_legality,
 };
 
+/// Pitch > min_rydberg_spacing so idle–idle R3 can pass (no spectator parking).
+const ISOLATED_PITCH_UM: f64 = 20.0;
+
 fn er_edges(n: u32, seed: u64) -> Vec<(u32, u32)> {
-    // Deterministic ER-style edge list from seed (p≈0.35).
     let mut edges = Vec::new();
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
     for a in 0..n {
@@ -25,6 +30,32 @@ fn er_edges(n: u32, seed: u64) -> Vec<(u32, u32)> {
     edges
 }
 
+fn stretch_occupied_isolated(req: &mut quon_na::GraphScheduleRequest) {
+    let layout = req.layout.as_mut().expect("layout");
+    let bindings: Vec<(AtomId, SiteId)> = layout
+        .initial_bindings
+        .iter()
+        .map(|b| {
+            let site = match b.trap {
+                TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
+            };
+            (b.atom, site)
+        })
+        .collect();
+    let n = bindings.len().max(1);
+    let cols = (n as f64).sqrt().ceil() as usize;
+    for (i, (_atom, site)) in bindings.iter().enumerate() {
+        let row = i / cols;
+        let col = i % cols;
+        if let Some(s) = layout.sites.iter_mut().find(|s| s.id == *site) {
+            s.position = Position {
+                x_um: (col as f64) * ISOLATED_PITCH_UM,
+                y_um: (row as f64) * ISOLATED_PITCH_UM,
+            };
+        }
+    }
+}
+
 fn plan_random(seed: u64, n: u32, er: bool) -> Option<quon_na::MovementPlanResult> {
     let graph = if er {
         let edges = er_edges(n, seed);
@@ -37,8 +68,11 @@ fn plan_random(seed: u64, n: u32, er: bool) -> Option<quon_na::MovementPlanResul
     }
     let req = schedule_from_graph(graph).ok()?;
     let placed = place(req, PlacementStrategy::RowMajor).ok()?;
-    let scheduled = schedule_entangling_layers(placed.request, 340).ok()?;
-    plan_aod_movement(scheduled.request, &MovementParams::generic_rna_v0()).ok()
+    let mut scheduled = schedule_entangling_layers(placed.request, 340)
+        .ok()?
+        .request;
+    stretch_occupied_isolated(&mut scheduled);
+    plan_aod_movement(scheduled, &MovementParams::generic_rna_v0()).ok()
 }
 
 proptest! {
@@ -54,40 +88,77 @@ proptest! {
     }
 
     #[test]
-    fn partners_adjacent_before_entangle(seed in 0u64..200, n in 4u32..10) {
+    fn partners_and_isolation_before_entangle(seed in 0u64..200, n in 4u32..10) {
         let Some(result) = plan_random(seed, n, true) else { return Ok(()); };
         let layout = result.request.layout.as_ref().expect("layout");
-        let site_pos: std::collections::BTreeMap<_, _> =
+        let site_pos: BTreeMap<SiteId, Position> =
             layout.sites.iter().map(|s| (s.id, s.position)).collect();
-        // Track occupancy through layers roughly via final layout for smoke;
-        // stronger: before each Entangle2 in output, partners ≤ rb using final
-        // positions is insufficient — check emitted entangle layers have partners
-        // that ended on pair_gap after plan (final bindings).
-        let occ: std::collections::BTreeMap<_, _> = layout
+        let p = MovementParams::generic_rna_v0();
+
+        // Replay occupancy from pre-plan bindings reconstructed via reverse moves,
+        // then forward through layers — seed from final then rewind moves.
+        let mut occ_atom: BTreeMap<AtomId, SiteId> = layout
             .initial_bindings
             .iter()
             .map(|b| {
                 let site = match b.trap {
-                    quon_na::TrapBinding::Slm { site }
-                    | quon_na::TrapBinding::Aod { site, .. } => site,
+                    TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
                 };
                 (b.atom, site)
             })
             .collect();
-        let p = MovementParams::generic_rna_v0();
+        // Final bindings are post-plan; rewind AtomMoves to recover start, then replay.
+        let mut initial = occ_atom.clone();
+        for layer in result.request.layers.iter().rev() {
+            for action in &layer.actions {
+                if let NeutralAtomAction::Move(g) = action {
+                    for m in &g.moves {
+                        initial.insert(m.atom, m.from);
+                    }
+                }
+            }
+        }
+        occ_atom = initial;
+        let mut occ_site: BTreeMap<SiteId, AtomId> =
+            occ_atom.iter().map(|(&a, &s)| (s, a)).collect();
+
         for layer in &result.request.layers {
             for action in &layer.actions {
-                if let NeutralAtomAction::Entangle2 { atoms, .. } = action {
-                    let sa = occ.get(&atoms[0]);
-                    let sb = occ.get(&atoms[1]);
-                    if let (Some(a), Some(b)) = (sa, sb) {
-                        let d = euclidean_um(site_pos[a], site_pos[b]);
-                        // After full plan with return_home=false, last entangle's
-                        // atoms remain on pairs; earlier layers may have been
-                        // vacated — only assert d is finite.
-                        prop_assert!(d.is_finite());
-                        let _ = p;
+                match action {
+                    NeutralAtomAction::Transfer(t) => {
+                        if t.direction == TransferDirection::SlmToAod {
+                            if occ_site.get(&t.site) == Some(&t.atom) {
+                                occ_site.remove(&t.site);
+                            }
+                        } else {
+                            occ_site.insert(t.site, t.atom);
+                            occ_atom.insert(t.atom, t.site);
+                        }
                     }
+                    NeutralAtomAction::Move(g) => {
+                        for m in &g.moves {
+                            occ_atom.insert(m.atom, m.to);
+                        }
+                    }
+                    NeutralAtomAction::Entangle2 { atoms, .. } => {
+                        let gates = [(atoms[0], atoms[1])];
+                        // R1: partners ≤ r_b; R2/R3: all occupied isolation (B11).
+                        prop_assert!(
+                            check_entangling_geometry(
+                                layer.cycle,
+                                &gates,
+                                &occ_atom,
+                                &site_pos,
+                                &p
+                            )
+                            .is_ok()
+                        );
+                        let sa = occ_atom[&atoms[0]];
+                        let sb = occ_atom[&atoms[1]];
+                        let d = euclidean_um(site_pos[&sa], site_pos[&sb]);
+                        prop_assert!(d <= p.rydberg_range_um);
+                    }
+                    _ => {}
                 }
             }
         }

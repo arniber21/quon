@@ -142,11 +142,10 @@ pub struct MovementParams {
     /// `BANK_ISOLATION_EPS_UM` so default pitch == min remains satisfiable.
     /// Default: 18.75.
     pub pair_pitch_um: f64,
-    /// Quon reuse default: 2 transfers per *moved atom* (SLM→AOD + AOD→SLM) with
-    /// return_home=false. Enola-comparable: return_home=true (4 per moved atom).
-    /// Do NOT document the default as Enola Sec. 2/6.1.
-    pub transfers_per_moved_atom: u32,
     /// When true, after entangle emit return moves to home SLM sites (Enola-comparable 4-xfer).
+    /// When false (default), Quon reuse: 2 transfers per moved atom (load+store).
+    /// This flag alone selects the 2- vs 4-transfer policy (B6) — no separate
+    /// `transfers_per_moved_atom` field.
     pub return_home: bool,
 }
 
@@ -244,10 +243,9 @@ pub fn plan_aod_movement(
 | `pair_pitch_um` | **18.75** | ≥ `min_rydberg_spacing_um`; bank uses `+ BANK_ISOLATION_EPS_UM` so placement↔bank / inter-pair distances are dialect-strict `>` min (**B14**) |
 | `min_row_col_separation_um` | 2.0 | M3 / dialect |
 | `aod_rows` / `aod_cols` / `num_aods` | 100 / 100 / 1 | |
-| `transfers_per_moved_atom` | **2** | **Quon reuse policy** — not Enola |
-| `return_home` | **false** | atoms stay on interaction-pair sites for later reuse |
+| `return_home` | **false** | Quon reuse (2 xfers/atom); atoms stay on pair sites |
 
-Enola-comparable mode for tests / fidelity accounting: `return_home: true` and `transfers_per_moved_atom: 4`.
+Enola-comparable mode: `return_home: true` (4 xfers/atom). Only `return_home` selects the policy.
 
 **Entry validation (fail closed):**
 
@@ -616,8 +614,8 @@ One sortIS dual-set \(S\) may expand into **multiple** such triples when B7 seri
 
 | Mode | Params | Transfers per moved atom | Attribution |
 | --- | --- | --- | --- |
-| **Default (Quon reuse)** | `return_home=false`, `transfers_per_moved_atom=2` | load+store to pair; atom stays; **B8 eviction** between layers when bank would overflow | Quon reuse — **not** Enola |
-| **Enola-comparable** | `return_home=true`, `transfers_per_moved_atom=4` | load+store to pair, then load+store home each layer | Comparable to [Enola] Sec. 2/6.1 “4 transfers per gate” |
+| **Default (Quon reuse)** | `return_home=false` | load+store to pair (2 xfers); atom stays; **B8 eviction** between layers when bank would overflow | Quon reuse — **not** Enola |
+| **Enola-comparable** | `return_home=true` | load+store to pair, then load+store home each layer (4 xfers) | Comparable to [Enola] Sec. 2/6.1 “4 transfers per gate” |
 
 Module docs and rustdoc **must** state this table. Forbidden phrases for the default: “Enola-aligned transfer count”, “Enola Sec. 2 default”.
 

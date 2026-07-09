@@ -55,7 +55,8 @@ pub use layout::{
 pub use movement::{
     BANK_ISOLATION_EPS_UM, CandidateLeg, InteractionPair, MoveSpec, MovementParams,
     MovementPlanError, MovementPlanResult, atom_moves_to_move_specs, check_entangling_geometry,
-    ensure_interaction_pairs, legs_conflict, plan_aod_movement, verify_aod_legality,
+    ensure_interaction_pairs, legs_conflict, plan_aod_movement, try_transfer_into_occupied,
+    verify_aod_legality, verify_entangling_geometry_predicates,
 };
 pub use placement::{
     PlacementError, PlacementResult, PlacementStrategy, SITE_PITCH_UM, grid_dims, place,
