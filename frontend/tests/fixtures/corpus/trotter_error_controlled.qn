@@ -1,27 +1,19 @@
--- Second-order (Suzuki) Trotter evolution with O(τ³) local error, ZZ-split symmetric step.
--- Increasing n_steps tightens the error; the symbolic depth tracks the chosen step count.
--- Stresses: symmetric ZZ·X·ZZ half-step split, depth n_steps*(2*(n-1)+1).
-
 fn zz_half(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { Rzz(0.5 * j * tau) @(i, i + 1) }
+        (for i in (range(n - 1)) { (Rzz((0.5 * j) * tau)) @(i, i + 1) })
 }
 
 fn x_full(n: Nat, h: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rx(h * tau) q }
+        (for q in (qubits n) { Rx(h * tau, q) })
 }
 
 fn suzuki2_step(n: Nat, j: Float, h: Float, tau: Float): Circuit<n, n, 2 * (n - 1) + 1, Universal> = circuit {
-    zz_half(n, j, tau) |> x_full(n, h, tau) |> zz_half(n, j, tau)
+        zz_half(n, j, tau) |> x_full(n, h, tau) |> zz_half(n, j, tau)
 }
 
-fn suzuki2_evolve(n: Nat, j: Float, h: Float, t: Float, n_steps: Int)
-    : Circuit<n, n, n_steps * (2 * (n - 1) + 1), Universal> =
-    let tau = t / float(n_steps)
-    in fold(range(n_steps), identity(n), fn(acc, _) ->
-        acc |> suzuki2_step(n, j, h, tau)
-    )
+fn suzuki2_evolve(n: Nat, j: Float, h: Float, t: Float, n_steps: Int): Circuit<n, n, n_steps * (2 * (n - 1) + 1), Universal> = let tau = t / (float n_steps) in fold(range n_steps, identity n, fn(acc, _) -> acc
+|> suzuki2_step(n, j, h, tau))
 
 fn simulate_suzuki2(n: Nat, j: Float, h: Float, t: Float, n_steps: Int): Q<List<Bit>> = run {
-    q <- suzuki2_evolve(n, j, h, t, n_steps) @ qreg(n)
-    measure_all(q)
+        q <- (suzuki2_evolve(n, j, h, t, n_steps)) @ (qreg n)
+        measure_all q
 }

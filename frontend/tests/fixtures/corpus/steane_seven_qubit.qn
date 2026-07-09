@@ -1,19 +1,13 @@
--- Steane [[7,1,3]] code: a CSS code from the classical Hamming code, transversal Clifford gates.
--- Stresses: a width-growing 1 → 7 encode (Hamming parity structure) and its adjoint decode.
-
 fn steane_encode(): Circuit<1, 7, 12, Clifford> = circuit {
-    H @1 |> H @2 |> H @3
-    |> CNOT @(0, 4) |> CNOT @(0, 5) |> CNOT @(0, 6)
-    |> CNOT @(1, 4) |> CNOT @(1, 5)
-    |> CNOT @(2, 4) |> CNOT @(2, 6)
-    |> CNOT @(3, 5) |> CNOT @(3, 6)
+        H @1 |> H @2 |> H @3 |> CNOT @(0, 4) |> CNOT @(0, 5) |> CNOT @(0, 6) |> CNOT @(1, 4) |> CNOT @(1, 5)
+|> CNOT @(2, 4) |> CNOT @(2, 6) |> CNOT @(3, 5) |> CNOT @(3, 6)
 }
 
 fn steane_decode(): Circuit<7, 1, 12, Clifford> = adjoint(steane_encode())
 
 fn protect_steane(logical: Qubit): Q<QReg<1>> = run {
-    enc              <- steane_encode() @ logical
-    dec              <- steane_decode() @ enc
-    let (out, _rest)  = split(1, dec)
-    return out
+        enc <- (steane_encode()) @logical
+        dec <- (steane_decode()) @enc
+        let (out, _rest) = split(1, dec)
+        return out
 }

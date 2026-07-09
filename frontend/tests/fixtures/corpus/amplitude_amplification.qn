@@ -1,35 +1,30 @@
--- Fixed-point amplitude amplification: `k` applications of the Grover operator (oracle · diffusion).
--- Recursive on the iteration count `k`.
--- Stresses: value-dependent recursion (#57–#60) on `k`, depth k*4.
-
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
 fn phase_flip(n: Nat): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rz(PI) q }
+        (for q in (qubits n) { Rz(PI, q) })
 }
 
 fn mark(n: Nat): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rz(PI) q }
+        (for q in (qubits n) { Rz(PI, q) })
 }
 
 fn diffusion(n: Nat): Circuit<n, n, 3, Universal> = circuit {
-    hadamard_all(n) |> phase_flip(n) |> hadamard_all(n)
+        hadamard_all n |> phase_flip n |> hadamard_all n
 }
 
 fn grover_op(n: Nat): Circuit<n, n, 4, Universal> = circuit {
-    mark(n) |> diffusion(n)
+        mark n |> diffusion n
 }
 
-fn amplify(k: Nat, n: Nat): Circuit<n, n, k * 4, Universal> =
-    match k {
-        0 => identity(n),
-        _ => grover_op(n) |> amplify(k - 1, n)
-    }
+fn amplify(k: Nat, n: Nat): Circuit<n, n, k * 4, Universal> = match k {
+0 => identity n,
+_ => grover_op n |> amplify(k - 1, n)
+}
 
 fn run_amplify(k: Nat, n: Nat): Q<List<Bit>> = run {
-    let circ = hadamard_all(n) |> amplify(k, n)
-    q       <- circ @ qreg(n)
-    measure_all(q)
+        let circ = hadamard_all n |> amplify(k, n)
+        q <- circ @ (qreg n)
+        measure_all q
 }

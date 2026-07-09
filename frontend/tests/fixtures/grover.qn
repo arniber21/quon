@@ -1,20 +1,20 @@
 type Oracle<n> = Circuit<n, n, _, Universal>
 
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
 fn phase_flip_zero(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { Z q }
+        (for q in (qubits n) { Z q })
 }
 
 fn diffusion(n: Nat): Circuit<n, n, 3, Clifford> = circuit {
-    hadamard_all(n) |> phase_flip_zero(n) |> hadamard_all(n)
+        hadamard_all n |> phase_flip_zero n |> hadamard_all n
 }
 
 fn grover(n: Nat, oracle: Oracle<n>): Q<List<Bit>> = run {
-    let iters  = round(PI / 4.0 * sqrt(2.0 ^ n))
-    let search = hadamard_all(n) |> repeat(iters, oracle |> diffusion(n))
-    q         <- search @ qreg(n)
-    measure_all(q)
+        let iters = round((PI / 4.0) * (sqrt(2.0 ^ n)))
+        let search = hadamard_all n |> repeat(iters, oracle |> diffusion n)
+        q <- search @ (qreg n)
+        measure_all q
 }
