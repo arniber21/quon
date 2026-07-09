@@ -1,0 +1,73 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Quon",
+  "scopeName": "source.quon",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#keywords" },
+    { "include": "#booleans" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-dash.quon",
+          "match": "--.*$"
+        },
+        {
+          "name": "comment.block.quon",
+          "begin": "\\{-",
+          "end": "-\\}",
+          "patterns": [{ "include": "#comments" }]
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.quon",
+          "match": "\\b(fn|type|let|in|return|match|circuit|run|borrow|for|if|then|else|adjoint|controlled|par)\\b"
+        }
+      ]
+    },
+    "booleans": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.quon",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.quon",
+          "match": "\\b-?\\d+\\.\\d+([eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.quon",
+          "match": "\\b-?\\d+([eE][+-]?\\d+)?\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.quon",
+          "match": "(\\|>|<-|->|-o|=>|@|=|\\+|\\-|\\*|/|\\^|\\||:|,|\\.|_)"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.quon",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}
