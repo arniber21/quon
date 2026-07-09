@@ -24,6 +24,17 @@ pub fn desugar_decls(decls: Vec<Sp<Decl>>) -> Result<Vec<Sp<Decl>>, Vec<Diagnost
     }
 }
 
+/// Desugar declarations, returning structured diagnostics on failure.
+pub fn desugar_decls_rich(
+    decls: Vec<Sp<Decl>>,
+) -> Result<Vec<Sp<Decl>>, Vec<crate::diagnostics::RichDiagnostic>> {
+    desugar_decls(decls).map_err(|errs| {
+        errs.into_iter()
+            .map(|d| crate::diagnostics::classify_desugar_error(&d.message, d.span))
+            .collect()
+    })
+}
+
 /// Desugar a single expression. Convenience wrapper around the internal
 /// recursion for stage-level tests that work with one expression at a time.
 pub fn desugar_expr(expr: Sp<Expr>) -> Result<Sp<Expr>, Vec<Diagnostic>> {

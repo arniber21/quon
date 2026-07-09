@@ -6,7 +6,7 @@ use frontend;
 use tower_lsp::Client;
 use tower_lsp::lsp_types::Url;
 
-use crate::diagnostics::check_to_lsp_diags;
+use crate::diagnostics::analysis_to_lsp_diags;
 use crate::document::DocumentStore;
 use crate::span::LineIndex;
 
@@ -63,28 +63,30 @@ impl AnalysisScheduler {
                 (doc.text.clone(), doc.version)
             };
 
-            let uri_for_task = uri.clone();
+            let uri_for_analysis = uri.clone();
             let text_for_task = text.clone();
-            let lsp_diags = match tokio::task::spawn_blocking(move || {
-                let result = frontend::check_program(&text_for_task);
+            let (lsp_diags, analysis) = match tokio::task::spawn_blocking(move || {
+                let result = frontend::analyze(&text_for_task);
                 let line_index = LineIndex::new(&text_for_task);
-                check_to_lsp_diags(&text_for_task, result, &line_index)
+                let diags =
+                    analysis_to_lsp_diags(&text_for_task, &result, &line_index, &uri_for_analysis);
+                (diags, result)
             })
             .await
             {
-                Ok(diags) => diags,
+                Ok(pair) => pair,
                 Err(_) => {
                     tracing::debug!(%uri, "analysis task cancelled");
                     return;
                 }
             };
 
-            let should_publish = {
-                let Ok(docs) = documents.read() else {
-                    tracing::error!("document store read lock poisoned");
-                    return;
-                };
-                docs.get(&uri).is_some_and(|doc| doc.version == version)
+            let should_publish = match documents.write() {
+                Ok(mut docs) => docs.store_cached_analysis_if_current(&uri, version, analysis),
+                Err(_) => {
+                    tracing::error!("document store write lock poisoned");
+                    false
+                }
             };
 
             if !should_publish {
@@ -93,7 +95,7 @@ impl AnalysisScheduler {
             }
 
             client
-                .publish_diagnostics(uri_for_task, lsp_diags, Some(version))
+                .publish_diagnostics(uri, lsp_diags, Some(version))
                 .await;
         });
         guard.pending.insert(uri_for_pending, handle);
