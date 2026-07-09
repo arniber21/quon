@@ -44,6 +44,9 @@ use linear::Delta;
 use std::collections::{BTreeSet, HashMap};
 use unify::Table;
 
+use crate::analysis::{
+    ResolutionMap, ResolvedTarget, SymbolIndex, TypeAnnotations, is_quantum_builtin,
+};
 use quon_core::DepthExpr;
 
 /// The unrestricted context Γ: names in scope mapped to their (monomorphic) types.
@@ -128,6 +131,12 @@ pub struct TypeChecker {
     current_fn: Option<(Name, Vec<Name>)>,
     /// Self-recursive call sites captured while checking the current body (issue #60).
     rec_calls: Vec<RecCall>,
+    /// Optional LSP annotation sink (issue #45).
+    annotations: Option<*mut TypeAnnotations>,
+    /// Optional LSP resolution sink (issue #45).
+    resolutions: Option<*mut ResolutionMap>,
+    /// Symbol index for resolution recording.
+    symbol_index: Option<SymbolIndex>,
 }
 
 impl TypeChecker {
@@ -145,7 +154,47 @@ impl TypeChecker {
             assumptions: Vec::new(),
             current_fn: None,
             rec_calls: Vec::new(),
+            annotations: None,
+            resolutions: None,
+            symbol_index: None,
         }
+    }
+
+    /// Enable LSP analysis hooks (issue #45).
+    pub fn enable_analysis(&mut self, symbols: &SymbolIndex) {
+        self.symbol_index = Some(symbols.clone());
+    }
+
+    pub fn set_sinks(
+        &mut self,
+        annotations: &mut TypeAnnotations,
+        resolutions: &mut ResolutionMap,
+    ) {
+        self.annotations = Some(annotations as *mut TypeAnnotations);
+        self.resolutions = Some(resolutions as *mut ResolutionMap);
+    }
+
+    fn record_annotation(&mut self, span: SimpleSpan, ty: &Ty) {
+        if let Some(ptr) = self.annotations {
+            // SAFETY: `analyze_program` owns the annotations for the checker lifetime.
+            unsafe {
+                (*ptr).record(span, ty.clone());
+            }
+        }
+    }
+
+    fn record_resolution(&mut self, span: SimpleSpan, target: ResolvedTarget) {
+        if let Some(ptr) = self.resolutions {
+            unsafe {
+                (*ptr).record(span, target);
+            }
+        }
+    }
+
+    fn resolve_var_name(&self, name: &str, use_span: SimpleSpan) -> Option<ResolvedTarget> {
+        let index = self.symbol_index.as_ref()?;
+        let id = index.resolve_name_at(name, use_span.start)?;
+        Some(ResolvedTarget::Symbol(id))
     }
 
     /// Reconcile an inferred type `got` against an expected type `expected`. For two circuits
@@ -252,9 +301,9 @@ impl TypeChecker {
         for (decl, _) in decls {
             if let Decl::TypeAlias { name, params, ty } = decl {
                 self.aliases.insert(
-                    name.clone(),
+                    name.0.clone(),
                     AliasDef {
-                        params: params.clone(),
+                        params: params.iter().map(|p| p.0.clone()).collect(),
                         body: ty.clone(),
                     },
                 );
@@ -269,7 +318,7 @@ impl TypeChecker {
             {
                 match self.fn_type(params, ret) {
                     Ok(ty) => {
-                        self.globals.insert(name.clone(), ty);
+                        self.globals.insert(name.0.clone(), ty);
                         self.record_fn_sig(name, params, ret);
                     }
                     Err(e) => errors.push(e),
@@ -314,9 +363,9 @@ impl TypeChecker {
         for (decl, _) in decls {
             if let Decl::TypeAlias { name, params, ty } = decl {
                 self.aliases.insert(
-                    name.clone(),
+                    name.0.clone(),
                     AliasDef {
-                        params: params.clone(),
+                        params: params.iter().map(|p| p.0.clone()).collect(),
                         body: ty.clone(),
                     },
                 );
@@ -328,7 +377,7 @@ impl TypeChecker {
             } = decl
                 && let Ok(ty) = self.fn_type(params, ret)
             {
-                self.globals.insert(name.clone(), ty);
+                self.globals.insert(name.0.clone(), ty);
                 self.record_fn_sig(name, params, ret);
             }
         }
@@ -357,7 +406,11 @@ impl TypeChecker {
     /// matches the call syntax, which the parser lowers to nested single-argument `App`s:
     /// `f()` is `App(f, ())` (so a nullary `f` has type `Unit -> R`), `f(x)` is `App(f, x)`,
     /// and `f(x, y)` is `App(App(f, x), y)`.
-    fn fn_type(&mut self, params: &[(Name, Sp<Type>)], ret: &Sp<Type>) -> Result<Ty, TypeError> {
+    fn fn_type(
+        &mut self,
+        params: &[(Sp<Name>, Sp<Type>)],
+        ret: &Sp<Type>,
+    ) -> Result<Ty, TypeError> {
         let ret_ty = self.resolve_type(ret)?;
         if params.is_empty() {
             return Ok(Ty::func(Ty::Unit, ret_ty));
@@ -373,14 +426,14 @@ impl TypeChecker {
     /// Record a function's value-dependency signature (issue #57) into `fn_sigs`. `is_nat` is
     /// read from the *surface* `Type::Nat` (it resolves to `Ty::Int`, so the distinction is lost
     /// in `ret`). Only called once the signature is known to resolve, so it never double-reports.
-    fn record_fn_sig(&mut self, name: &Name, params: &[(Name, Sp<Type>)], ret: &Sp<Type>) {
+    fn record_fn_sig(&mut self, name: &Sp<Name>, params: &[(Sp<Name>, Sp<Type>)], ret: &Sp<Type>) {
         if let Ok(ret_ty) = self.resolve_type(ret) {
             let sig_params = params
                 .iter()
-                .map(|(pn, pt)| (pn.clone(), matches!(pt.0, Type::Nat)))
+                .map(|(pn, pt)| (pn.0.clone(), matches!(pt.0, Type::Nat)))
                 .collect();
             self.fn_sigs.insert(
-                name.clone(),
+                name.0.clone(),
                 FnSig {
                     params: sig_params,
                     ret: ret_ty,
@@ -395,7 +448,7 @@ impl TypeChecker {
     /// the parameter's type annotation (parameter names carry no span of their own).
     fn bind_fn_params(
         &mut self,
-        params: &[(Name, Sp<Type>)],
+        params: &[(Sp<Name>, Sp<Type>)],
         env: &mut Env,
         delta: &mut Delta,
     ) -> Result<Vec<(String, SimpleSpan)>, TypeError> {
@@ -403,10 +456,10 @@ impl TypeChecker {
         for (name, t) in params {
             let ty = self.resolve_type(t)?;
             if ty.is_linear_resource() {
-                delta.introduce(name.clone(), ty, t.1)?;
-                introduced.push((name.clone(), t.1));
+                delta.introduce(name.0.clone(), ty, name.1)?;
+                introduced.push((name.0.clone(), name.1));
             } else {
-                env.insert(name.clone(), ty);
+                env.insert(name.0.clone(), ty);
             }
         }
         Ok(introduced)
@@ -414,8 +467,8 @@ impl TypeChecker {
 
     fn check_fn_body(
         &mut self,
-        name: &Name,
-        params: &[(Name, Sp<Type>)],
+        name: &Sp<Name>,
+        params: &[(Sp<Name>, Sp<Type>)],
         ret: &Sp<Type>,
         body: &Sp<Expr>,
     ) -> Result<(), TypeError> {
@@ -424,9 +477,9 @@ impl TypeChecker {
         let nat_params: Vec<Name> = params
             .iter()
             .filter(|(_, t)| matches!(t.0, Type::Nat))
-            .map(|(n, _)| n.clone())
+            .map(|(n, _)| n.0.clone())
             .collect();
-        self.current_fn = Some((name.clone(), nat_params));
+        self.current_fn = Some((name.0.clone(), nat_params));
         self.rec_calls.clear();
 
         let mut env = self.globals.clone();
@@ -436,7 +489,7 @@ impl TypeChecker {
         self.check(&env, &mut delta, body, &ret_ty)?;
         self.finalize_numeric()?;
         self.ensure_consumed(&delta, &introduced)?;
-        self.check_termination(name, body.1)
+        self.check_termination(&name.0, body.1)
     }
 
     /// Verify that the recursive calls captured while checking the current body admit a
@@ -490,7 +543,7 @@ impl TypeChecker {
         let fn_names: HashSet<&str> = decls
             .iter()
             .filter_map(|(d, _)| match d {
-                Decl::Fn { name, .. } => Some(name.as_str()),
+                Decl::Fn { name, .. } => Some(name.0.as_str()),
                 _ => None,
             })
             .collect();
@@ -507,7 +560,7 @@ impl TypeChecker {
             if let Decl::Fn { name, body, .. } = d {
                 let mut callees = HashSet::new();
                 collect_called_fns(body, &fn_names, &mut callees);
-                adj.insert(name.as_str(), callees);
+                adj.insert(name.0.as_str(), callees);
             }
         }
         // The set of functions reachable from `start` over ≥ 1 call edge.
@@ -529,15 +582,15 @@ impl TypeChecker {
         };
         for (d, span) in decls {
             if let Decl::Fn { name, .. } = d
-                && returns_circuit(name)
+                && returns_circuit(&name.0)
             {
-                let forward = reaches(name);
+                let forward = reaches(&name.0);
                 let mutual = forward.iter().any(|v| {
-                    v.as_str() != name && returns_circuit(v) && reaches(v).contains(name.as_str())
+                    v.as_str() != name.0 && returns_circuit(v) && reaches(v).contains(&name.0)
                 });
                 if mutual {
                     errors.push(TypeError::MutualRecursion {
-                        name: name.clone(),
+                        name: name.0.clone(),
                         span: *span,
                     });
                 }
@@ -666,18 +719,33 @@ impl TypeChecker {
         // User bindings (locals and globals) shadow the prelude. Unrestricted names live in
         // `Γ` and leave `Δ` untouched.
         if let Some(ty) = env.get(name) {
+            if let Some(target) = self.resolve_var_name(name, span) {
+                self.record_resolution(span, target);
+            }
+            self.record_annotation(span, ty);
             return Ok(ty.clone());
         }
         // A linear resource: consuming it removes it from `Δ`; a second use is no-cloning.
         if let Some(result) = delta.try_consume(name, span) {
+            if let Ok(ref ty) = result {
+                if let Some(target) = self.resolve_var_name(name, span) {
+                    self.record_resolution(span, target);
+                }
+                self.record_annotation(span, ty);
+            }
             return result;
         }
         if let Some(scheme) = builtins::lookup(name) {
-            return Ok(self.instantiate(&scheme));
+            let ty = self.instantiate(&scheme);
+            self.record_resolution(span, ResolvedTarget::Builtin(name.to_string()));
+            self.record_annotation(span, &ty);
+            return Ok(ty);
         }
         // A gate primitive synthesizes a fresh circuit value (or, for rotations, the function
         // that produces one). Issue #12 specialises rotation classes from the static angle.
         if let Some(ty) = circuit::gate_type(name) {
+            self.record_resolution(span, ResolvedTarget::Gate(name.to_string()));
+            self.record_annotation(span, &ty);
             return Ok(ty);
         }
         // A linear resource owned by an enclosing scope, referenced inside a lambda: a closure
@@ -690,6 +758,7 @@ impl TypeChecker {
         }
         // Recognise quantum-prelude names for a clearer message than "unbound".
         if is_quantum_builtin(name) {
+            self.record_resolution(span, ResolvedTarget::QuantumBuiltin(name.to_string()));
             return Err(TypeError::Unsupported {
                 construct: "quantum prelude",
                 span,
@@ -1195,7 +1264,7 @@ impl TypeChecker {
         env: &Env,
         delta: &mut Delta,
         rhs: &Sp<Expr>,
-        param: &str,
+        param: &Sp<Name>,
         body: &Sp<Expr>,
     ) -> Result<Ty, TypeError> {
         let rhs_ty = self.synth(env, delta, rhs)?;
@@ -1218,10 +1287,10 @@ impl TypeChecker {
         let mut inner = env.clone();
         // Bind the threaded value. `_` discards it (a `Pat::Wildcard`, which rejects a leftover
         // linear resource as a no-dropping error); a name routes by linearity via `bind_pat`.
-        let pat = if param == "_" {
-            (Pat::Wildcard, rhs.1)
+        let pat = if param.0 == "_" {
+            (Pat::Wildcard, param.1)
         } else {
-            (Pat::Var(param.to_string()), rhs.1)
+            (Pat::Var(param.0.clone()), param.1)
         };
         let introduced = self.bind_pat(&pat, &bound, &mut inner, delta)?;
         let body_ty = self.synth(&inner, delta, body)?;
@@ -1254,7 +1323,7 @@ impl TypeChecker {
         &mut self,
         env: &Env,
         delta: &mut Delta,
-        bindings: &[(Name, Sp<Type>)],
+        bindings: &[(Sp<Name>, Sp<Type>)],
         body: &[Sp<Stmt>],
         span: SimpleSpan,
     ) -> Result<Ty, TypeError> {
@@ -1277,9 +1346,9 @@ impl TypeChecker {
                     span: ann.1,
                 });
             }
-            delta.introduce(name.clone(), ty, ann.1)?;
-            introduced.push((name.clone(), ann.1));
-            borrowed.insert(name.clone());
+            delta.introduce(name.0.clone(), ty, name.1)?;
+            introduced.push((name.0.clone(), name.1));
+            borrowed.insert(name.0.clone());
         }
 
         // No-escape: reject before threading `Δ`, since a `return a` would otherwise *consume*
@@ -1287,7 +1356,7 @@ impl TypeChecker {
         if let Some((name, esc_span)) = find_borrow_escape(&block, &borrowed) {
             let borrow_span = bindings
                 .iter()
-                .find(|(n, _)| n == &name)
+                .find(|(n, _)| n.0 == name)
                 .map(|(_, ann)| ann.1)
                 .unwrap_or(span);
             return Err(TypeError::BorrowEscape {
@@ -3038,70 +3107,6 @@ fn construct_name(expr: &Expr) -> &'static str {
         Expr::For { .. } => "for",
         _ => "expression",
     }
-}
-
-/// Names from the quantum/linear prelude (gates, allocation, measurement, combinators).
-/// Used only to upgrade an "unbound variable" message to "not yet type-checked".
-fn is_quantum_builtin(name: &str) -> bool {
-    const NAMES: &[&str] = &[
-        // allocation / registers / measurement
-        "qreg",
-        "qubit",
-        "destructure",
-        "split",
-        "tensored",
-        "measure",
-        "measure_x",
-        "measure_y",
-        "measure_all",
-        "reset",
-        "discard",
-        "apply",
-        "apply_dyn",
-        "init_one",
-        "init_plus",
-        "map_q",
-        "sequence_q",
-        "return",
-        // circuit combinators
-        "identity",
-        "adjoint",
-        "controlled",
-        "repeat",
-        "on_high",
-        "on_low",
-        "swap_reverse",
-        // single-qubit gates
-        "I",
-        "X",
-        "Y",
-        "Z",
-        "H",
-        "S",
-        "S_dag",
-        "T",
-        "T_dag",
-        "Rx",
-        "Ry",
-        "Rz",
-        "SX",
-        "SX_dag",
-        // two-qubit gates
-        "CNOT",
-        "CX",
-        "CY",
-        "CZ",
-        "SWAP",
-        "iSWAP",
-        "ECR",
-        "Rzz",
-        "Rxx",
-        "Ryy",
-        "CRz",
-        "CRx",
-        "CP",
-    ];
-    NAMES.contains(&name)
 }
 
 impl Default for TypeChecker {

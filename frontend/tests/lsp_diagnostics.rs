@@ -139,7 +139,7 @@ fn partial_source_no_panic() {
         "ident_without_end",
     ];
     for src in snippets {
-        let AnalysisResult { diagnostics } = analyze(src);
+        let AnalysisResult { diagnostics, .. } = analyze(src);
         let _ = diagnostics;
     }
 }

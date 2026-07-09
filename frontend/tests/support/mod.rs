@@ -24,18 +24,34 @@ pub fn strip_decls(decls: &mut [Sp<Decl>]) {
     }
 }
 
+fn strip_sp_name(n: &mut Sp<Name>) {
+    n.1 = z();
+}
+
 fn strip_decl(d: &mut Decl) {
     match d {
         Decl::Fn {
-            params, ret, body, ..
+            name,
+            params,
+            ret,
+            body,
+            ..
         } => {
-            for (_, t) in params.iter_mut() {
+            strip_sp_name(name);
+            for (n, t) in params.iter_mut() {
+                strip_sp_name(n);
                 go!(t, strip_ty);
             }
             go!(ret, strip_ty);
             go!(body, strip_expr);
         }
-        Decl::TypeAlias { ty, .. } => go!(ty, strip_ty),
+        Decl::TypeAlias { name, params, ty } => {
+            strip_sp_name(name);
+            for p in params.iter_mut() {
+                strip_sp_name(p);
+            }
+            go!(ty, strip_ty);
+        }
     }
 }
 
@@ -176,12 +192,14 @@ fn strip_expr(e: &mut Expr) {
             go!(gate, strip_expr);
             go!(qubits, strip_expr);
         }
-        Expr::Bind { rhs, body, .. } => {
+        Expr::Bind { rhs, param, body } => {
             go!(rhs, strip_expr);
+            strip_sp_name(param);
             go!(body, strip_expr);
         }
         Expr::Borrow { bindings, body } => {
-            for (_, t) in bindings.iter_mut() {
+            for (n, t) in bindings.iter_mut() {
+                strip_sp_name(n);
                 go!(t, strip_ty);
             }
             for s in body.iter_mut() {

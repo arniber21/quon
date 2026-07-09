@@ -102,6 +102,7 @@ where
     I: ValueInput<'a, Token = Token, Span = SimpleSpan>,
 {
     let ident = select! { Token::Ident(n) => n };
+    let sp_ident = ident.map_with(|n, e| (n, e.span()));
 
     // ── Natural-number expressions (type-level arithmetic) ────────────────────
     let nat = recursive(|nat| {
@@ -432,7 +433,7 @@ where
             )
             .map_with(|stmts, e| (Expr::RunBlock(stmts), e.span()));
 
-        let borrow_binding = ident.then_ignore(just(Token::Colon)).then(ty.clone());
+        let borrow_binding = sp_ident.then_ignore(just(Token::Colon)).then(ty.clone());
         let borrow_block = just(Token::Borrow)
             .ignore_then(
                 borrow_binding
@@ -805,9 +806,9 @@ where
     // ── Declarations ──────────────────────────────────────────────────────────
     let nls = just(Token::Newline).repeated();
 
-    let fn_param = ident.then_ignore(just(Token::Colon)).then(ty.clone());
+    let fn_param = sp_ident.then_ignore(just(Token::Colon)).then(ty.clone());
     let fn_decl = just(Token::Fn)
-        .ignore_then(ident)
+        .ignore_then(sp_ident)
         .then(
             fn_param
                 .separated_by(just(Token::Comma).padded_by(nls.clone()))
@@ -836,9 +837,9 @@ where
         });
 
     let type_alias = just(Token::Type)
-        .ignore_then(ident)
+        .ignore_then(sp_ident)
         .then(
-            ident
+            sp_ident
                 .separated_by(just(Token::Comma).padded_by(nls.clone()))
                 .at_least(1)
                 .collect::<Vec<_>>()

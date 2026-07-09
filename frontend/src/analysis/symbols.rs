@@ -1,0 +1,316 @@
+use crate::ast::{Decl, Expr, Pat, Stmt};
+use crate::lexer::{SimpleSpan, Sp};
+
+use super::prelude_names::{classical_builtins, gates, quantum_builtins};
+use super::scopes::{ScopeId, ScopeStack};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SymbolId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    Function,
+    TypeAlias,
+    TypeParam,
+    Parameter,
+    LocalBinding,
+    LinearBinding,
+    Builtin,
+    Gate,
+    QuantumBuiltin,
+}
+
+#[derive(Debug, Clone)]
+pub struct Symbol {
+    pub id: SymbolId,
+    pub name: String,
+    pub kind: SymbolKind,
+    pub name_span: SimpleSpan,
+    pub scope: ScopeId,
+    pub ty: Option<crate::types::Ty>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolIndex {
+    pub symbols: Vec<Symbol>,
+    pub scopes: Vec<super::scopes::Scope>,
+    by_name: std::collections::HashMap<String, Vec<SymbolId>>,
+    by_def_span: std::collections::HashMap<(usize, usize), SymbolId>,
+}
+
+struct Builder {
+    index: SymbolIndex,
+    stack: ScopeStack,
+    next_id: u32,
+}
+
+impl Builder {
+    fn new(src_len: usize) -> Self {
+        let root_span = SimpleSpan::from(0..src_len);
+        Self {
+            index: SymbolIndex {
+                symbols: Vec::new(),
+                scopes: Vec::new(),
+                by_name: std::collections::HashMap::new(),
+                by_def_span: std::collections::HashMap::new(),
+            },
+            stack: ScopeStack::new(root_span),
+            next_id: 0,
+        }
+    }
+
+    fn insert(&mut self, name: String, kind: SymbolKind, name_span: SimpleSpan) -> SymbolId {
+        let id = SymbolId(self.next_id);
+        self.next_id += 1;
+        let scope = self.stack.current();
+        self.index
+            .by_def_span
+            .insert((name_span.start, name_span.end), id);
+        self.index.by_name.entry(name.clone()).or_default().push(id);
+        self.index.symbols.push(Symbol {
+            id,
+            name,
+            kind,
+            name_span,
+            scope,
+            ty: None,
+        });
+        self.stack.add_symbol(id);
+        id
+    }
+
+    fn finish(mut self) -> SymbolIndex {
+        self.index.scopes = self.stack.scopes().to_vec();
+        self.index
+    }
+}
+
+impl SymbolIndex {
+    pub fn empty() -> Self {
+        Builder::new(0).finish()
+    }
+
+    pub fn get(&self, id: SymbolId) -> Option<&Symbol> {
+        self.symbols.get(id.0 as usize)
+    }
+
+    pub fn by_def_span(&self, span: SimpleSpan) -> Option<SymbolId> {
+        self.by_def_span.get(&(span.start, span.end)).copied()
+    }
+
+    pub fn resolve_name_at(&self, name: &str, offset: usize) -> Option<SymbolId> {
+        let mut scope_id = self.innermost_scope(offset)?;
+        while let Some(scope) = self.scopes.get(scope_id.0 as usize) {
+            for &sym_id in scope.symbols.iter().rev() {
+                if let Some(sym) = self.get(sym_id)
+                    && sym.name == name
+                {
+                    return Some(sym_id);
+                }
+            }
+            scope_id = scope.parent?;
+        }
+        None
+    }
+
+    fn innermost_scope(&self, offset: usize) -> Option<ScopeId> {
+        let mut best: Option<(usize, ScopeId)> = None;
+        for scope in &self.scopes {
+            if scope.span.start <= offset && offset <= scope.span.end {
+                let size = scope.span.end.saturating_sub(scope.span.start);
+                if best.is_none_or(|(s, _)| size < s) {
+                    best = Some((size, scope.id));
+                }
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    pub fn alias_names(&self) -> impl Iterator<Item = &str> {
+        self.symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::TypeAlias)
+            .map(|s| s.name.as_str())
+    }
+}
+
+pub fn build_symbol_index(decls: &[Sp<Decl>], src_len: usize) -> SymbolIndex {
+    let mut b = Builder::new(src_len);
+    let empty = SimpleSpan::from(0..0);
+    for name in classical_builtins() {
+        b.insert(name.to_string(), SymbolKind::Builtin, empty);
+    }
+    for name in gates() {
+        b.insert(name.to_string(), SymbolKind::Gate, empty);
+    }
+    for name in quantum_builtins() {
+        b.insert(name.to_string(), SymbolKind::QuantumBuiltin, empty);
+    }
+
+    for (decl, decl_span) in decls {
+        match decl {
+            Decl::Fn {
+                name,
+                params,
+                ret: _,
+                body,
+            } => {
+                b.stack.push(*decl_span);
+                b.insert(name.0.clone(), SymbolKind::Function, name.1);
+                for (p, _) in params {
+                    b.insert(p.0.clone(), SymbolKind::Parameter, p.1);
+                }
+                walk_expr(body, &mut b);
+                b.stack.pop();
+            }
+            Decl::TypeAlias {
+                name,
+                params,
+                ty: _,
+            } => {
+                b.stack.push(*decl_span);
+                b.insert(name.0.clone(), SymbolKind::TypeAlias, name.1);
+                for p in params {
+                    b.insert(p.0.clone(), SymbolKind::TypeParam, p.1);
+                }
+                b.stack.pop();
+            }
+        }
+    }
+    b.finish()
+}
+
+fn walk_expr(expr: &Sp<Expr>, b: &mut Builder) {
+    let (e, span) = expr;
+    match e {
+        Expr::Lam { params, body } => {
+            b.stack.push(*span);
+            for (pat, _) in params {
+                bind_pat(pat, SymbolKind::Parameter, b);
+            }
+            walk_expr(body, b);
+            b.stack.pop();
+        }
+        Expr::Let { pat, rhs, body } => {
+            walk_expr(rhs, b);
+            b.stack.push(*span);
+            bind_pat(pat, SymbolKind::LocalBinding, b);
+            walk_expr(body, b);
+            b.stack.pop();
+        }
+        Expr::Bind { rhs, param, body } => {
+            walk_expr(rhs, b);
+            b.stack.push(*span);
+            b.insert(param.0.clone(), SymbolKind::LocalBinding, param.1);
+            walk_expr(body, b);
+            b.stack.pop();
+        }
+        Expr::If { cond, then, else_ } => {
+            walk_expr(cond, b);
+            walk_expr(then, b);
+            walk_expr(else_, b);
+        }
+        Expr::Match { scrutinee, arms } => {
+            walk_expr(scrutinee, b);
+            for (pat, arm) in arms {
+                b.stack.push(pat.1);
+                bind_pat(pat, SymbolKind::LocalBinding, b);
+                walk_expr(arm, b);
+                b.stack.pop();
+            }
+        }
+        Expr::For { pat, iter, body } => {
+            walk_expr(iter, b);
+            b.stack.push(*span);
+            bind_pat(pat, SymbolKind::Parameter, b);
+            walk_expr(body, b);
+            b.stack.pop();
+        }
+        Expr::Borrow { bindings, body } => {
+            b.stack.push(*span);
+            for (name, _) in bindings {
+                b.insert(name.0.clone(), SymbolKind::Parameter, name.1);
+            }
+            walk_stmts(body, b);
+            b.stack.pop();
+        }
+        Expr::CircuitBlock(stmts) | Expr::RunBlock(stmts) => {
+            b.stack.push(*span);
+            walk_stmts(stmts, b);
+            b.stack.pop();
+        }
+        Expr::App(a, br)
+        | Expr::Compose(a, br)
+        | Expr::Par(a, br)
+        | Expr::GateApp {
+            gate: a,
+            qubits: br,
+            ..
+        } => {
+            walk_expr(a, b);
+            walk_expr(br, b);
+        }
+        Expr::BinOp { lhs, rhs, .. } => {
+            walk_expr(lhs, b);
+            walk_expr(rhs, b);
+        }
+        Expr::Neg(inner)
+        | Expr::Adjoint(inner)
+        | Expr::Controlled(inner)
+        | Expr::Return(inner)
+        | Expr::Ascribe(inner, _) => walk_expr(inner, b),
+        Expr::Tuple(es) | Expr::List(es) => {
+            for e in es {
+                walk_expr(e, b);
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(_) => {}
+    }
+}
+
+fn walk_stmts(stmts: &[Sp<Stmt>], b: &mut Builder) {
+    for (stmt, span) in stmts {
+        match stmt {
+            Stmt::Bind { pat, rhs } | Stmt::Let { pat, rhs } => {
+                walk_expr(rhs, b);
+                b.stack.push(*span);
+                bind_pat(pat, SymbolKind::LocalBinding, b);
+                b.stack.pop();
+            }
+            Stmt::Expr(e) => walk_expr(e, b),
+        }
+    }
+}
+
+fn bind_pat(pat: &Sp<Pat>, kind: SymbolKind, b: &mut Builder) {
+    match &pat.0 {
+        Pat::Var(name) => {
+            b.insert(name.clone(), kind, pat.1);
+        }
+        Pat::Tuple(ps) => {
+            for p in ps {
+                bind_pat(p, kind, b);
+            }
+        }
+        Pat::Wildcard | Pat::Lit(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::desugar_program;
+
+    #[test]
+    fn top_level_fn_symbol() {
+        let src = "fn f(): Int = 1\n";
+        let decls = desugar_program(src).expect("parse");
+        let index = build_symbol_index(&decls, src.len());
+        assert!(
+            index
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Function && s.name == "f")
+        );
+    }
+}

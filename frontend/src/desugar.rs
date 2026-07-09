@@ -244,7 +244,7 @@ fn desugar_run_block(
             Stmt::Expr(e) => (
                 Expr::Bind {
                     rhs: Box::new(desugar_expr_acc(e, errors)),
-                    param: "_".to_string(),
+                    param: ("_".to_string(), stmt_span),
                     body: Box::new(current_expr),
                 },
                 current_span,
@@ -277,8 +277,8 @@ fn desugar_bind(
 ) -> Sp<Expr> {
     let pat_span = pat.1;
     let (param, body) = match &pat.0 {
-        Pat::Var(name) => (name.clone(), body),
-        Pat::Wildcard => ("_".to_string(), body),
+        Pat::Var(name) => ((name.clone(), pat_span), body),
+        Pat::Wildcard => (("_".to_string(), pat_span), body),
         Pat::Tuple(_) => {
             let tmp = format!("$bind{}", pat_span.start);
             let destructured = (
@@ -289,14 +289,14 @@ fn desugar_bind(
                 },
                 span,
             );
-            (tmp, destructured)
+            ((tmp, pat_span), destructured)
         }
         Pat::Lit(_) => {
             errors.push(Diagnostic::new(
                 "a `<-` bind in a `run` block cannot bind a literal pattern",
                 pat_span,
             ));
-            ("_".to_string(), body)
+            (("_".to_string(), pat_span), body)
         }
     };
     (
