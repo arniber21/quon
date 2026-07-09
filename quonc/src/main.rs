@@ -62,6 +62,11 @@ struct Cli {
     /// Debounce window for filesystem events in watch mode (milliseconds)
     #[arg(long, default_value_t = 300)]
     watch_debounce_ms: u64,
+
+    /// SABRE noise-weight coefficient γ (SPEC §7.4). Higher values prefer
+    /// quieter two-qubit edges / readout qubits when choosing SWAPs.
+    #[arg(long, default_value_t = 0.3)]
+    sabre_gamma: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -267,6 +272,7 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
         target_descriptor_path: cli.target.clone(),
         dump_ir: cli.dump_ir,
         verify_linear: cli.verify_linear,
+        sabre_gamma: cli.sabre_gamma,
     })
 }
 

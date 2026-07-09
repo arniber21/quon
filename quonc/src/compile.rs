@@ -32,6 +32,8 @@ pub struct CompileRequest {
     pub target_descriptor_path: Option<PathBuf>,
     pub dump_ir: bool,
     pub verify_linear: bool,
+    /// SABRE noise-weight coefficient γ (SPEC §7.4). Default 0.3.
+    pub sabre_gamma: f64,
 }
 
 /// Outcome of one compile invocation.
@@ -133,7 +135,11 @@ fn compile_inner(request: &CompileRequest) -> Result<(String, CircuitMetrics), S
     }
 
     native_gate_decomp::run_on_module(&context, &request.target, &module);
-    sabre_routing::run_on_module(&context, &request.target, SabreCost::default(), &module);
+    let sabre_cost = SabreCost {
+        gamma: request.sabre_gamma,
+        ..SabreCost::default()
+    };
+    sabre_routing::run_on_module(&context, &request.target, sabre_cost, &module);
     let t_count = metrics::count_t_gates(&module);
     native_gate_decomp::run_on_module(&context, &request.target, &module);
     depth_scheduling::run_on_module(&context, &request.target, &module);
