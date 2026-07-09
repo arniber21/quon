@@ -1,0 +1,25 @@
+[package]
+name        = "quon_na"
+version     = "0.1.0"
+edition     = "2024"
+description = "MLIR-free neutral-atom layout, schedule, and reporting types for Quon"
+
+[features]
+default = ["mlir"]
+# Opt-in Flux refinement-type checking. Off by default so the stable workspace
+# build never compiles `flux-rs`; enabled by `cargo flux -p quon_na
+# --no-default-features --features flux` (nightly).
+flux = ["dep:flux-rs"]
+mlir = ["dep:mlir_bridge"]
+
+[dependencies]
+flux-rs    = { workspace = true, optional = true }
+mlir_bridge = { path = "../mlir_bridge", optional = true }
+quon_core   = { path = "../quon_core" }
+serde       = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[package.metadata.flux]
+enabled = true

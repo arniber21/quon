@@ -830,6 +830,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "quon_na"
+version = "0.1.0"
+dependencies = [
+ "flux-rs",
+ "mlir_bridge",
+ "quon_core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quonc"
 version = "0.1.0"
 dependencies = [
