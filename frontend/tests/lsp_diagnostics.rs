@@ -64,6 +64,18 @@ fn parse_error_has_code() {
 }
 
 #[test]
+fn unterminated_block_comment_has_code() {
+    let src = "{- unclosed block\n";
+    assert_code(src, "quon.lex.unterminated-comment");
+}
+
+#[test]
+fn desugar_run_trailing_bind_has_code() {
+    let src = "fn f(): Q<Int> = run { x <- measure(qubit()) }\n";
+    assert_code(src, "quon.desugar.run-trailing-bind");
+}
+
+#[test]
 fn linear_used_twice_related() {
     let src = "fn f(q: Qubit): QReg<2> = (q, q)";
     assert_code(src, "quon.linearity.used-twice");
@@ -79,10 +91,19 @@ fn linear_unconsumed_borrow_fix() {
         "expected discard/reset quick fixes, got {:?}",
         d.fixes
     );
-    let fixed = apply_fixes(src, &d.fixes);
+    let discard_fix = d
+        .fixes
+        .iter()
+        .find(|f| f.title.contains("discard"))
+        .expect("discard quick fix");
+    let fixed = apply_fixes(src, std::slice::from_ref(discard_fix));
     assert!(
         fixed.contains("discard(a)"),
         "fixed source should contain discard(a): {fixed}"
+    );
+    assert!(
+        analyze(&fixed).diagnostics.is_empty(),
+        "fixed source should typecheck: {fixed}"
     );
 }
 
@@ -101,6 +122,10 @@ fn clifford_mismatch_fix() {
         "fixed source should use Universal: {fixed}"
     );
     assert!(!fixed.contains("Clifford> = circuit"));
+    assert!(
+        analyze(&fixed).diagnostics.is_empty(),
+        "fixed source should typecheck: {fixed}"
+    );
 }
 
 #[test]
@@ -116,6 +141,10 @@ fn depth_mismatch_constant_fix() {
     assert!(
         fixed.contains("Circuit<2, 2, 2, Clifford>"),
         "fixed: {fixed}"
+    );
+    assert!(
+        analyze(&fixed).diagnostics.is_empty(),
+        "fixed source should typecheck: {fixed}"
     );
 }
 
@@ -277,8 +306,8 @@ fn every_type_error_variant_has_unique_code() {
 }
 
 #[test]
-fn linear_discard_fix_for_simple_let() {
-    let src = "fn f(q: Qubit): Int = let _ = q in 0";
+fn linear_discard_fix_in_run_block() {
+    let src = "fn f(q: Qubit): Q<Int> = run {\n  let _ = q\n  0\n}";
     let d = first_with_code(src, "quon.linearity.discard");
     assert!(
         d.fixes.iter().any(|f| f.title.contains("discard(q)")),
@@ -287,4 +316,15 @@ fn linear_discard_fix_for_simple_let() {
     );
     let fixed = apply_fixes(src, &d.fixes);
     assert!(fixed.contains("discard(q)"), "{fixed}");
+}
+
+#[test]
+fn linear_discard_no_fix_for_let_in() {
+    let src = "fn f(q: Qubit): Int = let _ = q in 0";
+    let d = first_with_code(src, "quon.linearity.discard");
+    assert!(
+        d.fixes.is_empty(),
+        "let-in discard must not offer unsafe rewrite: {:?}",
+        d.fixes
+    );
 }

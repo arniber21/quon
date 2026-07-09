@@ -73,12 +73,9 @@ impl AnalysisScheduler {
                     analysis_to_lsp_diags(&text_for_task, &result, &line_index, &uri_for_analysis);
 
                 if result.diagnostics.is_empty() {
-                    let lint_config = LintConfig::default();
-                    let lints = lint_source(
-                        std::path::Path::new(uri_for_analysis.path()),
-                        &text_for_task,
-                        &lint_config,
-                    );
+                    let lint_path = std::path::Path::new(uri_for_analysis.path());
+                    let lint_config = LintConfig::discover_for_file(lint_path);
+                    let lints = lint_source(lint_path, &text_for_task, &lint_config);
                     diags.extend(diagnostics_to_lsp(
                         &text_for_task,
                         &lints,

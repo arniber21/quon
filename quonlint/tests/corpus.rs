@@ -41,6 +41,33 @@ fn fail_on_error_passes_on_clean_fixture() {
 }
 
 #[test]
+fn ci_corpus_warn_baseline() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let manifest = root.join("test/tooling/ci-corpus.txt");
+    let text = std::fs::read_to_string(&manifest).expect("read corpus");
+    let config = LintConfig::discover_project(&root).with_fail_on(Severity::Warning);
+    let mut warn_count = 0usize;
+    for line in text.lines() {
+        let path = line.split('#').next().unwrap_or("").trim();
+        if path.is_empty() {
+            continue;
+        }
+        let full = root.join(path);
+        let src = std::fs::read_to_string(&full).expect("read fixture");
+        let diags = quonlint::lint_source(&full, &src, &config);
+        warn_count += diags
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .count();
+    }
+    // Ratchet: CI corpus should not accumulate warn-level lint debt beyond baseline.
+    assert!(
+        warn_count <= 12,
+        "warn count {warn_count} exceeds baseline (update baseline intentionally if expected)"
+    );
+}
+
+#[test]
 fn fail_on_warn_detects_info_when_elevated() {
     let src = r#"fn f(n: Nat): Circuit<n, n, _, Universal> = circuit {
         for i in range(n) { H @0 }

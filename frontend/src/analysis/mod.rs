@@ -16,7 +16,6 @@ pub use symbols::{Symbol, SymbolId, SymbolIndex, SymbolKind, build_symbol_index}
 pub use typed::TypedProgram;
 
 use crate::ast::Decl;
-use crate::desugar_program;
 use crate::diagnostics::Diagnostic;
 use crate::lexer::{SimpleSpan, Sp};
 use crate::typecheck::TypeChecker;
@@ -53,38 +52,70 @@ impl Default for DocumentAnalysis {
     }
 }
 
-/// Parse, desugar, build symbols, type-check with annotation/resolution sinks.
-/// Always returns a snapshot (never `Err`).
-pub fn analyze_program(src: &str) -> DocumentAnalysis {
-    let mut out = DocumentAnalysis::empty(src.to_string());
-    let decls = match desugar_program(src) {
-        Ok(d) => d,
+/// Full IDE analysis: rich diagnostics + intelligence snapshot in one pass.
+pub fn analyze_with_rich(src: &str) -> crate::diagnostics::AnalysisResult {
+    let mut intelligence = DocumentAnalysis::empty(src.to_string());
+    let mut rich_diagnostics = Vec::new();
+
+    let tokens = match crate::lexer::lex_rich(src) {
+        Ok(t) => t,
         Err(diags) => {
-            out.diagnostics = diags;
-            return out;
+            intelligence.diagnostics = diags.iter().map(Diagnostic::from).collect();
+            return crate::diagnostics::AnalysisResult {
+                diagnostics: diags,
+                intelligence,
+            };
         }
     };
-    out.symbols = build_symbol_index(&decls, src.len());
+    let decls = match crate::parser::parse_rich(&tokens) {
+        Ok(d) => d,
+        Err(diags) => {
+            intelligence.diagnostics = diags.iter().map(Diagnostic::from).collect();
+            return crate::diagnostics::AnalysisResult {
+                diagnostics: diags,
+                intelligence,
+            };
+        }
+    };
+    let decls = match crate::desugar::desugar_decls_rich(decls) {
+        Ok(d) => d,
+        Err(diags) => {
+            intelligence.diagnostics = diags.iter().map(Diagnostic::from).collect();
+            return crate::diagnostics::AnalysisResult {
+                diagnostics: diags,
+                intelligence,
+            };
+        }
+    };
+
+    intelligence.symbols = build_symbol_index(&decls, src.len());
 
     let mut checker = TypeChecker::new();
-    checker.enable_analysis(&out.symbols);
+    checker.enable_analysis(&intelligence.symbols);
     let mut annotations = TypeAnnotations::default();
     let mut resolutions = ResolutionMap::default();
     checker.set_sinks(&mut annotations, &mut resolutions);
 
-    let tc_result = checker.check_decls(&decls);
-    match tc_result {
-        Ok(()) => {}
-        Err(errs) => out
-            .diagnostics
-            .extend(errs.iter().map(|e| e.to_diagnostic())),
+    if let Err(errs) = checker.check_decls(&decls) {
+        rich_diagnostics = errs.iter().map(|e| e.to_rich_diagnostic(src)).collect();
+        intelligence.diagnostics = rich_diagnostics.iter().map(Diagnostic::from).collect();
     }
 
-    attach_types(&mut out.symbols, &checker, &decls);
-    out.decls = decls;
-    out.annotations = annotations;
-    out.resolutions = resolutions;
-    out
+    attach_types(&mut intelligence.symbols, &checker, &decls);
+    intelligence.decls = decls;
+    intelligence.annotations = annotations;
+    intelligence.resolutions = resolutions;
+
+    crate::diagnostics::AnalysisResult {
+        diagnostics: rich_diagnostics,
+        intelligence,
+    }
+}
+
+/// Parse, desugar, build symbols, type-check with annotation/resolution sinks.
+/// Always returns a snapshot (never `Err`).
+pub fn analyze_program(src: &str) -> DocumentAnalysis {
+    analyze_with_rich(src).intelligence
 }
 
 fn attach_types(symbols: &mut SymbolIndex, checker: &TypeChecker, decls: &[Sp<Decl>]) {
@@ -161,14 +192,19 @@ pub fn format_hover(query: &ResolvedQuery, analysis: &DocumentAnalysis) -> Strin
                 SymbolKind::Gate => "(gate)",
             };
             lines.push(format!("**{}** `{}`", kind, sym.name));
-            let ty = sym.ty.clone().or_else(|| {
+            if let Some(ty) = analysis.annotations.get(query.use_span) {
+                lines.push(format!("```quon\n{ty}\n```"));
+                append_circuit_details(&mut lines, ty);
+                if ty.is_linear_resource() && sym.kind != SymbolKind::Gate {
+                    lines.push("*must be consumed exactly once*".to_string());
+                }
+            } else if let Some(ref ty) = sym.ty.clone().or_else(|| {
                 if sym.kind == SymbolKind::Gate {
                     prelude_names::gate_type(&sym.name)
                 } else {
                     None
                 }
-            });
-            if let Some(ref ty) = ty {
+            }) {
                 lines.push(format!("```quon\n{ty}\n```"));
                 append_circuit_details(&mut lines, ty);
                 if ty.is_linear_resource() && sym.kind != SymbolKind::Gate {
@@ -179,8 +215,14 @@ pub fn format_hover(query: &ResolvedQuery, analysis: &DocumentAnalysis) -> Strin
                 append_circuit_details(&mut lines, ty);
             }
         }
-        ResolvedTarget::Builtin(name) | ResolvedTarget::QuantumBuiltin(name) => {
+        ResolvedTarget::Builtin(name) => {
             lines.push(format!("**(builtin)** `{name}`"));
+            if let Some(scheme) = crate::typecheck::builtins::lookup(name) {
+                lines.push(format!("```quon\n{}\n```", scheme.body));
+            }
+        }
+        ResolvedTarget::QuantumBuiltin(name) => {
+            lines.push(format!("**(quantum builtin)** `{name}`"));
         }
         ResolvedTarget::Gate(name) => {
             lines.push(format!("**(gate)** `{name}`"));

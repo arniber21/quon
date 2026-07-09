@@ -15,8 +15,8 @@ fn bell(): Circuit<2, 2, 1, Clifford> = circuit {
 }
 
 #[test]
-fn hover_fn_shows_signature() {
-    let src = "fn /*cursor*/f(): Int = 1\n";
+fn hover_local_shows_inferred_type() {
+    let src = "fn f(): Int = let x = 1 in /*cursor*/x\n";
     let md = hover_markdown(src).expect("hover");
-    assert!(md.contains("f") || md.contains("Int"), "hover: {md}");
+    assert!(md.contains("Int"), "hover should include Int: {md}");
 }

@@ -7,8 +7,8 @@ fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
 }
 
 fn cost_layer(n: Nat, gamma: Float, q: Matrix<n, n, Float>): Circuit<n, n, n * n + 1, Universal> = circuit {
-        for (i, j) in (pairs n) { Rzz(gamma * index(index(q, i), j)) @(i, j) }
-|> for i in (diag n) { Rz(gamma * index(index(q, i), i)) @i }
+        for (i, j) in (pairs n) { (Rzz(gamma * (index(index(q, i), j)))) @(i, j) }
+|> for i in (diag n) { (Rz(gamma * (index(index(q, i), i)))) @i }
 }
 
 fn mixer_layer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {

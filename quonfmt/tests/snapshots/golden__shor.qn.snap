@@ -30,9 +30,9 @@ fn init_one(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
 }
 
 fn shor_quantum(n: Nat, a: Int, nn: Int): Q<List<Bit>> = run {
-        ctrl <- hadamard_all n @ (qreg n)
-        tgt  <- init_one n @ (qreg n)
-        both <- mod_exp(n, a, nn) @ (tensored(ctrl, tgt))
+        ctrl <- (hadamard_all n) @ (qreg n)
+        tgt  <- (init_one n) @ (qreg n)
+        both <- (mod_exp(n, a, nn)) @ (tensored(ctrl, tgt))
         let (ctrl2, _) = split(n, both)
         est  <- adjoint(qft n) @ctrl2
         measure_all est

@@ -20,7 +20,6 @@ pub fn register_rules() -> Vec<Box<dyn LintRule>> {
         Box::new(depth::RepeatNonLiteralCount),
         Box::new(depth::ControlledChain),
         Box::new(gates::UniversalInCliffordBlock),
-        Box::new(gates::NonNativeDensity),
         Box::new(gates::ConsecutiveRotations),
         Box::new(gates::SwapInSource),
         Box::new(ancilla::DiscardInBorrow),

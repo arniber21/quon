@@ -58,3 +58,27 @@ fn metrics_human_line_on_stderr() {
     assert!(stderr.contains("[quonc] depth=2 gates=2 t=0 swaps=0"));
     assert!(stderr.contains("target=generic_openqasm"));
 }
+
+#[test]
+fn restrictive_target_compiles_with_metrics() {
+    let source = workspace_path("../frontend/tests/fixtures/bell_state.qn");
+    let target = workspace_path("../backend/tests/fixtures/device_5q.json");
+    let output = quonc()
+        .arg("--metrics-json")
+        .arg("-")
+        .arg("--target")
+        .arg(&target)
+        .arg(&source)
+        .output()
+        .expect("spawn quonc");
+
+    assert!(
+        output.status.success(),
+        "quonc failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let snapshot: MetricsOnly = serde_json::from_str(&stdout).expect("parse metrics json");
+    assert!(snapshot.metrics.gate_count > 0);
+    assert!(snapshot.metrics.qubit_count >= 2);
+}

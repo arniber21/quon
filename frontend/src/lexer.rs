@@ -149,14 +149,62 @@ pub fn lex(src: &str) -> Result<Vec<Sp<Token>>, Vec<Sp<String>>> {
 
 /// Tokenize `src`, returning structured diagnostics on failure.
 pub fn lex_rich(src: &str) -> Result<Vec<Sp<Token>>, Vec<crate::diagnostics::RichDiagnostic>> {
+    if let Some(start) = unterminated_block_comment_outside_line_comments(src) {
+        return Err(vec![crate::diagnostics::RichDiagnostic::new(
+            crate::diagnostics::DiagnosticCode::LEX_UNTERMINATED_COMMENT,
+            crate::diagnostics::DiagnosticSeverity::Error,
+            "unclosed block comment".to_owned(),
+            (start..src.len()).into(),
+        )]);
+    }
     lexer().parse(src).into_result().map_err(|errs| {
         errs.into_iter()
             .map(|e| {
                 let msg = e.to_string();
-                crate::diagnostics::classify_lex_error(&msg, *e.span())
+                crate::diagnostics::classify_lex_error(src, &msg, *e.span())
             })
             .collect()
     })
+}
+
+/// Detect `{-` without a matching `-}` outside `--` line comments.
+fn unterminated_block_comment_outside_line_comments(src: &str) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'-' {
+            let open = i;
+            let mut depth = 1u32;
+            i += 2;
+            while i + 1 < bytes.len() {
+                if bytes[i] == b'{' && bytes[i + 1] == b'-' {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i] == b'-' && bytes[i + 1] == b'}' {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            if depth > 0 {
+                return Some(open);
+            }
+            continue;
+        }
+        i += 1;
+    }
+    None
 }
 
 type LexErr<'src> = extra::Err<Rich<'src, char>>;

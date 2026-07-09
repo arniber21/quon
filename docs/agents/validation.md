@@ -8,10 +8,35 @@ Static analysis and refinement-type checks for the Quon workspace.
 | -------- | ------- | --------- |
 | [coverage.yml](../../.github/workflows/coverage.yml) | every PR (non-blocking) | `cargo llvm-cov` summary via `./scripts/coverage.sh` (stable, excludes `flux_verify`; needs LLVM 22 + MLIR) |
 | [ci.yml](../../.github/workflows/ci.yml) | every push and PR | `cargo fmt --check`, `clippy`, `build --release`, `test --workspace` on stable (excludes `flux_verify`; needs LLVM 22 + MLIR + z3), then Qiskit Aer verification for Bell/teleport/BV |
+| [ci.yml](../../.github/workflows/ci.yml) `tooling` | every push and PR | `quonfmt --check`, `quonlint`, `quon_lsp` smoke tests on CI corpus |
 | [taskless.yml](../../.github/workflows/taskless.yml) | every PR; push to `main` | diff-scoped `@taskless/cli check` (Node 22+) |
 | [flux.yml](../../.github/workflows/flux.yml) | PR when `flux_verify/` or lockfile changes; push to `main` | `cargo flux -p flux_verify` (nightly + z3) |
 
 Not in CI yet: `lit test/lit/` (FileCheck IR tests) — run locally per [README.md](../../README.md#testing).
+
+## Tooling gates (quonfmt · quonlint · LSP)
+
+The `tooling` job in [ci.yml](../../.github/workflows/ci.yml) enforces Quon developer-tooling correctness on a fixed 16-file corpus (`test/tooling/ci-corpus.txt`):
+
+- **`quonfmt --check`** — no formatting drift
+- **`quonlint`** — diagnostics at or above `error` fail the job (config: `.quonlint.toml`)
+- **LSP smoke** — protocol-level stdio JSON-RPC checks in `quon_lsp/tests/smoke.rs` (marked `#[ignore]`; tooling job runs with `--include-ignored`)
+
+```bash
+# Match CI exactly
+./scripts/tooling-check.sh --ci
+
+# Individual gates
+cargo build --release -p quonfmt -p quonlint-cli -p quon_lsp
+quonfmt --check $(grep -v '^#' test/tooling/ci-corpus.txt | grep -v '^$')
+quonlint --config .quonlint.toml --fail-on error $(grep -v '^#' test/tooling/ci-corpus.txt | grep -v '^$')
+cargo test --release -p quon_lsp --test smoke -- --include-ignored
+
+# Broader local sweep (not CI)
+./scripts/tooling-check.sh --full
+```
+
+LSP smoke tests are intentionally skipped by `cargo test --workspace` (they use `#[ignore]`). Only the tooling job runs them via `--include-ignored`.
 
 ## Taskless (ast-grep rules)
 
@@ -89,7 +114,7 @@ Flux uses **nightly** and **z3**; it is intentionally excluded from the stable `
 
 Agents should treat validation as a **stack of fast feedback loops**, not a single CI gate at the end:
 
-1. **Every PR** — fmt, clippy, `cargo test --workspace --exclude flux_verify`, Taskless on changed files (see [code-quality.md](./code-quality.md#pre-pr-checklist)).
+1. **Every PR** — fmt, clippy, `cargo test --workspace --exclude flux_verify`, Taskless on changed files, tooling gates (see [validation.md](./validation.md#tooling-gates-quonfmt--quonlint--lsp)).
 2. **Language / parser / typechecker work** — add or extend unit tests; keep reference-algorithm fixtures passing (`frontend/tests/reference_algorithms.rs`).
 3. **Algorithms and serializers** — add proptest coverage where an oracle or invariant exists (`backend/tests/props.rs`, `mlir_bridge/tests/depth_props.rs`); consider `cargo fuzz` for byte/text parsers.
 4. **MLIR dialect changes** — unit/integration tests in `mlir_bridge/tests/`; builders must call `verify()` (enforced by Taskless).

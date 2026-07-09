@@ -5,12 +5,14 @@ use tower_lsp::lsp_types::Position;
 #[derive(Debug, Clone)]
 pub struct LineIndex {
     inner: RawLineIndex,
+    text_len: usize,
 }
 
 impl LineIndex {
     pub fn new(text: &str) -> Self {
         Self {
             inner: RawLineIndex::new(text),
+            text_len: text.len(),
         }
     }
 
@@ -29,11 +31,16 @@ impl LineIndex {
 
     /// Byte offset → LSP Position (for diagnostic mapping).
     pub fn position(&self, offset: usize) -> Position {
+        let offset = offset.min(self.text_len);
         let offset = offset.min(u32::MAX as usize) as u32;
         let lc = self
             .inner
             .try_line_col(TextSize::from(offset))
-            .unwrap_or(LineCol { line: 0, col: 0 });
+            .unwrap_or_else(|| {
+                self.inner
+                    .try_line_col(TextSize::from(self.text_len.min(u32::MAX as usize) as u32))
+                    .unwrap_or(LineCol { line: 0, col: 0 })
+            });
         let wide = self
             .inner
             .to_wide(WideEncoding::Utf16, lc)

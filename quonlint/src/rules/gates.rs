@@ -57,33 +57,6 @@ impl LintRule for UniversalInCliffordBlock {
     }
 }
 
-pub struct NonNativeDensity;
-
-impl LintRule for NonNativeDensity {
-    fn id(&self) -> String {
-        "gates/non-native-density".into()
-    }
-
-    fn default_severity(&self) -> Severity {
-        Severity::Warning
-    }
-
-    fn description(&self) -> &'static str {
-        "High fraction of non-native gates after decomposition"
-    }
-
-    fn run(&self, _ctx: &LintContext<'_>, _emit: &mut dyn FnMut(LintDiagnostic)) {
-        #[cfg(feature = "ir-analysis")]
-        {
-            // IR walk requires `--deep`; skipped in AST-only mode.
-            if !_ctx.config.deep {
-                return;
-            }
-            // Full IR implementation deferred to ir-analysis feature builds.
-        }
-    }
-}
-
 pub struct ConsecutiveRotations;
 
 impl LintRule for ConsecutiveRotations {
@@ -165,10 +138,7 @@ fn gate_name_from_expr(expr: &Expr) -> Option<&str> {
 }
 
 fn is_clifford_class(class: Option<frontend::ast::CliffordClass>) -> bool {
-    matches!(
-        class,
-        Some(frontend::ast::CliffordClass::Clifford) | Some(frontend::ast::CliffordClass::Infer)
-    )
+    matches!(class, Some(frontend::ast::CliffordClass::Clifford))
 }
 
 fn current_circuit_class(
@@ -196,60 +166,113 @@ fn check_rotation_runs(
     let mut run_start: Option<frontend::lexer::SimpleSpan> = None;
     let mut run_len = 0u32;
 
-    let flush =
-        |start: frontend::lexer::SimpleSpan, len: u32, emit: &mut dyn FnMut(LintDiagnostic)| {
-            if len >= 2 {
-                let diag = LintDiagnostic::new(
-                    rule,
-                    default,
-                    format!("{len} consecutive parametric rotations on the same qubit"),
-                    start,
-                )
-                .with_help("rotation_merging pass can combine adjacent rotations");
-                emit_if_allowed(ctx, rule, default, diag, emit);
-            }
-        };
-
     for stmt in stmts {
-        let frontend::ast::Stmt::Expr(expr) = &stmt.0 else {
-            prev_qubit = None;
-            run_len = 0;
-            continue;
-        };
-        if let Expr::GateApp { gate, qubits } = &expr.0 {
-            let name = gate_name_from_expr(&gate.0);
-            let qubit = qubit_index_string(&qubits.0);
-            if let Some(name) = name
-                && is_rotation_gate(name)
-                && let Some(q) = qubit
-            {
-                if prev_qubit.as_deref() == Some(q.as_str()) {
-                    run_len += 1;
-                } else {
-                    if let Some(start) = run_start {
-                        flush(start, run_len, emit);
-                    }
-                    prev_qubit = Some(q);
-                    run_start = Some(gate.1);
-                    run_len = 1;
-                }
-            } else {
+        match &stmt.0 {
+            frontend::ast::Stmt::Expr(e) => walk_rotation_expr(
+                ctx,
+                e,
+                &mut prev_qubit,
+                &mut run_start,
+                &mut run_len,
+                rule,
+                default,
+                emit,
+            ),
+            _ => {
                 if let Some(start) = run_start.take() {
-                    flush(start, run_len, emit);
+                    flush(ctx, start, run_len, rule, default, emit);
                 }
                 prev_qubit = None;
                 run_len = 0;
             }
-        } else {
-            if let Some(start) = run_start.take() {
-                flush(start, run_len, emit);
-            }
-            prev_qubit = None;
-            run_len = 0;
         }
     }
     if let Some(start) = run_start {
-        flush(start, run_len, emit);
+        flush(ctx, start, run_len, rule, default, emit);
+    }
+}
+
+fn walk_rotation_expr(
+    ctx: &LintContext<'_>,
+    expr: &Sp<Expr>,
+    prev_qubit: &mut Option<String>,
+    run_start: &mut Option<frontend::lexer::SimpleSpan>,
+    run_len: &mut u32,
+    rule: &str,
+    default: Severity,
+    emit: &mut dyn FnMut(LintDiagnostic),
+) {
+    match &expr.0 {
+        Expr::Compose(a, b) => {
+            walk_rotation_expr(ctx, a, prev_qubit, run_start, run_len, rule, default, emit);
+            walk_rotation_expr(ctx, b, prev_qubit, run_start, run_len, rule, default, emit);
+        }
+        Expr::GateApp { gate, qubits } => {
+            record_rotation_gate(
+                ctx, gate, qubits, prev_qubit, run_start, run_len, rule, default, emit,
+            );
+        }
+        _ => {
+            if let Some(start) = run_start.take() {
+                flush(ctx, start, *run_len, rule, default, emit);
+            }
+            *prev_qubit = None;
+            *run_len = 0;
+        }
+    }
+}
+
+fn record_rotation_gate(
+    ctx: &LintContext<'_>,
+    gate: &Sp<Expr>,
+    qubits: &Sp<Expr>,
+    prev_qubit: &mut Option<String>,
+    run_start: &mut Option<frontend::lexer::SimpleSpan>,
+    run_len: &mut u32,
+    rule: &str,
+    default: Severity,
+    emit: &mut dyn FnMut(LintDiagnostic),
+) {
+    let name = gate_name_from_expr(&gate.0);
+    let qubit = qubit_index_string(&qubits.0);
+    if let Some(name) = name
+        && is_rotation_gate(name)
+        && let Some(q) = qubit
+    {
+        if prev_qubit.as_deref() == Some(q.as_str()) {
+            *run_len += 1;
+        } else {
+            if let Some(start) = run_start.take() {
+                flush(ctx, start, *run_len, rule, default, emit);
+            }
+            *prev_qubit = Some(q);
+            *run_start = Some(gate.1);
+            *run_len = 1;
+        }
+    } else if let Some(start) = run_start.take() {
+        flush(ctx, start, *run_len, rule, default, emit);
+        *prev_qubit = None;
+        *run_len = 0;
+    }
+}
+
+fn flush(
+    ctx: &LintContext<'_>,
+    start: frontend::lexer::SimpleSpan,
+    len: u32,
+    rule: &str,
+    default: Severity,
+    emit: &mut dyn FnMut(LintDiagnostic),
+) {
+    if len >= 2 {
+        let diag = LintDiagnostic::new(
+            rule,
+            default,
+            format!("{len} consecutive parametric rotations on the same qubit"),
+            start,
+        )
+        .with_help("rotation_merging pass can combine adjacent rotations");
+        emit_if_allowed(ctx, rule, default, diag, emit);
     }
 }
 

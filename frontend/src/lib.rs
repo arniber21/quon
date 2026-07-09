@@ -43,6 +43,8 @@ pub use analysis::DocumentAnalysis;
 pub use analysis::TypedProgram;
 #[cfg(feature = "full")]
 pub use analysis::analyze_program;
+#[cfg(feature = "full")]
+pub use analysis::analyze_with_rich;
 
 use crate::ast::Decl;
 use crate::diagnostics::Diagnostic;
@@ -56,51 +58,11 @@ pub use crate::diagnostics::{
     RichDiagnostic, TextEdit,
 };
 
-#[cfg(feature = "full")]
-use crate::typecheck::TypeChecker;
-
 /// IDE-oriented analysis: lex → parse → desugar → typecheck. Does not lower to MLIR.
 /// Accumulates errors from the first failing stage; never panics on partial source.
 #[cfg(feature = "full")]
 pub fn analyze(source: &str) -> AnalysisResult {
-    let intelligence = analyze_program(source);
-    let tokens = match crate::lexer::lex_rich(source) {
-        Ok(t) => t,
-        Err(diags) => {
-            return AnalysisResult {
-                diagnostics: diags,
-                intelligence,
-            };
-        }
-    };
-    let decls = match crate::parser::parse_rich(&tokens) {
-        Ok(d) => d,
-        Err(diags) => {
-            return AnalysisResult {
-                diagnostics: diags,
-                intelligence,
-            };
-        }
-    };
-    let decls = match crate::desugar::desugar_decls_rich(decls) {
-        Ok(d) => d,
-        Err(diags) => {
-            return AnalysisResult {
-                diagnostics: diags,
-                intelligence,
-            };
-        }
-    };
-    match TypeChecker::new().check_decls(&decls) {
-        Ok(()) => AnalysisResult {
-            diagnostics: Vec::new(),
-            intelligence,
-        },
-        Err(errs) => AnalysisResult {
-            diagnostics: errs.iter().map(|e| e.to_rich_diagnostic(source)).collect(),
-            intelligence,
-        },
-    }
+    analyze_with_rich(source)
 }
 
 /// The frontend's single entry point for turning source text into an AST: it
