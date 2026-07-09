@@ -1,15 +1,10 @@
--- qDRIFT product-formula channel: a stochastic sequence of m sampled Hamiltonian terms, each a
--- nearest-neighbour ZZ rotation with a fixed (importance-weighted) angle.
--- Stresses: repeat over a sampled-term circuit, depth m*(n-1).
-
 fn sampled_term(n: Nat, angle: Float): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { Rzz(angle) @(i, i + 1) }
+        (for i in (range(n - 1)) { (Rzz angle) @(i, i + 1) })
 }
 
-fn qdrift_channel(n: Nat, m: Int, angle: Float): Circuit<n, n, m * (n - 1), Universal> =
-    repeat(m, sampled_term(n, angle))
+fn qdrift_channel(n: Nat, m: Int, angle: Float): Circuit<n, n, m * (n - 1), Universal> = repeat(m, sampled_term(n, angle))
 
 fn simulate_qdrift(n: Nat, m: Int, angle: Float): Q<List<Bit>> = run {
-    q <- qdrift_channel(n, m, angle) @ qreg(n)
-    measure_all(q)
+        q <- (qdrift_channel(n, m, angle)) @ (qreg n)
+        measure_all q
 }

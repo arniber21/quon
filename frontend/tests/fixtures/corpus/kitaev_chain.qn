@@ -1,31 +1,23 @@
--- Kitaev p-wave superconducting chain (Majorana model): hopping + pairing + chemical potential.
--- Stresses: distinct XX hopping and YY pairing layers, depth n_steps*(2*(n-1)+1).
-
 fn majorana_hop(n: Nat, w: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { Rxx(w * tau) @(i, i + 1) }
+        (for i in (range(n - 1)) { (Rxx(w * tau)) @(i, i + 1) })
 }
 
 fn pairing_layer(n: Nat, delta: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { Ryy(delta * tau) @(i, i + 1) }
+        (for i in (range(n - 1)) { (Ryy(delta * tau)) @(i, i + 1) })
 }
 
 fn chemical_layer(n: Nat, mu: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rz(mu * tau) q }
+        (for q in (qubits n) { Rz(mu * tau, q) })
 }
 
-fn kitaev_step(n: Nat, w: Float, delta: Float, mu: Float, tau: Float)
-    : Circuit<n, n, 2 * (n - 1) + 1, Universal> = circuit {
-    majorana_hop(n, w, tau) |> pairing_layer(n, delta, tau) |> chemical_layer(n, mu, tau)
+fn kitaev_step(n: Nat, w: Float, delta: Float, mu: Float, tau: Float): Circuit<n, n, 2 * (n - 1) + 1, Universal> = circuit {
+        majorana_hop(n, w, tau) |> pairing_layer(n, delta, tau) |> chemical_layer(n, mu, tau)
 }
 
-fn kitaev_evolve(n: Nat, w: Float, delta: Float, mu: Float, t: Float, n_steps: Int)
-    : Circuit<n, n, n_steps * (2 * (n - 1) + 1), Universal> =
-    let tau = t / float(n_steps)
-    in fold(range(n_steps), identity(n), fn(acc, _) ->
-        acc |> kitaev_step(n, w, delta, mu, tau)
-    )
+fn kitaev_evolve(n: Nat, w: Float, delta: Float, mu: Float, t: Float, n_steps: Int): Circuit<n, n, n_steps * (2 * (n - 1) + 1), Universal> = let tau = t / (float n_steps) in fold(range n_steps, identity n, fn(acc, _) -> acc
+|> kitaev_step(n, w, delta, mu, tau))
 
 fn simulate_kitaev(n: Nat, w: Float, delta: Float, mu: Float, t: Float, n_steps: Int): Q<List<Bit>> = run {
-    q <- kitaev_evolve(n, w, delta, mu, t, n_steps) @ qreg(n)
-    measure_all(q)
+        q <- (kitaev_evolve(n, w, delta, mu, t, n_steps)) @ (qreg n)
+        measure_all q
 }

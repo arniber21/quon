@@ -1,34 +1,25 @@
--- QAOA for weighted MaxCut with a per-vertex longitudinal field (diag term).
--- Stresses: combined pairs (edges) + diag (vertex bias) cost, depth p*(n*n+2).
-
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
-fn wmaxcut_cost(n: Nat, gamma: Float, w: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 1, Universal> = circuit {
-    for (i, j) in pairs(n) { Rzz(gamma * w[i][j]) @(i, j) }
-    |> for i in diag(n)    { Rz(gamma * w[i][i]) @i }
+fn wmaxcut_cost(n: Nat, gamma: Float, w: Matrix<n, n, Float>): Circuit<n, n, n * n + 1, Universal> = circuit {
+        for (i, j) in (pairs n) { (Rzz(gamma * (index(index(w, i), j)))) @(i, j) }
+|> for i in (diag n) { (Rz(gamma * (index(index(w, i), i)))) @i }
 }
 
 fn wmaxcut_mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rx(2.0 * beta) q }
+        (for q in (qubits n) { Rx(2.0 * beta, q) })
 }
 
-fn wmaxcut_layer(n: Nat, gamma: Float, beta: Float, w: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 2, Universal> = circuit {
-    wmaxcut_cost(n, gamma, w) |> wmaxcut_mixer(n, beta)
+fn wmaxcut_layer(n: Nat, gamma: Float, beta: Float, w: Matrix<n, n, Float>): Circuit<n, n, n * n + 2, Universal> = circuit {
+        wmaxcut_cost(n, gamma, w) |> wmaxcut_mixer(n, beta)
 }
 
-fn wmaxcut_qaoa(n: Nat, p: Int, params: List<(Float, Float)>, w: Matrix<n, n, Float>)
-    : Circuit<n, n, p * (n*n + 2), Universal> =
-    fold(take(p, params), identity(n), fn(acc, (gamma, beta)) ->
-        acc |> wmaxcut_layer(n, gamma, beta, w)
-    )
+fn wmaxcut_qaoa(n: Nat, p: Int, params: List<(Float, Float)>, w: Matrix<n, n, Float>): Circuit<n, n, p * (n * n + 2), Universal> = fold(take(p, params), identity n, fn(acc, (gamma, beta)) -> acc
+|> wmaxcut_layer(n, gamma, beta, w))
 
-fn wmaxcut_shot(n: Nat, p: Int, params: List<(Float, Float)>, w: Matrix<n, n, Float>)
-    : Q<List<Bit>> = run {
-    let circ = hadamard_all(n) |> wmaxcut_qaoa(n, p, params, w)
-    reg     <- circ @ qreg(n)
-    measure_all(reg)
+fn wmaxcut_shot(n: Nat, p: Int, params: List<(Float, Float)>, w: Matrix<n, n, Float>): Q<List<Bit>> = run {
+        let circ = hadamard_all n |> wmaxcut_qaoa(n, p, params, w)
+        reg <- circ @ (qreg n)
+        measure_all reg
 }

@@ -1,0 +1,31 @@
+---
+title: Examples cookbook
+description: Eight complete Quon programs, from Bell states to a Shor quantum kernel.
+sidebar:
+  order: 1
+---
+
+Learn Quon by reading programs that the compiler's end-to-end test suite runs on
+Qiskit Aer. Every page embeds its checked-in fixture, shows how to emit OpenQASM
+3, and explains the assertion made by its seeded Aer verifier.
+
+Before running an example, build the compiler from the repository root:
+
+```sh
+cargo build --release -p quonc
+```
+
+## Reference programs
+
+1. [Bell state](./bell/) — prepare and measure a maximally entangled pair.
+2. [Quantum teleportation](./teleportation/) — recover a state using measurement and feed-forward.
+3. [Bernstein–Vazirani](./bernstein-vazirani/) — recover the hidden bit string `110`.
+4. [Grover search](./grover/) — amplify the marked two-qubit state `11`.
+5. [Quantum Fourier transform](./qft/) — exercise recursive, value-dependent circuit construction.
+6. [Transverse-field Ising](./ising/) — Trotterize a model and verify its `t = 0` boundary.
+7. [QAOA MaxCut](./qaoa/) — favor optimal cuts of the triangle graph.
+8. [Shor quantum kernel](./shor-kernel/) — compose the schematic period-finding circuit building blocks.
+
+The examples assume familiarity with [circuits, linear quantum values, and
+`run` blocks](/language/). For the formal language definition, see the
+[Quon specification](https://github.com/arniber21/quon/blob/main/SPEC.md).

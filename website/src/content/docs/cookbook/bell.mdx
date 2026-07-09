@@ -1,0 +1,38 @@
+---
+title: Bell state
+description: Prepare a maximally entangled pair and verify its correlations.
+sidebar:
+  order: 2
+---
+
+import source from '../../../../../test/verify/bell.qn?raw';
+
+This smallest example introduces a [circuit, sequential composition, circuit
+application, and measurement](/language/#circuits-and-composition). `H` puts
+the first qubit into a superposition; `CNOT` correlates the second qubit with it.
+
+## Source
+
+The embedded program is the exact
+[`test/verify/bell.qn`](https://github.com/arniber21/quon/blob/main/test/verify/bell.qn)
+fixture. Its
+[`bell.py`](https://github.com/arniber21/quon/blob/main/test/verify/bell.py)
+verifier supplies the statistical assertion; the frontend reference is
+[`frontend/tests/fixtures/bell_state.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/bell_state.qn).
+
+<pre><code>{source}</code></pre>
+
+## Compile and simulate
+
+From the repository root:
+
+```sh
+./target/release/quonc test/verify/bell.qn --emit-qasm > /tmp/bell.qasm
+QUONC=target/release/quonc python test/verify/bell.py
+```
+
+## Expected result
+
+Aer should report only `00` and `11`, with each outcome close to half of 4096
+shots and no `01` or `10` leakage. Randomness chooses which correlated result
+appears; the absence of mismatched bits demonstrates the entanglement.

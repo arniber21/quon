@@ -1,15 +1,11 @@
--- Repetition-code syndrome-extraction round on an n-qubit data block: forward parity checks
--- between neighbouring qubits, then their uncompute (the ancilla-free schematic of a round).
--- Stresses: an n-wide parity ladder composed with its adjoint, depth 2*(n-1).
-
 fn parity_ladder(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
-    for i in range(n - 1) { CNOT @(i, i + 1) }
+        (for i in (range(n - 1)) { CNOT @(i, i + 1) })
 }
 
-fn syndrome_round(n: Nat): Circuit<n, n, 2 * (n - 1), Clifford> =
-    parity_ladder(n) |> adjoint(parity_ladder(n))
+fn syndrome_round(n: Nat): Circuit<n, n, 2 * (n - 1), Clifford> = parity_ladder n
+|> adjoint(parity_ladder n)
 
 fn run_syndrome_round(n: Nat): Q<List<Bit>> = run {
-    q <- syndrome_round(n) @ qreg(n)
-    measure_all(q)
+        q <- (syndrome_round n) @ (qreg n)
+        measure_all q
 }

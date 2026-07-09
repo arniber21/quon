@@ -10,8 +10,33 @@ export default defineConfig({
 			title: 'quon',
 			sidebar: [
 				{
+					label: 'Getting Started',
+					items: [
+						{ label: 'Install Quon', slug: 'getting-started/install' },
+						{ label: 'Quickstart', slug: 'getting-started/quickstart' },
+					],
+				},
+				{
+					label: 'Language guide',
+					items: [{ label: 'Language fundamentals', link: '/language/' }],
+				},
+				{
 					label: 'Guides',
-					items: [{ label: 'Backends and verification', link: '/guides/backends/' }],
+					items: [
+						{ label: 'Developer tooling', slug: 'guides/tooling' },
+						{ label: 'Backends and verification', slug: 'guides/backends' },
+					],
+				},
+				{
+					label: 'Cookbook',
+					items: [{ autogenerate: { directory: 'cookbook' } }],
+				},
+				{
+					label: 'Reference',
+					items: [
+						{ label: 'quonc CLI', slug: 'reference/quonc' },
+						{ label: 'Compiler pipeline', slug: 'reference/compiler' },
+					],
 				},
 			],
 		}),

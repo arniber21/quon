@@ -1,24 +1,20 @@
--- Surface-code stabilizer round: alternating X- and Z-type plaquette checks across the lattice,
--- applied as Hadamard-conjugated CNOT fans (schematic, n-qubit patch).
--- Stresses: parametric-width Clifford stabilizer layers, depth 2*(n-1) + 2.
-
 fn x_stabilizers(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
-    for i in range(n - 1) { CNOT @(i, i + 1) }
+        (for i in (range(n - 1)) { CNOT @(i, i + 1) })
 }
 
 fn z_stabilizers(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
-    for i in range(n - 1) { CZ @(i, i + 1) }
+        (for i in (range(n - 1)) { CZ @(i, i + 1) })
 }
 
 fn basis_change(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
 fn stabilizer_round(n: Nat): Circuit<n, n, 2 * (n - 1) + 2, Clifford> = circuit {
-    basis_change(n) |> x_stabilizers(n) |> z_stabilizers(n) |> basis_change(n)
+        basis_change n |> x_stabilizers n |> z_stabilizers n |> basis_change n
 }
 
 fn run_stabilizer_round(n: Nat): Q<List<Bit>> = run {
-    q <- stabilizer_round(n) @ qreg(n)
-    measure_all(q)
+        q <- (stabilizer_round n) @ (qreg n)
+        measure_all q
 }
