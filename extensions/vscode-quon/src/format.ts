@@ -53,15 +53,15 @@ export function registerFormatter(context: vscode.ExtensionContext): vscode.Disp
 
       try {
         const result = await runQuonfmt(bin, document.getText());
-        if (result.code === 2) {
-          void vscode.window.showErrorMessage(
-            `Quon: quonfmt parse error${result.stderr ? `: ${result.stderr.trim()}` : ""}`,
-          );
-          return [];
-        }
         if (result.code !== 0) {
+          // quonfmt may exit 2 (plan) or 1 (anyhow-wrapped CLI); treat any non-zero
+          // with stderr as a parse/format failure rather than only special-casing 2.
+          const detail = result.stderr.trim();
+          const isParseLike = result.code === 2 || detail.length > 0;
           void vscode.window.showErrorMessage(
-            `Quon: quonfmt failed (exit ${result.code})${result.stderr ? `: ${result.stderr.trim()}` : ""}`,
+            isParseLike
+              ? `Quon: quonfmt parse error${detail ? `: ${detail}` : ""}`
+              : `Quon: quonfmt failed (exit ${result.code})`,
           );
           return [];
         }

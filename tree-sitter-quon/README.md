@@ -15,6 +15,8 @@ Do not fork grammar.js
 Do not relocate or duplicate the corpus directory
 ```
 
+This package is a **grammar source** (`grammar.js`, committed `src/parser.c`, `queries/`). `package.json` `"main"` is `index.js` (path metadata only — **not** a native `bindings/node` addon). Zed/Neovim should consume this directory by path for the Tree-sitter CLI / parser C sources.
+
 **Hard rules for #132 / #133:**
 
 - Do **not** invent a second `grammar.js` or fork `src/parser.c`.

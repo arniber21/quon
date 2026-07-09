@@ -7,11 +7,11 @@
       "request": "launch",
       "runtimeExecutable": "${execPath}",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}",
-        "${workspaceFolder}/../.."
+        "--extensionDevelopmentPath=${workspaceFolder}/extensions/vscode-quon",
+        "${workspaceFolder}"
       ],
       "outFiles": [
-        "${workspaceFolder}/out/**/*.js"
+        "${workspaceFolder}/extensions/vscode-quon/out/**/*.js"
       ]
     }
   ]

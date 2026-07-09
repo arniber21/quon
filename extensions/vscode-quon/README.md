@@ -34,13 +34,15 @@ code --install-extension dist/quon-vscode.vsix
 
 ### Extension Development Host (F5)
 
-Open the Quon monorepo in VS Code, then use the **Run Quon Extension** launch config under `extensions/vscode-quon/.vscode/launch.json`, or run:
+From the **monorepo root** (recommended):
 
 ```sh
 cd extensions/vscode-quon && npm ci && npm run compile
 ```
 
-and launch an Extension Development Host with `--extensionDevelopmentPath` pointing at this folder.
+Then press F5 / run **Run Quon Extension** — the root [`.vscode/launch.json`](../../.vscode/launch.json) points `--extensionDevelopmentPath` at this package and opens the repo as the workspace.
+
+A matching config also lives under `extensions/vscode-quon/.vscode/launch.json` if you open this folder alone as the workspace.
 
 ## Quick check
 

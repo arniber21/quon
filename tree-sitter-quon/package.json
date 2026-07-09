@@ -2,7 +2,7 @@
   "name": "tree-sitter-quon",
   "version": "0.1.0",
   "description": "Tree-sitter grammar for the Quon quantum programming language",
-  "main": "bindings/node",
+  "main": "index.js",
   "keywords": [
     "tree-sitter",
     "quon",

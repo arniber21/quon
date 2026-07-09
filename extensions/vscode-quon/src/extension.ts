@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { registerFormatter } from "./format";
 import {
+  getClient,
   getResolvedServerPath,
   restartLanguageClient,
   startLanguageClient,
@@ -8,7 +9,12 @@ import {
 } from "./lsp";
 import { BUILD_HINT, resolveFmtPath, resolveLspPath } from "./paths";
 
-export async function activate(context: vscode.ExtensionContext): Promise<void> {
+/** Public test/host API (returned from `activate`, available as `extension.exports`). */
+export type QuonExtensionApi = {
+  getClient: typeof getClient;
+};
+
+export async function activate(context: vscode.ExtensionContext): Promise<QuonExtensionApi> {
   context.subscriptions.push(registerFormatter(context));
 
   context.subscriptions.push(
@@ -29,6 +35,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   await startLanguageClient(context);
+  return { getClient };
 }
 
 export async function deactivate(): Promise<void> {

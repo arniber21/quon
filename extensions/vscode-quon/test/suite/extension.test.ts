@@ -3,9 +3,14 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import type { LanguageClient } from "vscode-languageclient/node";
 
 const BORROW_DISCARD_SRC =
   "fn f(): Q<Int> = run {\n  borrow a: Qubit in {\n    return 0\n  }\n}";
+
+type QuonExtensionApi = {
+  getClient: () => LanguageClient | undefined;
+};
 
 function requireWorkspaceRoot(): string {
   const folders = vscode.workspace.workspaceFolders;
@@ -44,6 +49,78 @@ async function waitFor(
   throw new Error(`timeout waiting for: ${label}`);
 }
 
+/** Resolve the activated extension API (LanguageClient handle). */
+async function requireQuonApi(): Promise<QuonExtensionApi> {
+  const ext = vscode.extensions.getExtension<QuonExtensionApi>("quon.quon-vscode");
+  assert.ok(ext, "quon.quon-vscode extension not found");
+  const api = ext.isActive ? ext.exports : await ext.activate();
+  assert.ok(api && typeof api.getClient === "function", "extension exports missing getClient");
+  return api;
+}
+
+/** Wait until the language client is running (proves LSP started — not vacuous []). */
+async function waitForLspRunning(api: QuonExtensionApi): Promise<LanguageClient> {
+  await waitFor(() => {
+    const client = api.getClient();
+    return !!client && client.isRunning();
+  }, "quon_lsp LanguageClient running");
+  const client = api.getClient();
+  assert.ok(client && client.isRunning(), "LanguageClient not running after wait");
+  return client;
+}
+
+/**
+ * Wait until the server has responded for `uri`.
+ *
+ * `getDiagnostics(uri)` starts as `[]` before any publish, so `diags.every(...)`
+ * is vacuous and must not be used alone. We subscribe *before* `open`, then accept:
+ * - a diagnostics change event for this URI (including empty publish), or
+ * - non-empty diagnostics (publish already applied), or
+ * - a successful hover at `probePos` (proves analysis completed for clean files
+ *   when an empty→empty republish might not fire a change event).
+ */
+async function waitUntilServerResponded(
+  uri: vscode.Uri,
+  open: () => Promise<vscode.Position | undefined | void>,
+  timeoutMs = 20_000,
+): Promise<readonly vscode.Diagnostic[]> {
+  let published = false;
+  let probePos: vscode.Position | undefined;
+  const sub = vscode.languages.onDidChangeDiagnostics((e) => {
+    if (e.uris.some((u) => u.toString() === uri.toString())) {
+      published = true;
+    }
+  });
+  try {
+    const maybePos = await open();
+    if (maybePos instanceof vscode.Position) {
+      probePos = maybePos;
+    }
+    await waitFor(async () => {
+      if (published) {
+        return true;
+      }
+      if (vscode.languages.getDiagnostics(uri).length > 0) {
+        return true;
+      }
+      if (probePos) {
+        const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+          "vscode.executeHoverProvider",
+          uri,
+          probePos,
+        );
+        if (hovers && hovers.length > 0) {
+          return true;
+        }
+      }
+      return false;
+    }, `LSP response for ${path.basename(uri.fsPath)}`, timeoutMs);
+    return vscode.languages.getDiagnostics(uri);
+  } finally {
+    sub.dispose();
+  }
+}
+
 async function openTempQuon(content: string): Promise<vscode.TextDocument> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "quon-vscode-"));
   const file = path.join(dir, "tmp.qn");
@@ -62,27 +139,29 @@ suite("Quon VS Code extension", () => {
   });
 
   test("bell_state.qn activates as quon with no error diagnostics", async () => {
+    const api = await requireQuonApi();
+    await waitForLspRunning(api);
+
     const root = requireWorkspaceRoot();
     const uri = vscode.Uri.file(path.join(root, "frontend/tests/fixtures/bell_state.qn"));
-    const doc = await vscode.workspace.openTextDocument(uri);
-    await vscode.window.showTextDocument(doc);
-    assert.strictEqual(doc.languageId, "quon");
 
-    await waitFor(() => {
-      const diags = vscode.languages.getDiagnostics(uri);
-      // Wait until LSP has published at least once (empty array is fine for clean file)
-      // or until a short settle after open.
-      return diags.every((d) => d.severity !== vscode.DiagnosticSeverity.Error);
-    }, "no error diagnostics on bell_state");
+    const diags = await waitUntilServerResponded(uri, async () => {
+      const doc = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(doc);
+      assert.strictEqual(doc.languageId, "quon");
+      const declIdx = doc.lineAt(0).text.indexOf("bell_state");
+      assert.ok(declIdx >= 0, "bell_state decl not found");
+      return new vscode.Position(0, declIdx + 2);
+    });
 
-    // Give the server a moment after open; then assert no errors.
-    await sleep(1500);
-    const diags = vscode.languages.getDiagnostics(uri);
     const errors = diags.filter((d) => d.severity === vscode.DiagnosticSeverity.Error);
     assert.strictEqual(errors.length, 0, `unexpected errors: ${JSON.stringify(errors)}`);
   });
 
   test("type error produces diagnostics", async () => {
+    const api = await requireQuonApi();
+    await waitForLspRunning(api);
+
     const doc = await openTempQuon("fn bad(): Int = true\n");
     await waitFor(() => {
       return vscode.languages.getDiagnostics(doc.uri).length > 0;
@@ -92,18 +171,33 @@ suite("Quon VS Code extension", () => {
   });
 
   test("hover, definition, and completion", async () => {
+    const api = await requireQuonApi();
+    await waitForLspRunning(api);
+
     // Definition: local let-binding (stable LSP contract from quon_lsp intel tests).
-    const defDoc = await openTempQuon("fn f(): Int = let x = 1 in x\n");
-    await waitFor(() => {
-      // Wait until analysis has settled (no errors expected).
-      const d = vscode.languages.getDiagnostics(defDoc.uri);
-      return d.every((x) => x.severity !== vscode.DiagnosticSeverity.Error);
-    }, "clean analysis for definition fixture");
-    await sleep(500);
-    const defText = defDoc.getText();
-    const useIdx = defText.lastIndexOf("x");
-    assert.ok(useIdx >= 0);
-    const usePos = defDoc.positionAt(useIdx);
+    const defSrc = "fn f(): Int = let x = 1 in x\n";
+    const defUri = vscode.Uri.file(
+      path.join(fs.mkdtempSync(path.join(os.tmpdir(), "quon-vscode-")), "def.qn"),
+    );
+    fs.writeFileSync(defUri.fsPath, defSrc, "utf8");
+    const useIdx = defSrc.lastIndexOf("x");
+    const usePos = new vscode.Position(0, useIdx);
+
+    const defDoc = await (async () => {
+      let doc!: vscode.TextDocument;
+      await waitUntilServerResponded(defUri, async () => {
+        doc = await vscode.workspace.openTextDocument(defUri);
+        await vscode.languages.setTextDocumentLanguage(doc, "quon");
+        await vscode.window.showTextDocument(doc);
+        return usePos;
+      });
+      return doc;
+    })();
+    const defDiags = vscode.languages.getDiagnostics(defDoc.uri);
+    assert.ok(
+      defDiags.every((x) => x.severity !== vscode.DiagnosticSeverity.Error),
+      `unexpected errors before definition: ${JSON.stringify(defDiags)}`,
+    );
     const defs = await vscode.commands.executeCommand<
       (vscode.Location | vscode.LocationLink)[]
     >("vscode.executeDefinitionProvider", defDoc.uri, usePos);
@@ -112,14 +206,16 @@ suite("Quon VS Code extension", () => {
     // Hover + completion on bell_state fixture.
     const root = requireWorkspaceRoot();
     const uri = vscode.Uri.file(path.join(root, "frontend/tests/fixtures/bell_state.qn"));
-    const doc = await vscode.workspace.openTextDocument(uri);
-    await vscode.window.showTextDocument(doc);
-    await sleep(1000);
-
-    const declLine = doc.lineAt(0).text;
-    const declIdx = declLine.indexOf("bell_state");
-    assert.ok(declIdx >= 0, "bell_state decl not found");
-    const namePos = new vscode.Position(0, declIdx + 2);
+    let doc!: vscode.TextDocument;
+    let namePos = new vscode.Position(0, 0);
+    await waitUntilServerResponded(uri, async () => {
+      doc = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(doc);
+      const declIdx = doc.lineAt(0).text.indexOf("bell_state");
+      assert.ok(declIdx >= 0, "bell_state decl not found");
+      namePos = new vscode.Position(0, declIdx + 2);
+      return namePos;
+    });
 
     const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
       "vscode.executeHoverProvider",
@@ -148,6 +244,9 @@ suite("Quon VS Code extension", () => {
   });
 
   test("code action returns discard(a) quick-fix", async () => {
+    const api = await requireQuonApi();
+    await waitForLspRunning(api);
+
     const doc = await openTempQuon(BORROW_DISCARD_SRC);
     await waitFor(() => vscode.languages.getDiagnostics(doc.uri).length > 0, "borrow diagnostics");
     const diags = vscode.languages.getDiagnostics(doc.uri);
