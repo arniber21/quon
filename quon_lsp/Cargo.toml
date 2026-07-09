@@ -1,0 +1,21 @@
+[package]
+name    = "quon_lsp"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "quon_lsp"
+path = "src/main.rs"
+
+[dependencies]
+frontend           = { path = "../frontend" }
+tower-lsp          = { workspace = true }
+tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "io-std"] }
+line-index         = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+anyhow             = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -1,5 +1,14 @@
 [workspace]
-members = ["quonc", "frontend", "zx", "mlir_bridge", "backend", "flux_verify", "quon_core"]
+members = [
+    "quonc",
+    "frontend",
+    "zx",
+    "mlir_bridge",
+    "backend",
+    "flux_verify",
+    "quon_core",
+    "quon_lsp",
+]
 resolver = "2"
 
 [workspace.dependencies]
@@ -33,6 +42,13 @@ clap = { version = "4", features = ["derive"] }
 
 # Shared
 anyhow = "1"
+
+# LSP
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std"] }
+line-index = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
 lto = true
