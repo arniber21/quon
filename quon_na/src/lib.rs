@@ -4,6 +4,8 @@
 //! structures for neutral-atom layouts, schedules, validation helpers, and
 //! resource reports without registering dialects or requiring an MLIR context.
 
+#[cfg(feature = "mlir")]
+pub mod dialect;
 pub mod layout;
 pub mod report;
 pub mod schedule;

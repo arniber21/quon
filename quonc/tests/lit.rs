@@ -13,6 +13,7 @@ use std::process::Command;
 
 const ORACLE_BINARIES: &[&str] = &[
     "circ_roundtrip",
+    "na_roundtrip",
     "circ_lower",
     "dynamic_roundtrip",
     "monadic_lower",
