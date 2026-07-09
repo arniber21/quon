@@ -1,0 +1,42 @@
+---
+title: Quantum teleportation
+description: Transfer a qubit state with entanglement, measurement, and feed-forward.
+sidebar:
+  order: 3
+---
+
+import source from '../../../../../test/verify/teleport.qn?raw';
+
+Teleportation combines Bell-pair preparation with measurement-controlled
+corrections. The measured qubits are consumed, while Bob's qubit is threaded
+linearly through the selected correction circuits. See the guide to
+[`run` blocks, linear values, and feed-forward](/language/#quantum-computations).
+
+## Source
+
+This is the executable
+[`test/verify/teleport.qn`](https://github.com/arniber21/quon/blob/main/test/verify/teleport.qn)
+fixture. The broader typechecker example is
+[`frontend/tests/fixtures/teleport.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/teleport.qn).
+
+<pre><code>{source}</code></pre>
+
+## Compile and simulate
+
+```sh
+./target/release/quonc test/verify/teleport.qn --emit-qasm > /tmp/teleport.qasm
+QUONC=target/release/quonc python test/verify/teleport.py
+```
+
+The checked-in
+[`teleport.py`](https://github.com/arniber21/quon/blob/main/test/verify/teleport.py)
+verifier also runs
+[`teleport_plus.qn`](https://github.com/arniber21/quon/blob/main/test/verify/teleport_plus.qn),
+so both the `X` and `Z` correction paths are tested.
+
+## Expected result
+
+The shown program prepares `|1>` and should recover `1` on Bob's qubit with
+more than 99% fidelity. The companion case prepares `|+>`, rotates back to the
+Z basis, and should recover `0` above the same threshold. Together they show
+that both classical feed-forward corrections preserve the teleported state.

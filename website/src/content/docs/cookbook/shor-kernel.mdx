@@ -1,0 +1,42 @@
+---
+title: Shor quantum kernel
+description: Compose recursive QFT and schematic modular-exponentiation building blocks.
+sidebar:
+  order: 9
+---
+
+import source from '../../../../../test/verify/shor.qn?raw';
+
+This kernel combines [recursive value-dependent circuits, `tensored`, `split`,
+and `adjoint`](/language/#registers-and-value-dependent-types). It is useful as
+a compiler integration example, but it is intentionally not a complete
+implementation of Shor's factoring algorithm.
+
+## Source
+
+This page embeds the Aer-tested
+[`test/verify/shor.qn`](https://github.com/arniber21/quon/blob/main/test/verify/shor.qn)
+adaptation of
+[`frontend/tests/fixtures/shor.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/shor.qn).
+The corpus also contains a focused
+[`shor_kernel.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/corpus/shor_kernel.qn)
+typechecker fixture.
+
+<pre><code>{source}</code></pre>
+
+## Compile and simulate
+
+```sh
+./target/release/quonc test/verify/shor.qn --emit-qasm > /tmp/shor.qasm
+QUONC=target/release/quonc python test/verify/shor.py
+```
+
+## Expected result
+
+The fixture's `modmul` is a schematic sequence of controlled rotations; it
+does not perform physical modular multiplication and therefore cannot exhibit
+real period-finding peaks or factor `15`. The
+[`shor.py`](https://github.com/arniber21/quon/blob/main/test/verify/shor.py)
+verifier checks the actual contract: compilation and execution succeed, two
+runs with the fixed seed are identical, and all observed control-register
+outcomes lie in `{00, 01}`.

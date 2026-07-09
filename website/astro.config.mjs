@@ -20,6 +20,10 @@ export default defineConfig({
 					label: 'Language guide',
 					items: [{ label: 'Language fundamentals', link: '/language/' }],
 				},
+				{
+					label: 'Cookbook',
+					items: [{ autogenerate: { directory: 'cookbook' } }],
+				},
 			],
 		}),
 	],
