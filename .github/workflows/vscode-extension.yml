@@ -1,0 +1,101 @@
+name: VS Code extension
+
+on:
+  push:
+    paths:
+      - "extensions/vscode-quon/**"
+      - "tree-sitter-quon/**"
+      - ".github/workflows/vscode-extension.yml"
+      - "quon_lsp/**"
+      - "quonfmt/**"
+  pull_request:
+    paths:
+      - "extensions/vscode-quon/**"
+      - "tree-sitter-quon/**"
+      - ".github/workflows/vscode-extension.yml"
+      - "quon_lsp/**"
+      - "quonfmt/**"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  MLIR_SYS_220_PREFIX: /usr/lib/llvm-22
+
+jobs:
+  tree-sitter:
+    name: tree-sitter-quon corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tree-sitter-quon/package-lock.json
+
+      - name: tree-sitter test
+        working-directory: tree-sitter-quon
+        run: |
+          npm ci
+          npx tree-sitter test
+
+  vscode-extension:
+    name: compile · vsix · smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 22, MLIR, libz3, xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg lsb-release software-properties-common libz3-dev xvfb
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y libmlir-22-dev mlir-22-tools llvm-22-dev llvm-22-tools libpolly-22-dev
+          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: vscode-extension
+
+      - name: Build quon_lsp and quonfmt
+        run: cargo build --release -p quon_lsp -p quonfmt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extensions/vscode-quon/package-lock.json
+
+      - name: Install extension deps
+        working-directory: extensions/vscode-quon
+        run: npm ci
+
+      - name: Compile
+        working-directory: extensions/vscode-quon
+        run: npm run compile
+
+      - name: Package .vsix
+        working-directory: extensions/vscode-quon
+        run: npm run package
+
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quon-vscode-vsix
+          path: extensions/vscode-quon/dist/*.vsix
+          if-no-files-found: error
+
+      - name: Extension smoke
+        working-directory: extensions/vscode-quon
+        run: xvfb-run -a npm test
+        env:
+          QUON_LSP_PATH: ${{ github.workspace }}/target/release/quon_lsp
+          QUON_FMT_PATH: ${{ github.workspace }}/target/release/quonfmt
+          QUON_LSP_DEBOUNCE_MS: "0"
