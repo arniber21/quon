@@ -267,7 +267,7 @@ Units: lengths in µm, times in µs, fidelities as probabilities in [0, 1].
 | `interaction` | object | Rydberg parameters (§8.4) | Entangling legality, isolation spacing (#105, #106) |
 | `native_gates` | array of string | Gate names executable natively, e.g. `["cz", "rz_local", "ry_global", "measure_z"]` | Lowering must decompose to this set |
 | `timing` | object | Operation durations (§8.5) | Schedule makespan, decoherence-weighted cost |
-| `fidelity` | object | Operation fidelities + coherence time (§8.5) | Resource report fidelity estimate (#110) |
+| `fidelity` | object | Operation fidelities + coherence time (§8.5) | Deferred fidelity estimate (future; not #110 — see §11) |
 | `cost_model` | object | Linear cost weights (§9) | Scheduler objective, resource report |
 
 ### 8.2 Zone
@@ -534,9 +534,9 @@ Microsecond headers use Unicode `(µs)`.
 
 | JSON field | Meaning | RAP / Enola alignment |
 | --- | --- | --- |
-| `rydberg_stages` | Layers with ≥1 entangle action | RAP Table I / Enola stage count |
-| `rearrangement_steps` | Move action count | Movement / rearrangement steps |
-| `rearrangement_time_us` | Sum of move durations | √-law move time |
+| `rydberg_stages` | Layers with ≥1 entangle action | Enola stage count |
+| `rearrangement_steps` | Move action count | RAP Table I rearrangement steps |
+| `rearrangement_time_us` | Sum of move durations | RAP Table I √-law rearrangement time |
 | `trap_transfers` | Transfer action count | Atom transfers |
 | `transfer_time_us` | Sum of transfer durations | Transfer time |
 | `entangle2_count` / `entangle_n_count` | Entangling gate counts | 2Q / multi-atom entangle |
