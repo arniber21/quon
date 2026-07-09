@@ -1,16 +1,14 @@
--- W state preparation: a single excitation spread across the register by a controlled-rotation
--- cascade.
--- Stresses: an X seed plus a CRz cascade, depth n.
-
-fn w_seed(n: Nat): Circuit<n, n, 1, Clifford> = circuit { X @0 }
-
-fn w_cascade(n: Nat): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { CRz(PI / 3.0) @(i, i + 1) }
+fn w_seed(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+        X @0
 }
 
-fn w_state(n: Nat): Circuit<n, n, n, Universal> = w_seed(n) |> w_cascade(n)
+fn w_cascade(n: Nat): Circuit<n, n, n - 1, Universal> = circuit {
+        (for i in (range(n - 1)) { (CRz(PI / 3.0)) @(i, i + 1) })
+}
+
+fn w_state(n: Nat): Circuit<n, n, n, Universal> = w_seed n |> w_cascade n
 
 fn make_w(n: Nat): Q<List<Bit>> = run {
-    q <- w_state(n) @ qreg(n)
-    measure_all(q)
+        q <- (w_state n) @ (qreg n)
+        measure_all q
 }

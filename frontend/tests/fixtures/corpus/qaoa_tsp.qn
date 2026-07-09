@@ -1,34 +1,25 @@
--- QAOA for the Travelling Salesman Problem (penalty formulation on a city-time one-hot encoding).
--- Stresses: large-penalty constraint couplings + distance-weighted diagonal, depth p*(n*n+2).
-
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
-fn tsp_cost(n: Nat, gamma: Float, penalty: Float, dist: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 1, Universal> = circuit {
-    for (i, j) in pairs(n) { Rzz(gamma * penalty * dist[i][j]) @(i, j) }
-    |> for i in diag(n)    { Rz(gamma * dist[i][i]) @i }
+fn tsp_cost(n: Nat, gamma: Float, penalty: Float, dist: Matrix<n, n, Float>): Circuit<n, n, n * n + 1, Universal> = circuit {
+        for (i, j) in (pairs n) { (Rzz((gamma * penalty) * (index(index(dist, i), j)))) @(i, j) }
+|> for i in (diag n) { (Rz(gamma * (index(index(dist, i), i)))) @i }
 }
 
 fn tsp_mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rx(2.0 * beta) q }
+        (for q in (qubits n) { Rx(2.0 * beta, q) })
 }
 
-fn tsp_layer(n: Nat, gamma: Float, beta: Float, penalty: Float, dist: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 2, Universal> = circuit {
-    tsp_cost(n, gamma, penalty, dist) |> tsp_mixer(n, beta)
+fn tsp_layer(n: Nat, gamma: Float, beta: Float, penalty: Float, dist: Matrix<n, n, Float>): Circuit<n, n, n * n + 2, Universal> = circuit {
+        tsp_cost(n, gamma, penalty, dist) |> tsp_mixer(n, beta)
 }
 
-fn tsp_qaoa(n: Nat, p: Int, penalty: Float, params: List<(Float, Float)>, dist: Matrix<n, n, Float>)
-    : Circuit<n, n, p * (n*n + 2), Universal> =
-    fold(take(p, params), identity(n), fn(acc, (gamma, beta)) ->
-        acc |> tsp_layer(n, gamma, beta, penalty, dist)
-    )
+fn tsp_qaoa(n: Nat, p: Int, penalty: Float, params: List<(Float, Float)>, dist: Matrix<n, n, Float>): Circuit<n, n, p * (n * n + 2), Universal> = fold(take(p, params), identity n, fn(acc, (gamma, beta)) -> acc
+|> tsp_layer(n, gamma, beta, penalty, dist))
 
-fn tsp_shot(n: Nat, p: Int, penalty: Float, params: List<(Float, Float)>, dist: Matrix<n, n, Float>)
-    : Q<List<Bit>> = run {
-    let circ = hadamard_all(n) |> tsp_qaoa(n, p, penalty, params, dist)
-    reg     <- circ @ qreg(n)
-    measure_all(reg)
+fn tsp_shot(n: Nat, p: Int, penalty: Float, params: List<(Float, Float)>, dist: Matrix<n, n, Float>): Q<List<Bit>> = run {
+        let circ = hadamard_all n |> tsp_qaoa(n, p, penalty, params, dist)
+        reg <- circ @ (qreg n)
+        measure_all reg
 }

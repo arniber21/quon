@@ -1,27 +1,19 @@
--- Spin–boson model: a central spin (qubit 0) coupled to n-1 truncated bosonic modes via
--- controlled-phase couplings, with per-mode energies. First-order Trotter step.
--- Stresses: controlled-rotation star coupling from a single control, depth n_steps*n.
-
 fn star_coupling(n: Nat, g: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { CRz(g * tau) @(0, i + 1) }
+        (for i in (range(n - 1)) { (CRz(g * tau)) @(0, i + 1) })
 }
 
 fn mode_energies(n: Nat, omega: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rz(omega * tau) q }
+        (for q in (qubits n) { Rz(omega * tau, q) })
 }
 
 fn spin_boson_step(n: Nat, g: Float, omega: Float, tau: Float): Circuit<n, n, n, Universal> = circuit {
-    star_coupling(n, g, tau) |> mode_energies(n, omega, tau)
+        star_coupling(n, g, tau) |> mode_energies(n, omega, tau)
 }
 
-fn spin_boson_evolve(n: Nat, g: Float, omega: Float, t: Float, n_steps: Int)
-    : Circuit<n, n, n_steps * n, Universal> =
-    let tau = t / float(n_steps)
-    in fold(range(n_steps), identity(n), fn(acc, _) ->
-        acc |> spin_boson_step(n, g, omega, tau)
-    )
+fn spin_boson_evolve(n: Nat, g: Float, omega: Float, t: Float, n_steps: Int): Circuit<n, n, n_steps * n, Universal> = let tau = t / (float n_steps) in fold(range n_steps, identity n, fn(acc, _) -> acc
+|> spin_boson_step(n, g, omega, tau))
 
 fn simulate_spin_boson(n: Nat, g: Float, omega: Float, t: Float, n_steps: Int): Q<List<Bit>> = run {
-    q <- spin_boson_evolve(n, g, omega, t, n_steps) @ qreg(n)
-    measure_all(q)
+        q <- (spin_boson_evolve(n, g, omega, t, n_steps)) @ (qreg n)
+        measure_all q
 }

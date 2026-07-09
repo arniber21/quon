@@ -1,31 +1,23 @@
--- Jordan–Wigner mapped fermionic hopping evolution: each hopping term (a†ᵢaⱼ + h.c.) becomes an
--- XX+YY rotation dressed by a Z-string; here nearest-neighbour so the string is trivial.
--- Stresses: paired XX/YY hopping layers + a number-operator Z layer, depth n_steps*(2*(n-1)+1).
-
 fn hop_xx(n: Nat, t: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { Rxx(t * tau) @(i, i + 1) }
+        (for i in (range(n - 1)) { (Rxx(t * tau)) @(i, i + 1) })
 }
 
 fn hop_yy(n: Nat, t: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
-    for i in range(n - 1) { Ryy(t * tau) @(i, i + 1) }
+        (for i in (range(n - 1)) { (Ryy(t * tau)) @(i, i + 1) })
 }
 
 fn number_layer(n: Nat, eps: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rz(eps * tau) q }
+        (for q in (qubits n) { Rz(eps * tau, q) })
 }
 
 fn jw_step(n: Nat, t: Float, eps: Float, tau: Float): Circuit<n, n, 2 * (n - 1) + 1, Universal> = circuit {
-    hop_xx(n, t, tau) |> hop_yy(n, t, tau) |> number_layer(n, eps, tau)
+        hop_xx(n, t, tau) |> hop_yy(n, t, tau) |> number_layer(n, eps, tau)
 }
 
-fn jw_evolve(n: Nat, t: Float, eps: Float, total: Float, n_steps: Int)
-    : Circuit<n, n, n_steps * (2 * (n - 1) + 1), Universal> =
-    let tau = total / float(n_steps)
-    in fold(range(n_steps), identity(n), fn(acc, _) ->
-        acc |> jw_step(n, t, eps, tau)
-    )
+fn jw_evolve(n: Nat, t: Float, eps: Float, total: Float, n_steps: Int): Circuit<n, n, n_steps * (2 * (n - 1) + 1), Universal> = let tau = total / (float n_steps) in fold(range n_steps, identity n, fn(acc, _) -> acc
+|> jw_step(n, t, eps, tau))
 
 fn simulate_jw(n: Nat, t: Float, eps: Float, total: Float, n_steps: Int): Q<List<Bit>> = run {
-    q <- jw_evolve(n, t, eps, total, n_steps) @ qreg(n)
-    measure_all(q)
+        q <- (jw_evolve(n, t, eps, total, n_steps)) @ (qreg n)
+        measure_all q
 }

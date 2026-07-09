@@ -1,0 +1,38 @@
+---
+title: QAOA MaxCut
+description: Bias a three-qubit distribution toward optimal cuts of K3.
+sidebar:
+  order: 8
+---
+
+import source from '../../../../../test/verify/qaoa.qn?raw';
+
+This depth-one QAOA circuit prepares a uniform superposition, applies a cost
+layer over every pair in the triangle, and mixes with `Rx` rotations. The
+[`pairs(n)` loop and sequential circuit composition](/language/#circuits-and-composition)
+keep the graph-sized circuit explicit in its type.
+
+## Source
+
+The embedded program is
+[`test/verify/qaoa.qn`](https://github.com/arniber21/quon/blob/main/test/verify/qaoa.qn),
+an executable specialization of
+[`frontend/tests/fixtures/qaoa.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/qaoa.qn).
+
+<pre><code>{source}</code></pre>
+
+## Compile and simulate
+
+```sh
+./target/release/quonc test/verify/qaoa.qn --emit-qasm > /tmp/qaoa.qasm
+QUONC=target/release/quonc python test/verify/qaoa.py
+```
+
+## Expected result
+
+K3 has six optimal “one versus two” cuts: the bitstrings with Hamming weight
+one or two. `000` and `111` cut no edges. With the fixture's selected angles,
+each optimal bitstring should be more frequent than either non-optimal one.
+The seeded
+[`qaoa.py`](https://github.com/arniber21/quon/blob/main/test/verify/qaoa.py)
+verifier compares those observed frequencies directly.
