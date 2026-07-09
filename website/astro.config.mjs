@@ -10,6 +10,13 @@ export default defineConfig({
 			title: 'quon',
 			sidebar: [
 				{
+					label: 'Getting Started',
+					items: [
+						{ label: 'Install Quon', slug: 'getting-started/install' },
+						{ label: 'Quickstart', slug: 'getting-started/quickstart' },
+					],
+				},
+				{
 					label: 'Language guide',
 					items: [{ label: 'Language fundamentals', link: '/language/' }],
 				},
