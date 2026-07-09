@@ -24,6 +24,13 @@ export default defineConfig({
 					label: 'Cookbook',
 					items: [{ autogenerate: { directory: 'cookbook' } }],
 				},
+				{
+					label: 'Reference',
+					items: [
+						{ label: 'quonc CLI', slug: 'reference/quonc' },
+						{ label: 'Compiler pipeline', slug: 'reference/compiler' },
+					],
+				},
 			],
 		}),
 	],
