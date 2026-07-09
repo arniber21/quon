@@ -8,6 +8,15 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'quon',
+			sidebar: [
+				{
+					label: 'Reference',
+					items: [
+						{ label: 'quonc CLI', slug: 'reference/quonc' },
+						{ label: 'Compiler pipeline', slug: 'reference/compiler' },
+					],
+				},
+			],
 		}),
 	],
 });
