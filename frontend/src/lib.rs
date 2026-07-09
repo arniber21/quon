@@ -13,6 +13,7 @@
     clippy::arc_with_non_send_sync // Z3 Context is !Send; Arc retained per PRD
 )]
 
+pub mod analysis;
 pub mod ast;
 pub mod desugar;
 pub mod diagnostics;
@@ -24,6 +25,9 @@ pub mod pretty;
 pub mod refinement;
 pub mod typecheck;
 pub mod types;
+
+pub use analysis::DocumentAnalysis;
+pub use analysis::analyze_program;
 
 use crate::ast::Decl;
 use crate::diagnostics::Diagnostic;
@@ -39,24 +43,42 @@ pub use crate::diagnostics::{
 /// IDE-oriented analysis: lex → parse → desugar → typecheck. Does not lower to MLIR.
 /// Accumulates errors from the first failing stage; never panics on partial source.
 pub fn analyze(source: &str) -> AnalysisResult {
+    let intelligence = analyze_program(source);
     let tokens = match crate::lexer::lex_rich(source) {
         Ok(t) => t,
-        Err(diags) => return AnalysisResult { diagnostics: diags },
+        Err(diags) => {
+            return AnalysisResult {
+                diagnostics: diags,
+                intelligence,
+            };
+        }
     };
     let decls = match crate::parser::parse_rich(&tokens) {
         Ok(d) => d,
-        Err(diags) => return AnalysisResult { diagnostics: diags },
+        Err(diags) => {
+            return AnalysisResult {
+                diagnostics: diags,
+                intelligence,
+            };
+        }
     };
     let decls = match crate::desugar::desugar_decls_rich(decls) {
         Ok(d) => d,
-        Err(diags) => return AnalysisResult { diagnostics: diags },
+        Err(diags) => {
+            return AnalysisResult {
+                diagnostics: diags,
+                intelligence,
+            };
+        }
     };
     match TypeChecker::new().check_decls(&decls) {
         Ok(()) => AnalysisResult {
             diagnostics: Vec::new(),
+            intelligence,
         },
         Err(errs) => AnalysisResult {
             diagnostics: errs.iter().map(|e| e.to_rich_diagnostic(source)).collect(),
+            intelligence,
         },
     }
 }

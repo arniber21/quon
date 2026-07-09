@@ -28,16 +28,24 @@ fn decl_str(d: &Decl) -> String {
         } => {
             let ps = params
                 .iter()
-                .map(|(n, t)| format!("{n}: {}", ty_str(&t.0)))
+                .map(|(n, t)| format!("{}: {}", n.0, ty_str(&t.0)))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("fn {name}({ps}): {} = {}", ty_str(&ret.0), e_str(body))
+            format!("fn {}({ps}): {} = {}", name.0, ty_str(&ret.0), e_str(body))
         }
         Decl::TypeAlias { name, params, ty } => {
             let head = if params.is_empty() {
-                name.clone()
+                name.0.clone()
             } else {
-                format!("{name}<{}>", params.join(", "))
+                format!(
+                    "{}<{}>",
+                    name.0,
+                    params
+                        .iter()
+                        .map(|p| p.0.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
             format!("type {head} = {}", ty_str(&ty.0))
         }
@@ -294,7 +302,7 @@ fn e_str(e: &Sp<Expr>) -> String {
         Expr::Borrow { bindings, body } => {
             let bs = bindings
                 .iter()
-                .map(|(n, t)| format!("{n}: {}", ty_str(&t.0)))
+                .map(|(n, t)| format!("{}: {}", n.0, ty_str(&t.0)))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("borrow {bs} in {}", block_str("", body).trim_start())
@@ -305,7 +313,7 @@ fn e_str(e: &Sp<Expr>) -> String {
 
         // Post-desugaring node; never produced by the parser/generator.
         Expr::Bind { rhs, param, body } => {
-            format!("bind({}, fn({param}) -> {})", e_str(rhs), e_str(body))
+            format!("bind({}, fn({}) -> {})", e_str(rhs), param.0, e_str(body))
         }
     }
 }

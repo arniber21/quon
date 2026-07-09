@@ -27,6 +27,10 @@ fn ident(u: &mut Unstructured) -> Result<String> {
     Ok((*u.choose(IDENTS)?).to_string())
 }
 
+fn sp_ident(u: &mut Unstructured) -> Result<Sp<Name>> {
+    Ok(sp(ident(u)?))
+}
+
 fn type_name(u: &mut Unstructured) -> Result<String> {
     Ok((*u.choose(TYPE_NAMES)?).to_string())
 }
@@ -262,7 +266,7 @@ pub fn expr(u: &mut Unstructured, depth: u32) -> Result<Sp<Expr>> {
             let n = u.int_in_range(1..=2)?;
             let mut bindings = Vec::new();
             for _ in 0..n {
-                bindings.push((ident(u)?, ty(u, 1)?));
+                bindings.push((sp_ident(u)?, ty(u, 1)?));
             }
             Expr::Borrow {
                 bindings,
@@ -278,10 +282,10 @@ fn decl(u: &mut Unstructured, depth: u32) -> Result<Sp<Decl>> {
         let np = u.int_in_range(0..=2)?;
         let mut params = Vec::new();
         for _ in 0..np {
-            params.push((ident(u)?, ty(u, 2)?));
+            params.push((sp_ident(u)?, ty(u, 2)?));
         }
         Decl::Fn {
-            name: ident(u)?,
+            name: sp_ident(u)?,
             params,
             ret: ty(u, 2)?,
             body: expr(u, depth)?,
@@ -290,10 +294,10 @@ fn decl(u: &mut Unstructured, depth: u32) -> Result<Sp<Decl>> {
         let np = u.int_in_range(0..=2)?;
         let mut params = Vec::new();
         for _ in 0..np {
-            params.push(ident(u)?);
+            params.push(sp_ident(u)?);
         }
         Decl::TypeAlias {
-            name: type_name(u)?,
+            name: sp(type_name(u)?),
             params,
             ty: ty(u, 3)?,
         }

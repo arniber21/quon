@@ -26,8 +26,10 @@
 //! Optional `QUON_LSP_DEBOUNCE_MS` overrides the analysis debounce interval.
 
 pub mod analysis;
+pub mod convert;
 pub mod diagnostics;
 pub mod document;
+pub mod intel;
 pub mod server;
 pub mod span;
 
