@@ -16,6 +16,9 @@
 //! Entangling-layer scheduling (#105) uses Misra–Gries edge coloring on
 //! commutation-group interaction graphs (Enola Sec. 3 / Theorem 1) and ASAP
 //! layering on dependency-DAG segments; see `docs/neutral_atom/architecture_model.md` §4.
+//!
+//! Zoned routing-aware placement (#107) follows [RAP] (placement cost = routing
+//! cost, Eqs. (1)–(2)); see `docs/neutral_atom/architecture_model.md` §7.
 
 #[cfg(feature = "mlir")]
 pub mod dialect;
@@ -29,6 +32,7 @@ pub mod qec;
 pub mod report;
 pub mod schedule;
 pub mod schedule_entry;
+pub mod zoned;
 
 pub use entangling_schedule::{
     EntanglingScheduleError, EntanglingScheduleResult, LayerUtilization, capacity_layer_count,
@@ -56,6 +60,11 @@ pub use schedule::{
     ScheduleLayer, TransferDirection, TrapTransfer,
 };
 pub use schedule_entry::{GraphScheduleRequest, ScheduleFromGraphError, schedule_from_graph};
+pub use zoned::{
+    PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, ZonedScheduleError, ZonedScheduleResult,
+    euclidean_um, movement_duration_us, routing_cost_eq1, schedule_zoned, sqrt_d_max,
+    toy_zoned_architecture, validate_zone_constraints,
+};
 
 #[cfg(feature = "mlir")]
 pub use extract::{ExtractError, extract_interaction_graph, extract_interaction_graph_with_gamma};
