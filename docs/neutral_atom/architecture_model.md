@@ -385,6 +385,9 @@ weighting is ours. The shape (which terms exist) is cited; the weights are not.
 Snapshot tests may pin them for regression purposes but must not present them
 as published values.
 
+The resource estimator emits JSON and Markdown reports whose field names and
+table shape are specified in §11.
+
 ## 10. Code families and overhead formulas
 
 The QEC abstraction layer (#109) expands each logical qubit's code block into
@@ -477,6 +480,100 @@ Code blocks are scheduling units: whole blocks move between zones and logical
 picture motivating this layer, demonstrated in [Bluvstein24] (Figs. 1a, 2a).
 That paper is motivation, not a reproduction target; no transversal-gate
 scheduler is claimed for v0.
+
+## 11. Resource report formats
+
+The resource estimator (#110) aggregates a compiled neutral-atom schedule into
+a `ResourceReport` (`quon_na::report`). Emitters produce **JSON** (pretty
+serde) and **Markdown** matching the sample below. Fidelity (Enola Eq. 1) is
+**deferred**; §9 cost weights remain placeholders.
+
+### 11.1 Markdown sample (canonical)
+
+```markdown
+# Neutral-atom resource report
+
+## Qubit resources
+| Metric | Value |
+| --- | ---: |
+| Logical qubits | 12 |
+| Physical atoms | 288 |
+| Atoms per logical | 24 |
+| Code family | high_rate_qldpc_like |
+
+## Schedule metrics
+| Metric | Value |
+| --- | ---: |
+| Estimated cycles | 3 |
+| Bottleneck | rearrangement |
+| Rydberg stages | 2 |
+| Rearrangement steps | 1 |
+| Rearrangement time (µs) | 10 |
+| Trap transfers | 1 |
+| Transfer time (µs) | 6 |
+| Entangle2 count | 1 |
+| EntangleN count | 1 |
+| Measurement rounds | 1 |
+| Reset rounds | 1 |
+| Wait time (µs) | 4 |
+| Total time (µs) | 30 |
+
+## Notes
+- Field names align with TUM RAP Table I / Enola headline metrics.
+- `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
+- Non-QEC reports omit atoms-per-logical and code-family rows.
+```
+
+**Non-QEC omit policy:** always emit Logical qubits and Physical atoms (may be
+`0` if sizing unset). Emit Atoms per logical and Code family **only when** the
+corresponding optional fields are set. Never print `N/A` for omitted QEC
+detail. Bottleneck cell text uses the same snake_case strings as JSON.
+Microsecond headers use Unicode `(µs)`.
+
+### 11.2 JSON fields (paper-name mapping)
+
+| JSON field | Meaning | RAP / Enola alignment |
+| --- | --- | --- |
+| `rydberg_stages` | Layers with ≥1 entangle action | RAP Table I / Enola stage count |
+| `rearrangement_steps` | Move action count | Movement / rearrangement steps |
+| `rearrangement_time_us` | Sum of move durations | √-law move time |
+| `trap_transfers` | Transfer action count | Atom transfers |
+| `transfer_time_us` | Sum of transfer durations | Transfer time |
+| `entangle2_count` / `entangle_n_count` | Entangling gate counts | 2Q / multi-atom entangle |
+| `measurement_rounds` / `reset_rounds` | Layers with measure / reset | Round counts (not action counts) |
+| `wait_time_us` / `total_time_us` | Idle sum / max-per-layer sum | Idle + wall-clock proxy |
+| `logical_qubits` / `physical_atoms` | Sizing (§10) | QEC overhead |
+| `atoms_per_logical` / `code_family` | Optional; omitted when unset | Single-family QEC detail |
+| `estimated_cycles` | `layers.len()` as `u64` | Parallel schedule cycles |
+| `bottleneck` | `none` / `rydberg` / `rearrangement` / `transfer` / `measurement` / `mixed` | Max of four scores below |
+
+New required numerics (`logical_qubits`, `physical_atoms`, `estimated_cycles`,
+`bottleneck`) use `#[serde(default)]` so older JSON without those keys still
+deserializes. Optional QEC fields use `skip_serializing_if = "Option::is_none"`.
+
+### 11.3 `estimated_cycles` and `bottleneck`
+
+- **`estimated_cycles`:** number of `ScheduleLayer`s (`layers.len()`). Not
+  `max(cycle) + 1`. Empty input → `0`.
+- **`bottleneck` scores:** `rydberg_stages`, `rearrangement_time_us`,
+  `transfer_time_us`, `measurement_rounds`. All zero → `none`; unique max →
+  that kind; tie → `mixed`. `wait_time_us` and `reset_rounds` are not
+  bottleneck categories in v0.
+
+### 11.4 Logical vs physical sizing
+
+| Mode | Population |
+| --- | --- |
+| Bare `from_layers` | Schedule metrics + cycles/bottleneck; sizing zeros; Options unset |
+| Non-QEC `with_physical_atoms(n)` | `physical_atoms = logical_qubits = n`; Options unset |
+| QEC `with_code_blocks` | logical = Σ `logical_qubits.len()`; physical = Σ `atoms.len()`; single shared family → set `atoms_per_logical` / `code_family`; mixed families → counts only |
+
+Stable `code_family` labels: `surface_code_like`, `repetition_code_toy`,
+`high_rate_qldpc_like`, `abstract_block_code`. Formulas: §10.
+
+Regression goldens: `cargo test -p quon_na --test report_snapshots` (update
+with `INSTA_UPDATE=1`). Compaction (#108) may change schedule numbers; snapshot
+refresh is intentional then.
 
 ## References
 

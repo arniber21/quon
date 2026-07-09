@@ -1,0 +1,21 @@
+---
+source: quon_na/tests/report_snapshots.rs
+expression: json
+---
+{
+  "rydberg_stages": 2,
+  "rearrangement_steps": 1,
+  "rearrangement_time_us": 10,
+  "trap_transfers": 1,
+  "transfer_time_us": 6,
+  "entangle2_count": 1,
+  "entangle_n_count": 1,
+  "measurement_rounds": 1,
+  "reset_rounds": 1,
+  "wait_time_us": 4,
+  "total_time_us": 30,
+  "logical_qubits": 8,
+  "physical_atoms": 8,
+  "estimated_cycles": 3,
+  "bottleneck": "rearrangement"
+}

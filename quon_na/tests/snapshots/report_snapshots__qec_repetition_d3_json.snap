@@ -1,0 +1,23 @@
+---
+source: quon_na/tests/report_snapshots.rs
+expression: json
+---
+{
+  "rydberg_stages": 0,
+  "rearrangement_steps": 0,
+  "rearrangement_time_us": 0,
+  "trap_transfers": 0,
+  "transfer_time_us": 0,
+  "entangle2_count": 0,
+  "entangle_n_count": 0,
+  "measurement_rounds": 0,
+  "reset_rounds": 0,
+  "wait_time_us": 0,
+  "total_time_us": 0,
+  "logical_qubits": 1,
+  "physical_atoms": 5,
+  "atoms_per_logical": 5,
+  "code_family": "repetition_code_toy",
+  "estimated_cycles": 0,
+  "bottleneck": "none"
+}
