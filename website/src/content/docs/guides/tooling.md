@@ -147,12 +147,14 @@ local sweep over the repository's `.qn` fixtures, run:
 
 ## Editor integration status
 
-No first-party editor package is published yet. Until one is available, configure the
-stdio language server command above and wire `quonfmt --check` or `quonfmt -w` and
-`quonlint` into editor tasks or save hooks.
+- **VS Code:** first-party extension at [`extensions/vscode-quon/`](https://github.com/arniber21/quon/tree/main/extensions/vscode-quon)
+  ([#131](https://github.com/arniber21/quon/issues/131)). Install from a built `.vsix` or run
+  the Extension Development Host. It starts `quon_lsp` over stdio and formats via `quonfmt`
+  (format-on-save default **off** — `quonfmt` strips comments).
+- **Shared Tree-sitter grammar:** [`tree-sitter-quon/`](https://github.com/arniber21/quon/tree/main/tree-sitter-quon)
+  (corpus at `tree-sitter-quon/test/corpus/`) for Zed/Neovim consumers.
+- **Zed / Neovim:** in progress — [#132](https://github.com/arniber21/quon/issues/132),
+  [#133](https://github.com/arniber21/quon/issues/133).
 
-Packaging and editor-specific defaults are tracked separately:
-
-- [VS Code extension (#131)](https://github.com/arniber21/quon/issues/131)
-- [Zed extension (#132)](https://github.com/arniber21/quon/issues/132)
-- [Neovim support (#133)](https://github.com/arniber21/quon/issues/133)
+Until those land, you can still configure the stdio language server command above and wire
+`quonfmt --check` or `quonfmt -w` and `quonlint` into editor tasks or save hooks.
