@@ -131,7 +131,7 @@ impl<'c> LoweringCtx<'c> {
                         unreachable!("matched above");
                     };
                     self.func_meta.insert(
-                        name.clone(),
+                        name.0.clone(),
                         FuncMeta {
                             depth: d,
                             clifford: matches!(c, CliffordClass::Clifford),
@@ -139,7 +139,7 @@ impl<'c> LoweringCtx<'c> {
                             out_qubits: const_width(&m, "out_qubits")?,
                         },
                     );
-                    self.bodies.insert(name.clone(), body.clone());
+                    self.bodies.insert(name.0.clone(), body.clone());
                 } else {
                     // A parametric circuit function (e.g. `hadamard_all(n)`):
                     // not emitted yet — every parameter must be `Nat`/`Int`/
@@ -148,9 +148,9 @@ impl<'c> LoweringCtx<'c> {
                     // §5), specialized on demand at each concrete call site
                     // (`specialize_named_fn`).
                     self.parametric.insert(
-                        name.clone(),
+                        name.0.clone(),
                         elaborate::ParametricDef {
-                            params: params.iter().map(|(p, _)| p.clone()).collect(),
+                            params: params.iter().map(|(p, _)| p.0.clone()).collect(),
                             body: body.clone(),
                             ret_ty,
                         },
@@ -167,7 +167,7 @@ impl<'c> LoweringCtx<'c> {
                 body,
             } = &decl.0
             {
-                self.lower_circuit_fn(name, params, ret, body)?;
+                self.lower_circuit_fn(&name.0, params, ret, body)?;
             }
         }
 
@@ -182,7 +182,7 @@ impl<'c> LoweringCtx<'c> {
                 body,
             } = &decl.0
             {
-                self.lower_run_fn(name, params, ret, body)?;
+                self.lower_run_fn(&name.0, params, ret, body)?;
             }
         }
         Ok(&self.module)
@@ -195,7 +195,7 @@ impl<'c> LoweringCtx<'c> {
     fn lower_circuit_fn(
         &mut self,
         name: &Name,
-        params: &[(Name, Sp<AstType>)],
+        params: &[(Sp<Name>, Sp<AstType>)],
         ret: &Sp<AstType>,
         body: &Sp<Expr>,
     ) -> Result<(), LowerError> {
@@ -468,7 +468,7 @@ impl<'c> LoweringCtx<'c> {
     fn lower_run_fn(
         &mut self,
         name: &Name,
-        params: &[(Name, Sp<AstType>)],
+        params: &[(Sp<Name>, Sp<AstType>)],
         ret: &Sp<AstType>,
         body: &Sp<Expr>,
     ) -> Result<(), LowerError> {
@@ -505,7 +505,7 @@ impl<'c> LoweringCtx<'c> {
         match &expr.0 {
             Expr::Bind { rhs, param, body } => {
                 let results = self.eval(rhs, block, env)?;
-                env.insert(param.clone(), results);
+                env.insert(param.0.clone(), results);
                 self.lower_monadic(body, block, env)
             }
             // `let (hi, lo) = split(k, q)` (SPEC §5, Shor's modular

@@ -14,15 +14,15 @@ pub type Name = String;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decl {
     Fn {
-        name: Name,
-        params: Vec<(Name, Sp<Type>)>,
+        name: Sp<Name>,
+        params: Vec<(Sp<Name>, Sp<Type>)>,
         ret: Sp<Type>,
         body: Sp<Expr>,
     },
     TypeAlias {
-        name: Name,
+        name: Sp<Name>,
         /// Type-level parameters, e.g. `n` in `type Oracle<n> = ...`. Empty for plain aliases.
-        params: Vec<Name>,
+        params: Vec<Sp<Name>>,
         ty: Sp<Type>,
     },
 }
@@ -205,7 +205,7 @@ pub enum Expr {
     RunBlock(Vec<Sp<Stmt>>), // pre-desugaring
     Bind {
         rhs: Box<Sp<Expr>>,
-        param: Name,
+        param: Sp<Name>,
         body: Box<Sp<Expr>>,
     }, // post-desugaring
     Return(Box<Sp<Expr>>),
@@ -213,7 +213,7 @@ pub enum Expr {
     // Borrow
     /// `borrow b1: T1, b2: T2 in { stmts }` — scoped ancilla allocation (§3.4, ADR-0003).
     Borrow {
-        bindings: Vec<(Name, Sp<Type>)>,
+        bindings: Vec<(Sp<Name>, Sp<Type>)>,
         body: Vec<Sp<Stmt>>,
     },
 

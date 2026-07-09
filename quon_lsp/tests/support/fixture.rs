@@ -1,0 +1,83 @@
+use frontend::analysis::cursor_at;
+use frontend::analyze;
+use tower_lsp::lsp_types::{Position, Url};
+
+use quon_lsp::intel::{completions_at, definition_at, hover_at, semantic_tokens_full};
+
+fn fixture_url() -> Url {
+    Url::parse("file:///test.qn").expect("url")
+}
+
+fn analyze_fixture(src: &str) -> frontend::AnalysisResult {
+    analyze(src)
+}
+
+pub fn position_after_marker(src: &str) -> Position {
+    let offset = cursor_at(src, "/*cursor*/");
+    let before = src[..offset].replace("/*cursor*/", "");
+    let line = before.matches('\n').count() as u32;
+    let col = before
+        .rfind('\n')
+        .map(|i| (before.len() - i - 1) as u32)
+        .unwrap_or(before.len() as u32);
+    Position {
+        line,
+        character: col,
+    }
+}
+
+pub fn src_without_marker(src: &str) -> String {
+    src.replace("/*cursor*/", "")
+}
+
+pub fn hover_markdown(src: &str) -> Option<String> {
+    let clean = src_without_marker(src);
+    let pos = position_after_marker(src);
+    let result = analyze_fixture(&clean);
+    let hover = hover_at(&result.intelligence, pos)?;
+    match hover.contents {
+        tower_lsp::lsp_types::HoverContents::Markup(m) => Some(m.value),
+        _ => None,
+    }
+}
+
+pub fn definition_at_marker(src: &str) -> Option<tower_lsp::lsp_types::Range> {
+    let clean = src_without_marker(src);
+    let pos = position_after_marker(src);
+    let result = analyze_fixture(&clean);
+    let uri = fixture_url();
+    let resp = definition_at(&result.intelligence, &uri, pos)?;
+    match resp {
+        tower_lsp::lsp_types::GotoDefinitionResponse::Scalar(loc) => Some(loc.range),
+        _ => None,
+    }
+}
+
+pub fn completion_labels(src: &str) -> Vec<String> {
+    let clean = src_without_marker(src);
+    let pos = position_after_marker(src);
+    let result = analyze_fixture(&clean);
+    let resp = completions_at(&result.intelligence, pos).expect("completions");
+    match resp {
+        tower_lsp::lsp_types::CompletionResponse::Array(items) => {
+            items.into_iter().map(|i| i.label).collect()
+        }
+        _ => vec![],
+    }
+}
+
+pub fn semantic_token_count(src: &str) -> usize {
+    let result = analyze_fixture(src);
+    let tokens = semantic_tokens_full(
+        &result.intelligence,
+        Position {
+            line: 0,
+            character: 0,
+        },
+    )
+    .expect("tokens");
+    match tokens {
+        tower_lsp::lsp_types::SemanticTokensResult::Tokens(t) => t.data.len(),
+        _ => 0,
+    }
+}

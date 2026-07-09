@@ -39,14 +39,14 @@ fn run_block_desugars_to_nested_binds() {
     let Expr::Bind { rhs, param, body } = body else {
         panic!("expected outer Bind, got {body:?}");
     };
-    assert_eq!(param, "x");
+    assert_eq!(param.0, "x");
     assert_eq!(rhs.0, var("e1"));
 
     let Expr::Bind { rhs, param, body } = body.0 else {
         panic!("expected inner Bind, got {:?}", body.0);
     };
     assert_eq!(
-        param, "_",
+        param.0, "_",
         "a bare expression statement discards its result"
     );
     assert_eq!(rhs.0, var("e2"));
@@ -159,7 +159,7 @@ fn tuple_bind_pattern_destructures_via_a_fresh_let() {
     };
     assert_eq!(rhs.0, var("e"));
     assert!(
-        param.starts_with('$'),
+        param.0.starts_with('$'),
         "tuple bind introduces a fresh, non-collidable name, got {param:?}"
     );
 
@@ -173,7 +173,7 @@ fn tuple_bind_pattern_destructures_via_a_fresh_let() {
     );
     assert_eq!(
         rhs.0,
-        var(&param),
+        var(&param.0),
         "the let destructures the bind's fresh var"
     );
     assert!(

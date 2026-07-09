@@ -158,9 +158,11 @@ impl RichDiagnostic {
 }
 
 /// Result of IDE-oriented analysis (parse + desugar + typecheck; no lowering).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct AnalysisResult {
     pub diagnostics: Vec<RichDiagnostic>,
+    /// Language intelligence snapshot (hover, completion, go-to-definition, semantic tokens).
+    pub intelligence: crate::analysis::DocumentAnalysis,
 }
 
 /// A single frontend error: a message anchored at a source span.

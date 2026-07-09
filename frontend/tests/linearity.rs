@@ -79,8 +79,8 @@ fn dropping_a_qubit_points_at_its_binding() {
         "message was: {}",
         diag.message
     );
-    // The binding is the parameter's type annotation.
-    assert_span_on_first(src, "Qubit", &diag);
+    // M0: the binding span is the parameter name (not the type annotation).
+    assert_span_on_first(src, "q", &diag);
 }
 
 #[test]

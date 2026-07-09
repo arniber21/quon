@@ -8,6 +8,9 @@ use tower_lsp::{Client, LanguageServer};
 use crate::analysis::{AnalysisScheduler, debounce_from_env};
 use crate::diagnostics::code_actions_for_range;
 use crate::document::{DocumentError, DocumentStore};
+use crate::intel::{
+    completions_at, definition_at, hover_at, semantic_tokens_full, semantic_tokens_legend,
+};
 
 pub struct QuonLanguageServer {
     client: Client,
@@ -44,6 +47,21 @@ impl LanguageServer for QuonLanguageServer {
                         ..Default::default()
                     },
                 )),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec!["@".into(), ":".into(), "<".into()]),
+                    ..Default::default()
+                }),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: semantic_tokens_legend(),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            ..Default::default()
+                        },
+                    ),
+                ),
                 code_action_provider: Some(CodeActionProviderCapability::Options(
                     CodeActionOptions {
                         code_action_kinds: Some(vec![
@@ -105,6 +123,81 @@ impl LanguageServer for QuonLanguageServer {
             tracing::error!("document store write lock poisoned");
         }
         self.client.publish_diagnostics(uri, vec![], None).await;
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(hover_at(&analysis.intelligence, position))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(definition_at(&analysis.intelligence, &uri, position))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(completions_at(&analysis.intelligence, position))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        _params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = _params.text_document.uri;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(semantic_tokens_full(
+            &analysis.intelligence,
+            Position {
+                line: 0,
+                character: 0,
+            },
+        ))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
