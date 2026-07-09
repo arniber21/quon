@@ -12,9 +12,14 @@
 //! Placement (#104) maps logical qubits onto SLM sites with row-major,
 //! degree-based, and interaction-clustering heuristics inspired by [Atomique]
 //! Sec. III-B; see `docs/neutral_atom/architecture_model.md` §4.
+//!
+//! Entangling-layer scheduling (#105) uses Misra–Gries edge coloring on
+//! commutation-group interaction graphs (Enola Sec. 3 / Theorem 1) and ASAP
+//! layering on dependency-DAG segments; see `docs/neutral_atom/architecture_model.md` §4.
 
 #[cfg(feature = "mlir")]
 pub mod dialect;
+pub mod entangling_schedule;
 #[cfg(feature = "mlir")]
 pub mod extract;
 pub mod graph;
@@ -25,6 +30,10 @@ pub mod report;
 pub mod schedule;
 pub mod schedule_entry;
 
+pub use entangling_schedule::{
+    EntanglingScheduleError, EntanglingScheduleResult, LayerUtilization, capacity_layer_count,
+    schedule_entangling_layers,
+};
 pub use graph::{
     DEFAULT_GAMMA, GraphError, Interaction, InteractionEdge, InteractionGraph, InteractionId,
     InteractionSegment, LogicalQubitId, SegmentKind, aggregate_edges, cubic_commutation_graph,
