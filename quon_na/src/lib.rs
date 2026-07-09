@@ -17,6 +17,11 @@
 //! commutation-group interaction graphs (Enola Sec. 3 / Theorem 1) and ASAP
 //! layering on dependency-DAG segments; see `docs/neutral_atom/architecture_model.md` §4.
 //!
+//! Flat AOD movement (#106) uses a Quon interaction-pair bank with both-atom
+//! duals and Enola-inspired per-axis conflict types / greedy longest-first IS
+//! packing (not Enola one-atom duals; not RAP zoned routing). See
+//! `docs/neutral_atom/architecture_model.md` §5–§6 and [`movement`].
+//!
 //! Zoned routing-aware placement (#107) follows [RAP] (placement cost = routing
 //! cost, Eqs. (1)–(2)); see `docs/neutral_atom/architecture_model.md` §7.
 
@@ -27,6 +32,7 @@ pub mod entangling_schedule;
 pub mod extract;
 pub mod graph;
 pub mod layout;
+pub mod movement;
 pub mod placement;
 pub mod qec;
 pub mod report;
@@ -45,6 +51,11 @@ pub use graph::{
 };
 pub use layout::{
     AodTrapRef, AtomBinding, AtomId, AtomSite, NeutralAtomLayout, Position, SiteId, TrapBinding,
+};
+pub use movement::{
+    BANK_ISOLATION_EPS_UM, CandidateLeg, InteractionPair, MoveSpec, MovementParams,
+    MovementPlanError, MovementPlanResult, atom_moves_to_move_specs, check_entangling_geometry,
+    ensure_interaction_pairs, legs_conflict, plan_aod_movement, verify_aod_legality,
 };
 pub use placement::{
     PlacementError, PlacementResult, PlacementStrategy, SITE_PITCH_UM, grid_dims, place,
