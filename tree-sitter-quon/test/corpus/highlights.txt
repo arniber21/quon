@@ -1,0 +1,204 @@
+==================
+bell_state
+==================
+
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+        H @0 |> CNOT @(0, 1)
+}
+
+fn hello_bell(): Q<(Bit, Bit)> = run {
+        (q0, q1) <- (bell_state()) @ (qreg 2)
+        b0       <- measure q0
+        b1       <- measure q1
+        return (b0, b1)
+}
+
+---
+
+(source_file
+  (fn_declaration
+    name: (identifier))
+  (delimiter)
+  (delimiter)
+  (punctuation)
+  (identifier)
+  (delimiter)
+  (number)
+  (punctuation)
+  (number)
+  (punctuation)
+  (number)
+  (punctuation)
+  (identifier)
+  (delimiter)
+  (operator)
+  (keyword)
+  (delimiter)
+  (identifier)
+  (operator)
+  (number)
+  (operator)
+  (identifier)
+  (operator)
+  (delimiter)
+  (number)
+  (punctuation)
+  (number)
+  (delimiter)
+  (delimiter)
+  (fn_declaration
+    name: (identifier))
+  (delimiter)
+  (delimiter)
+  (punctuation)
+  (identifier)
+  (delimiter)
+  (delimiter)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (delimiter)
+  (delimiter)
+  (operator)
+  (keyword)
+  (delimiter)
+  (delimiter)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (delimiter)
+  (operator)
+  (delimiter)
+  (identifier)
+  (delimiter)
+  (delimiter)
+  (delimiter)
+  (operator)
+  (delimiter)
+  (identifier)
+  (number)
+  (delimiter)
+  (identifier)
+  (operator)
+  (identifier)
+  (identifier)
+  (identifier)
+  (operator)
+  (identifier)
+  (identifier)
+  (keyword)
+  (delimiter)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (delimiter)
+  (delimiter))
+
+==================
+match_if
+==================
+
+fn choose(b: Bool): Int = if b then 1 else 0
+
+fn match_demo(x: Int): Int = match x {
+  0 => 1,
+  _ => 2
+}
+
+fn loop(): Circuit<2,2,1,Clifford> = for i in range(2) { H@i }
+
+---
+
+(source_file
+  (fn_declaration
+    name: (identifier))
+  (delimiter)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (delimiter)
+  (punctuation)
+  (identifier)
+  (operator)
+  (keyword)
+  (identifier)
+  (keyword)
+  (number)
+  (keyword)
+  (number)
+  (fn_declaration
+    name: (identifier))
+  (delimiter)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (delimiter)
+  (punctuation)
+  (identifier)
+  (operator)
+  (keyword)
+  (identifier)
+  (delimiter)
+  (number)
+  (operator)
+  (number)
+  (punctuation)
+  (identifier)
+  (operator)
+  (number)
+  (delimiter)
+  (fn_declaration
+    name: (identifier))
+  (delimiter)
+  (delimiter)
+  (punctuation)
+  (identifier)
+  (delimiter)
+  (number)
+  (punctuation)
+  (number)
+  (punctuation)
+  (number)
+  (punctuation)
+  (identifier)
+  (delimiter)
+  (operator)
+  (keyword)
+  (identifier)
+  (keyword)
+  (identifier)
+  (delimiter)
+  (number)
+  (delimiter)
+  (delimiter)
+  (identifier)
+  (operator)
+  (identifier)
+  (delimiter))
+
+==================
+comments
+==================
+
+-- line comment
+fn demo(): Int = 1
+{- outer {- nested -} still outer -}
+type Alias = Int
+
+---
+
+(source_file
+  (line_comment)
+  (fn_declaration
+    name: (identifier))
+  (delimiter)
+  (delimiter)
+  (punctuation)
+  (identifier)
+  (operator)
+  (number)
+  (block_comment)
+  (type_declaration
+    name: (identifier))
+  (operator)
+  (identifier))

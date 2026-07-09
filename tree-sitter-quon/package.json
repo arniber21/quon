@@ -1,0 +1,40 @@
+{
+  "name": "tree-sitter-quon",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Quon quantum programming language",
+  "main": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "quon",
+    "parser"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arniber21/quon.git",
+    "directory": "tree-sitter-quon"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.quon",
+      "file-types": [
+        "qn"
+      ],
+      "highlights": [
+        "queries/highlights.scm"
+      ],
+      "injection-regex": "^quon$"
+    }
+  ],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.6"
+  },
+  "allowScripts": {
+    "tree-sitter-cli@0.25.10": true
+  }
+}
