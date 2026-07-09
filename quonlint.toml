@@ -1,0 +1,21 @@
+[quonlint]
+level = "info"
+fail_on = "warn"
+
+include = [
+    "frontend/tests/fixtures/**/*.qn",
+    "test/verify/*.qn",
+]
+exclude = [
+    "**/target/**",
+    "website/**",
+]
+
+[rules]
+"depth/sequential-for-blowup" = "info"
+"gates/swap-in-source" = "allow"
+"monad/circuit-bind-without-apply" = "error"
+
+[rules."gates/non-native-density"]
+severity = "warn"
+threshold = 0.25

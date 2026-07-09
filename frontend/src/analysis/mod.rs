@@ -4,6 +4,7 @@ mod prelude_names;
 mod resolution;
 mod scopes;
 mod symbols;
+mod typed;
 
 pub use annotations::TypeAnnotations;
 pub use cursor::{NodeAt, cursor_at, node_at_offset, partial_ident};
@@ -12,6 +13,7 @@ pub use prelude_names::{
 };
 pub use resolution::{ResolutionMap, ResolvedTarget};
 pub use symbols::{Symbol, SymbolId, SymbolIndex, SymbolKind, build_symbol_index};
+pub use typed::TypedProgram;
 
 use crate::ast::Decl;
 use crate::desugar_program;

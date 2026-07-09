@@ -37,6 +37,8 @@ pub mod types;
 #[cfg(not(feature = "parser-only"))]
 pub use analysis::DocumentAnalysis;
 #[cfg(not(feature = "parser-only"))]
+pub use analysis::TypedProgram;
+#[cfg(not(feature = "parser-only"))]
 pub use analysis::analyze_program;
 
 use crate::ast::Decl;
@@ -113,7 +115,7 @@ pub fn desugar_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
 /// Parse, desugar, and type-check a program (issues #9–#14).
 #[cfg(not(feature = "parser-only"))]
 pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
-    let result = analyze(source);
+    let result = analyze(src);
     if result.diagnostics.is_empty() {
         Ok(())
     } else {

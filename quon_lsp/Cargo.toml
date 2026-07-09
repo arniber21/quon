@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 frontend           = { path = "../frontend" }
+quonlint           = { path = "../quonlint" }
 tower-lsp          = { workspace = true }
 tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "io-std"] }
 line-index         = { workspace = true }

@@ -17,4 +17,9 @@ impl TypeAnnotations {
     pub fn get(&self, span: SimpleSpan) -> Option<&Ty> {
         self.by_span.get(&(span.start, span.end))
     }
+
+    /// Iterate all recorded expression types (for lint export).
+    pub fn iter(&self) -> impl Iterator<Item = ((usize, usize), &Ty)> {
+        self.by_span.iter().map(|(k, v)| (*k, v))
+    }
 }
