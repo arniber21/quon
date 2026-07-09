@@ -415,6 +415,32 @@ fn generic_neutral_atom_target_loads_correctly() {
 }
 
 #[test]
+fn fake_manila_v2_snapshot_loads_with_noise() {
+    let target = json::load(&workspace_path("../targets/ibm/fake_manila_v2.json"))
+        .expect("fake_manila_v2 snapshot should load");
+    let fixed = target.fixed_target().expect("expected fixed IBM target");
+
+    assert_eq!(target.id, "fake_manila_v2");
+    assert_eq!(fixed.num_qubits, 5);
+    assert_eq!(fixed.topology.edges.len(), 4);
+    assert!(target.is_native("cx"));
+    assert!(target.is_native("sx"));
+    assert!(
+        fixed
+            .noise
+            .two_qubit_fidelity
+            .contains_key(&("cx".into(), 0, 1))
+            || fixed
+                .noise
+                .two_qubit_fidelity
+                .contains_key(&("cx".into(), 1, 0)),
+        "expected bidirectional CX fidelity entries"
+    );
+    assert_eq!(fixed.noise.t1_us.len(), 5);
+    assert_eq!(fixed.noise.readout_error.len(), 5);
+}
+
+#[test]
 fn neutral_atom_target_round_trips_through_descriptor() {
     let target = json::load(&workspace_path(
         "../targets/neutral_atom/generic_rna_v0.json",
