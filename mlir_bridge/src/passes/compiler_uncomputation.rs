@@ -1,17 +1,23 @@
 //! Compiler-assisted uncomputation pass (issue #21).
+//!
+//! Appends the adjoint of a reversible `quantum.circ.borrow` body and rewires
+//! the region's `return` so the composed body is identity on the ancilla
+//! (when started in `|0…0⟩`).
 
 use melior::ir::attribute::StringAttribute;
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
-use melior::ir::{BlockLike, OperationRef, RegionLike, Value};
+use melior::ir::{BlockLike, OperationRef, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
-use melior::{Context, ContextRef};
+use melior::{Context, ContextRef, IrRewriter};
+use mlir_sys::mlirOperationSetOperand;
 
 use crate::dialect::quantum_circ::{self, attr};
 
 #[derive(Clone)]
 struct RecordedGate {
     name: String,
+    /// Logical qubit indices (block-argument order) this gate acts on.
     targets: Vec<usize>,
 }
 
@@ -22,6 +28,10 @@ fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
         .as_str()
         .unwrap_or("")
         .to_string()
+}
+
+fn value_key<'a>(value: &impl ValueLike<'a>) -> usize {
+    value.to_raw().ptr as usize
 }
 
 fn read_string_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
@@ -46,6 +56,14 @@ fn inverse_name(name: &str) -> Option<String> {
     Some(inverse.to_string())
 }
 
+fn set_return_operands<'c, 'a>(return_op: OperationRef<'c, 'a>, wires: &[Value<'c, 'a>]) {
+    for (index, value) in wires.iter().enumerate() {
+        unsafe {
+            mlirOperationSetOperand(return_op.to_raw(), index as isize, value.to_raw());
+        }
+    }
+}
+
 fn uncompute_borrow<'c, 'a>(context: &'c Context, borrow: OperationRef<'c, 'a>) -> bool {
     let Ok(region) = borrow.region(0) else {
         return false;
@@ -54,11 +72,28 @@ fn uncompute_borrow<'c, 'a>(context: &'c Context, borrow: OperationRef<'c, 'a>) 
         return false;
     };
     let location = borrow.location();
+    let width = block.argument_count();
+
+    // Map each live SSA value to its logical qubit index, and track the latest
+    // value per logical wire through the forward body.
+    let mut value_to_logical = std::collections::HashMap::new();
+    let mut wires: Vec<Value<'c, 'a>> = Vec::with_capacity(width);
+    for index in 0..width {
+        let Ok(arg) = block.argument(index) else {
+            return false;
+        };
+        let value = Value::from(arg);
+        value_to_logical.insert(value_key(&value), index);
+        wires.push(value);
+    }
+
     let mut gates = Vec::new();
+    let mut return_op = None;
     let mut op = block.first_operation();
     while let Some(current) = op {
         let name = op_name(&current);
         if name == quantum_circ::op::RETURN {
+            return_op = Some(current);
             break;
         }
         if name != quantum_circ::op::GATE {
@@ -68,7 +103,24 @@ fn uncompute_borrow<'c, 'a>(context: &'c Context, borrow: OperationRef<'c, 'a>) 
         if inverse_name(&gate_name).is_none() {
             return false;
         }
-        let targets: Vec<usize> = (0..current.operand_count()).collect();
+        let mut targets = Vec::with_capacity(current.operand_count());
+        for i in 0..current.operand_count() {
+            let Ok(operand) = current.operand(i) else {
+                return false;
+            };
+            let Some(&logical) = value_to_logical.get(&value_key(&operand)) else {
+                return false;
+            };
+            targets.push(logical);
+        }
+        for (i, &logical) in targets.iter().enumerate() {
+            let Ok(result) = current.result(i) else {
+                return false;
+            };
+            let value = Value::from(result);
+            value_to_logical.insert(value_key(&value), logical);
+            wires[logical] = value;
+        }
         gates.push(RecordedGate {
             name: gate_name,
             targets,
@@ -76,31 +128,12 @@ fn uncompute_borrow<'c, 'a>(context: &'c Context, borrow: OperationRef<'c, 'a>) 
         op = current.next_in_block();
     }
 
-    // Conservatively bail out (leaving the borrow as-is) on any structural
-    // surprise rather than panicking — uncomputation is an optional rewrite.
-    let Some(mut wires) = (0..block.argument_count())
-        .map(|index| block.argument(index).ok().map(Value::from))
-        .collect::<Option<Vec<Value<'c, 'a>>>>()
-    else {
-        return false;
-    };
-    let return_op = {
-        let mut cursor = block.first_operation();
-        let mut found = None;
-        while let Some(current) = cursor {
-            if op_name(&current) == quantum_circ::op::RETURN {
-                found = Some(current);
-                break;
-            }
-            cursor = current.next_in_block();
-        }
-        found
-    };
     let Some(return_op) = return_op else {
         return false;
     };
+
+    // Append adjoints in reverse, starting from the forward body's final wires.
     for gate in gates.iter().rev() {
-        // `inverse_name` was already confirmed `Some` when recording each gate.
         let Some(inverse) = inverse_name(&gate.name) else {
             return false;
         };
@@ -112,6 +145,20 @@ fn uncompute_borrow<'c, 'a>(context: &'c Context, borrow: OperationRef<'c, 'a>) 
         for (index, target) in gate.targets.iter().enumerate() {
             if let Ok(result) = appended.result(index) {
                 wires[*target] = Value::from(result);
+            }
+        }
+    }
+
+    // Point `return` at the post-adjoint wires so the body is U;U†, not dead code.
+    if return_op.operand_count() == wires.len() {
+        set_return_operands(return_op, &wires);
+    } else {
+        // Fall back to replace_all_uses if arity somehow differs.
+        let rewriter = IrRewriter::new(context);
+        let base = rewriter.as_rewriter_base();
+        for (index, wire) in wires.iter().enumerate() {
+            if let Ok(old) = return_op.operand(index) {
+                base.replace_all_uses_with(old, *wire);
             }
         }
     }
