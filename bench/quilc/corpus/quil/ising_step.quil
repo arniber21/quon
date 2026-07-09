@@ -1,0 +1,16 @@
+# One TFIM Trotter step n=4, J=h=1, tau=0.25
+# Rzz(theta) = CNOT; RZ(theta); CNOT with theta = -2*J*tau = -0.5
+CNOT 0 1
+RZ(-0.5) 1
+CNOT 0 1
+CNOT 1 2
+RZ(-0.5) 2
+CNOT 1 2
+CNOT 2 3
+RZ(-0.5) 3
+CNOT 2 3
+# Rx(-2*h*tau) = Rx(-0.5) on each
+RX(-0.5) 0
+RX(-0.5) 1
+RX(-0.5) 2
+RX(-0.5) 3

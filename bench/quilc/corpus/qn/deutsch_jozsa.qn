@@ -1,0 +1,18 @@
+-- Deutsch-Jozsa balanced oracle f(x)=x0 xor x1 on 3 query + 1 ancilla (#116).
+-- Depth annotation uses `_` (hole) to avoid sequential-compose depth mismatch.
+
+fn dj_balanced(): Circuit<4, 4, _, Clifford> = circuit {
+    X @3
+    |> H @0 |> H @1 |> H @2 |> H @3
+    |> CNOT @(0, 3) |> CNOT @(1, 3)
+    |> H @0 |> H @1 |> H @2
+}
+
+fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, anc) <- dj_balanced() @ qreg(4)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    a <- measure(anc)
+    return (b0, b1, b2, a)
+}

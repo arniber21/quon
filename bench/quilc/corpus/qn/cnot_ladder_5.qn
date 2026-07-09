@@ -1,0 +1,18 @@
+-- Topology-aligned CNOT ladder on 5 qubits (#116).
+
+fn cnot_ladder_5(): Circuit<5, 5, 4, Clifford> = circuit {
+    CNOT @(0, 1)
+    |> CNOT @(1, 2)
+    |> CNOT @(2, 3)
+    |> CNOT @(3, 4)
+}
+
+fn main(): Q<(Bit, Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, q3, q4) <- cnot_ladder_5() @ qreg(5)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    b3 <- measure(q3)
+    b4 <- measure(q4)
+    return (b0, b1, b2, b3, b4)
+}
