@@ -1,12 +1,12 @@
 //! SABRE routing pass (issue #25, SPEC §7.4).
 //!
 //! Maps logical qubits to physical indices and inserts SWAP gates to satisfy
-//! connectivity constraints on the [`BackendTarget`] topology.
+//! connectivity constraints on fixed-target topology.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use backend::target::BackendTarget;
+use backend::target::{BackendTarget, FixedTarget};
 use melior::StringRef;
 use melior::ir::attribute::IntegerAttribute;
 use melior::ir::operation::OperationLike;
@@ -197,7 +197,7 @@ fn set_qubit_operands<'c, 'a>(gate: OperationRef<'c, 'a>, values: &[Value<'c, 'a
 #[allow(clippy::too_many_arguments)]
 fn route_two_qubit<'c, 'a>(
     context: &'c Context,
-    target: &BackendTarget,
+    target: &FixedTarget,
     cost: SabreCost,
     layout: &mut Layout,
     block: melior::ir::BlockRef<'c, 'a>,
@@ -246,7 +246,7 @@ fn route_two_qubit<'c, 'a>(
 }
 
 fn best_swap(
-    target: &BackendTarget,
+    target: &FixedTarget,
     cost: SabreCost,
     layout: &Layout,
     p_a: usize,
@@ -285,7 +285,7 @@ fn best_swap(
     })
 }
 
-fn noise_penalty(target: &BackendTarget, a: usize, b: usize) -> f64 {
+fn noise_penalty(target: &FixedTarget, a: usize, b: usize) -> f64 {
     target
         .noise
         .two_qubit_fidelity
@@ -324,7 +324,7 @@ impl<'c, 'a> RouteState<'c, 'a> {
 
 fn route_block<'c, 'a>(
     context: &'c Context,
-    target: &BackendTarget,
+    target: &FixedTarget,
     cost: SabreCost,
     block: melior::ir::BlockRef<'c, 'a>,
     state: &mut RouteState<'c, 'a>,
@@ -447,7 +447,7 @@ fn route_block<'c, 'a>(
 /// roots so the surrounding block sees a continuous wire.
 fn recurse_region<'c, 'a>(
     context: &'c Context,
-    target: &BackendTarget,
+    target: &FixedTarget,
     cost: SabreCost,
     op: OperationRef<'c, 'a>,
     region_index: usize,
@@ -488,7 +488,7 @@ fn recurse_region<'c, 'a>(
 
 fn route_module<'c, 'a>(
     context: &'c Context,
-    target: &BackendTarget,
+    target: &FixedTarget,
     cost: SabreCost,
     module: OperationRef<'c, 'a>,
 ) {
@@ -537,6 +537,9 @@ pub fn run_on_module<'c>(
     cost: SabreCost,
     module: &melior::ir::Module<'c>,
 ) {
+    let Some(target) = target.fixed_target() else {
+        return;
+    };
     route_module(context, target, cost, module.as_operation());
 }
 
@@ -572,8 +575,11 @@ impl<'c> RunExternalPass<'c> for SabreRouting {
             pass.signal_failure();
             return;
         }
+        let Some(target) = self.target.fixed_target() else {
+            return;
+        };
         let context = unsafe { &*(self.context as *const Context) };
-        route_module(context, &self.target, self.cost, operation);
+        route_module(context, target, self.cost, operation);
     }
 }
 
