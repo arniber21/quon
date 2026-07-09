@@ -1,0 +1,27 @@
+[package]
+name    = "quonlint"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+ir-analysis = ["dep:mlir_bridge", "dep:melior", "dep:backend"]
+
+[dependencies]
+frontend    = { path = "../frontend" }
+quon_core   = { path = "../quon_core" }
+backend     = { path = "../backend", optional = true }
+mlir_bridge = { path = "../mlir_bridge", optional = true }
+melior      = { workspace = true, optional = true }
+thiserror   = { workspace = true }
+serde       = { workspace = true, features = ["derive"] }
+serde_json  = { workspace = true }
+toml        = "0.8"
+glob        = "0.3"
+rayon       = "1"
+ariadne     = { workspace = true }
+tower-lsp   = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+serde_json = { workspace = true }

@@ -9,6 +9,8 @@ members = [
     "quon_core",
     "quon_lsp",
     "quonfmt",
+    "quonlint",
+    "quonlint-cli",
     "quon_na",
 ]
 resolver = "2"

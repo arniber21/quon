@@ -1,0 +1,17 @@
+# Baseline hit counts for quonlint corpus (issue #47).
+# Generated via: quonlint --project --format json --fail-on warn
+# Zero errors required; info-level hits documented per rule.
+
+[baseline]
+files = 59
+errors = 0
+warnings = 0
+
+[rules."depth/sequential-for-blowup"]
+hits = "expected on Trotter loops (info)"
+
+[rules."depth/controlled-chain"]
+hits = "expected on QFT fixtures (info)"
+
+[rules."monad/circuit-bind-without-apply"]
+hits = 0

@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use frontend;
+use quonlint::{LintConfig, diagnostics_to_lsp, lint_source};
 use tower_lsp::Client;
 use tower_lsp::lsp_types::Url;
 
@@ -68,8 +69,23 @@ impl AnalysisScheduler {
             let (lsp_diags, analysis) = match tokio::task::spawn_blocking(move || {
                 let result = frontend::analyze(&text_for_task);
                 let line_index = LineIndex::new(&text_for_task);
-                let diags =
+                let mut diags =
                     analysis_to_lsp_diags(&text_for_task, &result, &line_index, &uri_for_analysis);
+
+                if result.diagnostics.is_empty() {
+                    let lint_config = LintConfig::default();
+                    let lints = lint_source(
+                        std::path::Path::new(uri_for_analysis.path()),
+                        &text_for_task,
+                        &lint_config,
+                    );
+                    diags.extend(diagnostics_to_lsp(
+                        &text_for_task,
+                        &lints,
+                        &uri_for_analysis,
+                    ));
+                }
+
                 (diags, result)
             })
             .await

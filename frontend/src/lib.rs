@@ -40,6 +40,8 @@ pub mod types;
 #[cfg(feature = "full")]
 pub use analysis::DocumentAnalysis;
 #[cfg(feature = "full")]
+pub use analysis::TypedProgram;
+#[cfg(feature = "full")]
 pub use analysis::analyze_program;
 
 use crate::ast::Decl;
