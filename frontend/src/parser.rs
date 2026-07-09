@@ -76,6 +76,25 @@ pub fn parse(tokens: &[Sp<Token>]) -> Result<Vec<Sp<Decl>>, Vec<Sp<String>>> {
     })
 }
 
+/// Parse tokens, returning structured diagnostics on failure.
+pub fn parse_rich(
+    tokens: &[Sp<Token>],
+) -> Result<Vec<Sp<Decl>>, Vec<crate::diagnostics::RichDiagnostic>> {
+    let eoi: SimpleSpan = tokens
+        .last()
+        .map(|(_, s)| (s.end..s.end).into())
+        .unwrap_or_else(|| (0..0).into());
+    let input = tokens.split_token_span(eoi);
+    program().parse(input).into_result().map_err(|errs| {
+        errs.into_iter()
+            .map(|e| {
+                let msg = e.to_string();
+                crate::diagnostics::classify_parse_error(&msg, *e.span())
+            })
+            .collect()
+    })
+}
+
 type PErr<'a> = extra::Err<Rich<'a, Token>>;
 
 fn program<'a, I>() -> impl Parser<'a, I, Vec<Sp<Decl>>, PErr<'a>>

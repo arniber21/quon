@@ -6,6 +6,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use crate::analysis::{AnalysisScheduler, debounce_from_env};
+use crate::diagnostics::code_actions_for_range;
 use crate::document::{DocumentError, DocumentStore};
 
 pub struct QuonLanguageServer {
@@ -40,6 +41,15 @@ impl LanguageServer for QuonLanguageServer {
                         open_close: Some(true),
                         change: Some(TextDocumentSyncKind::INCREMENTAL),
                         save: None,
+                        ..Default::default()
+                    },
+                )),
+                code_action_provider: Some(CodeActionProviderCapability::Options(
+                    CodeActionOptions {
+                        code_action_kinds: Some(vec![
+                            CodeActionKind::QUICKFIX,
+                            CodeActionKind::REFACTOR_REWRITE,
+                        ]),
                         ..Default::default()
                     },
                 )),
@@ -95,5 +105,31 @@ impl LanguageServer for QuonLanguageServer {
             tracing::error!("document store write lock poisoned");
         }
         self.client.publish_diagnostics(uri, vec![], None).await;
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri;
+        let range = params.range;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        let actions = code_actions_for_range(&uri, &doc.text, analysis, range, &doc.line_index);
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(
+                actions
+                    .into_iter()
+                    .map(CodeActionOrCommand::CodeAction)
+                    .collect(),
+            ))
+        }
     }
 }

@@ -147,6 +147,18 @@ pub fn lex(src: &str) -> Result<Vec<Sp<Token>>, Vec<Sp<String>>> {
     })
 }
 
+/// Tokenize `src`, returning structured diagnostics on failure.
+pub fn lex_rich(src: &str) -> Result<Vec<Sp<Token>>, Vec<crate::diagnostics::RichDiagnostic>> {
+    lexer().parse(src).into_result().map_err(|errs| {
+        errs.into_iter()
+            .map(|e| {
+                let msg = e.to_string();
+                crate::diagnostics::classify_lex_error(&msg, *e.span())
+            })
+            .collect()
+    })
+}
+
 type LexErr<'src> = extra::Err<Rich<'src, char>>;
 
 fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Sp<Token>>, LexErr<'src>> {
