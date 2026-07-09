@@ -109,6 +109,7 @@ this table is our own engineering glue, not a literature claim.
 | Zone transfer semantics (load/move/store; ghost spots) | [AbstractModel] | Sec. III-B, Sec. III-C constraint (c) |
 | Zoned **joint placement-routing** (#107) | [RAP] — the paper being reproduced | Secs. III-B, IV-A/B/C, V; Eqs. (1)–(5) |
 | Reuse ("don't move atoms already in place") optimization | [RAP] (reuse analysis, from ZAC) | Sec. III-A "Analyzing Reuse" |
+| Schedule compaction (#108): exclusive-cycle ASAP + greedy E0 merge | **engineering glue** (not a paper reproduction; **not** Enola-optimal ASAP) | Exclusive-cycle ASAP serializes independent layers for a merge-free baseline; greedy recovers legal entangle-only parallelism. [Enola] Sec. 3 cited only for critical-path lower bound / true ASAP; [RAP] Sec. III-A is reuse only |
 | Benchmark reproduction anchor (#111) | [RAP] | Table I (Sec. VI-B) |
 | Per-`CodeFamily` overhead formulas (#109) | [Bravyi24], [BMD07], [Kelly15], [Gottesman97] | Section 10 below |
 | Code blocks moved as scheduling units; transversal logical gates | [Bluvstein24] (motivation only, not reproduced) | Figs. 1a, 2a |

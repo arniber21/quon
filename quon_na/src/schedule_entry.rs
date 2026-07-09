@@ -4,9 +4,11 @@
 //! It validates the graph and returns a [`GraphScheduleRequest`] with empty
 //! schedule layers and no layout — a stable extension point for placement
 //! ([`crate::placement::place`], #104), Misra–Gries entangling-layer scheduling
-//! ([`crate::entangling_schedule::schedule_entangling_layers`], #105), and Quon
-//! flat AOD movement with interaction-pair bank duals
-//! ([`crate::movement::plan_aod_movement`], #106; Enola-inspired conflicts only).
+//! ([`crate::entangling_schedule::schedule_entangling_layers`], #105), Quon flat
+//! AOD movement with interaction-pair bank duals
+//! ([`crate::movement::plan_aod_movement`], #106; Enola-inspired conflicts only),
+//! zoned RAP (#107), and schedule compaction
+//! ([`crate::compaction::compact_schedule`], #108) as a post-pass.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -23,14 +25,16 @@ use crate::schedule::ScheduleLayer;
 /// [`crate::entangling_schedule::schedule_entangling_layers`] to fill `layers`
 /// via Misra–Gries / ASAP (does not require `layout`), then
 /// [`crate::movement::plan_aod_movement`] (#106) to expand with Transfer/Move
-/// cycles (requires layout + interaction-pair bank).
+/// cycles (requires layout + interaction-pair bank). Optionally compact with
+/// [`crate::compaction::compact_schedule`] (#108) after #105/#106/#107.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphScheduleRequest {
     pub graph: InteractionGraph,
     /// Empty after [`schedule_from_graph`]; filled by
     /// [`crate::entangling_schedule::schedule_entangling_layers`] (#105);
-    /// rewritten by [`crate::movement::plan_aod_movement`] (#106).
+    /// rewritten by [`crate::movement::plan_aod_movement`] (#106);
+    /// may be rewritten by [`crate::compaction::compact_schedule`] (#108).
     pub layers: Vec<ScheduleLayer>,
     /// Filled by [`crate::placement::place`] (#104); enlarged with an
     /// interaction-pair bank by [`crate::movement::ensure_interaction_pairs`]
