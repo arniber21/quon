@@ -7,6 +7,10 @@
 //! Interaction-graph extraction (#103) follows [Enola] (interaction graph /
 //! dependency segments) and [Atomique] (layer-decayed `γ^l` edge weights); see
 //! `docs/neutral_atom/architecture_model.md` §4.
+//!
+//! Placement (#104) maps logical qubits onto SLM sites with row-major,
+//! degree-based, and interaction-clustering heuristics inspired by [Atomique]
+//! Sec. III-B; see `docs/neutral_atom/architecture_model.md` §4.
 
 #[cfg(feature = "mlir")]
 pub mod dialect;
@@ -14,6 +18,7 @@ pub mod dialect;
 pub mod extract;
 pub mod graph;
 pub mod layout;
+pub mod placement;
 pub mod report;
 pub mod schedule;
 pub mod schedule_entry;
@@ -25,6 +30,10 @@ pub use graph::{
 };
 pub use layout::{
     AodTrapRef, AtomBinding, AtomId, AtomSite, NeutralAtomLayout, Position, SiteId, TrapBinding,
+};
+pub use placement::{
+    PlacementError, PlacementResult, PlacementStrategy, SITE_PITCH_UM, grid_dims, place,
+    placement_score,
 };
 pub use report::ResourceReport;
 pub use schedule::{

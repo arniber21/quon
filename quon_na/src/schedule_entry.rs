@@ -3,7 +3,7 @@
 //! [`schedule_from_graph`] bypasses Quon source and `quantum.dynamic` entirely.
 //! It validates the graph and returns a [`GraphScheduleRequest`] with empty
 //! schedule layers and no layout — a stable extension point for placement
-//! (#104), edge-coloring (#105), and AOD movement (#106).
+//! ([`crate::placement::place`], #104), edge-coloring (#105), and AOD movement (#106).
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -23,7 +23,7 @@ pub struct GraphScheduleRequest {
     pub graph: InteractionGraph,
     /// Always empty after [`schedule_from_graph`] until #105/#106 populate it.
     pub layers: Vec<ScheduleLayer>,
-    /// Reserved for #104; always `None` in #103.
+    /// Filled by [`crate::placement::place`] (#104); `None` after [`schedule_from_graph`].
     pub layout: Option<NeutralAtomLayout>,
 }
 
