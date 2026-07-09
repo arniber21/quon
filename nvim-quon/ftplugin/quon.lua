@@ -9,3 +9,6 @@ vim.bo.textwidth = 100
 
 -- Prefer conform / :Format (stdin quonfmt). Do not shell quonfmt -w on the buffer path.
 vim.bo.formatexpr = ""
+
+-- Start Tree-sitter highlighting for shared-grammar AC (registration alone is not enough).
+pcall(vim.treesitter.start)

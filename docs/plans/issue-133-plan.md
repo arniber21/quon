@@ -72,7 +72,7 @@ Do not re-derive; spot-check only what you touch.
 | #132 Zed | `extensions/zed-quon/` + WASM LSP hook | consumes grammar; Zed query copies synced from shared |
 | #133 Neovim | `nvim-quon/` Lua module | consumes grammar + shared queries; **Neovim overlay only** |
 
-**Rule**: one `tree-sitter-quon` grammar (`grammar.js` / `src/parser.c` / `corpus/`) owned by #131. Shared `tree-sitter-quon/queries/*.scm` are canonical. #133 may add a **documented Neovim-only overlay** (extra captures) — never a second `grammar.js` or a forked corpus layout.
+**Rule**: one `tree-sitter-quon` grammar (`grammar.js` / `src/parser.c` / `test/corpus/`) owned by #131. Shared `tree-sitter-quon/queries/*.scm` are canonical. #133 may add a **documented Neovim-only overlay** (extra captures) — never a second `grammar.js` or a forked corpus layout.
 
 ---
 
@@ -146,7 +146,8 @@ tree-sitter-quon/                 # SHARED; owned initially by #131
 │   ├── highlights.scm            # canonical for Zed + Neovim
 │   ├── indents.scm               # optional; useful for Neovim
 │   └── locals.scm                # optional
-├── corpus/                       # tree-sitter test corpus (.txt) — NOT test/corpus/
+├── test/
+│   └── corpus/                  # tree-sitter test corpus (.txt)
 ├── package.json
 └── README.md                     # consumption contract for #131/#132/#133
 ```
@@ -155,7 +156,7 @@ tree-sitter-quon/                 # SHARED; owned initially by #131
 
 | Asset | Owner | #133 action |
 |-------|-------|-------------|
-| `grammar.js` / `src/parser.c` / `corpus/` | **#131** | **Consume only** — never create or fork |
+| `grammar.js` / `src/parser.c` / `test/corpus/` | **#131** | **Consume only** — never create or fork |
 | Shared `queries/*.scm` | **#131** (canonical) | Point nvim-treesitter at them; do not re-author a parallel full set |
 | Neovim-only query overlay | **#133** | Allowed only as documented extras under `nvim-quon/queries/quon/` |
 | nvim-treesitter registration + install docs | **#133** | `User TSUpdate` + `install_info` (see §6.3) |
@@ -166,7 +167,7 @@ tree-sitter-quon/                 # SHARED; owned initially by #131
 2. **If present:** stack/rebase #133 onto it; wire `nvim-quon` to that path.
 3. **If absent:** **stop grammar work** — do **not** scaffold `tree-sitter-quon/` in the #133 PR. Either wait for #131, stack Graphite under the #131 grammar branch, or land a **tiny precursor owned as the #131 grammar commit** (same layout as #131) *before* Neovim packaging — never a Neovim-private grammar.
 
-Do **not** embed `grammar.js` under `nvim-quon/`. Do **not** use `test/corpus/` — corpus lives at `tree-sitter-quon/corpus/` per #131.
+Do **not** embed `grammar.js` under `nvim-quon/`. Corpus lives at `tree-sitter-quon/test/corpus/` per #131.
 
 ### D3 — LSP registration: `lsp/quon_lsp.lua` + `vim.lsp.config` / `enable` only
 
@@ -317,7 +318,7 @@ flowchart LR
 
 ### 6.1 Grammar scope (MVP) — owned by #131, not #133
 
-#133 does **not** author `grammar.js`. Highlighting-grade coverage (comments, keywords, idents, numbers, operators, `circuit`/`run`/`borrow` blocks) is defined in the #131 plan. Corpus lives at **`tree-sitter-quon/corpus/`** (not `test/corpus/`).
+#133 does **not** author `grammar.js`. Highlighting-grade coverage (comments, keywords, idents, numbers, operators, `circuit`/`run`/`borrow` blocks) is defined in the #131 plan. Corpus lives at **`tree-sitter-quon/test/corpus/`**.
 
 Implementer checks: shared package present; `npx tree-sitter test` (or documented script) passes on the #131 corpus subset. Gaps are #131 follow-ups unless a query-only overlay fixes Neovim captures.
 
@@ -546,13 +547,13 @@ Prefer extending existing tooling workflow with `continue-on-error: true` initia
 ### Phase 0 — Preflight (30–60 min)
 
 - [ ] Confirm `cargo build -p quon_lsp -p quonfmt -p quonlint-cli` works in the agent environment (LLVM 22).
-- [ ] **Grammar gate:** confirm `tree-sitter-quon/` exists on `main` / #131 PR / stacked branch with #131 layout (`corpus/`, `queries/`, committed `src/parser.c`). If missing → **do not create grammar in #133**; wait or stack under #131.
+- [ ] **Grammar gate:** confirm `tree-sitter-quon/` exists on `main` / #131 PR / stacked branch with #131 layout (`test/corpus/`, `queries/`, committed `src/parser.c`). If missing → **do not create grammar in #133**; wait or stack under #131.
 - [ ] Confirm Neovim ≥ 0.11 available for local smoke (`vim.lsp.config` / `enable`).
 
 ### Phase 1 — Consume shared grammar (no authorship)
 
 - [ ] Wire paths only: document / resolve abs path to existing `tree-sitter-quon/`.
-- [ ] Spot-check shared `queries/highlights.scm` + `corpus/` layout matches #131 pin.
+- [ ] Spot-check shared `queries/highlights.scm` + `test/corpus/` layout matches #131 pin.
 - [ ] Do **not** add `grammar.js` or alternate corpus paths in this issue’s PR.
 
 ### Phase 2 — `nvim-quon` skeleton + LSP catalog
@@ -615,7 +616,7 @@ No changes required to `quon_lsp` / `quonfmt` / `quonlint` **unless** a bug is f
 | Diagnostics / hover / completion / go-to-def on bell-state | Manual or headless smoke on `frontend/tests/fixtures/bell_state.qn` |
 | `:Format` / format-on-save uses `quonfmt` | Format buffer; output matches `quonfmt` CLI stdin result |
 | Install docs: lazy.nvim **and** packer | Present in `nvim-quon/README.md` (+ agent doc) |
-| Grammar shared with VS Code/Zed | Consumes single `tree-sitter-quon/` (#131 layout: `corpus/`, shared `queries/`); no second grammar; Neovim overlay documented if any |
+| Grammar shared with VS Code/Zed | Consumes single `tree-sitter-quon/` (#131 layout: `test/corpus/`, shared `queries/`); no second grammar; Neovim overlay documented if any |
 | Optional headless CI | Workflow + script exist **or** explicitly deferred in PR with rationale |
 
 ---
@@ -699,7 +700,7 @@ No changes required to `quon_lsp` / `quonfmt` / `quonlint` **unless** a bug is f
 
 | # | Blocker | Plan fix |
 |---|---------|----------|
-| 1 | Shared-grammar contract vs #131/#132 | D2 + §6: consume-first; #131 paths (`corpus/`, shared `queries/`); Neovim overlay only; no grammar invent in #133 |
+| 1 | Shared-grammar contract vs #131/#132 | D2 + §6: consume-first; #131 paths (`test/corpus/`, shared `queries/`); Neovim overlay only; no grammar invent in #133 |
 | 2 | Treesitter install snippet stale | §6.3: `User TSUpdate` + `install_info.path` / `location`; no `get_parser_configs` |
 | 3 | lspconfig dual `.setup()` / missing catalog | D3 + §7: ship `lsp/quon_lsp.lua`; `vim.lsp.config`/`enable` only |
 | 4 | lazy `ft = "qn"` | §9.1: `ft = "quon"`; filetype/languageId = `quon` everywhere |

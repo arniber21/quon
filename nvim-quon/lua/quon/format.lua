@@ -52,9 +52,10 @@ function M.setup(opts)
     vim.api.nvim_create_user_command("Format", function(cmd_opts)
       require("conform").format({
         bufnr = 0,
+        -- conform range end is exclusive (end line is not included).
         range = cmd_opts.range ~= 0 and {
           start = { cmd_opts.line1, 0 },
-          ["end"] = { cmd_opts.line2, 0 },
+          ["end"] = { cmd_opts.line2 + 1, 0 },
         } or nil,
       })
     end, { range = true, desc = "Format with conform (quonfmt for Quon)" })
