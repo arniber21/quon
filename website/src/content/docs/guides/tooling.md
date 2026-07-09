@@ -3,9 +3,10 @@ title: Developer tooling
 description: Run Quon's language server, formatter, and linter from a source checkout.
 ---
 
-Quon ships a language server, formatter, and linter in the repository. First-party
-editor extensions are still in development, but you can build the tools and connect
-them to an editor today.
+Quon ships a language server, formatter, and linter in the repository, plus a
+first-party VS Code extension at `extensions/vscode-quon/`. Build the tools from
+source and use the extension (or wire the binaries into another editor) as described
+below.
 
 ## Build the tools
 

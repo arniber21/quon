@@ -29,7 +29,7 @@ Discovery order (symmetric for both tools): setting → env → `PATH` → `targ
 cd extensions/vscode-quon
 npm ci
 npm run package
-code --install-extension dist/quon-vscode-*.vsix
+code --install-extension dist/quon-vscode.vsix
 ```
 
 ### Extension Development Host (F5)
