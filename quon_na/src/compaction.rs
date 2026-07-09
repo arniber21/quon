@@ -40,14 +40,23 @@
 //! # Feed-forward trust boundary (B4)
 //!
 //! [`infer_atom_dependencies`] never invents [`ScheduleDependencyKind::FeedForward`].
-//! Without caller-supplied FeedForward edges, compaction cannot claim classical
-//! control safety when correction atoms differ from the measured atom.
+//! **Only** an explicit FeedForward (or Measurement) edge protects
+//! measure→correction when correction atoms are disjoint from the measured atom.
+//! Without that edge, classical-control safety is **not** claimed.
 //!
-//! # Physical legality (B3)
+//! The locked AC3 fixture (Measure(`q0`), then Entangle(`q2`,`q3`), then
+//! Entangle(`q2`,`q4`)) shares `q2` between L2 and L3, so inferred AtomHazard /
+//! `validate_conflicts` already blocks L2∥L3. Do **not** read that as “L3 could
+//! merge with L2 without FeedForward” — FeedForward alone protects measure→L3.
 //!
-//! When `layout` and [`CompactionOptions::legality`] are present, position-aware
-//! R2/R3 geometry checks are **mandatory** on entangle merges (MLIR-free).
-//! Zone re-validate is best-effort on static bindings for entangle-only merges.
+//! # Physical legality (B3 contract (b))
+//!
+//! Position-aware R2/R3 runs **iff** `request.layout` **and**
+//! [`CompactionOptions::legality`] are both set (MLIR-free). Without `legality`,
+//! geometry is **unchecked** even when a layout is present (AC2 / default opts
+//! may accept physically illegal E0 merges). Do **not** claim R2/R3 runs
+//! “whenever layout is present.” Zone re-validate is best-effort on static
+//! bindings for entangle-only merges.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -151,7 +160,10 @@ pub struct LegalityLimits {
 pub struct CompactionOptions {
     /// When set with layout, run zone checks after compaction (best-effort; see B3).
     pub arch: Option<ZonedArchitecture>,
-    /// When set **with** `request.layout`, enable mandatory position-aware R2/R3.
+    /// Position-aware R2/R3 runs **iff** this is `Some` **and** `request.layout`
+    /// is `Some` (B3 contract **(b)**). `None` ⇒ geometry unchecked (AC2 may
+    /// accept physically illegal E0 merges). Callers who need geometry must set
+    /// `legality`; layout alone does **not** enable R2/R3.
     pub legality: Option<LegalityLimits>,
     /// If true, run greedy compaction after ASAP; if false, ASAP-only baseline.
     pub greedy: bool,
@@ -939,7 +951,8 @@ fn try_merge_pair(
         return Ok(MergeAttempt::Skip);
     }
 
-    // Position-aware R2/R3 when legality + layout present.
+    // B3 contract (b): R2/R3 only when legality AND layout are both set.
+    // Without legality, geometry is unchecked even if layout is present.
     if let Some(limits) = &opts.legality {
         let Some(layout) = layout.as_ref() else {
             return Ok(MergeAttempt::HardFail(CompactionError::LayoutRequired));
@@ -1008,9 +1021,12 @@ fn apply_merge(
     Ok(())
 }
 
-/// Public helper for tests: attempt a forced merge of two layer indices after ASAP.
-#[cfg(test)]
-pub(crate) fn force_merge_layers(
+/// Attempt a forced merge of two post-ASAP layer indices (test / diagnostic helper).
+///
+/// Runs exclusive-cycle ASAP, then tries to merge layers `i` and `j` without the
+/// greedy search. Used by acceptance tests to assert HardFail paths
+/// (`DependencyViolation`, `ForbiddenMergeClass`, …).
+pub fn force_merge_layers(
     req: GraphScheduleRequest,
     deps: &[ScheduleDependency],
     i: usize,
@@ -1041,506 +1057,4 @@ pub(crate) fn force_merge_layers(
         critical_path,
         compacted: true,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::graph::{DEFAULT_GAMMA, InteractionGraph, LogicalQubitId};
-    use crate::layout::{AtomBinding, AtomSite, SiteId};
-    use crate::schedule::{
-        AtomMove, MeasurementBasis, MovementGroup, TransferDirection, TrapTransfer,
-    };
-    use crate::schedule_entry::schedule_from_graph;
-    use crate::zoned::{ZoneKind, toy_zoned_architecture};
-
-    fn empty_req(n_qubits: u32) -> GraphScheduleRequest {
-        let vertices: Vec<_> = (0..n_qubits).map(LogicalQubitId).collect();
-        let graph = InteractionGraph::from_interactions(vertices, vec![], vec![], DEFAULT_GAMMA)
-            .expect("empty graph");
-        schedule_from_graph(graph).expect("stub")
-    }
-
-    fn entangle(a: u32, b: u32) -> NeutralAtomAction {
-        NeutralAtomAction::Entangle2 {
-            atoms: [AtomId(a), AtomId(b)],
-            duration_us: 1,
-        }
-    }
-
-    fn measure(a: u32) -> NeutralAtomAction {
-        NeutralAtomAction::Measure {
-            atom: AtomId(a),
-            basis: MeasurementBasis::Z,
-            duration_us: 1,
-        }
-    }
-
-    fn layer(cycle: u32, actions: Vec<NeutralAtomAction>) -> ScheduleLayer {
-        ScheduleLayer { cycle, actions }
-    }
-
-    #[test]
-    fn empty_schedule_errors() {
-        let req = empty_req(2);
-        let err = asap_schedule_layers(req, &[]).unwrap_err();
-        assert!(matches!(err, CompactionError::EmptySchedule));
-    }
-
-    #[test]
-    fn feed_forward_not_inferred() {
-        let layers = vec![layer(0, vec![measure(0)]), layer(1, vec![entangle(2, 3)])];
-        let deps = infer_atom_dependencies(&layers);
-        assert!(
-            deps.iter()
-                .all(|d| d.kind != ScheduleDependencyKind::FeedForward)
-        );
-        assert!(deps.is_empty(), "disjoint atoms → no AtomHazard either");
-    }
-
-    #[test]
-    fn infer_atom_dependencies_shared_atom() {
-        let layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(1, vec![entangle(1, 2)]),
-        ];
-        let deps = infer_atom_dependencies(&layers);
-        assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0].before, 0);
-        assert_eq!(deps[0].after, 1);
-        assert_eq!(deps[0].kind, ScheduleDependencyKind::AtomHazard);
-    }
-
-    #[test]
-    fn asap_dependency_chain_matches_critical_path() {
-        // Chain coincidence with lower bound — not an Enola-optimality claim.
-        let mut req = empty_req(4);
-        req.layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(1, vec![entangle(1, 2)]),
-            layer(2, vec![entangle(2, 3)]),
-        ];
-        let result = asap_schedule_layers(req, &[]).expect("asap");
-        assert_eq!(result.asap_makespan_cycles, 3);
-        assert_eq!(result.critical_path.critical_path_length, 3);
-        assert_eq!(result.request.layers.len(), 3);
-        assert!(!result.compacted);
-    }
-
-    #[test]
-    fn asap_exclusive_cycle_serializes_independent() {
-        let mut req = empty_req(4);
-        req.layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(0, vec![entangle(2, 3)]),
-        ];
-        let result = asap_schedule_layers(req, &[]).expect("asap");
-        assert_eq!(result.asap_makespan_cycles, 2);
-        assert_eq!(result.critical_path.critical_path_length, 1);
-        assert!(result.asap_makespan_cycles > result.critical_path.critical_path_length);
-    }
-
-    #[test]
-    fn asap_does_not_union_actions() {
-        let mut req = empty_req(4);
-        req.layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(0, vec![entangle(2, 3)]),
-        ];
-        let n = req.layers.len();
-        let result = asap_schedule_layers(req, &[]).expect("asap");
-        assert_eq!(result.request.layers.len(), n);
-        for l in &result.request.layers {
-            assert_eq!(l.actions.len(), 1);
-        }
-    }
-
-    #[test]
-    fn greedy_reduces_vs_asap_e0() {
-        let mut req = empty_req(4);
-        req.layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(0, vec![entangle(2, 3)]),
-        ];
-        let opts = CompactionOptions {
-            greedy: true,
-            ..Default::default()
-        };
-        let result = compact_schedule(req, &[], &opts).expect("compact");
-        assert_eq!(result.asap_makespan_cycles, 2);
-        assert_eq!(result.compacted_makespan_cycles, 1);
-        assert!(result.compacted_makespan_cycles < result.asap_makespan_cycles);
-        assert!(result.compacted);
-        assert_eq!(result.request.layers.len(), 1);
-        assert_eq!(result.request.layers[0].actions.len(), 2);
-    }
-
-    #[test]
-    fn measure_feed_forward_disjoint() {
-        let mut req = empty_req(5);
-        req.layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(1, vec![measure(0)]),
-            layer(2, vec![entangle(2, 3)]),
-            layer(3, vec![entangle(2, 4)]),
-        ];
-        let ff = feed_forward_dependencies(1, &[3]);
-        let opts = CompactionOptions {
-            greedy: true,
-            ..Default::default()
-        };
-        let result = compact_schedule(req, &ff, &opts).expect("compact");
-        let c_meas = result
-            .request
-            .layers
-            .iter()
-            .find(|l| {
-                l.actions
-                    .iter()
-                    .any(|a| matches!(a, NeutralAtomAction::Measure { atom, .. } if atom.0 == 0))
-            })
-            .map(|l| l.cycle)
-            .expect("measure layer");
-        let c_corr = result
-            .request
-            .layers
-            .iter()
-            .find(|l| {
-                l.actions.iter().any(|a| {
-                    matches!(
-                        a,
-                        NeutralAtomAction::Entangle2 { atoms, .. }
-                            if atoms[0] == AtomId(2) && atoms[1] == AtomId(4)
-                    )
-                })
-            })
-            .map(|l| l.cycle)
-            .expect("correction layer");
-        assert!(c_meas < c_corr);
-    }
-
-    #[test]
-    fn cannot_merge_measure_with_correction() {
-        let mut req = empty_req(5);
-        req.layers = vec![layer(0, vec![measure(0)]), layer(1, vec![entangle(2, 4)])];
-        let ff = feed_forward_dependencies(0, &[1]);
-        let opts = CompactionOptions::default();
-        let err = force_merge_layers(req, &ff, 0, 1, &opts).unwrap_err();
-        assert!(matches!(err, CompactionError::DependencyViolation));
-    }
-
-    #[test]
-    fn barrier_blocks_cross_merge() {
-        let mut req = empty_req(6);
-        req.layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(1, vec![entangle(4, 5)]),
-            layer(2, vec![entangle(2, 3)]),
-        ];
-        let deps = vec![ScheduleDependency {
-            before: 0,
-            after: 2,
-            kind: ScheduleDependencyKind::Barrier,
-        }];
-        let opts = CompactionOptions {
-            greedy: true,
-            ..Default::default()
-        };
-        let result = compact_schedule(req, &deps, &opts).expect("compact");
-        let cycle_of_pair = |a: u32, b: u32| -> Option<u32> {
-            result.request.layers.iter().find_map(|l| {
-                l.actions.iter().find_map(|action| match action {
-                    NeutralAtomAction::Entangle2 { atoms, .. }
-                        if atoms[0] == AtomId(a) && atoms[1] == AtomId(b) =>
-                    {
-                        Some(l.cycle)
-                    }
-                    _ => None,
-                })
-            })
-        };
-        assert_ne!(cycle_of_pair(0, 1), cycle_of_pair(2, 3));
-    }
-
-    #[test]
-    fn forbidden_merge_transfer_layers() {
-        let mut req = empty_req(2);
-        let xfer = |atom: u32, site: u32| {
-            NeutralAtomAction::Transfer(TrapTransfer {
-                atom: AtomId(atom),
-                direction: TransferDirection::SlmToAod,
-                site: SiteId(site),
-                aod: PLACEHOLDER_AOD,
-                duration_us: 15,
-            })
-        };
-        req.layers = vec![layer(0, vec![xfer(0, 0)]), layer(1, vec![xfer(1, 1)])];
-        let opts = CompactionOptions::default();
-        let err = force_merge_layers(req, &[], 0, 1, &opts).unwrap_err();
-        assert!(matches!(err, CompactionError::ForbiddenMergeClass(_)));
-    }
-
-    #[test]
-    fn merge_rejected_when_r2_r3_violated() {
-        // Two pairs too close for isolation when merged.
-        let mut req = empty_req(4);
-        req.layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(0, vec![entangle(2, 3)]),
-        ];
-        req.layout = Some(NeutralAtomLayout {
-            sites: vec![
-                AtomSite {
-                    id: SiteId(0),
-                    position: Position {
-                        x_um: 0.0,
-                        y_um: 0.0,
-                    },
-                },
-                AtomSite {
-                    id: SiteId(1),
-                    position: Position {
-                        x_um: 5.0,
-                        y_um: 0.0,
-                    },
-                },
-                AtomSite {
-                    id: SiteId(2),
-                    position: Position {
-                        x_um: 6.0,
-                        y_um: 0.0,
-                    },
-                },
-                AtomSite {
-                    id: SiteId(3),
-                    position: Position {
-                        x_um: 11.0,
-                        y_um: 0.0,
-                    },
-                },
-            ],
-            initial_bindings: (0..4)
-                .map(|i| AtomBinding {
-                    atom: AtomId(i),
-                    trap: TrapBinding::Slm { site: SiteId(i) },
-                })
-                .collect(),
-        });
-        let opts = CompactionOptions {
-            greedy: true,
-            legality: Some(LegalityLimits {
-                rydberg_range_um: 7.5,
-                min_rydberg_spacing_um: 18.75,
-                aod_min_separation_um: 2.0,
-            }),
-            ..Default::default()
-        };
-        let result = compact_schedule(req, &[], &opts).expect("compact");
-        // Merge must be rejected → still 2 cycles.
-        assert_eq!(result.compacted_makespan_cycles, 2);
-        assert!(!result.compacted);
-    }
-
-    #[test]
-    fn r2_r3_runs_without_mlir_feature() {
-        // Same as above — this test file compiles under --no-default-features.
-        let mut req = empty_req(4);
-        req.layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(0, vec![entangle(2, 3)]),
-        ];
-        // Far-apart pairs: merge should succeed under legality.
-        req.layout = Some(NeutralAtomLayout {
-            sites: vec![
-                AtomSite {
-                    id: SiteId(0),
-                    position: Position {
-                        x_um: 0.0,
-                        y_um: 0.0,
-                    },
-                },
-                AtomSite {
-                    id: SiteId(1),
-                    position: Position {
-                        x_um: 5.0,
-                        y_um: 0.0,
-                    },
-                },
-                AtomSite {
-                    id: SiteId(2),
-                    position: Position {
-                        x_um: 40.0,
-                        y_um: 0.0,
-                    },
-                },
-                AtomSite {
-                    id: SiteId(3),
-                    position: Position {
-                        x_um: 45.0,
-                        y_um: 0.0,
-                    },
-                },
-            ],
-            initial_bindings: (0..4)
-                .map(|i| AtomBinding {
-                    atom: AtomId(i),
-                    trap: TrapBinding::Slm { site: SiteId(i) },
-                })
-                .collect(),
-        });
-        let opts = CompactionOptions {
-            greedy: true,
-            legality: Some(LegalityLimits {
-                rydberg_range_um: 7.5,
-                min_rydberg_spacing_um: 18.75,
-                aod_min_separation_um: 2.0,
-            }),
-            ..Default::default()
-        };
-        let result = compact_schedule(req, &[], &opts).expect("compact");
-        assert_eq!(result.compacted_makespan_cycles, 1);
-    }
-
-    #[test]
-    fn critical_path_report_populated() {
-        let mut req = empty_req(4);
-        req.layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(1, vec![entangle(1, 2)]),
-            layer(2, vec![entangle(2, 3)]),
-        ];
-        let result = asap_schedule_layers(req, &[]).expect("asap");
-        assert_eq!(result.critical_path.makespan_cycles, 3);
-        assert_eq!(result.critical_path.critical_path_length, 3);
-        assert_eq!(result.critical_path.critical_layer_indices, vec![0, 1, 2]);
-        let json = serde_json::to_string(&result.critical_path).expect("ser");
-        let back: CriticalPathReport = serde_json::from_str(&json).expect("de");
-        assert_eq!(back, result.critical_path);
-    }
-
-    #[test]
-    fn zoned_entangle_only_passthrough() {
-        let mut req = empty_req(4);
-        req.layers = vec![
-            layer(0, vec![entangle(0, 1)]),
-            layer(0, vec![entangle(2, 3)]),
-        ];
-        let arch = toy_zoned_architecture();
-        // Place atoms inside the entanglement zone (origin y=50) with pair gap
-        // and wide isolation so E0 merge + zone validate succeed.
-        let ent = arch
-            .zones
-            .iter()
-            .find(|z| z.kind == ZoneKind::Entanglement)
-            .expect("ent zone");
-        let y = ent.origin_um.1;
-        let sites = vec![
-            AtomSite {
-                id: SiteId(0),
-                position: Position { x_um: 0.0, y_um: y },
-            },
-            AtomSite {
-                id: SiteId(1),
-                position: Position { x_um: 2.0, y_um: y },
-            },
-            AtomSite {
-                id: SiteId(2),
-                position: Position {
-                    x_um: 40.0,
-                    y_um: y,
-                },
-            },
-            AtomSite {
-                id: SiteId(3),
-                position: Position {
-                    x_um: 42.0,
-                    y_um: y,
-                },
-            },
-        ];
-        req.layout = Some(NeutralAtomLayout {
-            sites,
-            initial_bindings: (0..4)
-                .map(|i| AtomBinding {
-                    atom: AtomId(i),
-                    trap: TrapBinding::Slm { site: SiteId(i) },
-                })
-                .collect(),
-        });
-        let opts = CompactionOptions {
-            greedy: true,
-            arch: Some(arch),
-            legality: Some(LegalityLimits {
-                rydberg_range_um: 7.5,
-                min_rydberg_spacing_um: 18.75,
-                aod_min_separation_um: 2.0,
-            }),
-        };
-        let result = compact_schedule(req, &[], &opts).expect("compact");
-        assert_eq!(result.compacted_makespan_cycles, 1);
-    }
-
-    #[test]
-    fn zone_reject_move_merge_without_simulator() {
-        let mut req = empty_req(4);
-        req.layers = vec![
-            layer(
-                0,
-                vec![NeutralAtomAction::Move(MovementGroup {
-                    moves: vec![AtomMove {
-                        atom: AtomId(0),
-                        from: SiteId(0),
-                        to: SiteId(1),
-                    }],
-                    duration_us: 10,
-                })],
-            ),
-            layer(1, vec![entangle(2, 3)]),
-        ];
-        let arch = toy_zoned_architecture();
-        req.layout = Some(NeutralAtomLayout {
-            sites: vec![
-                AtomSite {
-                    id: SiteId(0),
-                    position: Position {
-                        x_um: 0.0,
-                        y_um: 0.0,
-                    },
-                },
-                AtomSite {
-                    id: SiteId(1),
-                    position: Position {
-                        x_um: 10.0,
-                        y_um: 0.0,
-                    },
-                },
-                AtomSite {
-                    id: SiteId(2),
-                    position: Position {
-                        x_um: 40.0,
-                        y_um: 0.0,
-                    },
-                },
-                AtomSite {
-                    id: SiteId(3),
-                    position: Position {
-                        x_um: 45.0,
-                        y_um: 0.0,
-                    },
-                },
-            ],
-            initial_bindings: (0..4)
-                .map(|i| AtomBinding {
-                    atom: AtomId(i),
-                    trap: TrapBinding::Slm { site: SiteId(i) },
-                })
-                .collect(),
-        });
-        let opts = CompactionOptions {
-            arch: Some(arch),
-            ..Default::default()
-        };
-        let err = force_merge_layers(req, &[], 0, 1, &opts).unwrap_err();
-        assert!(matches!(err, CompactionError::ForbiddenMergeClass(_)));
-    }
 }

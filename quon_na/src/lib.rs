@@ -42,7 +42,7 @@ pub mod zoned;
 pub use compaction::{
     CompactionError, CompactionOptions, CompactionResult, CriticalPathReport, LegalityLimits,
     ScheduleDependency, ScheduleDependencyKind, asap_schedule_layers, compact_schedule,
-    feed_forward_dependencies, infer_atom_dependencies,
+    feed_forward_dependencies, force_merge_layers, infer_atom_dependencies,
 };
 pub use entangling_schedule::{
     EntanglingScheduleError, EntanglingScheduleResult, LayerUtilization, capacity_layer_count,
