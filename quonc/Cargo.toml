@@ -3,6 +3,10 @@ name    = "quonc"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "quonc"
+path = "src/lib.rs"
+
 [[bin]]
 name = "quonc"
 path = "src/main.rs"
@@ -11,7 +15,16 @@ path = "src/main.rs"
 frontend    = { path = "../frontend" }
 mlir_bridge = { path = "../mlir_bridge" }
 backend     = { path = "../backend" }
+quon_core   = { path = "../quon_core" }
 melior      = { workspace = true }
 clap        = { workspace = true }
 anyhow      = { workspace = true }
 ariadne     = { workspace = true }
+serde_json  = { workspace = true }
+notify      = { workspace = true }
+sha2        = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+serde = { workspace = true }
+serde_json = { workspace = true }

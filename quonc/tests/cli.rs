@@ -65,7 +65,18 @@ fn short_help_matches_long() {
 fn help_lists_all_documented_flags() {
     let out = quonc().arg("--help").output().expect("spawn");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for flag in ["--emit-qasm", "--target", "--dump-ir", "--verify-linear"] {
+    for flag in [
+        "--emit-qasm",
+        "--target",
+        "--dump-ir",
+        "--verify-linear",
+        "--metrics",
+        "--metrics-json",
+        "--metrics-snapshot",
+        "--regression-config",
+        "--watch",
+        "--watch-debounce-ms",
+    ] {
         assert!(stdout.contains(flag), "missing {flag} in --help");
     }
 }

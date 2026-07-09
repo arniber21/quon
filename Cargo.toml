@@ -42,6 +42,8 @@ arbitrary = { version = "1", features = ["derive"] }
 
 # Driver
 clap = { version = "4", features = ["derive"] }
+notify = "7"
+sha2 = "0.10"
 
 # Shared
 anyhow = "1"

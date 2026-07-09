@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "program": {
+    "source": "frontend/tests/fixtures/bell_state.qn",
+    "source_sha256": "61011c6daadd2c4ac160898be16dcfbee8c8283788af25ae741e8d521057407c",
+    "entry": "main"
+  },
+  "target": {
+    "id": "generic_openqasm"
+  },
+  "toolchain": {
+    "quonc_version": "0.1.0",
+    "git_commit": "baseline",
+    "git_dirty": false
+  },
+  "compile": {
+    "status": "ok",
+    "compile_ms": 100
+  },
+  "metrics": {
+    "depth": 2,
+    "depth_bound": null,
+    "gate_count": 2,
+    "t_count": 0,
+    "qubit_count": 2,
+    "swap_count": 0
+  }
+}

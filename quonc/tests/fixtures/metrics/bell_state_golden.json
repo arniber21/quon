@@ -1,0 +1,10 @@
+{
+  "metrics": {
+    "depth": 2,
+    "depth_bound": null,
+    "gate_count": 2,
+    "t_count": 0,
+    "qubit_count": 2,
+    "swap_count": 0
+  }
+}

@@ -11,8 +11,11 @@ description = "MLIR-free shared types and invariant kernels for the Quon workspa
 flux = ["dep:flux-rs"]
 
 [dependencies]
-thiserror = { workspace = true }
-flux-rs   = { workspace = true, optional = true }
+thiserror  = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+toml       = "0.8"
+flux-rs    = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

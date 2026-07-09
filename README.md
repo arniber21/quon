@@ -41,6 +41,9 @@ cargo build --release
 
 # Simulate with Qiskit Aer
 ./target/release/quonc program.qn --emit-qasm | python python/quon_aer.py --shots 4096
+
+# Experiment loop: live metrics and watch mode (see docs/agents/experiment-loop.md)
+./target/release/quonc program.qn --watch --target device.json --metrics
 ```
 
 ## Testing
