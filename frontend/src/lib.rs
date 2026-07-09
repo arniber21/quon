@@ -30,6 +30,37 @@ use crate::diagnostics::Diagnostic;
 use crate::lexer::Sp;
 use crate::typecheck::TypeChecker;
 
+pub use crate::diagnostics::fixes::apply_fixes;
+pub use crate::diagnostics::{
+    AnalysisResult, DiagnosticCode, DiagnosticSeverity, QuickFix, QuickFixKind, RelatedInfo,
+    RichDiagnostic, TextEdit,
+};
+
+/// IDE-oriented analysis: lex → parse → desugar → typecheck. Does not lower to MLIR.
+/// Accumulates errors from the first failing stage; never panics on partial source.
+pub fn analyze(source: &str) -> AnalysisResult {
+    let tokens = match crate::lexer::lex_rich(source) {
+        Ok(t) => t,
+        Err(diags) => return AnalysisResult { diagnostics: diags },
+    };
+    let decls = match crate::parser::parse_rich(&tokens) {
+        Ok(d) => d,
+        Err(diags) => return AnalysisResult { diagnostics: diags },
+    };
+    let decls = match crate::desugar::desugar_decls_rich(decls) {
+        Ok(d) => d,
+        Err(diags) => return AnalysisResult { diagnostics: diags },
+    };
+    match TypeChecker::new().check_decls(&decls) {
+        Ok(()) => AnalysisResult {
+            diagnostics: Vec::new(),
+        },
+        Err(errs) => AnalysisResult {
+            diagnostics: errs.iter().map(|e| e.to_rich_diagnostic(source)).collect(),
+        },
+    }
+}
+
 /// The frontend's single entry point for turning source text into an AST: it
 /// runs the lexer then the parser, folding both stages' errors into one
 /// [`Diagnostic`] stream so callers never re-thread the pipeline themselves.
@@ -58,10 +89,12 @@ pub fn desugar_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
 /// monad fragment is type-checked on the desugared tree. Lexer, parser, desugaring, and type
 /// errors are folded into the one [`Diagnostic`] stream.
 pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
-    let decls = desugar_program(src)?;
-    TypeChecker::new()
-        .check_decls(&decls)
-        .map_err(|errs| errs.iter().map(|e| e.to_diagnostic()).collect())
+    let result = analyze(src);
+    if result.diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(result.diagnostics.iter().map(Diagnostic::from).collect())
+    }
 }
 
 /// Parse, desugar, type-check, and lower circuit functions to `quantum.circ` MLIR (issue #16).

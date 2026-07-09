@@ -622,7 +622,8 @@ impl TypeChecker {
             Expr::Let { pat, rhs, body } => {
                 let rhs_ty = self.synth(env, delta, rhs)?;
                 let mut inner = env.clone();
-                let introduced = self.bind_pat(pat, &rhs_ty, &mut inner, delta)?;
+                let introduced =
+                    self.bind_pat_with_rhs(pat, Some(rhs), &rhs_ty, &mut inner, delta)?;
                 let ty = self.synth(&inner, delta, body)?;
                 self.ensure_consumed(delta, &introduced)?;
                 Ok(ty)
@@ -1284,9 +1285,15 @@ impl TypeChecker {
         // No-escape: reject before threading `Δ`, since a `return a` would otherwise *consume*
         // the ancilla into the result and pass the cleanup check, hiding the escape.
         if let Some((name, esc_span)) = find_borrow_escape(&block, &borrowed) {
+            let borrow_span = bindings
+                .iter()
+                .find(|(n, _)| n == &name)
+                .map(|(_, ann)| ann.1)
+                .unwrap_or(span);
             return Err(TypeError::BorrowEscape {
                 name,
                 span: esc_span,
+                borrow_span,
             });
         }
 
@@ -1499,7 +1506,7 @@ impl TypeChecker {
         // The loop variable(s) are classical qubit indices; bind them into Γ for the body.
         let mut inner = env.clone();
         let mut bound = Vec::new();
-        self.check_pat_into(pat, &elem, &mut inner, delta, &mut bound)?;
+        self.check_pat_into(pat, None, &elem, &mut inner, delta, &mut bound)?;
         let body_ty = self.synth(&inner, delta, body)?;
         if let (Some(saved), Some(top)) = (saved_ambient.as_ref(), self.circuit_width.last_mut()) {
             *top = saved.clone();
@@ -1627,6 +1634,7 @@ impl TypeChecker {
         let mut introduced = Vec::new();
         self.check_pat_into(
             &params[0].0,
+            None,
             acc_ty,
             &mut inner,
             &mut lam_delta,
@@ -1634,6 +1642,7 @@ impl TypeChecker {
         )?;
         self.check_pat_into(
             &params[1].0,
+            None,
             elem_ty,
             &mut inner,
             &mut lam_delta,
@@ -1996,7 +2005,8 @@ impl TypeChecker {
             Expr::Let { pat, rhs, body } => {
                 let rhs_ty = self.synth(env, delta, rhs)?;
                 let mut inner = env.clone();
-                let introduced = self.bind_pat(pat, &rhs_ty, &mut inner, delta)?;
+                let introduced =
+                    self.bind_pat_with_rhs(pat, Some(rhs), &rhs_ty, &mut inner, delta)?;
                 self.check(&inner, delta, body, expected)?;
                 self.ensure_consumed(delta, &introduced)
             }
@@ -2361,8 +2371,19 @@ impl TypeChecker {
         env: &mut Env,
         delta: &mut Delta,
     ) -> Result<Vec<(String, SimpleSpan)>, TypeError> {
+        self.bind_pat_with_rhs(pat, None, ty, env, delta)
+    }
+
+    fn bind_pat_with_rhs(
+        &mut self,
+        pat: &Sp<Pat>,
+        rhs: Option<&Sp<Expr>>,
+        ty: &Ty,
+        env: &mut Env,
+        delta: &mut Delta,
+    ) -> Result<Vec<(String, SimpleSpan)>, TypeError> {
         let mut introduced = Vec::new();
-        self.check_pat_into(pat, ty, env, delta, &mut introduced)?;
+        self.check_pat_into(pat, rhs, ty, env, delta, &mut introduced)?;
         Ok(introduced)
     }
 
@@ -2383,6 +2404,7 @@ impl TypeChecker {
     fn check_pat_into(
         &mut self,
         pat: &Sp<Pat>,
+        rhs: Option<&Sp<Expr>>,
         ty: &Ty,
         env: &mut Env,
         delta: &mut Delta,
@@ -2395,8 +2417,17 @@ impl TypeChecker {
             Pat::Wildcard => {
                 let resolved = self.table.resolve(ty);
                 if resolved.is_linear_resource() && !matches!(resolved, Ty::QReg(_)) {
+                    let (bound_name, binding_span, let_span) = match rhs {
+                        Some((Expr::Var(name), rhs_span)) => {
+                            (Some(name.clone()), Some(*rhs_span), None)
+                        }
+                        _ => (None, None, None),
+                    };
                     return Err(TypeError::LinearDiscard {
                         name: resolved.to_string(),
+                        bound_name,
+                        binding_span,
+                        let_span,
                         span,
                     });
                 }
@@ -2435,7 +2466,7 @@ impl TypeChecker {
             Pat::Tuple(ps) => match self.table.resolve(ty) {
                 Ty::Tuple(ts) if ts.len() == ps.len() => {
                     for (p, t) in ps.iter().zip(&ts) {
-                        self.check_pat_into(p, t, env, delta, introduced)?;
+                        self.check_pat_into(p, None, t, env, delta, introduced)?;
                     }
                     Ok(())
                 }
@@ -2456,7 +2487,7 @@ impl TypeChecker {
                         });
                     }
                     for p in ps {
-                        self.check_pat_into(p, &Ty::Qubit, env, delta, introduced)?;
+                        self.check_pat_into(p, None, &Ty::Qubit, env, delta, introduced)?;
                     }
                     Ok(())
                 }
@@ -2464,7 +2495,7 @@ impl TypeChecker {
                     let fresh: Vec<Ty> = (0..ps.len()).map(|_| self.table.fresh()).collect();
                     self.table.unify(ty, &Ty::Tuple(fresh.clone()), span)?;
                     for (p, t) in ps.iter().zip(&fresh) {
-                        self.check_pat_into(p, t, env, delta, introduced)?;
+                        self.check_pat_into(p, None, t, env, delta, introduced)?;
                     }
                     Ok(())
                 }

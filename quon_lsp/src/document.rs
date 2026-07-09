@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use frontend::AnalysisResult;
 use thiserror::Error;
 use tower_lsp::lsp_types::{Range, TextDocumentContentChangeEvent, Url};
 
@@ -13,6 +14,8 @@ pub struct Document {
     /// Used only for LSP Position → byte offset during incremental edit application.
     /// Rebuilt after every text mutation. Analysis rebuilds its own LineIndex from snapshot.
     pub line_index: LineIndex,
+    /// Cached structured analysis for the current `version` (code actions read this).
+    pub cached_analysis: Option<AnalysisResult>,
 }
 
 #[derive(Debug, Default)]
@@ -33,6 +36,23 @@ impl DocumentStore {
         self.documents.get(uri)
     }
 
+    /// Cache structured analysis when the document version still matches.
+    pub fn store_cached_analysis_if_current(
+        &mut self,
+        uri: &Url,
+        version: i32,
+        analysis: AnalysisResult,
+    ) -> bool {
+        let Some(doc) = self.documents.get_mut(uri) else {
+            return false;
+        };
+        if doc.version != version {
+            return false;
+        }
+        doc.cached_analysis = Some(analysis);
+        true
+    }
+
     pub fn open(&mut self, uri: Url, text: String, version: i32) {
         let line_index = LineIndex::new(&text);
         self.documents.insert(
@@ -42,6 +62,7 @@ impl DocumentStore {
                 text,
                 version,
                 line_index,
+                cached_analysis: None,
             },
         );
     }
@@ -67,6 +88,7 @@ impl DocumentStore {
                 return Err(DocumentError::InvalidEdit(uri.clone()));
             }
             doc.line_index = LineIndex::new(&doc.text);
+            doc.cached_analysis = None;
         }
 
         if let Some(v) = version {

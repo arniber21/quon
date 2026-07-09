@@ -5,7 +5,10 @@
 //! [`TypeError`] lowers into the unified [`Diagnostic`] currency via [`TypeError::span`]
 //! and its `Display` impl, keeping the renderer (ariadne) decoupled from the checker.
 
-use crate::diagnostics::Diagnostic;
+use crate::diagnostics::fixes::quick_fixes_for_type_error;
+use crate::diagnostics::{
+    Diagnostic, DiagnosticCode, DiagnosticSeverity, RelatedInfo, RichDiagnostic,
+};
 use crate::lexer::SimpleSpan;
 use crate::types::Ty;
 use std::fmt;
@@ -67,7 +70,17 @@ pub enum TypeError {
     LinearBranchMismatch { name: String, span: SimpleSpan },
     /// A linear resource was bound to a wildcard `_`, i.e. silently discarded. Permitted
     /// discards (a measured qubit, a borrow-reset qubit) arrive with issues #14/#15.
-    LinearDiscard { name: String, span: SimpleSpan },
+    LinearDiscard {
+        /// Resolved type name for the human-readable message (e.g. `"Qubit"`).
+        name: String,
+        /// RHS identifier when the discard is `let _ = <var>` (for fixes / related info).
+        bound_name: Option<String>,
+        /// Span of the RHS identifier (`bound_name`).
+        binding_span: Option<SimpleSpan>,
+        /// Span of the whole `let _ = <var> in` prefix when available (for fixes).
+        let_span: Option<SimpleSpan>,
+        span: SimpleSpan,
+    },
     /// A lambda body referred to a linear resource from the enclosing scope. A function
     /// value may run zero or many times, so it cannot consume a resource exactly once.
     LinearCapture { name: String, span: SimpleSpan },
@@ -117,7 +130,11 @@ pub enum TypeError {
     /// it would escape the borrow scope (issue #15, SPEC §3.4). An ancilla must be cleaned up
     /// (measured, `reset`, or `discard`ed) inside the block, never returned. `span` points at
     /// the returned value that mentions it.
-    BorrowEscape { name: String, span: SimpleSpan },
+    BorrowEscape {
+        name: String,
+        span: SimpleSpan,
+        borrow_span: SimpleSpan,
+    },
     /// A `Nat` value argument at a value-dependent call site (issue #57) could not be lowered to
     /// a symbolic depth — only `Int` literals, variables, and `+ - * / ^` over them specialize a
     /// dependent parameter. `func`/`param` name the callee and the offending parameter.
@@ -176,6 +193,83 @@ impl TypeError {
             | TypeError::MutualRecursion { span, .. }
             | TypeError::Unsupported { span, .. } => *span,
         }
+    }
+
+    /// Stable diagnostic code for IDE consumers.
+    pub fn code(&self) -> DiagnosticCode {
+        match self {
+            TypeError::Mismatch { .. } => DiagnosticCode::TYPE_MISMATCH,
+            TypeError::UnboundVariable { .. } => DiagnosticCode::TYPE_UNBOUND_VARIABLE,
+            TypeError::NotAFunction { .. } => DiagnosticCode::TYPE_NOT_A_FUNCTION,
+            TypeError::NotNumeric { .. } => DiagnosticCode::TYPE_NOT_NUMERIC,
+            TypeError::ArityMismatch { .. } => DiagnosticCode::TYPE_ARITY_MISMATCH,
+            TypeError::NonExhaustive { .. } => DiagnosticCode::TYPE_NON_EXHAUSTIVE,
+            TypeError::UnreachableArm { .. } => DiagnosticCode::TYPE_UNREACHABLE_ARM,
+            TypeError::AmbiguousLambda { .. } => DiagnosticCode::TYPE_AMBIGUOUS_LAMBDA,
+            TypeError::OccursCheck { .. } => DiagnosticCode::TYPE_INFINITE,
+            TypeError::AliasArity { .. } => DiagnosticCode::TYPE_ALIAS_ARITY,
+            TypeError::LinearUsedTwice { .. } => DiagnosticCode::LINEARITY_USED_TWICE,
+            TypeError::LinearUnconsumed { .. } => DiagnosticCode::LINEARITY_UNCONSUMED,
+            TypeError::LinearBranchMismatch { .. } => DiagnosticCode::LINEARITY_BRANCH_MISMATCH,
+            TypeError::LinearDiscard { .. } => DiagnosticCode::LINEARITY_DISCARD,
+            TypeError::LinearCapture { .. } => DiagnosticCode::LINEARITY_CAPTURE,
+            TypeError::NotACircuit { .. } => DiagnosticCode::CIRCUIT_NOT_A_CIRCUIT,
+            TypeError::QubitCountMismatch { .. } => DiagnosticCode::CIRCUIT_QUBIT_COUNT,
+            TypeError::GateTargetArity { .. } => DiagnosticCode::CIRCUIT_GATE_TARGET,
+            TypeError::IndexOutOfBounds { .. } => DiagnosticCode::CIRCUIT_INDEX_OOB,
+            TypeError::CliffordMismatch { .. } => DiagnosticCode::REFINEMENT_CLIFFORD,
+            TypeError::DepthMismatch { .. } => DiagnosticCode::REFINEMENT_DEPTH,
+            TypeError::DepthIntractable { .. } => DiagnosticCode::REFINEMENT_DEPTH_INTRACTABLE,
+            TypeError::ExpectedMonad { .. } => DiagnosticCode::MONAD_EXPECTED,
+            TypeError::BorrowEscape { .. } => DiagnosticCode::BORROW_ESCAPE,
+            TypeError::NonDependentArg { .. } => DiagnosticCode::DEPENDENT_NON_DEPENDENT,
+            TypeError::IllFoundedRecursion { .. } => DiagnosticCode::RECURSION_ILL_FOUNDED,
+            TypeError::MutualRecursion { .. } => DiagnosticCode::RECURSION_MUTUAL,
+            TypeError::Unsupported { .. } => DiagnosticCode::UNSUPPORTED_QUANTUM,
+        }
+    }
+
+    /// All current frontend failures are hard errors.
+    pub fn severity(&self) -> DiagnosticSeverity {
+        DiagnosticSeverity::Error
+    }
+
+    /// Secondary locations for multi-site errors.
+    pub fn related(&self) -> Vec<RelatedInfo> {
+        match self {
+            TypeError::LinearUsedTwice { name, first, .. } => vec![RelatedInfo {
+                message: format!("first use of `{name}`"),
+                span: *first,
+            }],
+            TypeError::LinearDiscard {
+                bound_name: Some(bound_name),
+                binding_span: Some(binding_span),
+                ..
+            } => vec![RelatedInfo {
+                message: format!("`{bound_name}` bound here"),
+                span: *binding_span,
+            }],
+            TypeError::BorrowEscape {
+                name, borrow_span, ..
+            } => vec![RelatedInfo {
+                message: format!("borrowed as `{name}` here"),
+                span: *borrow_span,
+            }],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Safe quick fixes computed once during analysis.
+    pub fn quick_fixes(&self, source: &str) -> Vec<crate::diagnostics::QuickFix> {
+        quick_fixes_for_type_error(self, source)
+    }
+
+    /// Lower to a rich diagnostic, populating related info and fixes.
+    pub fn to_rich_diagnostic(&self, source: &str) -> RichDiagnostic {
+        let fixes = self.quick_fixes(source);
+        RichDiagnostic::new(self.code(), self.severity(), self.to_string(), self.span())
+            .with_related(self.related())
+            .with_fixes(fixes)
     }
 
     /// Lowers this error into the frontend's unified diagnostic type.
