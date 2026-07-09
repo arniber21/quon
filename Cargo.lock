@@ -1481,6 +1481,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "quon_na"
+version = "0.1.0"
+dependencies = [
+ "flux-rs",
+ "melior",
+ "mlir_bridge",
+ "quon_core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "quonc"
 version = "0.1.0"
 dependencies = [

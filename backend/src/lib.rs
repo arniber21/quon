@@ -1,9 +1,9 @@
 //! Backend hardware descriptors for Quon — see issue #3, SPEC.md §8.
 //!
-//! A [`BackendTarget`] combines a [`ConnectivityGraph`], a native gate set,
-//! a [`NoiseModel`], and capability flags. Targets come from the built-in
-//! [`generic_openqasm`] target or are loaded from a §8.3 JSON descriptor via
-//! [`json::load`].
+//! A [`BackendTarget`] wraps architecture-specific target payloads behind
+//! [`TargetKind`]. The current gate-model compiler uses [`FixedTarget`]; the
+//! neutral-atom backend loads [`NeutralAtomTarget`] descriptors through the
+//! same [`json::load`] entry point.
 
 pub mod decompose;
 pub mod descriptor;
@@ -17,4 +17,9 @@ pub mod unitary;
 
 pub use descriptor::TargetDescriptor;
 pub use error::BackendError;
-pub use target::{BackendTarget, ConnectivityGraph, GateOp, NativeGate, NoiseModel, UNREACHABLE};
+pub use target::{
+    AodMovement, AodMovementModel, AodSpeedModel, AodSpeedModelKind, BackendTarget,
+    ConnectivityGraph, FixedTarget, GateOp, NativeGate, NeutralAtomCostModel, NeutralAtomFidelity,
+    NeutralAtomGrid, NeutralAtomTarget, NeutralAtomTiming, NeutralAtomZone, NoiseModel,
+    RydbergInteraction, TargetKind, UNREACHABLE, ZoneKind,
+};
