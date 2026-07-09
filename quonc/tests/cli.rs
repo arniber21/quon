@@ -2,6 +2,7 @@
 //! Full compile/emit behavior is covered by `smoke.rs`; these tests exercise
 //! only the clap surface.
 
+use std::path::Path;
 use std::process::Command;
 
 fn quonc() -> Command {
@@ -18,6 +19,7 @@ fn help_shows_usage() {
     assert!(stdout.contains("target"));
     assert!(stdout.contains("dump-ir"));
     assert!(stdout.contains("verify-linear"));
+    assert!(stdout.contains("print-target"));
 }
 
 #[test]
@@ -65,7 +67,31 @@ fn short_help_matches_long() {
 fn help_lists_all_documented_flags() {
     let out = quonc().arg("--help").output().expect("spawn");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for flag in ["--emit-qasm", "--target", "--dump-ir", "--verify-linear"] {
+    for flag in [
+        "--emit-qasm",
+        "--target",
+        "--print-target",
+        "--dump-ir",
+        "--verify-linear",
+    ] {
         assert!(stdout.contains(flag), "missing {flag} in --help");
     }
+}
+
+#[test]
+fn print_target_does_not_require_source() {
+    let target =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../targets/neutral_atom/generic_rna_v0.json");
+    let out = quonc()
+        .arg("--target")
+        .arg(target)
+        .arg("--print-target")
+        .output()
+        .expect("spawn");
+
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("generic_reconfigurable_neutral_atom_v0"));
+    assert!(stdout.contains("kind: neutral_atom_reconfigurable"));
+    assert!(stdout.contains("max_parallel_pairs=340"));
 }

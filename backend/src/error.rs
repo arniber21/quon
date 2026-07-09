@@ -26,6 +26,17 @@ pub enum BackendError {
     #[error("unknown native gate `{0}` (no decomposition registered)")]
     UnknownGate(String),
 
+    /// A target descriptor names an architecture family this backend does not
+    /// recognize.
+    #[error("unknown target kind `{0}`")]
+    UnknownTargetKind(String),
+
+    /// A target descriptor is syntactically valid JSON but violates semantic
+    /// invariants such as positive geometry, non-overlapping zones, or
+    /// architecture-specific capacity limits.
+    #[error("invalid target configuration: {0}")]
+    InvalidTargetConfig(String),
+
     /// A two-qubit noise key was not of the form `\"u,v\"`.
     #[error("malformed two-qubit noise key `{0}` (expected \"u,v\")")]
     BadTwoQubitKey(String),

@@ -21,8 +21,11 @@ fn e2e_load_all_json_fixtures() {
         let path = entry.path();
         let target = backend::json::load(&path)
             .unwrap_or_else(|e| panic!("failed to load {}: {e}", path.display()));
-        assert!(target.num_qubits > 0);
-        assert!(!target.native_gates.is_empty());
+        let Some(fixed) = target.fixed_target() else {
+            panic!("expected fixed fixture: {}", path.display());
+        };
+        assert!(fixed.num_qubits > 0);
+        assert!(!fixed.native_gates.is_empty());
     }
 }
 
@@ -30,10 +33,11 @@ fn e2e_load_all_json_fixtures() {
 fn e2e_generic_openqasm_scales() {
     for n in [1, 2, 4, 8, 16] {
         let t = backend::generic_openqasm::target(n);
-        assert_eq!(t.num_qubits, n);
+        let fixed = t.fixed_target().expect("generic_openqasm is fixed");
+        assert_eq!(fixed.num_qubits, n);
         for i in 0..n {
             for j in 0..n {
-                let d = t.topology.dist(i, j);
+                let d = fixed.topology.dist(i, j);
                 assert!(d <= 1 || i == j);
             }
         }

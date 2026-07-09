@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use backend::decompose::{decompose_named_single, decompose_named_two};
-use backend::target::BackendTarget;
+use backend::target::{BackendTarget, FixedTarget};
 use melior::StringRef;
 use melior::ir::attribute::{BoolAttribute, FloatAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
@@ -67,7 +67,7 @@ fn value_key<'a>(value: &impl ValueLike<'a>) -> usize {
     value.to_raw().ptr as usize
 }
 
-fn native_gate_names(target: &BackendTarget) -> Vec<String> {
+fn native_gate_names(target: &FixedTarget) -> Vec<String> {
     target.native_gates.iter().map(|g| g.name.clone()).collect()
 }
 
@@ -148,7 +148,7 @@ fn append_native_gate<'c, 'a>(
 
 fn decompose_gate<'c, 'a>(
     context: &'c Context,
-    target: &BackendTarget,
+    target: &FixedTarget,
     block: melior::ir::BlockRef<'c, 'a>,
     gate: OperationRef<'c, 'a>,
 ) -> Result<(), DecompError> {
@@ -254,7 +254,7 @@ fn decompose_gate<'c, 'a>(
 /// use `quantum.circ.func`.
 fn decompose_block<'c, 'a>(
     context: &'c Context,
-    target: &BackendTarget,
+    target: &FixedTarget,
     block: melior::ir::BlockRef<'c, 'a>,
 ) {
     let mut op = block.first_operation();
@@ -285,7 +285,7 @@ fn decompose_block<'c, 'a>(
 
 fn decompose_module<'c, 'a>(
     context: &'c Context,
-    target: &BackendTarget,
+    target: &FixedTarget,
     module: OperationRef<'c, 'a>,
 ) {
     let Some(body) = module
@@ -320,6 +320,9 @@ pub fn run_on_module<'c>(
     target: &BackendTarget,
     module: &melior::ir::Module<'c>,
 ) {
+    let Some(target) = target.fixed_target() else {
+        return;
+    };
     decompose_module(context, target, module.as_operation());
 }
 
@@ -353,8 +356,11 @@ impl<'c> RunExternalPass<'c> for NativeGateDecomp {
             pass.signal_failure();
             return;
         }
+        let Some(target) = self.target.fixed_target() else {
+            return;
+        };
         let context = unsafe { &*(self.context as *const Context) };
-        decompose_module(context, &self.target, operation);
+        decompose_module(context, target, operation);
     }
 }
 

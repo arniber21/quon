@@ -19,43 +19,47 @@ pub mod lexer;
 pub mod parser;
 pub mod pretty;
 
-#[cfg(not(feature = "parser-only"))]
+// Gate heavy pipeline modules on `full` (not `not(parser-only)`): Cargo unifies
+// features across the workspace, so enabling `parser-only` for `quonfmt` must not
+// strip analysis/typecheck from `quon_lsp` when another crate still enables `full`.
+#[cfg(feature = "full")]
 pub mod analysis;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod desugar;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod elaborate;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod lower;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod refinement;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod typecheck;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub mod types;
 
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub use analysis::DocumentAnalysis;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub use analysis::analyze_program;
 
 use crate::ast::Decl;
 use crate::diagnostics::Diagnostic;
 use crate::lexer::Sp;
 
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub use crate::diagnostics::fixes::apply_fixes;
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub use crate::diagnostics::{
     AnalysisResult, DiagnosticCode, DiagnosticSeverity, QuickFix, QuickFixKind, RelatedInfo,
     RichDiagnostic, TextEdit,
 };
 
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 use crate::typecheck::TypeChecker;
 
 /// IDE-oriented analysis: lex → parse → desugar → typecheck. Does not lower to MLIR.
-#[cfg(not(feature = "parser-only"))]
+/// Accumulates errors from the first failing stage; never panics on partial source.
+#[cfg(feature = "full")]
 pub fn analyze(source: &str) -> AnalysisResult {
     let intelligence = analyze_program(source);
     let tokens = match crate::lexer::lex_rich(source) {
@@ -97,23 +101,30 @@ pub fn analyze(source: &str) -> AnalysisResult {
     }
 }
 
-/// The frontend's single entry point for turning source text into an AST.
+/// The frontend's single entry point for turning source text into an AST: it
+/// runs the lexer then the parser, folding both stages' errors into one
+/// [`Diagnostic`] stream so callers never re-thread the pipeline themselves.
+///
+/// The individual stages ([`lexer::lex`], [`parser::parse`]) remain public as
+/// internal seams for stage-level tests. Once desugaring, type checking, and
+/// lowering land, this grows into a full `compile`; today the implemented
+/// surface stops at a parsed declaration list.
 pub fn parse_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
     let tokens = lexer::lex(src).map_err(diagnostics::from_stage)?;
     parser::parse(&tokens).map_err(diagnostics::from_stage)
 }
 
 /// Parse `src` and run the `run { }` desugaring pass (issue #8).
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub fn desugar_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
     let decls = parse_program(src)?;
     desugar::desugar_decls(decls)
 }
 
 /// Parse, desugar, and type-check a program (issues #9–#14).
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
-    let result = analyze(source);
+    let result = analyze(src);
     if result.diagnostics.is_empty() {
         Ok(())
     } else {
@@ -122,7 +133,7 @@ pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
 }
 
 /// Parse, desugar, type-check, and lower circuit functions to `quantum.circ` MLIR (issue #16).
-#[cfg(not(feature = "parser-only"))]
+#[cfg(feature = "full")]
 pub fn lower_program_to_mlir(src: &str) -> Result<String, Vec<Diagnostic>> {
     let context = melior::Context::new();
     let module = lower::lower_program(&context, src)?;
