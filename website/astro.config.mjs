@@ -8,6 +8,12 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'quon',
+			sidebar: [
+				{
+					label: 'Language guide',
+					items: [{ label: 'Language fundamentals', link: '/language/' }],
+				},
+			],
 		}),
 	],
 });
