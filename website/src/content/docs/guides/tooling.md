@@ -160,7 +160,11 @@ local sweep over the repository's `.qn` fixtures, run:
   Tree-sitter from `tree-sitter-quon/`, and conform.nvim → `quonfmt`.
 - **Shared Tree-sitter grammar:** [`tree-sitter-quon/`](https://github.com/arniber21/quon/tree/main/tree-sitter-quon)
   (corpus at `tree-sitter-quon/test/corpus/`) for Zed/Neovim consumers.
-- **Zed:** in progress — [#132](https://github.com/arniber21/quon/issues/132).
+- **Zed:** dev extension at [`extensions/zed-quon/`](https://github.com/arniber21/quon/tree/main/extensions/zed-quon)
+  ([#132](https://github.com/arniber21/quon/issues/132)). Install via Zed → Extensions →
+  Install Dev Extension; see the [zed-quon README](https://github.com/arniber21/quon/blob/main/extensions/zed-quon/README.md).
+  Uses shared Tree-sitter from `tree-sitter-quon/`, `quon_lsp` over stdio, and
+  format-on-save via external `quonfmt`.
 
 You can also configure the stdio language server command above and wire
 `quonfmt --check` or `quonfmt -w` and `quonlint` into editor tasks or save hooks without
