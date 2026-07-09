@@ -8,6 +8,12 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'quon',
+			sidebar: [
+				{
+					label: 'Guides',
+					items: [{ label: 'Backends and verification', link: '/guides/backends/' }],
+				},
+			],
 		}),
 	],
 });
