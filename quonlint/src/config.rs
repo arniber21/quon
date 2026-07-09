@@ -32,6 +32,12 @@ struct FileConfig {
     quonlint: QuonlintSection,
     #[serde(default)]
     rules: RulesSection,
+    /// Root-level include globs (accepted for `quonlint.toml` convenience).
+    #[serde(default)]
+    include: Vec<String>,
+    /// Root-level exclude globs (accepted for `quonlint.toml` convenience).
+    #[serde(default)]
+    exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -52,7 +58,8 @@ struct QuonlintSection {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
+// No deny_unknown_fields: serde rejects every key when the only field is
+// `flatten` (all keys look "unknown"), which breaks `[rules]` tables.
 struct RulesSection {
     #[serde(flatten)]
     entries: HashMap<String, toml::Value>,
@@ -181,9 +188,13 @@ impl LintConfig {
         }
         if !file.quonlint.include.is_empty() {
             self.include = file.quonlint.include.clone();
+        } else if !file.include.is_empty() {
+            self.include = file.include.clone();
         }
         if !file.quonlint.exclude.is_empty() {
             self.exclude = file.quonlint.exclude.clone();
+        } else if !file.exclude.is_empty() {
+            self.exclude = file.exclude.clone();
         }
         self.target_path = file.quonlint.target.clone();
         self.deep = file.quonlint.deep;

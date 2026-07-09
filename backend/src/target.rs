@@ -278,6 +278,11 @@ impl NeutralAtomTarget {
         self.native_gates.iter().any(|g| g == gate)
     }
 
+    /// Sum of `rows * cols` over zones of `kind`.
+    ///
+    /// `#[trusted]` under Flux: Flux ICE's on the iterator/filter/map chain
+    /// (`flux-infer` projections impossible case) while checking this body.
+    #[cfg_attr(feature = "flux", trusted)]
     pub fn zone_capacity(&self, kind: ZoneKind) -> u64 {
         self.zones
             .iter()

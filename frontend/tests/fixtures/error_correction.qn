@@ -1,40 +1,48 @@
 fn encode(): Circuit<1, 3, 2, Clifford> = circuit {
-    CNOT @(0,1) |> CNOT @(0,2)
+        CNOT @(0, 1) |> CNOT @(0, 2)
 }
 
 fn parity(): Circuit<2, 2, 1, Clifford> = circuit {
-    CNOT @(0, 1)
+        CNOT @(0, 1)
 }
 
 fn syndrome_measure(q: QReg<3>): Q<(QReg<3>, Bit, Bit)> = run {
-    let (q0, q1, q2) = destructure(q)
-    borrow a1: Qubit, a2: Qubit in {
-        (q0a, a1b) <- parity() @ (q0 `tensored` a1)
-        (q1a, a2b) <- parity() @ (q1 `tensored` a2)
-        s1         <- measure(a1b)
-        s2         <- measure(a2b)
-        return (q0a `tensored` q1a `tensored` q2, s1, s2)
-    }
+        let (q0, q1, q2) = destructure q
+        borrow a1: Qubit, a2: Qubit in {
+            (q0a, a1b) <- (parity()) @ (tensored(q0, a1))
+            (q1a, a2b) <- (parity()) @ (tensored(q1, a2))
+            s1         <- measure a1b
+            s2         <- measure a2b
+            return (tensored(tensored(q0a, q1a), q2), s1, s2)
+}
 }
 
-fn x_at_0(): Circuit<3, 3, 1, Clifford> = circuit { X @0 }
-fn x_at_1(): Circuit<3, 3, 1, Clifford> = circuit { X @1 }
-fn x_at_2(): Circuit<3, 3, 1, Clifford> = circuit { X @2 }
+fn x_at_0(): Circuit<3, 3, 1, Clifford> = circuit {
+        X @0
+}
+
+fn x_at_1(): Circuit<3, 3, 1, Clifford> = circuit {
+        X @1
+}
+
+fn x_at_2(): Circuit<3, 3, 1, Clifford> = circuit {
+        X @2
+}
 
 fn correct(q: QReg<3>, s1: Bit, s2: Bit): Q<QReg<3>> = run {
-    return match (s1, s2) {
-        (0, 0) => q,
-        (1, 0) => x_at_0() @ q,
-        (1, 1) => x_at_1() @ q,
-        (0, 1) => x_at_2() @ q,
-    }
+        return match (s1, s2) {
+(0, 0) => q,
+(1, 0) => (x_at_0()) @q,
+(1, 1) => (x_at_1()) @q,
+(0, 1) => (x_at_2()) @q
+}
 }
 
 fn bit_flip_round(logical: Qubit): Q<QReg<1>> = run {
-    encoded            <- encode() @ logical
-    (data, s1, s2)    <- syndrome_measure(encoded)
-    corrected         <- correct(data, s1, s2)
-    decoded           <- adjoint(encode()) @ corrected
-    let (out, _rest)   = split(1, decoded)
-    return out
+        encoded        <- (encode()) @logical
+        (data, s1, s2) <- syndrome_measure encoded
+        corrected      <- correct(data, s1, s2)
+        decoded        <- adjoint(encode()) @corrected
+        let (out, _rest) = split(1, decoded)
+        return out
 }

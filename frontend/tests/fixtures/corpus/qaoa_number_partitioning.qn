@@ -1,33 +1,24 @@
--- QAOA for Number Partitioning: fully-connected Ising cost J_ij = a_i a_j.
--- Stresses: dense all-pairs ZZ couplings with no single-body term, depth p*(n*n+1).
-
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in qubits(n) { H q }
+        (for q in (qubits n) { H q })
 }
 
-fn partition_cost(n: Nat, gamma: Float, jmat: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n, Universal> = circuit {
-    for (i, j) in pairs(n) { Rzz(2.0 * gamma * jmat[i][j]) @(i, j) }
+fn partition_cost(n: Nat, gamma: Float, jmat: Matrix<n, n, Float>): Circuit<n, n, n * n, Universal> = circuit {
+        (for (i, j) in (pairs n) { (Rzz((2.0 * gamma) * (index(index(jmat, i), j)))) @(i, j) })
 }
 
 fn partition_mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
-    for q in qubits(n) { Rx(2.0 * beta) q }
+        (for q in (qubits n) { Rx(2.0 * beta, q) })
 }
 
-fn partition_layer(n: Nat, gamma: Float, beta: Float, jmat: Matrix<n, n, Float>)
-    : Circuit<n, n, n*n + 1, Universal> = circuit {
-    partition_cost(n, gamma, jmat) |> partition_mixer(n, beta)
+fn partition_layer(n: Nat, gamma: Float, beta: Float, jmat: Matrix<n, n, Float>): Circuit<n, n, n * n + 1, Universal> = circuit {
+        partition_cost(n, gamma, jmat) |> partition_mixer(n, beta)
 }
 
-fn partition_qaoa(n: Nat, p: Int, params: List<(Float, Float)>, jmat: Matrix<n, n, Float>)
-    : Circuit<n, n, p * (n*n + 1), Universal> =
-    fold(take(p, params), identity(n), fn(acc, (gamma, beta)) ->
-        acc |> partition_layer(n, gamma, beta, jmat)
-    )
+fn partition_qaoa(n: Nat, p: Int, params: List<(Float, Float)>, jmat: Matrix<n, n, Float>): Circuit<n, n, p * (n * n + 1), Universal> = fold(take(p, params), identity n, fn(acc, (gamma, beta)) -> acc
+|> partition_layer(n, gamma, beta, jmat))
 
-fn partition_shot(n: Nat, p: Int, params: List<(Float, Float)>, jmat: Matrix<n, n, Float>)
-    : Q<List<Bit>> = run {
-    let circ = hadamard_all(n) |> partition_qaoa(n, p, params, jmat)
-    reg     <- circ @ qreg(n)
-    measure_all(reg)
+fn partition_shot(n: Nat, p: Int, params: List<(Float, Float)>, jmat: Matrix<n, n, Float>): Q<List<Bit>> = run {
+        let circ = hadamard_all n |> partition_qaoa(n, p, params, jmat)
+        reg <- circ @ (qreg n)
+        measure_all reg
 }
