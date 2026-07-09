@@ -2,21 +2,22 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Parser;
 use quon_core::{
     RegressionConfig, compare, format_comparison_table, format_metrics_line, load_snapshot,
     save_snapshot,
 };
 
+use backend::{BackendTarget, TargetKind};
 use quonc::compile::{CompileRequest, compile};
 use quonc::watch::{print_watch_metrics, run_watch_loop};
 
 #[derive(Parser)]
 #[command(name = "quonc", about = "Quon quantum compiler", version)]
 struct Cli {
-    /// Source file to compile (.qn)
-    source: PathBuf,
+    /// Source file to compile (.qn). Optional when using --print-target.
+    source: Option<PathBuf>,
 
     /// Emit OpenQASM 3.0 to stdout
     #[arg(long)]
@@ -25,6 +26,10 @@ struct Cli {
     /// Backend target descriptor (JSON). Defaults to generic_openqasm.
     #[arg(long)]
     target: Option<PathBuf>,
+
+    /// Print the loaded backend target summary and exit.
+    #[arg(long)]
+    print_target: bool,
 
     /// Dump MLIR after each pass (debug)
     #[arg(long)]
@@ -95,6 +100,16 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode> {
     let mut cli = Cli::parse();
 
+    // The emitter reads only the target's native gate set and id, not its
+    // topology, so the qubit width here is immaterial; `generic_openqasm` is
+    // an all-to-all target used when the caller supplies no device JSON.
+    let target = load_target(cli.target.as_ref())?;
+
+    if cli.print_target {
+        print!("{}", render_target_summary(&target));
+        return Ok(ExitCode::SUCCESS);
+    }
+
     if cli.watch && !cli.metrics {
         cli.metrics = true;
     }
@@ -103,7 +118,7 @@ fn run() -> Result<ExitCode> {
         return run_watch(&cli);
     }
 
-    let request = build_request(&cli)?;
+    let request = build_request(&cli, target)?;
     let report = compile(&request);
 
     if report.snapshot.compile.status != quon_core::CompileStatus::Ok {
@@ -156,7 +171,7 @@ fn run() -> Result<ExitCode> {
 }
 
 fn run_watch(cli: &Cli) -> Result<ExitCode> {
-    let source = cli.source.clone();
+    let source = require_source(cli)?;
     let target = cli.target.clone();
     let debounce = cli.watch_debounce_ms;
     let metrics_json = cli.metrics_json.clone();
@@ -183,10 +198,13 @@ fn run_watch(cli: &Cli) -> Result<ExitCode> {
     let mut sticky_fail = false;
 
     run_watch_loop(
-        source.clone(),
-        target.clone(),
+        source,
+        target,
         debounce,
-        || build_request(cli),
+        || {
+            let loaded = load_target(cli.target.as_ref())?;
+            build_request(cli, loaded)
+        },
         regression,
         |report, previous, comparison| {
             if print_metrics {
@@ -210,18 +228,40 @@ fn run_watch(cli: &Cli) -> Result<ExitCode> {
     }
 }
 
-fn build_request(cli: &Cli) -> Result<CompileRequest> {
-    let source = std::fs::read_to_string(&cli.source)
-        .with_context(|| format!("reading {}", cli.source.display()))?;
+fn load_target(path: Option<&PathBuf>) -> Result<BackendTarget> {
+    match path {
+        Some(path) => {
+            backend::json::load(path).map_err(|e| anyhow!("loading target {}: {e}", path.display()))
+        }
+        None => Ok(backend::generic_openqasm::target(64)),
+    }
+}
 
-    let target = match &cli.target {
-        Some(path) => backend::json::load(path)
-            .map_err(|e| anyhow::anyhow!("loading target {}: {e}", path.display()))?,
-        None => backend::generic_openqasm::target(64),
-    };
+fn require_source(cli: &Cli) -> Result<PathBuf> {
+    cli.source
+        .clone()
+        .ok_or_else(|| anyhow!("missing source file; pass a .qn source or use --print-target"))
+}
+
+fn require_fixed_target(target: &BackendTarget) -> Result<()> {
+    if target.fixed_target().is_none() {
+        bail!(
+            "target `{}` has kind `{}`; the OpenQASM pipeline currently supports only fixed targets (use --print-target to inspect this target)",
+            target.id,
+            target.kind_name()
+        );
+    }
+    Ok(())
+}
+
+fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
+    require_fixed_target(&target)?;
+    let source_path = require_source(cli)?;
+    let source = std::fs::read_to_string(&source_path)
+        .with_context(|| format!("reading {}", source_path.display()))?;
 
     Ok(CompileRequest {
-        source_path: cli.source.clone(),
+        source_path,
         source,
         target,
         target_descriptor_path: cli.target.clone(),
@@ -254,4 +294,74 @@ fn write_metrics_json(path: &str, report: &quonc::CompileReport, emit_qasm: bool
         std::fs::write(&path, format!("{json}\n"))?;
     }
     Ok(())
+}
+
+fn render_target_summary(target: &BackendTarget) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("target: {}\n", target.id));
+    out.push_str(&format!("kind: {}\n", target.kind_name()));
+
+    match &target.kind {
+        TargetKind::Fixed(fixed) => {
+            out.push_str(&format!("num_qubits: {}\n", fixed.num_qubits));
+            out.push_str(&format!("topology_edges: {}\n", fixed.topology.edges.len()));
+            out.push_str(&format!(
+                "native_gates: {}\n",
+                fixed
+                    .native_gates
+                    .iter()
+                    .map(|gate| gate.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            out.push_str(&format!(
+                "measurement_latency_us: {}\n",
+                fixed.meas_latency_us
+            ));
+            out.push_str(&format!(
+                "supports_mid_circuit_meas: {}\n",
+                fixed.supports_mid_circuit_meas
+            ));
+            out.push_str(&format!(
+                "supports_feed_forward: {}\n",
+                fixed.supports_feed_forward
+            ));
+        }
+        TargetKind::NeutralAtomReconfigurable(na) => {
+            out.push_str(&format!(
+                "grid_um: {} x {}\n",
+                na.grid.width_um, na.grid.height_um
+            ));
+            out.push_str(&format!("zones: {}\n", na.zones.len()));
+            out.push_str(&format!(
+                "zone_capacity: storage={}, entanglement={}, readout={}\n",
+                na.zone_capacity(backend::ZoneKind::Storage),
+                na.zone_capacity(backend::ZoneKind::Entanglement),
+                na.zone_capacity(backend::ZoneKind::Readout)
+            ));
+            out.push_str(&format!(
+                "movement: aod_row_column_coupled, rows={}, cols={}, aods={}, trap_transfer_us={}\n",
+                na.movement.aod_rows,
+                na.movement.aod_cols,
+                na.movement.num_aods,
+                na.movement.trap_transfer_us
+            ));
+            out.push_str(&format!(
+                "rydberg: range_um={}, min_spacing_um={}, max_parallel_pairs={}\n",
+                na.interaction.rydberg_range_um,
+                na.interaction.min_rydberg_spacing_um,
+                na.interaction.max_parallel_entangling_pairs
+            ));
+            out.push_str(&format!(
+                "timing_us: cz={}, single_qubit={}, measurement={}, reset={}\n",
+                na.timing.cz_us,
+                na.timing.single_qubit_us,
+                na.timing.measurement_us,
+                na.timing.reset_us
+            ));
+            out.push_str(&format!("native_gates: {}\n", na.native_gates.join(", ")));
+        }
+    }
+
+    out
 }

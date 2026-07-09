@@ -16,10 +16,7 @@ fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit
 
 fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> = match n {
 0 => identity 0,
-_ => apply_hadamard n
-|> controlled_rotations n
-|> on_high(qft(n - 1), n)
-|> swap_reverse n
+_ => apply_hadamard n |> controlled_rotations n |> on_high(qft(n - 1), n) |> swap_reverse n
 }
 
 fn modmul(n: Nat, a: Int, nn: Int): Circuit<2 * n, 2 * n, 2 * n, Universal> = circuit {

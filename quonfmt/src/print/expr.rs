@@ -366,6 +366,9 @@ fn is_unit(e: &Sp<Expr>) -> bool {
 }
 
 fn is_juxta_atom(e: &Sp<Expr>) -> bool {
+    // Tuples are not juxta-safe: `f (a, b)` parses as curried `App(App(f, a), b)`.
+    // Lists are not juxta-safe: `f [x]` re-parses as index sugar `index(f, x)`.
+    // Always print those args in call form: `f((a, b))`, `f([x])`.
     matches!(
         &e.0,
         Expr::Int(_)
@@ -373,7 +376,6 @@ fn is_juxta_atom(e: &Sp<Expr>) -> bool {
             | Expr::Bool(_)
             | Expr::Unit
             | Expr::Var(_)
-            | Expr::Tuple(_)
             | Expr::Adjoint(_)
             | Expr::Controlled(_)
     ) || matches!(&e.0, Expr::GateApp { .. })
@@ -430,9 +432,7 @@ fn expr_prec(e: &Expr) -> Prec {
         | Expr::For { .. }
         | Expr::Match { .. }
         | Expr::Adjoint(_)
-        | Expr::Controlled(_)
-        | Expr::Lam { .. }
-        | Expr::Return(_) => Prec::Atom,
+        | Expr::Controlled(_) => Prec::Atom,
         Expr::App(_, _) => Prec::App,
         Expr::GateApp { .. } => Prec::GateApp,
         Expr::Neg(_) => Prec::Neg,
@@ -448,6 +448,13 @@ fn expr_prec(e: &Expr) -> Prec {
         } => Prec::Add,
         Expr::Compose(_, _) => Prec::Compose,
         Expr::Ascribe(_, _) => Prec::Ascribe,
-        Expr::Let { .. } | Expr::If { .. } | Expr::Bind { .. } => Prec::IfLet,
+        // `fn() -> …`, `return …`, `let`/`if`/`bind` all extend right and absorb a
+        // following `|>` into their body — same tier as `IfLet`, so they parenthesize
+        // when used as a compose operand (e.g. `(fn() -> a) |> b`).
+        Expr::Lam { .. }
+        | Expr::Return(_)
+        | Expr::Let { .. }
+        | Expr::If { .. }
+        | Expr::Bind { .. } => Prec::IfLet,
     }
 }

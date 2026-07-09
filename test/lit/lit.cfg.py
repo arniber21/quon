@@ -20,10 +20,12 @@ config.test_exec_root = os.path.join(os.environ.get("QUON_BUILD_DIR", "."), "tes
 # Require quonc, the round-trip oracles, and FileCheck on PATH.
 # %circ-roundtrip is mlir_bridge's `circ_roundtrip` example (issue #4).
 # %dynamic-roundtrip is mlir_bridge's `dynamic_roundtrip` example (issue #6).
+# %na-roundtrip is quon_na's `na_roundtrip` example (issue #102).
 config.substitutions.append(("%quonc", "quonc"))
 config.substitutions.append(("%circ-roundtrip", "circ_roundtrip"))
 config.substitutions.append(("%circ-lower", "circ_lower"))
 config.substitutions.append(("%dynamic-roundtrip", "dynamic_roundtrip"))
+config.substitutions.append(("%na-roundtrip", "na_roundtrip"))
 config.substitutions.append(("%monadic-lower", "monadic_lower"))
 config.substitutions.append(("%gate-cancel", "gate_cancel"))
 config.substitutions.append(("%rotation-merge", "rotation_merge"))
