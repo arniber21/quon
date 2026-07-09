@@ -3,16 +3,25 @@ title: quonc CLI
 description: Command-line reference for the Quon compiler.
 ---
 
-`quonc` compiles a Quon (`.qn`) source file for a fixed-connectivity target. It
-always runs the compiler; pass `--emit-qasm` when you also want the generated
-OpenQASM 3 on standard output.
+`quonc` compiles a Quon (`.qn`) source file for a selected **hardware target**.
+Fixed gate-model targets can emit OpenQASM 3 as an intermediary; neutral-atom
+targets emit schedules and resource reports. See
+[ADR-0010](https://github.com/arniber21/quon/blob/main/docs/adr/0010-hardware-targets-primary-openqasm-intermediary.md).
 
 ```sh
+# Neutral-atom hardware path
+quonc test/na/bell.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-schedule \
+  --emit-resource-report
+
+# Fixed path: OpenQASM intermediary
 quonc program.qn --emit-qasm > program.qasm
 ```
 
-Without output or metrics flags, a successful compile prints a short
-confirmation to standard error.
+Without emit or metrics flags, a successful compile prints a short confirmation
+to standard error. `quonc --list-passes` prints the pass outline for both
+architecture families.
 
 ## Usage
 
@@ -20,164 +29,138 @@ confirmation to standard error.
 quonc [OPTIONS] [SOURCE]
 ```
 
-`SOURCE` is the `.qn` file to compile. It may be omitted only when
-`--print-target` is used.
+`SOURCE` is the `.qn` file to compile. It may be omitted for `--print-target`
+or `--list-passes`.
 
 ## Options
 
-### `--emit-qasm`
+### Emit
 
-Write the generated OpenQASM 3 program to standard output.
+#### `--emit-qasm`
+
+Write OpenQASM 3 for a **fixed** target to standard output (intermediary for
+Aer / tooling).
 
 ```sh
 quonc program.qn --emit-qasm > program.qasm
 ```
 
-### `--target <PATH>`
+#### `--emit-na-schedule [PATH]`
+
+Write the neutral-atom schedule as JSON (`-` or omitted = stdout). Requires a
+`neutral_atom_reconfigurable` target. Production `quantum.na` MLIR emit is
+tracked in [#167](https://github.com/arniber21/quon/issues/167).
+
+#### `--emit-resource-report [PATH]`
+
+Write a neutral-atom resource report (`-` = stdout; `.md` → Markdown, else
+JSON). Requires a neutral-atom target.
+
+#### `--resource-report-format <json|markdown>`
+
+Force the resource-report format (overrides PATH extension).
+
+### Target
+
+#### `--target <PATH>`
 
 Load a backend target descriptor from a JSON file. Without this option, `quonc`
-uses the built-in 64-qubit, all-to-all `generic_openqasm` fixed target.
+uses the built-in 64-qubit, all-to-all `generic_openqasm` **fixed** target.
 
 ```sh
 quonc program.qn --target targets/device.json --emit-qasm
 ```
 
-See [Target selection](#target-selection) for the descriptor kinds the loader
-accepts and the kinds the compiler can currently compile.
+#### `--print-target`
 
-### `--print-target`
+Print a summary of the selected target and exit without compiling.
 
-Print a summary of the selected target and exit without compiling. A source
-file is not required.
+#### `--sabre-gamma <F>`
 
-```sh
-quonc --target targets/device.json --print-target
-```
+SABRE noise-weight coefficient γ for **fixed** targets (default `0.3`).
 
-### `--dump-ir`
+### Neutral atom
 
-Print MLIR snapshots to standard error at the compiler's lowering, circuit,
-monadic, dynamic, and physical pipeline checkpoints.
+#### `--na-backend <zoned|flat>`
 
-```sh
-quonc program.qn --dump-ir
-```
+Movement backend after entangling-layer scheduling (default `zoned` = RAP).
 
-### `--verify-linear`
+#### `--na-placer <routing-agnostic|routing-aware>`
 
-Run the debug linearity verifiers on circuit IR and again after lowering to
-dynamic IR.
+Zoned placer mode (default `routing-agnostic`).
 
-```sh
-quonc program.qn --verify-linear
-```
+#### `--no-na-compact`
 
-### `--metrics`
+Skip schedule compaction after movement / zoned scheduling.
 
-Print a one-line, human-readable metrics summary to standard error after a
-successful compile.
+#### `--na-placement <row-major|degree|clustering>`
 
-```sh
-quonc program.qn --metrics
-```
+Flat AOD placement strategy (default `row-major`).
 
-### `--metrics-json <PATH>`
+### Debug
 
-Write the versioned metrics snapshot as JSON. Use `-` for standard output; when
-combined with `--emit-qasm`, `-` writes JSON to standard error so QASM can keep
-standard output.
+#### `--dump-ir`
 
-```sh
-quonc program.qn --metrics-json metrics/run.json
-```
+Print MLIR / schedule checkpoints to standard error.
 
-### `--metrics-snapshot <ACTION> <PATH>`
+#### `--verify-linear`
 
-Save the current metrics snapshot as a baseline, or compare it with a saved
-baseline. `ACTION` is `save` or `compare`.
+Run debug linearity verifiers on circuit IR and after dynamic lowering.
 
-```sh
-quonc program.qn --metrics-snapshot save metrics/baseline.json
-quonc program.qn --metrics-snapshot compare metrics/baseline.json
-```
+#### `--list-passes`
 
-### `--regression-config <PATH>`
+Print the shared front-end and per-architecture backend stages, then exit.
 
-Load TOML or JSON metric tolerances for a `--metrics-snapshot compare`.
+#### `--quiet` / `-q`
 
-```sh
-quonc program.qn \
-  --metrics-snapshot compare metrics/baseline.json \
-  --regression-config metrics/tolerances.toml
-```
+Suppress the “compiled successfully” hint.
 
-### `--watch`
+#### `--color <auto|always|never>`
 
-Watch the source file, and the target JSON when `--target` is set, then
-recompile after changes. Watch mode implicitly enables `--metrics`.
+Colorize help and diagnostics (`QUONC_COLOR` env also honored).
 
-```sh
-quonc program.qn --watch --target targets/device.json
-```
+### Metrics / watch
 
-### `--watch-debounce-ms <MILLISECONDS>`
+#### `--metrics`
 
-Set the watch-mode filesystem-event debounce window. The default is 300 ms.
+Print a one-line metrics summary to standard error after a successful compile.
 
-```sh
-quonc program.qn --watch --watch-debounce-ms 500
-```
+#### `--metrics-json <PATH>`
 
-### `-h`, `--help`
+Write metrics JSON (`-` for stdout/stderr depending on other emits).
 
-Print command help and exit.
+#### `--metrics-snapshot <save|compare> <PATH>`
 
-```sh
-quonc --help
-```
+Save or compare a metrics snapshot baseline.
 
-### `-V`, `--version`
+#### `--regression-config <PATH>`
 
-Print the `quonc` version and exit.
+Tolerance file for `--metrics-snapshot compare`.
 
-```sh
-quonc --version
-```
+#### `--watch` / `--watch-debounce-ms <N>`
 
-For baseline formats, tolerance semantics, watch behavior, output routing, and
-exit codes, read the
-[experiment-loop guide](https://github.com/arniber21/quon/blob/main/docs/agents/experiment-loop.md).
+Recompile on source (and target) changes.
 
 ## Target selection
 
 `BackendTarget` has an `id` and a `TargetKind`. The JSON loader chooses the
 kind from the descriptor's `kind` field:
 
-- `fixed` selects the fixed-connectivity gate-model architecture. Legacy fixed
-  descriptors may omit `kind`.
-- `neutral_atom_reconfigurable` selects the separate reconfigurable
-  neutral-atom architecture family.
-
-The current OpenQASM compile pipeline accepts **fixed targets only**. For a
-fixed target, `--target` controls its qubit count, connectivity, native gates,
-noise data, measurement latency, and dynamic-circuit capability flags. Native
-gate decomposition, routing, scheduling, metrics, and emission use that loaded
-target.
-
-Neutral-atom descriptors can currently be loaded and inspected with
-`--print-target`, but `quonc` rejects them for compilation. This is a distinct
-architecture family, not a fixed target with extra fields. See the
-[neutral-atom architecture model](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/architecture_model.md).
+- `fixed` — gate-model connectivity, native gates, optional noise. Emit with
+  `--emit-qasm`.
+- `neutral_atom_reconfigurable` — zones, AOD movement, Rydberg parameters.
+  Emit with `--emit-na-schedule` / `--emit-resource-report`.
 
 ```sh
-quonc \
-  --target targets/neutral_atom/generic_rna_v0.json \
-  --print-target
+quonc --target targets/neutral_atom/generic_rna_v0.json --print-target
 ```
+
+See the
+[neutral-atom architecture model](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/architecture_model.md)
+and the [backends guide](../backends/).
 
 ## What runs
 
-Every compile follows the same high-level path: parse and typecheck the source,
-elaborate and lower it to MLIR, optimize and lower the IR, adapt it to the
-fixed target, then emit OpenQASM 3. See the
+Every compile shares the front-end (parse → typecheck → `quantum.circ` →
+dynamic lowering), then forks on `TargetKind`. See the
 [compiler pipeline reference](../compiler/).

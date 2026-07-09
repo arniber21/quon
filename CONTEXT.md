@@ -1,6 +1,6 @@
 # Quon
 
-Quon is an MLIR-based optimizing compiler for quantum programs. It accepts a functional source language with linear types and emits OpenQASM 3.0 for execution on Qiskit Aer or real hardware.
+Quon is an MLIR-based optimizing compiler for quantum programs. It accepts a functional source language with linear types and lowers programs onto **hardware targets** (`BackendTarget` / `TargetKind`: fixed gate-model, neutral-atom reconfigurable, and future families). OpenQASM 3.0 is a convenient intermediary emit form for fixed targets (Aer verification and tooling interop), not the compiler's primary backend identity — see ADR-0010.
 
 ## Language
 
@@ -52,7 +52,7 @@ _Avoid_: physical dialect, hardware dialect
 
 ### Backend
 
-**BackendTarget**: A hardware descriptor, discriminated by `TargetKind`. The `Fixed` kind (gate-model hardware) combines a connectivity graph, native gate set, noise model (per-gate fidelity, T1/T2 times, readout error), and capability flags (`supports_mid_circuit_meas`, `supports_feed_forward`). Other kinds (e.g. `NeutralAtomReconfigurable`) carry an independent field set with no forced overlap — only an `id` is shared across all kinds.
+**BackendTarget**: A hardware descriptor, discriminated by `TargetKind`. The primary compile surface: choose a target, then emit architecture-appropriate artifacts (schedules, resource reports, hardware IR, or — for fixed targets — OpenQASM as an intermediary). The `Fixed` kind (gate-model hardware) combines a connectivity graph, native gate set, noise model (per-gate fidelity, T1/T2 times, readout error), and capability flags (`supports_mid_circuit_meas`, `supports_feed_forward`). Other kinds (e.g. `NeutralAtomReconfigurable`) carry an independent field set with no forced overlap — only an `id` is shared across all kinds.
 _Avoid_: target, device, backend
 
 **TargetKind**: The discriminant on `BackendTarget` separating architecture families (gate-model `Fixed`, `NeutralAtomReconfigurable`, and future families) whose descriptors have genuinely different shapes. Each kind owns its own payload rather than sharing fields — deliberately, so adding a new architecture family never forces awkward unused fields onto existing kinds.
@@ -60,6 +60,9 @@ _Avoid_: architecture kind, target type
 
 **Native gate**: A gate in the BackendTarget's supported gate set. Gates not in the native set must be decomposed before emission. Tracked via the `native_gate : BoolAttr` attribute on `quantum.circ.gate` ops.
 _Avoid_: supported gate, hardware gate
+
+**OpenQASM intermediary**: OpenQASM 3.0 text emitted from a **fixed** target's physicalized `quantum.dynamic` IR (`--emit-qasm`). Used for Aer simulation and external tooling — not the definition of Quon's backend, and not the emit form for neutral-atom targets (those use schedule / `quantum.na` / resource reports; see ADR-0010, issue #167).
+_Avoid_: primary output, universal backend target
 
 ### Optimization
 

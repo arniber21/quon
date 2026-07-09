@@ -9,9 +9,10 @@ The two shapes have almost nothing in common — `Fixed` carries a connectivity 
 native gate set, and noise model; `NeutralAtomReconfigurable` carries zones, grid
 geometry, movement model, and a cost model. A truly separate type would have been
 simpler to build. This is a deliberate bet on Quon's longer-term identity as unified
-quantum compiler infrastructure spanning multiple architecture families, not just an
-MLIR/OpenQASM gate-model compiler — worth the extra indirection now so `--target`
-stays one concept as more architecture families are added later.
+quantum compiler infrastructure spanning multiple architecture families — hardware
+targets first, with OpenQASM as an intermediary emit for the fixed path (ADR-0010) —
+worth the extra indirection now so `--target` stays one concept as more architecture
+families are added later.
 
 ## Considered Options
 

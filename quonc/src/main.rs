@@ -20,13 +20,13 @@ use quonc::watch::{print_watch_metrics, run_watch_loop};
 
 const AFTER_HELP: &str = "\
 Examples:
-  # Fixed / OpenQASM path
+  # Neutral-atom hardware path
+  quonc test/na/bell.qn --target targets/neutral_atom/generic_rna_v0.json \\
+    --emit-na-schedule --emit-resource-report
+
+  # Fixed path: OpenQASM intermediary (Aer / tooling)
   quonc program.qn --emit-qasm
   quonc program.qn --target targets/ibm/fake_manila.json --emit-qasm --metrics
-
-  # Neutral-atom path (#112)
-  quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
-    --emit-na-schedule --emit-resource-report
 
   # Debug IR after each pass
   quonc program.qn --dump-ir --verify-linear --emit-qasm
@@ -35,20 +35,22 @@ Examples:
   quonc --target targets/neutral_atom/generic_rna_v0.json --print-target
 
 Notes:
-  Fixed targets run SABRE routing and emit OpenQASM 3.0.
-  Neutral-atom targets extract an interaction graph, schedule entangling
-  layers, run zoned RAP (default) or flat AOD movement, optionally compact,
-  then emit schedule JSON and/or a resource report.
+  Hardware targets are primary (ADR-0010). Fixed targets run SABRE routing and
+  may emit OpenQASM 3.0 as an intermediary. Neutral-atom targets extract an
+  interaction graph, schedule entangling layers, run zoned RAP (default) or
+  flat AOD movement, optionally compact, then emit schedule JSON and/or a
+  resource report. Production quantum.na MLIR emit is issue #167.
 ";
 
 #[derive(Parser, Debug)]
 #[command(
     name = "quonc",
     about = "Quon quantum compiler",
-    long_about = "Quon quantum compiler — OpenQASM 3.0 and neutral-atom schedules.\n\n\
-Compile Quon programs through the MLIR pipeline. Fixed (gate-model) targets \
-emit OpenQASM 3.0. Neutral-atom reconfigurable targets schedule AOD movement \
-/ zoned RAP and emit schedule JSON plus resource reports.",
+    long_about = "Quon quantum compiler — hardware targets first.\n\n\
+Compile Quon programs through the MLIR pipeline onto a BackendTarget \
+(fixed gate-model or neutral-atom reconfigurable). OpenQASM 3.0 is a \
+convenient intermediary emit for fixed targets (Aer / tooling); neutral-atom \
+targets emit schedules and resource reports (quantum.na MLIR: issue #167).",
     after_help = AFTER_HELP,
     version,
     color = ColorChoice::Auto,

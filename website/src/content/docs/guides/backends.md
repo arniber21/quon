@@ -1,11 +1,13 @@
 ---
 title: Backends and verification
-description: Compile Quon programs for fixed gate-model targets and verify the emitted OpenQASM 3 with Qiskit Aer.
+description: Compile Quon programs for hardware targets — fixed gate-model (OpenQASM intermediary + Aer) and neutral-atom schedules.
 ---
 
-Quon's fixed backend path compiles a program for a gate-model `BackendTarget`,
-emits OpenQASM 3, and can run that output on Qiskit Aer. This path works locally:
-it does not require an account or access to live quantum hardware.
+Quon is a **hardware-target compiler**: `--target` selects an architecture family,
+and the pipeline lowers toward that family's artifacts. OpenQASM 3.0 is a
+convenient intermediary for **fixed** gate-model targets (Aer verification and
+tooling interop), not the definition of the backend surface — see
+[ADR-0010](https://github.com/arniber21/quon/blob/main/docs/adr/0010-hardware-targets-primary-openqasm-intermediary.md).
 
 ## Fixed backend targets
 
@@ -43,10 +45,11 @@ cargo run -p quonc -- \
 The loader validates the JSON, including field names, gate names, and topology
 indices. A non-zero exit means the descriptor could not be loaded.
 
-## Compile and emit OpenQASM 3
+## Compile and emit OpenQASM 3 (fixed-path intermediary)
 
 From the repository root, compile a checked-in Bell-state program for the
-five-qubit fixture:
+five-qubit fixture. `--emit-qasm` writes the OpenQASM intermediary used by Aer
+and external tooling:
 
 ```sh
 cargo run -p quonc -- \
@@ -142,14 +145,24 @@ QUONC="$PWD/target/debug/quonc" python3 test/verify/routing.py
 It passes only when both constrained topologies recover the same secret as the
 all-to-all baseline after swap insertion and native-gate decomposition.
 
-## Different architecture: neutral atoms
+## Neutral-atom hardware targets
 
-Fixed targets model gate connectivity and OpenQASM emission. A
-`neutral_atom_reconfigurable` target instead describes zones, array geometry,
-AOD movement, Rydberg interactions, timing, fidelity, and a cost model. Those
-fields and that lowering path are intentionally separate; the OpenQASM pipeline
-currently accepts fixed targets only.
+A `neutral_atom_reconfigurable` target describes zones, array geometry, AOD
+movement, Rydberg interactions, timing, fidelity, and a cost model. That path
+is a first-class hardware backend (not an OpenQASM side quest):
+
+```sh
+cargo run -p quonc -- \
+  test/na/bell.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-schedule \
+  --emit-resource-report
+```
+
+Schedule JSON and resource reports are available today (#112). Production
+lowering into `quantum.na` MLIR is tracked in
+[#167](https://github.com/arniber21/quon/issues/167).
 
 See the
 [neutral-atom architecture model](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/architecture_model.md)
-for that architecture family.
+for the architecture family, and ADR-0007 / ADR-0010 for IR and product framing.

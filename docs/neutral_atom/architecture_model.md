@@ -1,13 +1,19 @@
 # Neutral-atom backend: architecture model
 
 This document is the normative reference for the `quon_na` neutral-atom backend
-(ADR-0007, ADR-0008, ADR-0009). It defines the hardware model the backend
-approximates, the vocabulary and constraints every pass is built against, every
-field of the neutral-atom target JSON schema (issue #101), and the
-per-`CodeFamily` overhead formulas (issue #109). Every modeled mechanism is
+(ADR-0007, ADR-0008, ADR-0009, ADR-0010). It defines the hardware model the
+backend approximates, the vocabulary and constraints every pass is built
+against, every field of the neutral-atom target JSON schema (issue #101), and
+the per-`CodeFamily` overhead formulas (issue #109). Every modeled mechanism is
 attributed to the specific paper it comes from, and every numeric constant is
 either pinned to a cited source or explicitly labeled an illustrative
 placeholder.
+
+Neutral-atom compilation is a **first-class hardware path** in Quon (not an
+OpenQASM side feature): Quon → `quantum.dynamic` → scheduled layers → resource
+report today (#112); production `ScheduleLayer` → `quantum.na` MLIR lowering is
+issue [#167](https://github.com/arniber21/quon/issues/167). OpenQASM remains the
+intermediary emit for fixed gate-model targets only (ADR-0010).
 
 Citation keys like `[OLSQ-DPQA]` resolve in the References section at the end.
 Companion document: [literature_notes.md](./literature_notes.md) summarizes each

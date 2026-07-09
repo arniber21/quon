@@ -1,6 +1,6 @@
 # Quon
 
-An MLIR-based optimizing compiler for quantum programs. Accepts programs in the Quon language — a functional language with linear types and a monadic quantum interface — and emits OpenQASM 3.0 for execution on Qiskit Aer or real hardware.
+An MLIR-based optimizing compiler for quantum programs. Accepts programs in the Quon language — a functional language with linear types and a monadic quantum interface — and lowers them onto **hardware targets** (fixed gate-model devices and reconfigurable neutral-atom arrays today). OpenQASM 3.0 is a convenient intermediary for fixed targets (Aer verification and tooling); neutral-atom targets emit schedules and resource reports (and, tracked in #167, `quantum.na` MLIR).
 
 ## Prerequisites
 
@@ -33,26 +33,25 @@ cargo build --release
 ## Usage
 
 ```bash
-# Compile to OpenQASM 3.0 (generic all-to-all target)
-./target/release/quonc program.qn --emit-qasm
+# Inspect a hardware target (fixed or neutral-atom)
+./target/release/quonc --target targets/neutral_atom/generic_rna_v0.json --print-target
+./target/release/quonc --list-passes
 
-# Compile targeting a specific device
-./target/release/quonc program.qn --target device.json --emit-qasm
-
-# Neutral-atom schedule + resource report (#112)
+# Neutral-atom hardware path: schedule + resource report (#112)
 ./target/release/quonc test/na/bell.qn \
   --target targets/neutral_atom/generic_rna_v0.json \
   --emit-na-schedule \
   --emit-resource-report
 
-# Debug: dump IR stages / list pass pipeline
-./target/release/quonc program.qn --dump-ir --verify-linear --emit-qasm
-./target/release/quonc --list-passes
+# Fixed gate-model path: OpenQASM 3.0 as intermediary (Aer / tooling)
+./target/release/quonc program.qn --target device.json --emit-qasm
+./target/release/quonc program.qn --emit-qasm   # built-in generic_openqasm fixed target
 
-# Simulate with Qiskit Aer
+# Simulate the OpenQASM intermediary with Qiskit Aer
 ./target/release/quonc program.qn --emit-qasm | python python/quon_aer.py --shots 4096
 
-# Experiment loop: live metrics and watch mode (see docs/agents/experiment-loop.md)
+# Debug IR stages; experiment loop (see docs/agents/experiment-loop.md)
+./target/release/quonc program.qn --dump-ir --verify-linear --emit-qasm
 ./target/release/quonc program.qn --watch --target device.json --metrics
 ```
 
@@ -132,10 +131,10 @@ CI: `.github/workflows/flux.yml` (path-filtered to `flux_verify/`). Requires z3 
 | `quonc` | Compiler driver binary (`quonc`) |
 | `frontend` | Lexer, parser, type checker (linear + Clifford + depth), Z3 refinement, AST→IR lowering |
 | `zx` | ZX-graph data structure (`petgraph::StableGraph`) and rewrite engine |
-| `mlir_bridge` | Melior wrappers, dialect registration, optimization passes, OpenQASM 3.0 emitter |
-| `backend` | `BackendTarget`, noise model, connectivity graph, JSON device loader |
-| `quon_core` | MLIR-free shared types (`DepthExpr`, the OpenQASM 3.0 typed IR) used by both `frontend` and `mlir_bridge` without pulling either into the other |
-| `quon_na` | Neutral-atom backend: interaction graph, placement, AOD/zoned scheduling, compaction, resource reports |
+| `mlir_bridge` | Melior wrappers, dialect registration, optimization passes, OpenQASM 3.0 emitter (fixed-path intermediary) |
+| `backend` | `BackendTarget` / `TargetKind`, noise model, connectivity, JSON device loader |
+| `quon_core` | MLIR-free shared types (`DepthExpr`, the OpenQASM 3.0 typed IR used as fixed-path interchange) |
+| `quon_na` | Neutral-atom hardware backend: interaction graph, placement, AOD/zoned scheduling, compaction, resource reports (`quantum.na` MLIR lowering: #167) |
 | `flux_verify` | Flux refinement-type examples (nightly; `cargo flux -p flux_verify`) |
 
 ## Documentation

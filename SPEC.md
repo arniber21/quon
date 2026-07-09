@@ -2,7 +2,8 @@
 
 **Version:** 0.1.0-draft  
 **Status:** Implementation Reference  
-**Target:** OpenQASM 3.0 / Qiskit Aer  
+**Primary backends:** Hardware targets via `BackendTarget` / `TargetKind` (fixed gate-model, neutral-atom reconfigurable, …)  
+**Intermediary emit (fixed path):** OpenQASM 3.0 / Qiskit Aer verification  
 **Implementation:** Rust · MLIR C API · LLVM C API (entirely Rust, no C++ or CMake)
 
 ---
@@ -27,14 +28,14 @@
 
 ## 1. Project Overview
 
-Quon is a full-stack, MLIR-based optimizing compiler for quantum computing programs. It accepts programs written in the Quon source language — a functional language with a linear type discipline, refined type-level resource tracking, and a monadic classical/quantum interface — and lowers them through a structured three-dialect MLIR stack to OpenQASM 3.0, with execution and verification via Qiskit Aer.
+Quon is a full-stack, MLIR-based optimizing compiler for quantum computing programs. It accepts programs written in the Quon source language — a functional language with a linear type discipline, refined type-level resource tracking, and a monadic classical/quantum interface — and lowers them through a structured MLIR stack onto **hardware targets** (`BackendTarget` / `TargetKind`). Fixed gate-model targets may emit OpenQASM 3.0 as a convenient intermediary for Qiskit Aer verification and tooling; neutral-atom targets produce schedules, resource reports, and (issue #167) `quantum.na` MLIR. OpenQASM is not the compiler's primary backend identity — see ADR-0010.
 
 ### 1.1 Design Goals
 
 - Demonstrate non-trivial IR and compiler design for a non-classical computation model using MLIR's progressive lowering infrastructure.
 - Enforce quantum-specific invariants statically: no-cloning (linear types), Clifford classification, and gate depth as refined type indices — each directly motivating downstream optimization passes.
 - Provide a complete optimization pipeline: ZX-calculus rewriting, Clifford+T optimization, rotation merging, gate cancellation, depth-aware SABRE routing, noise-weighted scheduling, and native gate decomposition.
-- Emit valid OpenQASM 3.0 and integrate with Qiskit Aer for simulation-based verification.
+- Emit architecture-appropriate artifacts for the selected hardware target (schedules / resource reports / hardware IR for neutral-atom; OpenQASM 3.0 as an intermediary for fixed gate-model targets) and integrate with Qiskit Aer for simulation-based verification of the fixed path.
 
 ### 1.2 Implementation Language
 
@@ -1388,7 +1389,7 @@ cargo build --release
 | Physical qubit assignment | Attributes on `quantum.dynamic` ops, not a fourth dialect | Avoids additional conversion pass; physical info is metadata, not a different computation model |
 | ZX-calculus placement | Rewriting pass on `quantum.circ` | Only valid at the unitary level; enables non-local identities missed by peephole passes |
 | SABRE extension | Depth + noise terms in cost function | Operationalizes the type-level depth bound at the physical layer; genuine algorithmic contribution beyond standard SABRE |
-| Hardware targeting | Abstract pluggable `BackendTarget` descriptor; no vendor hardcoded | Keeps compiler general; OpenQASM 3.0 is the universal output target |
+| Hardware targeting | Abstract pluggable `BackendTarget` / `TargetKind`; no vendor hardcoded | Multi-architecture hardware compiler (ADR-0009, ADR-0010); OpenQASM 3.0 is an intermediary emit for fixed targets, not the universal product |
 | Implementation split | Entirely Rust; LLVM and MLIR accessed via their stable C APIs | Single language across the whole compiler; MLIR's C API (`mlirRegisterExternalPass`, `mlirOperationWalk`, `mlirPassManagerRun`) is sufficient for all dialect registration, pass authoring, and IR mutation without requiring C++ or TableGen |
 | ZX-graph location | Rust `zx` crate, imported directly by the `zx_simplification` pass | Graph algorithms are more natural in Rust; no FFI boundary needed since both the pass and the graph live in the same binary |
 
