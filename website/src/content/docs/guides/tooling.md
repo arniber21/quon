@@ -4,9 +4,10 @@ description: Run Quon's language server, formatter, and linter from a source che
 ---
 
 Quon ships a language server, formatter, and linter in the repository, plus
-first-party editor packages for VS Code (`extensions/vscode-quon/`) and Neovim
-(`nvim-quon/`). Build the tools from source and use those packages (or wire the
-binaries into another editor) as described below.
+first-party editor packages for VS Code (`extensions/vscode-quon/`), Neovim
+(`nvim-quon/`), and Zed (`extensions/zed-quon/`). Build the tools from source
+and use those packages (or wire the binaries into another editor) as described
+below.
 
 ## Build the tools
 

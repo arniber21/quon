@@ -1,0 +1,16 @@
+{
+  "languages": {
+    "Quon": {
+      "tab_size": 4,
+      "hard_tabs": false,
+      "format_on_save": "on",
+      "formatter": {
+        "external": {
+          "command": "quonfmt",
+          "arguments": []
+        }
+      },
+      "semantic_tokens": "combined"
+    }
+  }
+}

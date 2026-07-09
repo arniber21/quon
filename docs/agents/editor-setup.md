@@ -100,11 +100,13 @@ See [`extensions/vscode-quon/README.md`](../../extensions/vscode-quon/README.md)
 
 ---
 
-## Zed — #132
+## Zed (`extensions/zed-quon/`) — #132
 
-In progress. Must consume the same `tree-sitter-quon/` package (no forked `grammar.js`).
-Point extension grammar path at the monorepo package; sync query copies from shared
-`queries/` when the extension needs local copies.
+Dev extension: Tree-sitter + `quon_lsp` + `quonfmt`. Consumes the same
+`tree-sitter-quon/` package (no forked `grammar.js`); keep local
+`languages/quon/*.scm` in sync with shared `queries/`.
+
+See [`extensions/zed-quon/README.md`](../../extensions/zed-quon/README.md).
 
 ---
 

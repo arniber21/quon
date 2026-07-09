@@ -1,0 +1,19 @@
+id = "quon"
+name = "Quon"
+description = "Quon language support — Tree-sitter, quon_lsp, and quonfmt."
+version = "0.0.1"
+schema_version = 1
+authors = ["Arnab Ghosh <arnabcare21@gmail.com>"]
+repository = "https://github.com/arniber21/quon"
+
+[language_servers.quon-lsp]
+name = "Quon LSP"
+languages = ["Quon"]
+
+[language_servers.quon-lsp.language_ids]
+"Quon" = "quon"
+
+[grammars.quon]
+repository = "https://github.com/arniber21/quon"
+rev = "5d24fc5da0429657f180d3cf16806f603fb32a95"
+path = "tree-sitter-quon"

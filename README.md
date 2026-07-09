@@ -55,6 +55,7 @@ cargo build --release
 | `quonlint` | Algorithm-quality linter (`quonlint`, `quonlint.toml`) |
 | VS Code | First-party extension: [`extensions/vscode-quon/`](extensions/vscode-quon/) (TextMate + LSP + `quonfmt`) |
 | Neovim | First-party module: [`nvim-quon/`](nvim-quon/) (LSP + Tree-sitter + `quonfmt`) — see [`docs/agents/editor-setup.md`](docs/agents/editor-setup.md) |
+| Zed | Dev extension: [`extensions/zed-quon/`](extensions/zed-quon/) (Tree-sitter + LSP + `quonfmt`) |
 | Tree-sitter | Shared grammar for editors: [`tree-sitter-quon/`](tree-sitter-quon/) |
 
 ```bash
