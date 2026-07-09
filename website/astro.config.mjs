@@ -22,7 +22,10 @@ export default defineConfig({
 				},
 				{
 					label: 'Guides',
-					items: [{ label: 'Developer tooling', slug: 'guides/tooling' }],
+					items: [
+						{ label: 'Developer tooling', slug: 'guides/tooling' },
+						{ label: 'Backends and verification', slug: 'guides/backends' },
+					],
 				},
 				{
 					label: 'Cookbook',
