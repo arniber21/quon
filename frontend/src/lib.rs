@@ -13,35 +13,53 @@
     clippy::arc_with_non_send_sync // Z3 Context is !Send; Arc retained per PRD
 )]
 
-pub mod analysis;
 pub mod ast;
-pub mod desugar;
 pub mod diagnostics;
-pub mod elaborate;
 pub mod lexer;
-pub mod lower;
 pub mod parser;
 pub mod pretty;
+
+// Gate heavy pipeline modules on `full` (not `not(parser-only)`): Cargo unifies
+// features across the workspace, so enabling `parser-only` for `quonfmt` must not
+// strip analysis/typecheck from `quon_lsp` when another crate still enables `full`.
+#[cfg(feature = "full")]
+pub mod analysis;
+#[cfg(feature = "full")]
+pub mod desugar;
+#[cfg(feature = "full")]
+pub mod elaborate;
+#[cfg(feature = "full")]
+pub mod lower;
+#[cfg(feature = "full")]
 pub mod refinement;
+#[cfg(feature = "full")]
 pub mod typecheck;
+#[cfg(feature = "full")]
 pub mod types;
 
+#[cfg(feature = "full")]
 pub use analysis::DocumentAnalysis;
+#[cfg(feature = "full")]
 pub use analysis::analyze_program;
 
 use crate::ast::Decl;
 use crate::diagnostics::Diagnostic;
 use crate::lexer::Sp;
-use crate::typecheck::TypeChecker;
 
+#[cfg(feature = "full")]
 pub use crate::diagnostics::fixes::apply_fixes;
+#[cfg(feature = "full")]
 pub use crate::diagnostics::{
     AnalysisResult, DiagnosticCode, DiagnosticSeverity, QuickFix, QuickFixKind, RelatedInfo,
     RichDiagnostic, TextEdit,
 };
 
+#[cfg(feature = "full")]
+use crate::typecheck::TypeChecker;
+
 /// IDE-oriented analysis: lex → parse → desugar → typecheck. Does not lower to MLIR.
 /// Accumulates errors from the first failing stage; never panics on partial source.
+#[cfg(feature = "full")]
 pub fn analyze(source: &str) -> AnalysisResult {
     let intelligence = analyze_program(source);
     let tokens = match crate::lexer::lex_rich(source) {
@@ -96,20 +114,15 @@ pub fn parse_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
     parser::parse(&tokens).map_err(diagnostics::from_stage)
 }
 
-/// Parse `src` and run the `run { }` desugaring pass (issue #8), folding lexer,
-/// parser, and desugaring errors into one [`Diagnostic`] stream. Desugaring runs
-/// *before* the type checker, so the declarations this returns have every `run`
-/// block already lowered to `Bind`/`Return` nodes — this is the seam the checker
-/// and later lowering stages build on.
+/// Parse `src` and run the `run { }` desugaring pass (issue #8).
+#[cfg(feature = "full")]
 pub fn desugar_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
     let decls = parse_program(src)?;
     desugar::desugar_decls(decls)
 }
 
-/// Parse, desugar, and type-check a program (issues #9–#14). `run { }` blocks are lowered to
-/// `Bind`/`Return` nodes by [`desugar_program`] *before* the checker runs, so the quantum
-/// monad fragment is type-checked on the desugared tree. Lexer, parser, desugaring, and type
-/// errors are folded into the one [`Diagnostic`] stream.
+/// Parse, desugar, and type-check a program (issues #9–#14).
+#[cfg(feature = "full")]
 pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
     let result = analyze(src);
     if result.diagnostics.is_empty() {
@@ -120,6 +133,7 @@ pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
 }
 
 /// Parse, desugar, type-check, and lower circuit functions to `quantum.circ` MLIR (issue #16).
+#[cfg(feature = "full")]
 pub fn lower_program_to_mlir(src: &str) -> Result<String, Vec<Diagnostic>> {
     let context = melior::Context::new();
     let module = lower::lower_program(&context, src)?;

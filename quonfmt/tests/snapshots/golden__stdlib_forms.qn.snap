@@ -1,0 +1,41 @@
+---
+source: quonfmt/tests/golden.rs
+expression: formatted
+---
+type Bell = Circuit<2, 2, 2, Clifford>
+
+fn bell_gate(): Bell = circuit {
+        H @0 |> CNOT @(0, 1)
+}
+
+fn phase_kickback(theta: Float): Circuit<2, 2, 3, Universal> = circuit {
+        CNOT @(0, 1) |> Rz theta @1 |> CNOT @(0, 1)
+}
+
+fn basis_measures(q1: Qubit, q2: Qubit): Q<(Bit, Bit)> = run {
+        a <- measure_x q1
+        b <- measure_y q2
+        return (a, b)
+}
+
+fn cleanup(q: Qubit): Q<Qubit> = run {
+        r <- reset q
+        return r
+}
+
+fn measure_one(_k: Int): Q<Bit> = run {
+        q <- qubit()
+        measure q
+}
+
+fn seqs(cs: List<Q<Bit>>): Q<List<Bit>> = sequence_q cs
+
+fn series(xs: List<Int>): Q<List<Bit>> = map_q(fn(k: Int) -> measure_one k, xs)
+
+fn reverse_reg(n: Nat): Circuit<n, n, n / 2, Clifford> = swap_reverse n
+
+fn had_one(): Circuit<1, 1, 1, Clifford> = circuit {
+        H @0
+}
+
+fn tower(n: Nat): Circuit<n, n, 1, Clifford> = par { had_one() } * n

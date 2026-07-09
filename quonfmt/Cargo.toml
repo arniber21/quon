@@ -1,0 +1,21 @@
+[package]
+name    = "quonfmt"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "quonfmt"
+path = "src/main.rs"
+
+[dependencies]
+frontend = { path = "../frontend", default-features = false, features = ["parser-only"] }
+thiserror = { workspace = true }
+clap      = { workspace = true }
+anyhow    = { workspace = true }
+ariadne   = { workspace = true }
+
+[dev-dependencies]
+insta     = { workspace = true }
+proptest  = { workspace = true }
+arbitrary = { workspace = true }
+frontend  = { path = "../frontend", default-features = false, features = ["parser-only"] }

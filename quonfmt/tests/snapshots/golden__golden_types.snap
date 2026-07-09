@@ -1,0 +1,9 @@
+---
+source: quonfmt/tests/golden.rs
+expression: formatted
+---
+type W<n> = Circuit<2, 2, n + 1, Clifford>
+
+type Reg<n> = QReg<n * 2>
+
+fn typed(): ((Int) -> (Int)) -o ((Qubit) -> (Q<Qubit>)) = fn(x: Int) -> x

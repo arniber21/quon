@@ -1,0 +1,8 @@
+fn choose(b: Bool): Int = if b then 1 else 0
+
+fn match_demo(x: Int): Int = match x {
+  0 => 1,
+  _ => 2
+}
+
+fn loop(): Circuit<2,2,1,Clifford> = for i in range(2) { H@i }

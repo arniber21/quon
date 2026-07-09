@@ -1,0 +1,13 @@
+fn jux(q: Qubit): Circuit<1, 1, 1, Clifford> = circuit { H q }
+
+fn call(a: Qubit, b: Qubit): Circuit<2, 2, 1, Clifford> = circuit { CNOT(a, b) }
+
+fn idx(q: Qubit): Circuit<1, 1, 1, Clifford> = circuit { index(q, 0) }
+
+fn method(x: Qubit, a: Int): Circuit<1, 1, 1, Clifford> = circuit { m(x, a) }
+
+fn nested_app(): Circuit<1, 1, 1, Clifford> = circuit { (H @0) |> X @0 }
+
+fn empty_call(): Circuit<0, 0, 0, Clifford> = circuit { noop() }
+
+fn noop(): Circuit<0, 0, 0, Clifford> = circuit {}

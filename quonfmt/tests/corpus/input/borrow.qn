@@ -1,0 +1,16 @@
+fn ancilla_demo(): Q<Qubit> = run {
+    borrow anc: Qubit in {
+        H @0
+        reset(anc)
+    }
+    return identity(1) @0
+}
+
+fn multi_borrow(): Q<Unit> = run {
+    borrow a: Qubit, b: Qubit in {
+        CNOT @(a, b)
+        reset(a)
+        discard(b)
+    }
+    return ()
+}

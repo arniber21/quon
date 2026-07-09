@@ -1,0 +1,7 @@
+fn prec(): Int = 1+2*3^2
+
+fn mix(): Circuit<2,2,1,Clifford> = circuit {
+  (H@0|>X@1)+Y@0
+}
+
+fn gate(): Circuit<1,1,1,Clifford> = circuit { -H@0 }
