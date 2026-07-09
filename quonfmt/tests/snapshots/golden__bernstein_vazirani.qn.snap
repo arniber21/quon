@@ -1,0 +1,18 @@
+---
+source: quonfmt/tests/golden.rs
+expression: formatted
+---
+type BVOracle<n> = Circuit<n + 1, n + 1, _, Universal>
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+        (for q in (qubits n) { H q })
+}
+
+fn bernstein_vazirani(n: Nat, oracle: BVOracle<n>): Q<List<Bit>> = run {
+        q    <- hadamard_all n @ (qreg n)
+        anc  <- (H |> X) @ (qreg 1)
+        both <- oracle @ (tensored(q, anc))
+        let (q2, _anc) = split(n, both)
+        out  <- hadamard_all n @q2
+        measure_all out
+}

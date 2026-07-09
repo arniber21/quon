@@ -5,6 +5,8 @@
 // form uniformly, so precedence and associativity can never be misread on re-parse. The
 // output is intentionally explicit rather than minimal — it backs the generative fuzzer
 // (frontend/fuzz/fuzz_roundtrip) and doubles as a debug dumper.
+//
+// For canonical source formatting, use the `quonfmt` crate instead.
 
 use crate::ast::*;
 use crate::lexer::Sp;

@@ -1,0 +1,7 @@
+fn demo(q0: Qubit, q1: Qubit): Q<(Bit, Bit)> = run {
+    (a, b) <- bell() @ (q0, q1)
+    x <- measure(a)
+    return (x, b)
+}
+
+fn bell(): Circuit<2, 2, 1, Clifford> = circuit { H @0 |> CNOT @(0, 1) }

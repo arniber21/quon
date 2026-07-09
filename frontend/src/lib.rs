@@ -13,35 +13,49 @@
     clippy::arc_with_non_send_sync // Z3 Context is !Send; Arc retained per PRD
 )]
 
-pub mod analysis;
 pub mod ast;
-pub mod desugar;
 pub mod diagnostics;
-pub mod elaborate;
 pub mod lexer;
-pub mod lower;
 pub mod parser;
 pub mod pretty;
+
+#[cfg(not(feature = "parser-only"))]
+pub mod analysis;
+#[cfg(not(feature = "parser-only"))]
+pub mod desugar;
+#[cfg(not(feature = "parser-only"))]
+pub mod elaborate;
+#[cfg(not(feature = "parser-only"))]
+pub mod lower;
+#[cfg(not(feature = "parser-only"))]
 pub mod refinement;
+#[cfg(not(feature = "parser-only"))]
 pub mod typecheck;
+#[cfg(not(feature = "parser-only"))]
 pub mod types;
 
+#[cfg(not(feature = "parser-only"))]
 pub use analysis::DocumentAnalysis;
+#[cfg(not(feature = "parser-only"))]
 pub use analysis::analyze_program;
 
 use crate::ast::Decl;
 use crate::diagnostics::Diagnostic;
 use crate::lexer::Sp;
-use crate::typecheck::TypeChecker;
 
+#[cfg(not(feature = "parser-only"))]
 pub use crate::diagnostics::fixes::apply_fixes;
+#[cfg(not(feature = "parser-only"))]
 pub use crate::diagnostics::{
     AnalysisResult, DiagnosticCode, DiagnosticSeverity, QuickFix, QuickFixKind, RelatedInfo,
     RichDiagnostic, TextEdit,
 };
 
+#[cfg(not(feature = "parser-only"))]
+use crate::typecheck::TypeChecker;
+
 /// IDE-oriented analysis: lex → parse → desugar → typecheck. Does not lower to MLIR.
-/// Accumulates errors from the first failing stage; never panics on partial source.
+#[cfg(not(feature = "parser-only"))]
 pub fn analyze(source: &str) -> AnalysisResult {
     let intelligence = analyze_program(source);
     let tokens = match crate::lexer::lex_rich(source) {
@@ -83,35 +97,23 @@ pub fn analyze(source: &str) -> AnalysisResult {
     }
 }
 
-/// The frontend's single entry point for turning source text into an AST: it
-/// runs the lexer then the parser, folding both stages' errors into one
-/// [`Diagnostic`] stream so callers never re-thread the pipeline themselves.
-///
-/// The individual stages ([`lexer::lex`], [`parser::parse`]) remain public as
-/// internal seams for stage-level tests. Once desugaring, type checking, and
-/// lowering land, this grows into a full `compile`; today the implemented
-/// surface stops at a parsed declaration list.
+/// The frontend's single entry point for turning source text into an AST.
 pub fn parse_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
     let tokens = lexer::lex(src).map_err(diagnostics::from_stage)?;
     parser::parse(&tokens).map_err(diagnostics::from_stage)
 }
 
-/// Parse `src` and run the `run { }` desugaring pass (issue #8), folding lexer,
-/// parser, and desugaring errors into one [`Diagnostic`] stream. Desugaring runs
-/// *before* the type checker, so the declarations this returns have every `run`
-/// block already lowered to `Bind`/`Return` nodes — this is the seam the checker
-/// and later lowering stages build on.
+/// Parse `src` and run the `run { }` desugaring pass (issue #8).
+#[cfg(not(feature = "parser-only"))]
 pub fn desugar_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
     let decls = parse_program(src)?;
     desugar::desugar_decls(decls)
 }
 
-/// Parse, desugar, and type-check a program (issues #9–#14). `run { }` blocks are lowered to
-/// `Bind`/`Return` nodes by [`desugar_program`] *before* the checker runs, so the quantum
-/// monad fragment is type-checked on the desugared tree. Lexer, parser, desugaring, and type
-/// errors are folded into the one [`Diagnostic`] stream.
+/// Parse, desugar, and type-check a program (issues #9–#14).
+#[cfg(not(feature = "parser-only"))]
 pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
-    let result = analyze(src);
+    let result = analyze(source);
     if result.diagnostics.is_empty() {
         Ok(())
     } else {
@@ -120,6 +122,7 @@ pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
 }
 
 /// Parse, desugar, type-check, and lower circuit functions to `quantum.circ` MLIR (issue #16).
+#[cfg(not(feature = "parser-only"))]
 pub fn lower_program_to_mlir(src: &str) -> Result<String, Vec<Diagnostic>> {
     let context = melior::Context::new();
     let module = lower::lower_program(&context, src)?;

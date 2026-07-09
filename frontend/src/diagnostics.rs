@@ -4,6 +4,7 @@
 //! [`Diagnostic`] type is the legacy currency for `quonc` / ariadne; [`RichDiagnostic`]
 //! preserves stable codes, severity, related spans, and quick fixes for IDE use.
 
+#[cfg(not(feature = "parser-only"))]
 pub mod fixes;
 
 use crate::lexer::{SimpleSpan, Sp};
@@ -158,6 +159,7 @@ impl RichDiagnostic {
 }
 
 /// Result of IDE-oriented analysis (parse + desugar + typecheck; no lowering).
+#[cfg(not(feature = "parser-only"))]
 #[derive(Debug, Clone, Default)]
 pub struct AnalysisResult {
     pub diagnostics: Vec<RichDiagnostic>,

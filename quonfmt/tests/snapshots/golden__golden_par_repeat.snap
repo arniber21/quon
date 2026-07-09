@@ -1,0 +1,11 @@
+---
+source: quonfmt/tests/golden.rs
+expression: formatted
+---
+fn tower(n: Nat): Circuit<n, n, 1, Clifford> = par { had_one() } * n
+
+fn nested(): Circuit<4, 4, 2, Clifford> = par { par { H @0 } * 2 } * 2
+
+fn had_one(): Circuit<1, 1, 1, Clifford> = circuit {
+        H @0
+}

@@ -1,0 +1,5 @@
+type MyAlias = Int
+
+type Vec2<n> = Matrix<2, n, Float>
+
+fn  add(x:Int,y:Int):Int= x+y

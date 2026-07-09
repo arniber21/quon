@@ -3,15 +3,20 @@ name    = "frontend"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["full"]
+full = ["dep:z3", "dep:quon_core", "dep:mlir_bridge", "dep:melior", "dep:anyhow"]
+parser-only = []
+
 [dependencies]
 chumsky   = { workspace = true }
-z3        = { workspace = true }
 thiserror = { workspace = true }
 ariadne   = { workspace = true }
-anyhow    = { workspace = true }
-quon_core   = { path = "../quon_core" } # shared DepthExpr (MLIR-free)
-mlir_bridge = { path = "../mlir_bridge" }
-melior      = { workspace = true }
+z3        = { workspace = true, optional = true }
+anyhow    = { workspace = true, optional = true }
+quon_core   = { path = "../quon_core", optional = true }
+mlir_bridge = { path = "../mlir_bridge", optional = true }
+melior      = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest    = { workspace = true }
@@ -19,10 +24,9 @@ insta       = { workspace = true }
 melior      = { workspace = true }
 mlir_bridge = { path = "../mlir_bridge" }
 backend     = { path = "../backend" }
-# Shared with the fuzz crate: the proptest roundtrip test drives the same Unstructured-based
-# generator (frontend/fuzz/src/gen.rs) via random bytes.
 arbitrary   = { workspace = true }
 
 [[example]]
 name = "circ_lower"
 path = "examples/circ_lower.rs"
+required-features = ["full"]

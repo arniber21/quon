@@ -1,0 +1,7 @@
+---
+source: quonfmt/tests/golden.rs
+expression: formatted
+---
+fn id(): (Int) -> (Int) = fn(x: Int) -> x
+
+fn asc(): Int = 1 + 2: Int

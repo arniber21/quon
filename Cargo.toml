@@ -8,6 +8,7 @@ members = [
     "flux_verify",
     "quon_core",
     "quon_lsp",
+    "quonfmt",
 ]
 resolver = "2"
 

@@ -1232,6 +1232,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "quonfmt"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arbitrary",
+ "ariadne",
+ "clap",
+ "frontend",
+ "insta",
+ "proptest",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"

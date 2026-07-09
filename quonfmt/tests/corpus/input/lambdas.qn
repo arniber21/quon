@@ -1,0 +1,3 @@
+fn id(): Int -> Int = fn(x: Int) -> x
+
+fn asc(): Int = (1 + 2) : Int
