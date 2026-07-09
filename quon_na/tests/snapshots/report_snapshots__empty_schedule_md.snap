@@ -1,0 +1,33 @@
+---
+source: quon_na/tests/report_snapshots.rs
+expression: md
+---
+# Neutral-atom resource report
+
+## Qubit resources
+| Metric | Value |
+| --- | ---: |
+| Logical qubits | 0 |
+| Physical atoms | 0 |
+
+## Schedule metrics
+| Metric | Value |
+| --- | ---: |
+| Estimated cycles | 0 |
+| Bottleneck | none |
+| Rydberg stages | 0 |
+| Rearrangement steps | 0 |
+| Rearrangement time (µs) | 0 |
+| Trap transfers | 0 |
+| Transfer time (µs) | 0 |
+| Entangle2 count | 0 |
+| EntangleN count | 0 |
+| Measurement rounds | 0 |
+| Reset rounds | 0 |
+| Wait time (µs) | 0 |
+| Total time (µs) | 0 |
+
+## Notes
+- Field names align with TUM RAP Table I / Enola headline metrics.
+- `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
+- Non-QEC reports omit atoms-per-logical and code-family rows.

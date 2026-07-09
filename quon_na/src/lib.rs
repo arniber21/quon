@@ -66,7 +66,10 @@ pub use qec::{
     CodeBlock, CodeBlockId, CodeFamily, LogicalOp, NetRate, QecError, atoms_per_logical, ceil_div,
     expand_code_block, repetition_n, surface_n,
 };
-pub use report::ResourceReport;
+pub use report::{
+    BottleneckKind, ReportError, ResourceReport, build_resource_report, resource_report_to_json,
+    resource_report_to_markdown, simultaneous_layer_time,
+};
 pub use schedule::{
     AtomMove, EntanglingAction, MeasurementBasis, MovementGroup, NeutralAtomAction, ScheduleError,
     ScheduleLayer, TransferDirection, TrapTransfer,

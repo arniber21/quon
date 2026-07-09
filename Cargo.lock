@@ -1485,6 +1485,7 @@ name = "quon_na"
 version = "0.1.0"
 dependencies = [
  "flux-rs",
+ "insta",
  "melior",
  "mlir_bridge",
  "proptest",

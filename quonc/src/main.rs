@@ -67,6 +67,11 @@ struct Cli {
     /// quieter two-qubit edges / readout qubits when choosing SWAPs.
     #[arg(long, default_value_t = 0.3)]
     sabre_gamma: f64,
+
+    /// Emit a neutral-atom resource report (JSON/Markdown).
+    /// Full wiring lands in #112; this flag is reserved and currently errors.
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "-")]
+    emit_resource_report: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -104,6 +109,12 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode> {
     let mut cli = Cli::parse();
+
+    if cli.emit_resource_report.is_some() {
+        bail!(
+            "--emit-resource-report is not wired yet; resource reports require the neutral-atom schedule path (see #112)"
+        );
+    }
 
     // The emitter reads only the target's native gate set and id, not its
     // topology, so the qubit width here is immaterial; `generic_openqasm` is

@@ -79,9 +79,27 @@ fn help_lists_all_documented_flags() {
         "--regression-config",
         "--watch",
         "--watch-debounce-ms",
+        "--emit-resource-report",
     ] {
         assert!(stdout.contains(flag), "missing {flag} in --help");
     }
+}
+
+#[test]
+fn emit_resource_report_is_not_wired_yet() {
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../frontend/tests/fixtures/bell_state.qn");
+    let out = quonc()
+        .arg(&source)
+        .arg("--emit-resource-report")
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not wired") && stderr.contains("#112"),
+        "stderr: {stderr}"
+    );
 }
 
 #[test]
