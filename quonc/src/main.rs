@@ -230,16 +230,17 @@ fn run_watch(cli: &Cli) -> Result<ExitCode> {
 
 fn load_target(path: Option<&PathBuf>) -> Result<BackendTarget> {
     match path {
-        Some(path) => backend::json::load(path)
-            .map_err(|e| anyhow!("loading target {}: {e}", path.display())),
+        Some(path) => {
+            backend::json::load(path).map_err(|e| anyhow!("loading target {}: {e}", path.display()))
+        }
         None => Ok(backend::generic_openqasm::target(64)),
     }
 }
 
 fn require_source(cli: &Cli) -> Result<PathBuf> {
-    cli.source.clone().ok_or_else(|| {
-        anyhow!("missing source file; pass a .qn source or use --print-target")
-    })
+    cli.source
+        .clone()
+        .ok_or_else(|| anyhow!("missing source file; pass a .qn source or use --print-target"))
 }
 
 fn require_fixed_target(target: &BackendTarget) -> Result<()> {
