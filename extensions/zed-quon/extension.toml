@@ -15,5 +15,5 @@ languages = ["Quon"]
 
 [grammars.quon]
 repository = "https://github.com/arniber21/quon"
-rev = "5d24fc5da0429657f180d3cf16806f603fb32a95"
+rev = "2adf184576c2ccc27443d666e2508f660ac0e32d"
 path = "tree-sitter-quon"
