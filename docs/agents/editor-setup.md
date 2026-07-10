@@ -98,6 +98,12 @@ grammar package for other editors (VS Code itself uses TextMate for lexical high
 
 See [`extensions/vscode-quon/README.md`](../../extensions/vscode-quon/README.md).
 
+**Syntax-only failure mode:** colors without hover/squiggles usually means
+`activate()` never loaded (packaged `.vsix` missing `vscode-languageclient`) or
+`quon_lsp` was not found. Do **not** exclude all of `node_modules/` in
+`.vscodeignore` — production deps must ship in the `.vsix`. Use
+**Quon: Show Server Status** and Output → Extension Host to confirm.
+
 ---
 
 ## Zed (`extensions/zed-quon/`) — #132

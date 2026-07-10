@@ -152,7 +152,10 @@ local sweep over the repository's `.qn` fixtures, run:
 - **VS Code:** first-party extension at [`extensions/vscode-quon/`](https://github.com/arniber21/quon/tree/main/extensions/vscode-quon)
   ([#131](https://github.com/arniber21/quon/issues/131)). Install from a built `.vsix` or run
   the Extension Development Host. It starts `quon_lsp` over stdio and formats via `quonfmt`
-  (format-on-save default **off** — `quonfmt` strips comments).
+  (format-on-save default **off** — `quonfmt` strips comments). If you get colors but no
+  hover/squiggles, or `quon.showServerStatus` is "not found", rebuild/reinstall the `.vsix`
+  (production `node_modules` must be packaged) and ensure `quon_lsp` is on `PATH` or set via
+  `quon.lsp.path`.
 - **Neovim:** first-party Lua module at [`nvim-quon/`](https://github.com/arniber21/quon/tree/main/nvim-quon)
   ([#133](https://github.com/arniber21/quon/issues/133)). Load via lazy.nvim (`ft = "quon"`) or
   packer from a monorepo checkout; see the [nvim-quon README](https://github.com/arniber21/quon/blob/main/nvim-quon/README.md).

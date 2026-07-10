@@ -66,7 +66,15 @@ export async function startLanguageClient(context: vscode.ExtensionContext): Pro
   client = new LanguageClient("quon", "Quon Language Server", serverOptions, clientOptions);
   client.setTrace(mapTrace(settings.trace));
   context.subscriptions.push(client);
-  await client.start();
+  try {
+    await client.start();
+  } catch (err) {
+    // Drop the failed client so status/restart reflect reality and a later
+    // restart can construct a fresh LanguageClient.
+    client = undefined;
+    lastResolvedPath = command;
+    throw err;
+  }
   return client;
 }
 
