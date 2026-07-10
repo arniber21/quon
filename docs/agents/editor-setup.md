@@ -114,6 +114,11 @@ Dev extension: Tree-sitter + `quon_lsp` + `quonfmt`. Consumes the same
 
 See [`extensions/zed-quon/README.md`](../../extensions/zed-quon/README.md).
 
+**Brackets query:** `languages/quon/brackets.scm` matches anonymous `"{"` /
+`"}"` tokens. Never reintroduce a named `delimiter` token in `grammar.js` —
+Zed fails language load with `Invalid node type "{"`. After grammar changes,
+bump `[grammars.quon].rev` in `extension.toml` and reinstall the Dev Extension.
+
 ---
 
 ## Agent checklist

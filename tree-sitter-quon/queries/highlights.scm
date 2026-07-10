@@ -17,5 +17,14 @@
 (number) @number
 (identifier) @variable
 (operator) @operator
-(delimiter) @punctuation.bracket
+
+"{" @punctuation.bracket
+"}" @punctuation.bracket
+"[" @punctuation.bracket
+"]" @punctuation.bracket
+"(" @punctuation.bracket
+")" @punctuation.bracket
+"<" @punctuation.bracket
+">" @punctuation.bracket
+
 (punctuation) @punctuation.delimiter

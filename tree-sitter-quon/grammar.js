@@ -4,6 +4,11 @@
  *
  * Structure is intentionally loose (error-tolerant) so highlights.scm can paint
  * keywords, comments, numbers, and operators without full type fidelity.
+ *
+ * Delimiters are anonymous string tokens (`"{"`, `"}"`, …) so Zed/Neovim
+ * brackets.scm can match them. Do not collapse them into a single `delimiter`
+ * named token — that makes `("{" @open "}" @close)` fail with
+ * "Invalid node type `{`".
  */
 module.exports = grammar({
   name: "quon",
@@ -26,7 +31,14 @@ module.exports = grammar({
         $.number,
         $.identifier,
         $.operator,
-        $.delimiter,
+        "{",
+        "}",
+        "[",
+        "]",
+        "(",
+        ")",
+        "<",
+        ">",
         $.punctuation,
       ),
 
@@ -65,8 +77,6 @@ module.exports = grammar({
 
     operator: (_) =>
       token(choice("|>", "<-", "->", "-o", "=>", "@", "=", "+", "-", "*", "/", "^", "|")),
-
-    delimiter: (_) => token(choice("(", ")", "{", "}", "[", "]", "<", ">")),
 
     punctuation: (_) => token(choice(":", ",", ".", "_", "`")),
 
