@@ -1,10 +1,13 @@
 .vscode-test/**
 .vscode/**
-node_modules/**
+# Do NOT ignore all of node_modules — vsce already omits devDependencies.
+# Excluding production deps (esp. vscode-languageclient) makes activate() fail
+# to load, so commands/LSP never register while TextMate highlighting still works.
 src/**
 test/**
 out/test/**
 **/*.ts
+!**/*.d.ts
 **/*.map
 tsconfig.json
 .gitignore

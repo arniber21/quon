@@ -2,7 +2,7 @@
   "name": "quon-vscode",
   "displayName": "Quon",
   "description": "Quon language support — syntax highlighting, LSP, and quonfmt",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "quon",
   "license": "Apache-2.0",
   "repository": {
@@ -19,7 +19,9 @@
     "Linters"
   ],
   "activationEvents": [
-    "onLanguage:quon"
+    "onLanguage:quon",
+    "onCommand:quon.restartServer",
+    "onCommand:quon.showServerStatus"
   ],
   "main": "./out/src/extension.js",
   "contributes": {

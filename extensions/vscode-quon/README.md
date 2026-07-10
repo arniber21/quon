@@ -50,6 +50,21 @@ A matching config also lives under `extensions/vscode-quon/.vscode/launch.json` 
 2. Confirm TextMate colors and (after the server starts) no error diagnostics.
 3. Hover `bell_state` / `CNOT` / `measure`.
 4. Format Document (explicit command) — do **not** rely on format-on-save.
+5. Run **Quon: Show Server Status** — it should report `running` and a path to `quon_lsp`.
+
+## Troubleshooting: colors work, but no hover / squiggles
+
+TextMate highlighting is static and does **not** require the extension to activate.
+Hover, diagnostics, and the Quon commands require `activate()` to load and
+`quon_lsp` to start.
+
+| Symptom | Likely cause | Fix |
+| ------- | ------------ | --- |
+| `command 'quon.showServerStatus' not found` | Extension JS failed to load (often a `.vsix` built without `vscode-languageclient`) | Rebuild with `npm ci && npm run package` from this directory and reinstall the `.vsix`. Confirm the archive contains `node_modules/vscode-languageclient/`. |
+| Status says `not running` / `(not found)` | `quon_lsp` missing from PATH / settings | `cargo build --release -p quon_lsp -p quonfmt -p quonlint-cli`, then set `quon.lsp.path` or put `target/release` on `PATH`. |
+| Activation error toast | `quon_lsp` crashed on start | Check **Output → Quon Language Server** and **Extension Host**. |
+
+Also open **Developer: Show Running Extensions** and confirm `Quon` is activated (not "Activation Failed").
 
 ## Settings
 
