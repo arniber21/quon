@@ -125,6 +125,11 @@ Or call `require("quon").format()`. Check `:ConformInfo`.
 **Caution:** `quonfmt` strips line and block comments. Keep format-on-save off unless you
 accept that. See [`docs/quonfmt-style.md`](../docs/quonfmt-style.md).
 
+**Double-format hazard:** `quon_lsp` advertises `textDocument/formatting`, while this
+plugin formats through conform.nvim → `quonfmt`. Use **one** path only. With the
+defaults here (conform enabled, LSP used for diagnostics/intel), do not also call
+`vim.lsp.buf.format()` for Quon buffers or register a second format-on-save hook.
+
 Secondary (formatter.nvim) data: `require("quon.format").formatter_nvim_config()`.
 
 ## Optional nvim-lint

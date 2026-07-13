@@ -19,5 +19,5 @@ pub use hover::hover_at;
 pub use inlay_hint::{full_document_range, inlay_hints};
 pub use references::references_at;
 pub use rename::{prepare_rename_at, rename_at};
-pub use semantic_tokens::{semantic_tokens_full, semantic_tokens_legend};
+pub use semantic_tokens::{semantic_tokens_full, semantic_tokens_legend, semantic_tokens_range};
 pub use signature_help::signature_help_at;
