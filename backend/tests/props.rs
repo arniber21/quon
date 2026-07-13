@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 
-use backend::gates::STD_GATES;
+use backend::gates::std_gates;
 use backend::target::{ConnectivityGraph, UNREACHABLE};
 use petgraph::algo::dijkstra;
 use petgraph::graph::{NodeIndex, UnGraph};
@@ -103,9 +103,9 @@ proptest! {
     #[test]
     fn json_round_trip_preserves_topology_and_gates(
         (n, edges) in graph_strategy(),
-        gate_mask in prop::collection::vec(any::<bool>(), STD_GATES.len()),
+        gate_mask in prop::collection::vec(any::<bool>(), std_gates().len()),
     ) {
-        let gates: Vec<&str> = STD_GATES
+        let gates: Vec<&str> = std_gates()
             .iter()
             .zip(&gate_mask)
             .filter_map(|((name, _), &keep)| keep.then_some(*name))

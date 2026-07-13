@@ -956,15 +956,7 @@ fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<GatePlacement>, LowerE
 }
 
 fn inverse_gate_name(name: &str) -> String {
-    match name {
-        "S" => "S_dag".to_string(),
-        "S_dag" => "S".to_string(),
-        "T" => "T_dag".to_string(),
-        "T_dag" => "T".to_string(),
-        "SX" => "SX_dag".to_string(),
-        "SX_dag" => "SX".to_string(),
-        other => other.to_string(),
-    }
+    quon_core::gates::inverse_or_self(name)
 }
 
 fn const_width(depth: &DepthExpr, field: &'static str) -> Result<i64, LowerError> {

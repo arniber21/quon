@@ -151,6 +151,7 @@ dependencies = [
  "flux-rs",
  "petgraph",
  "proptest",
+ "quon_core",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

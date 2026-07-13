@@ -45,15 +45,13 @@ fn read_string_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
 }
 
 fn inverse_name(name: &str) -> Option<String> {
-    let inverse = match name {
-        "H" | "X" | "Y" | "Z" | "CNOT" | "CX" | "CZ" | "SWAP" => name,
-        "S" => "S†",
-        "S†" | "Sdag" => "S",
-        "T" => "T†",
-        "T†" | "Tdag" => "T",
-        _ => return None,
-    };
-    Some(inverse.to_string())
+    // Only invertible discrete gates participate in uncomputation; parametric
+    // rotations need angle negation and are refused here (matches prior behaviour).
+    let info = quon_core::gates::lookup(name)?;
+    if info.parametric {
+        return None;
+    }
+    Some(info.inverse.to_string())
 }
 
 fn set_return_operands<'c, 'a>(return_op: OperationRef<'c, 'a>, wires: &[Value<'c, 'a>]) {

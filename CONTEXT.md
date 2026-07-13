@@ -61,6 +61,9 @@ _Avoid_: architecture kind, target type
 **Native gate**: A gate in the BackendTarget's supported gate set. Gates not in the native set must be decomposed before emission. Tracked via the `native_gate : BoolAttr` attribute on `quantum.circ.gate` ops.
 _Avoid_: supported gate, hardware gate
 
+**Gate registry**: The MLIR-free table in `quon_core::gates` that is the single source of truth for Quon/OpenQASM gate metadata — canonical id, surface aliases (`CX`/`CNOT`, `S†`/`S_dag`), arity, Clifford class, inverse, and OpenQASM spelling. Typecheck, backend `std_gates`, adjoint/inverse helpers, gate cancellation, and OpenQASM emit all consume it; adding a fixture gate means appending one `GateInfo` row (see the module docs). Adapters may still map id → Melior attributes or ZX nodes.
+_Avoid_: gate table, STD_GATES, native-gate map
+
 ### Optimization
 
 **ZX-graph**: An auxiliary graph representation of a `quantum.circ` circuit used for non-local algebraic simplification. Nodes are Z- or X-spiders with phase angles; edges are wires or Hadamard boxes. Built on `petgraph::StableGraph`.
