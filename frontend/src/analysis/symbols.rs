@@ -395,7 +395,7 @@ fn f(): Circuit<1, 1, 1, Clifford> = circuit {
     fn call_site_sees_other_top_level_fn() {
         let src = "fn g(): Int = 1\nfn f(): Int = g()\n";
         let decls = crate::desugar_program(src).expect("parse");
-        let index = build_symbol_index(&decls, src.len());
+        let index = build_symbol_index(&decls, src);
         let call = src.find("g()").expect("call");
         let g = index
             .symbols
