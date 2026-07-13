@@ -9,8 +9,9 @@ use crate::analysis::{AnalysisScheduler, debounce_from_env};
 use crate::diagnostics::code_actions_for_range;
 use crate::document::{DocumentError, DocumentStore};
 use crate::intel::{
-    completions_at, definition_at, document_highlight_at, hover_at, prepare_rename_at,
-    references_at, rename_at, semantic_tokens_full, semantic_tokens_legend, signature_help_at,
+    completions_at, definition_at, document_highlight_at, document_symbols, folding_ranges,
+    hover_at, inlay_hints, prepare_rename_at, references_at, rename_at, semantic_tokens_full,
+    semantic_tokens_legend, signature_help_at,
 };
 
 pub struct QuonLanguageServer {
@@ -83,6 +84,9 @@ impl LanguageServer for QuonLanguageServer {
                         ..Default::default()
                     },
                 )),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -329,5 +333,54 @@ impl LanguageServer for QuonLanguageServer {
                     .collect(),
             ))
         }
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(document_symbols(&analysis.intelligence))
+    }
+
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        let uri = params.text_document.uri;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(folding_ranges(&analysis.intelligence))
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+        let range = params.range;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(inlay_hints(&analysis.intelligence, range))
     }
 }
