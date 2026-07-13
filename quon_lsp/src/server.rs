@@ -9,7 +9,8 @@ use crate::analysis::{AnalysisScheduler, debounce_from_env};
 use crate::diagnostics::code_actions_for_range;
 use crate::document::{DocumentError, DocumentStore};
 use crate::intel::{
-    completions_at, definition_at, hover_at, semantic_tokens_full, semantic_tokens_legend,
+    completions_at, definition_at, document_highlight_at, hover_at, references_at,
+    semantic_tokens_full, semantic_tokens_legend,
 };
 
 pub struct QuonLanguageServer {
@@ -49,6 +50,8 @@ impl LanguageServer for QuonLanguageServer {
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                document_highlight_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec!["@".into(), ":".into(), "<".into()]),
                     ..Default::default()
@@ -158,6 +161,47 @@ impl LanguageServer for QuonLanguageServer {
             return Ok(None);
         };
         Ok(definition_at(&analysis.intelligence, &uri, position))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let include_declaration = params.context.include_declaration;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(references_at(
+            &analysis.intelligence,
+            &uri,
+            position,
+            include_declaration,
+        ))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(document_highlight_at(&analysis.intelligence, position))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {

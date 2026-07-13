@@ -40,15 +40,32 @@ fn offset_in(span: SimpleSpan, offset: usize) -> bool {
 
 fn visit_decl<'a>(decl: &'a Decl, offset: usize, best: &mut Option<(usize, NodeAt<'a>)>) {
     match decl {
-        Decl::Fn { name, body, .. } => {
+        Decl::Fn {
+            name,
+            params,
+            ret,
+            body,
+        } => {
             if offset_in(name.1, offset) {
                 consider(name.1, offset, NodeAt::Name(&name.0, name.1), best);
             }
+            for (param, ty) in params {
+                if offset_in(param.1, offset) {
+                    consider(param.1, offset, NodeAt::Name(&param.0, param.1), best);
+                }
+                visit_type(&ty.0, ty.1, offset, best);
+            }
+            visit_type(&ret.0, ret.1, offset, best);
             visit_expr(&body.0, body.1, offset, best);
         }
-        Decl::TypeAlias { name, ty, .. } => {
+        Decl::TypeAlias { name, params, ty } => {
             if offset_in(name.1, offset) {
                 consider(name.1, offset, NodeAt::Name(&name.0, name.1), best);
+            }
+            for p in params {
+                if offset_in(p.1, offset) {
+                    consider(p.1, offset, NodeAt::Name(&p.0, p.1), best);
+                }
             }
             visit_type(&ty.0, ty.1, offset, best);
         }
@@ -177,10 +194,37 @@ fn visit_type<'a>(
     if !offset_in(span, offset) {
         return;
     }
-    if let Type::Named { name, .. } = t {
-        consider(span, offset, NodeAt::Name(name, span), best);
+    match t {
+        Type::Var(name) => {
+            // Prefer the bare name leaf over the Type wrapper so resolve_at works.
+            consider(span, offset, NodeAt::Name(name, span), best);
+        }
+        Type::Named { name, .. } => {
+            consider(span, offset, NodeAt::Name(name, span), best);
+        }
+        Type::List(inner) | Type::Q(inner) => visit_type(&inner.0, inner.1, offset, best),
+        Type::Fn(a, b) | Type::Linear(a, b) => {
+            visit_type(&a.0, a.1, offset, best);
+            visit_type(&b.0, b.1, offset, best);
+        }
+        Type::Tuple(ts) => {
+            for ty in ts {
+                visit_type(&ty.0, ty.1, offset, best);
+            }
+        }
+        Type::Matrix(_, _, inner) => visit_type(&inner.0, inner.1, offset, best),
+        Type::Qubit
+        | Type::QReg(_)
+        | Type::Bit
+        | Type::Bool
+        | Type::Int
+        | Type::Float
+        | Type::Unit
+        | Type::Nat
+        | Type::Circuit { .. } => {
+            consider(span, offset, NodeAt::Type(t), best);
+        }
     }
-    consider(span, offset, NodeAt::Type(t), best);
 }
 
 fn visit_stmt<'a>(stmt: &'a Sp<Stmt>, offset: usize, best: &mut Option<(usize, NodeAt<'a>)>) {

@@ -164,7 +164,67 @@ pub fn resolve_at(analysis: &DocumentAnalysis, offset: usize) -> Option<Resolved
             target: ResolvedTarget::Symbol(id),
         });
     }
+    // Standing on a file-scoped definition (fn / type alias name) that is not
+    // also a use site — look up by definition span.
+    if let Some(id) = analysis.symbols.by_def_span(use_span) {
+        let target = match analysis.symbols.get(id).map(|s| s.kind) {
+            Some(SymbolKind::TypeAlias) => ResolvedTarget::TypeAlias(id),
+            _ => ResolvedTarget::Symbol(id),
+        };
+        return Some(ResolvedQuery {
+            name: name.to_string(),
+            use_span,
+            target,
+        });
+    }
     None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OccurrenceKind {
+    /// Binding / definition site.
+    Write,
+    /// Use site recorded in [`ResolutionMap`].
+    Read,
+}
+
+/// In-file occurrences of the symbol under `query` (definition + resolved uses).
+///
+/// `Symbol` and `TypeAlias` targets that share a [`SymbolId`] are treated as the
+/// same entity — alias definitions often resolve as `Symbol` while uses record
+/// `TypeAlias`.
+pub fn occurrences_of(
+    analysis: &DocumentAnalysis,
+    target: &ResolvedTarget,
+) -> Vec<(SimpleSpan, OccurrenceKind)> {
+    let Some(id) = target_symbol_id(target) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    if let Some(sym) = analysis.symbols.get(id)
+        && sym.name_span.start != sym.name_span.end
+    {
+        out.push((sym.name_span, OccurrenceKind::Write));
+    }
+    for (span, resolved) in analysis.resolutions.entries() {
+        if target_symbol_id(resolved) == Some(id) && span.start != span.end {
+            out.push((span, OccurrenceKind::Read));
+        }
+    }
+
+    out.sort_by_key(|(span, _)| (span.start, span.end));
+    out.dedup_by_key(|(span, _)| (span.start, span.end));
+    out
+}
+
+pub fn target_symbol_id(target: &ResolvedTarget) -> Option<SymbolId> {
+    match target {
+        ResolvedTarget::Symbol(id) | ResolvedTarget::TypeAlias(id) => Some(*id),
+        ResolvedTarget::Builtin(_)
+        | ResolvedTarget::Gate(_)
+        | ResolvedTarget::QuantumBuiltin(_) => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -268,5 +328,53 @@ mod tests {
         let a = analyze_program(src);
         assert!(a.diagnostics.is_empty());
         assert!(a.symbols.symbols.iter().any(|s| s.name == "f"));
+    }
+
+    #[test]
+    fn call_site_resolves_to_fn() {
+        let src = "fn g(): Int = 1\nfn f(): Int = /*cursor*/g()\n";
+        let clean = src.replace("/*cursor*/", "");
+        let offset = cursor_at(src, "/*cursor*/");
+        let a = analyze_program(&clean);
+        let q = resolve_at(&a, offset).expect("resolve call");
+        assert_eq!(q.name, "g");
+        match q.target {
+            ResolvedTarget::Symbol(id) => {
+                let sym = a.symbols.get(id).expect("sym");
+                assert_eq!(sym.kind, SymbolKind::Function);
+                assert_eq!(sym.name, "g");
+            }
+            other => panic!("expected Symbol, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn type_alias_use_resolves() {
+        let src = "type MyInt = Int\nfn f(): /*cursor*/MyInt = 1\n";
+        let clean = src.replace("/*cursor*/", "");
+        let offset = cursor_at(src, "/*cursor*/");
+        let a = analyze_program(&clean);
+        let q = resolve_at(&a, offset).expect("resolve alias");
+        assert_eq!(q.name, "MyInt");
+        assert!(matches!(q.target, ResolvedTarget::TypeAlias(_)));
+    }
+
+    #[test]
+    fn param_def_site_resolves() {
+        let src = "fn f(/*cursor*/x: Int): Int = x\n";
+        let clean = src.replace("/*cursor*/", "");
+        let offset = cursor_at(src, "/*cursor*/");
+        let a = analyze_program(&clean);
+        let q = resolve_at(&a, offset).expect("resolve param");
+        assert_eq!(q.name, "x");
+        let occs = occurrences_of(&a, &q.target);
+        assert!(
+            occs.iter().any(|(_, k)| *k == OccurrenceKind::Write),
+            "expected write occurrence"
+        );
+        assert!(
+            occs.iter().any(|(_, k)| *k == OccurrenceKind::Read),
+            "expected read occurrence: {occs:?}"
+        );
     }
 }

@@ -15,11 +15,15 @@ fn lsp_lifecycle_handshake() {
             "rootUri": null,
         })),
     );
-    let sync = &init["capabilities"]["textDocumentSync"];
+    let caps = &init["capabilities"];
+    let sync = &caps["textDocumentSync"];
     assert!(
         sync["change"] == "Incremental" || sync["change"] == 2,
         "expected incremental sync, got {sync}"
     );
+    assert_eq!(caps["definitionProvider"], true);
+    assert_eq!(caps["referencesProvider"], true);
+    assert_eq!(caps["documentHighlightProvider"], true);
 
     client.send_notification("initialized", json!({}));
     client.shutdown_and_exit();
