@@ -1,9 +1,8 @@
 //! Map [`backend::NeutralAtomTarget`] descriptors onto `quon_na` planner inputs.
 
-use backend::{AodSpeedModelKind, NeutralAtomTarget, ZoneKind as BackendZoneKind};
+use backend::{AodSpeedModelKind, NeutralAtomTarget, ZoneKind};
 use quon_na::{
-    CompactionOptions, LegalityLimits, MovementParams, PlacerMode, ZoneKind, ZoneSpec,
-    ZonedArchitecture,
+    CompactionOptions, LegalityLimits, MovementParams, PlacerMode, ZoneSpec, ZonedArchitecture,
 };
 
 /// Convert a loaded neutral-atom target into the zoned architecture RAP expects.
@@ -14,7 +13,7 @@ pub fn zoned_architecture(na: &NeutralAtomTarget) -> ZonedArchitecture {
             .iter()
             .map(|z| ZoneSpec {
                 zone_id: z.zone_id,
-                kind: map_zone_kind(z.kind),
+                kind: z.kind,
                 rows: z.rows,
                 cols: z.cols,
                 origin_um: z.origin_um,
@@ -33,7 +32,7 @@ pub fn movement_params(na: &NeutralAtomTarget) -> MovementParams {
     let pair_gap_um = na
         .zones
         .iter()
-        .find(|z| z.kind == BackendZoneKind::Entanglement)
+        .find(|z| z.kind == ZoneKind::Entanglement)
         .and_then(|z| z.pair_gap_um)
         .unwrap_or(2.0);
     MovementParams {
@@ -92,14 +91,6 @@ pub enum NaBackendKind {
     Zoned,
     /// Flat AOD pair-bank planner (#106).
     FlatAod,
-}
-
-fn map_zone_kind(kind: BackendZoneKind) -> ZoneKind {
-    match kind {
-        BackendZoneKind::Storage => ZoneKind::Storage,
-        BackendZoneKind::Entanglement => ZoneKind::Entanglement,
-        BackendZoneKind::Readout => ZoneKind::Readout,
-    }
 }
 
 /// Sanity-check that the target's speed model is the one `quon_na` implements.

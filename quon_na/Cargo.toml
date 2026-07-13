@@ -9,11 +9,12 @@ default = ["mlir"]
 # Opt-in Flux refinement-type checking. Off by default so the stable workspace
 # build never compiles `flux-rs`; enabled by `cargo flux -p quon_na
 # --no-default-features --features flux` (nightly).
-flux = ["dep:flux-rs"]
+flux = ["dep:flux-rs", "backend/flux"]
 mlir = ["dep:melior", "dep:mlir_bridge"]
 
 [dependencies]
-flux-rs    = { workspace = true, optional = true }
+backend     = { path = "../backend" }
+flux-rs     = { workspace = true, optional = true }
 melior      = { workspace = true, optional = true }
 mlir_bridge = { path = "../mlir_bridge", optional = true }
 quon_core   = { path = "../quon_core" }

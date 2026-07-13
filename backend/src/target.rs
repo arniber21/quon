@@ -6,6 +6,7 @@
 
 #[cfg(feature = "flux")]
 use flux_rs::attrs::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Distance sentinel for an unreachable pair in [`ConnectivityGraph::dist`].
@@ -330,7 +331,14 @@ impl NeutralAtomZone {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Zone capability taxonomy for neutral-atom reconfigurable targets.
+///
+/// The single `ZoneKind` for the workspace (issue #212): owned here in
+/// `backend` alongside [`NeutralAtomZone`], serialized directly as the JSON
+/// wire form (`crate::descriptor`), and re-exported by `quon_na` for the
+/// zoned placer (`quon_na::zoned`) rather than duplicated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ZoneKind {
     Storage,
     Entanglement,
