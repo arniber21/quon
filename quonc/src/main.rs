@@ -1,77 +1,265 @@
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use anstyle::{AnsiColor, Color, Style};
 use anyhow::{Context as _, Result, anyhow, bail};
-use clap::Parser;
+use clap::{ArgAction, ColorChoice, Parser, ValueEnum};
 use quon_core::{
     RegressionConfig, compare, format_comparison_table, format_metrics_line, load_snapshot,
     save_snapshot,
 };
+use quon_na::{
+    PlacementStrategy, PlacerMode, resource_report_to_json, resource_report_to_markdown,
+};
 
 use backend::{BackendTarget, TargetKind};
-use quonc::compile::{CompileRequest, compile};
+use quonc::compile::{CompileRequest, compile, schedule_to_json};
+use quonc::na_target::{NaBackendKind, parse_na_backend, parse_placer_mode};
 use quonc::watch::{print_watch_metrics, run_watch_loop};
 
-#[derive(Parser)]
-#[command(name = "quonc", about = "Quon quantum compiler", version)]
+const AFTER_HELP: &str = "\
+Examples:
+  # Fixed / OpenQASM path
+  quonc program.qn --emit-qasm
+  quonc program.qn --target targets/ibm/fake_manila.json --emit-qasm --metrics
+
+  # Neutral-atom path (#112)
+  quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
+    --emit-na-schedule --emit-resource-report
+
+  # Debug IR after each pass
+  quonc program.qn --dump-ir --verify-linear --emit-qasm
+
+  # Inspect a target without compiling
+  quonc --target targets/neutral_atom/generic_rna_v0.json --print-target
+
+Notes:
+  Fixed targets run SABRE routing and emit OpenQASM 3.0.
+  Neutral-atom targets extract an interaction graph, schedule entangling
+  layers, run zoned RAP (default) or flat AOD movement, optionally compact,
+  then emit schedule JSON and/or a resource report.
+";
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "quonc",
+    about = "Quon quantum compiler",
+    long_about = "Quon quantum compiler — OpenQASM 3.0 and neutral-atom schedules.\n\n\
+Compile Quon programs through the MLIR pipeline. Fixed (gate-model) targets \
+emit OpenQASM 3.0. Neutral-atom reconfigurable targets schedule AOD movement \
+/ zoned RAP and emit schedule JSON plus resource reports.",
+    after_help = AFTER_HELP,
+    version,
+    color = ColorChoice::Auto,
+    styles = clap_styles(),
+    propagate_version = true,
+    arg_required_else_help = true,
+    help_template = "\
+{before-help}{name} {version}
+{about-with-newline}
+{usage-heading} {usage}
+
+{all-args}{after-help}"
+)]
 struct Cli {
-    /// Source file to compile (.qn). Optional when using --print-target.
+    /// Source file to compile (.qn). Optional with --print-target / --list-passes.
     source: Option<PathBuf>,
 
-    /// Emit OpenQASM 3.0 to stdout
-    #[arg(long)]
+    // ── Emit ────────────────────────────────────────────────────────────
+    /// Emit OpenQASM 3.0 (fixed targets only)
+    #[arg(long, help_heading = "Emit", action = ArgAction::SetTrue)]
     emit_qasm: bool,
 
+    /// Emit neutral-atom schedule JSON (`-` = stdout)
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = "-",
+        help_heading = "Emit"
+    )]
+    emit_na_schedule: Option<String>,
+
+    /// Emit neutral-atom resource report (`-` = stdout; `.md` → Markdown, else JSON)
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = "-",
+        help_heading = "Emit"
+    )]
+    emit_resource_report: Option<String>,
+
+    /// Force resource-report format (overrides PATH extension)
+    #[arg(long, value_enum, value_name = "FMT", help_heading = "Emit")]
+    resource_report_format: Option<ReportFormat>,
+
+    // ── Target ──────────────────────────────────────────────────────────
     /// Backend target descriptor (JSON). Defaults to generic_openqasm.
-    #[arg(long)]
+    #[arg(long, help_heading = "Target")]
     target: Option<PathBuf>,
 
-    /// Print the loaded backend target summary and exit.
-    #[arg(long)]
+    /// Print the loaded backend target summary and exit
+    #[arg(long, help_heading = "Target", action = ArgAction::SetTrue)]
     print_target: bool,
 
-    /// Dump MLIR after each pass (debug)
-    #[arg(long)]
+    // ── Neutral atom ────────────────────────────────────────────────────
+    /// NA movement backend: zoned (RAP, default) or flat (AOD pair-bank)
+    #[arg(
+        long,
+        value_name = "KIND",
+        default_value = "zoned",
+        help_heading = "Neutral atom",
+        value_parser = parse_na_backend
+    )]
+    na_backend: NaBackendKind,
+
+    /// Zoned placer mode: routing-agnostic (default) or routing-aware
+    #[arg(
+        long,
+        value_name = "MODE",
+        default_value = "routing-agnostic",
+        help_heading = "Neutral atom",
+        value_parser = parse_placer_mode
+    )]
+    na_placer: PlacerMode,
+
+    /// Skip schedule compaction after NA movement/zoned scheduling
+    #[arg(long, help_heading = "Neutral atom", action = ArgAction::SetTrue)]
+    no_na_compact: bool,
+
+    /// Flat AOD placement strategy
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = CliPlacement::RowMajor,
+        help_heading = "Neutral atom"
+    )]
+    na_placement: CliPlacement,
+
+    // ── Debug ───────────────────────────────────────────────────────────
+    /// Dump MLIR after each major pass stage to stderr
+    #[arg(long, help_heading = "Debug", action = ArgAction::SetTrue)]
     dump_ir: bool,
 
-    /// Run the linearity verifier pass (debug)
-    #[arg(long)]
+    /// Run circ/dynamic linearity verifiers (debug)
+    #[arg(long, help_heading = "Debug", action = ArgAction::SetTrue)]
     verify_linear: bool,
 
-    /// Print a human-readable metrics summary to stderr after a successful compile
-    #[arg(long)]
+    /// List compiler pass stages and exit
+    #[arg(long, help_heading = "Debug", action = ArgAction::SetTrue)]
+    list_passes: bool,
+
+    /// Quiet: suppress the “compiled successfully” hint
+    #[arg(short = 'q', long, help_heading = "Debug", action = ArgAction::SetTrue)]
+    quiet: bool,
+
+    /// Colorize diagnostics and help (auto|always|never)
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = CliColor::Auto,
+        help_heading = "Debug",
+        env = "QUONC_COLOR"
+    )]
+    color: CliColor,
+
+    // ── Metrics / watch ─────────────────────────────────────────────────
+    /// Print a human-readable metrics summary to stderr
+    #[arg(long, help_heading = "Metrics", action = ArgAction::SetTrue)]
     metrics: bool,
 
     /// Write metrics JSON to file (`-` for stdout/stderr — see `--emit-qasm`)
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", help_heading = "Metrics")]
     metrics_json: Option<String>,
 
     /// Save or compare a metrics snapshot baseline (`save PATH` or `compare PATH`)
-    #[arg(long, num_args = 2, value_names = ["ACTION", "PATH"])]
+    #[arg(
+        long,
+        num_args = 2,
+        value_names = ["ACTION", "PATH"],
+        help_heading = "Metrics"
+    )]
     metrics_snapshot: Option<Vec<String>>,
 
     /// TOML/JSON tolerance file for `--metrics-snapshot compare`
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", help_heading = "Metrics")]
     regression_config: Option<PathBuf>,
 
     /// Watch source (and `--target` if set) for changes; recompile on change
-    #[arg(long)]
+    #[arg(long, help_heading = "Metrics", action = ArgAction::SetTrue)]
     watch: bool,
 
     /// Debounce window for filesystem events in watch mode (milliseconds)
-    #[arg(long, default_value_t = 300)]
+    #[arg(long, default_value_t = 300, help_heading = "Metrics")]
     watch_debounce_ms: u64,
 
-    /// SABRE noise-weight coefficient γ (SPEC §7.4). Higher values prefer
-    /// quieter two-qubit edges / readout qubits when choosing SWAPs.
-    #[arg(long, default_value_t = 0.3)]
+    /// SABRE noise-weight coefficient γ (SPEC §7.4). Fixed targets only.
+    #[arg(long, default_value_t = 0.3, help_heading = "Target")]
     sabre_gamma: f64,
+}
 
-    /// Emit a neutral-atom resource report (JSON/Markdown).
-    /// Full wiring lands in #112; this flag is reserved and currently errors.
-    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "-")]
-    emit_resource_report: Option<String>,
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ReportFormat {
+    Json,
+    Markdown,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum CliColor {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum CliPlacement {
+    #[default]
+    #[value(name = "row-major")]
+    RowMajor,
+    #[value(name = "degree")]
+    DegreeBased,
+    #[value(name = "clustering")]
+    InteractionClustering,
+}
+
+impl From<CliPlacement> for PlacementStrategy {
+    fn from(value: CliPlacement) -> Self {
+        match value {
+            CliPlacement::RowMajor => PlacementStrategy::RowMajor,
+            CliPlacement::DegreeBased => PlacementStrategy::DegreeBased,
+            CliPlacement::InteractionClustering => PlacementStrategy::InteractionClustering,
+        }
+    }
+}
+
+const fn clap_styles() -> clap::builder::Styles {
+    clap::builder::Styles::styled()
+        .header(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Ansi(AnsiColor::BrightBlue))),
+        )
+        .usage(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Ansi(AnsiColor::BrightBlue))),
+        )
+        .literal(Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightCyan))))
+        .placeholder(Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightGreen))))
+        .error(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Ansi(AnsiColor::BrightRed))),
+        )
+        .valid(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Ansi(AnsiColor::BrightGreen))),
+        )
+        .invalid(Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightYellow))))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -101,30 +289,68 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("error: {err:#}");
+            let style = error_style();
+            eprintln!("{style}error{style:#}: {err:#}");
             ExitCode::from(2)
         }
     }
 }
 
+fn error_style() -> Style {
+    if stderr_color_enabled() {
+        Style::new()
+            .bold()
+            .fg_color(Some(Color::Ansi(AnsiColor::BrightRed)))
+    } else {
+        Style::new()
+    }
+}
+
+fn ok_style() -> Style {
+    if stderr_color_enabled() {
+        Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightGreen)))
+    } else {
+        Style::new()
+    }
+}
+
+fn dim_style() -> Style {
+    if stderr_color_enabled() {
+        Style::new().dimmed()
+    } else {
+        Style::new()
+    }
+}
+
+fn stderr_color_enabled() -> bool {
+    match std::env::var("QUONC_COLOR")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "always" | "1" | "true" => true,
+        "never" | "0" | "false" => false,
+        _ => io::stderr().is_terminal(),
+    }
+}
+
 fn run() -> Result<ExitCode> {
     let mut cli = Cli::parse();
+    apply_color_env(&cli);
 
-    if cli.emit_resource_report.is_some() {
-        bail!(
-            "--emit-resource-report is not wired yet; resource reports require the neutral-atom schedule path (see #112)"
-        );
+    if cli.list_passes {
+        print_pass_list();
+        return Ok(ExitCode::SUCCESS);
     }
 
-    // The emitter reads only the target's native gate set and id, not its
-    // topology, so the qubit width here is immaterial; `generic_openqasm` is
-    // an all-to-all target used when the caller supplies no device JSON.
     let target = load_target(cli.target.as_ref())?;
 
     if cli.print_target {
         print!("{}", render_target_summary(&target));
         return Ok(ExitCode::SUCCESS);
     }
+
+    validate_emit_flags(&cli, &target)?;
 
     if cli.watch && !cli.metrics {
         cli.metrics = true;
@@ -139,18 +365,13 @@ fn run() -> Result<ExitCode> {
 
     if report.snapshot.compile.status != quon_core::CompileStatus::Ok {
         if let Some(err) = &report.snapshot.compile.error {
-            eprintln!("{err}");
+            let style = error_style();
+            eprintln!("{style}error{style:#}: {err}");
         }
         return Ok(ExitCode::from(1));
     }
 
-    if cli.emit_qasm {
-        if let Some(qasm) = &report.qasm {
-            print!("{qasm}");
-        }
-    } else if cli.metrics_json.is_none() && cli.metrics_snapshot.is_none() && !cli.metrics {
-        eprintln!("(compiled successfully; pass --emit-qasm to print OpenQASM 3.0)");
-    }
+    emit_artifacts(&cli, &report)?;
 
     if cli.metrics {
         eprintln!("{}", format_metrics_line(&report.snapshot));
@@ -165,7 +386,8 @@ fn run() -> Result<ExitCode> {
         match action {
             SnapshotAction::Save => {
                 save_snapshot(&path, &report.snapshot).map_err(|e| anyhow::anyhow!("{e}"))?;
-                eprintln!("saved snapshot → {}", path.display());
+                let ok = ok_style();
+                eprintln!("{ok}saved snapshot{ok:#} → {}", path.display());
             }
             SnapshotAction::Compare => {
                 let baseline = load_snapshot(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -184,6 +406,164 @@ fn run() -> Result<ExitCode> {
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn apply_color_env(cli: &Cli) {
+    // clap ColorChoice is set at parse time via attribute; also honor --color for
+    // our own stderr styling via QUONC_COLOR.
+    match cli.color {
+        CliColor::Always => unsafe { std::env::set_var("QUONC_COLOR", "always") },
+        CliColor::Never => unsafe { std::env::set_var("QUONC_COLOR", "never") },
+        CliColor::Auto => {}
+    }
+}
+
+fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
+    let is_na = matches!(target.kind, TargetKind::NeutralAtomReconfigurable(_));
+    if cli.emit_qasm && is_na {
+        bail!(
+            "--emit-qasm requires a fixed (gate-model) target; \
+             use --emit-na-schedule / --emit-resource-report for neutral-atom targets"
+        );
+    }
+    if (cli.emit_na_schedule.is_some() || cli.emit_resource_report.is_some()) && !is_na {
+        bail!(
+            "--emit-na-schedule / --emit-resource-report require a \
+             neutral_atom_reconfigurable target (see targets/neutral_atom/)"
+        );
+    }
+    Ok(())
+}
+
+fn emit_artifacts(cli: &Cli, report: &quonc::CompileReport) -> Result<()> {
+    let mut emitted = false;
+    // When OpenQASM already owns stdout, subsequent `-` emits go to stderr.
+    let qasm_owns_stdout = cli.emit_qasm;
+
+    if cli.emit_qasm {
+        if let Some(qasm) = &report.qasm {
+            print!("{qasm}");
+            emitted = true;
+        } else {
+            bail!("OpenQASM emission produced no output (is the target fixed?)");
+        }
+    }
+
+    if let Some(path) = &cli.emit_na_schedule {
+        let layers = report.na_schedule.as_ref().ok_or_else(|| {
+            anyhow!("no NA schedule available (compile with a neutral-atom target)")
+        })?;
+        let json = schedule_to_json(layers)?;
+        write_output(path, &json, qasm_owns_stdout && path == "-")?;
+        emitted = true;
+    }
+
+    if let Some(path) = &cli.emit_resource_report {
+        let report_body = report.resource_report.as_ref().ok_or_else(|| {
+            anyhow!("no resource report available (compile with a neutral-atom target)")
+        })?;
+        let text = match resolve_report_format(cli, path) {
+            ReportFormat::Json => resource_report_to_json(report_body)?,
+            ReportFormat::Markdown => resource_report_to_markdown(report_body),
+        };
+        // If schedule already printed to stdout on `-`, send the report to stderr
+        // so both artifacts remain recoverable without interleaving JSON values.
+        let schedule_on_stdout = cli.emit_na_schedule.as_ref().is_some_and(|p| p == "-");
+        write_output(
+            path,
+            &text,
+            (qasm_owns_stdout || schedule_on_stdout) && path == "-",
+        )?;
+        emitted = true;
+    }
+
+    if !emitted
+        && cli.metrics_json.is_none()
+        && cli.metrics_snapshot.is_none()
+        && !cli.metrics
+        && !cli.quiet
+    {
+        let dim = dim_style();
+        match &report.snapshot.target.id {
+            id if report.na_schedule.is_some() => {
+                eprintln!(
+                    "{dim}(compiled successfully for neutral-atom target `{id}`; \
+                     pass --emit-na-schedule / --emit-resource-report){dim:#}"
+                );
+            }
+            id => {
+                eprintln!(
+                    "{dim}(compiled successfully for `{id}`; pass --emit-qasm to print OpenQASM 3.0){dim:#}"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_report_format(cli: &Cli, path: &str) -> ReportFormat {
+    if let Some(fmt) = cli.resource_report_format {
+        return fmt;
+    }
+    if path != "-" && path.to_ascii_lowercase().ends_with(".md") {
+        ReportFormat::Markdown
+    } else {
+        ReportFormat::Json
+    }
+}
+
+fn write_output(path: &str, body: &str, prefer_stderr: bool) -> Result<()> {
+    if path == "-" {
+        if prefer_stderr {
+            eprintln!("{body}");
+        } else {
+            io::stdout().write_all(body.as_bytes())?;
+            if !body.ends_with('\n') {
+                io::stdout().write_all(b"\n")?;
+            }
+        }
+    } else {
+        let path = PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut contents = body.to_string();
+        if !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+        std::fs::write(&path, contents)?;
+    }
+    Ok(())
+}
+
+fn print_pass_list() {
+    println!(
+        "\
+quonc pass stages
+─────────────────
+Shared front-end
+  1. lower            Quon → quantum.circ
+  2. circ fixpoint    gate_cancellation, rotation_merging,
+                      compiler_uncomputation, zx_simplification, clifford_t_opt
+  3. monadic_lowering quantum.circ → quantum.dynamic
+  4. dynamic          measurement_deferral, classical_region_fusion
+
+Fixed (OpenQASM) path
+  5. native_gate_decomp
+  6. sabre_routing
+  7. native_gate_decomp (post-SWAP)
+  8. depth_scheduling
+  9. emit OpenQASM 3.0
+
+Neutral-atom path
+  5. extract_interaction_graph
+  6. schedule_entangling_layers (Misra–Gries / ASAP)
+  7. schedule_zoned (default)  OR  place + plan_aod_movement (--na-backend flat)
+  8. compact_schedule (unless --no-na-compact)
+  9. build_resource_report / emit schedule JSON
+"
+    );
 }
 
 fn run_watch(cli: &Cli) -> Result<ExitCode> {
@@ -254,24 +634,12 @@ fn load_target(path: Option<&PathBuf>) -> Result<BackendTarget> {
 }
 
 fn require_source(cli: &Cli) -> Result<PathBuf> {
-    cli.source
-        .clone()
-        .ok_or_else(|| anyhow!("missing source file; pass a .qn source or use --print-target"))
-}
-
-fn require_fixed_target(target: &BackendTarget) -> Result<()> {
-    if target.fixed_target().is_none() {
-        bail!(
-            "target `{}` has kind `{}`; the OpenQASM pipeline currently supports only fixed targets (use --print-target to inspect this target)",
-            target.id,
-            target.kind_name()
-        );
-    }
-    Ok(())
+    cli.source.clone().ok_or_else(|| {
+        anyhow!("missing source file; pass a .qn source, or use --print-target / --list-passes")
+    })
 }
 
 fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
-    require_fixed_target(&target)?;
     let source_path = require_source(cli)?;
     let source = std::fs::read_to_string(&source_path)
         .with_context(|| format!("reading {}", source_path.display()))?;
@@ -284,6 +652,10 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
         dump_ir: cli.dump_ir,
         verify_linear: cli.verify_linear,
         sabre_gamma: cli.sabre_gamma,
+        na_backend: cli.na_backend,
+        na_placer: cli.na_placer,
+        na_compact: !cli.no_na_compact,
+        na_placement: cli.na_placement.into(),
     })
 }
 
@@ -296,20 +668,7 @@ fn load_regression_config(path: Option<&PathBuf>) -> Result<RegressionConfig> {
 
 fn write_metrics_json(path: &str, report: &quonc::CompileReport, emit_qasm: bool) -> Result<()> {
     let json = serde_json::to_string_pretty(&report.snapshot)?;
-    if path == "-" {
-        if emit_qasm {
-            eprintln!("{json}");
-        } else {
-            io::stdout().write_all(json.as_bytes())?;
-            io::stdout().write_all(b"\n")?;
-        }
-    } else {
-        let path = PathBuf::from(path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, format!("{json}\n"))?;
-    }
+    write_output(path, &json, emit_qasm)?;
     Ok(())
 }
 

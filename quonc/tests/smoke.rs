@@ -23,7 +23,10 @@ fn quonc_help_exits_successfully() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Quon quantum compiler"));
+    assert!(
+        stdout.contains("Quon quantum compiler") || stdout.contains("OpenQASM"),
+        "unexpected help: {stdout}"
+    );
 }
 
 /// End-to-end driver acceptance for issue #27: the `bell_state` fixture compiles

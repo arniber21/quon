@@ -1,0 +1,12 @@
+-- Neutral-atom smoke: Bell pair (one CNOT) for quonc #112.
+
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+        H @0 |> CNOT @(0, 1)
+}
+
+fn bell_na(): Q<(Bit, Bit)> = run {
+        (q0, q1) <- (bell_state()) @ (qreg 2)
+        b0 <- measure q0
+        b1 <- measure q1
+        return (b0, b1)
+}

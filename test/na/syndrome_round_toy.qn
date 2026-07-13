@@ -1,0 +1,15 @@
+-- Toy syndrome-round skeleton: prepare, entangle onto ancilla, measure all.
+-- Feed-forward correction lowering is still limited; this exercises the
+-- entangle+measure schedule path that compaction hard-deps must respect.
+
+fn prep(): Circuit<3, 3, 3, Clifford> = circuit {
+        H @0 |> CNOT @(0, 2) |> CNOT @(1, 2)
+}
+
+fn syndrome_round_toy(): Q<(Bit, Bit, Bit)> = run {
+        (d0, d1, a) <- (prep()) @ (qreg 3)
+        s <- measure a
+        b0 <- measure d0
+        b1 <- measure d1
+        return (s, b0, b1)
+}

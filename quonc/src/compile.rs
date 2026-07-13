@@ -12,7 +12,7 @@ use quon_core::{
 };
 use sha2::{Digest, Sha256};
 
-use backend::BackendTarget;
+use backend::{BackendTarget, TargetKind};
 use mlir_bridge::emit::openqasm3;
 use mlir_bridge::metrics;
 use mlir_bridge::passes::{
@@ -22,6 +22,13 @@ use mlir_bridge::passes::{
     sabre_routing::{self, SabreCost},
     zx_simplification,
 };
+use quon_na::{
+    GraphScheduleRequest, PlacementStrategy, PlacerMode, ResourceReport, ScheduleLayer,
+    build_resource_report, compact_schedule, extract_interaction_graph, infer_atom_dependencies,
+    place, plan_aod_movement, schedule_entangling_layers, schedule_from_graph, schedule_zoned,
+};
+
+use crate::na_target::{self, NaBackendKind};
 
 /// Inputs for one compile invocation.
 #[derive(Debug)]
@@ -34,12 +41,45 @@ pub struct CompileRequest {
     pub verify_linear: bool,
     /// SABRE noise-weight coefficient γ (SPEC §7.4). Default 0.3.
     pub sabre_gamma: f64,
+    /// Neutral-atom movement backend (ignored for fixed targets).
+    pub na_backend: NaBackendKind,
+    /// Zoned placer mode (ignored unless `na_backend` is zoned).
+    pub na_placer: PlacerMode,
+    /// Run schedule compaction (#108) after movement/zoned scheduling.
+    pub na_compact: bool,
+    /// Flat AOD placement strategy (ignored unless `na_backend` is flat).
+    pub na_placement: PlacementStrategy,
+}
+
+impl Default for CompileRequest {
+    fn default() -> Self {
+        Self {
+            source_path: PathBuf::new(),
+            source: String::new(),
+            target: backend::generic_openqasm::target(64),
+            target_descriptor_path: None,
+            dump_ir: false,
+            verify_linear: false,
+            sabre_gamma: 0.3,
+            na_backend: NaBackendKind::Zoned,
+            na_placer: PlacerMode::RoutingAgnostic,
+            na_compact: true,
+            na_placement: PlacementStrategy::RowMajor,
+        }
+    }
 }
 
 /// Outcome of one compile invocation.
 #[derive(Clone, Debug)]
 pub struct CompileReport {
+    /// OpenQASM 3.0 text when the fixed-target path ran.
     pub qasm: Option<String>,
+    /// Neutral-atom schedule layers when the NA path ran.
+    pub na_schedule: Option<Vec<ScheduleLayer>>,
+    /// Neutral-atom resource report when the NA path ran.
+    pub resource_report: Option<ResourceReport>,
+    /// Interaction-graph vertex count (logical qubits) for NA compiles.
+    pub na_logical_qubits: Option<u64>,
     pub snapshot: MetricsSnapshot,
 }
 
@@ -61,16 +101,19 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
     };
 
     match compile_inner(request) {
-        Ok((qasm, circuit_metrics)) => {
+        Ok(artifacts) => {
             let compile_ms = started.elapsed().as_millis() as u64;
             CompileReport {
-                qasm: Some(qasm),
+                qasm: artifacts.qasm,
+                na_schedule: artifacts.na_schedule,
+                resource_report: artifacts.resource_report,
+                na_logical_qubits: artifacts.na_logical_qubits,
                 snapshot: MetricsSnapshot::ok(
                     program,
                     target_info,
                     toolchain,
                     compile_ms,
-                    circuit_metrics,
+                    artifacts.circuit_metrics,
                 ),
             }
         }
@@ -78,6 +121,9 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
             let compile_ms = started.elapsed().as_millis() as u64;
             CompileReport {
                 qasm: None,
+                na_schedule: None,
+                resource_report: None,
+                na_logical_qubits: None,
                 snapshot: MetricsSnapshot {
                     schema_version: quon_core::SCHEMA_VERSION,
                     program,
@@ -96,7 +142,15 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
     }
 }
 
-fn compile_inner(request: &CompileRequest) -> Result<(String, CircuitMetrics), String> {
+struct CompileArtifacts {
+    qasm: Option<String>,
+    na_schedule: Option<Vec<ScheduleLayer>>,
+    resource_report: Option<ResourceReport>,
+    na_logical_qubits: Option<u64>,
+    circuit_metrics: CircuitMetrics,
+}
+
+fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
     let context = melior::Context::new();
 
     let module = frontend::lower::lower_program(&context, &request.source).map_err(|diags| {
@@ -134,21 +188,34 @@ fn compile_inner(request: &CompileRequest) -> Result<(String, CircuitMetrics), S
         eprintln!("--- after dynamic passes ---\n{}", module.as_operation());
     }
 
-    native_gate_decomp::run_on_module(&context, &request.target, &module);
+    match &request.target.kind {
+        TargetKind::NeutralAtomReconfigurable(na) => {
+            compile_neutral_atom(request, &module, na).map_err(|e| e.to_string())
+        }
+        TargetKind::Fixed(_) => compile_fixed(request, &context, &module),
+    }
+}
+
+fn compile_fixed(
+    request: &CompileRequest,
+    context: &melior::Context,
+    module: &melior::ir::Module<'_>,
+) -> Result<CompileArtifacts, String> {
+    native_gate_decomp::run_on_module(context, &request.target, module);
     let sabre_cost = SabreCost {
         gamma: request.sabre_gamma,
         ..SabreCost::default()
     };
-    sabre_routing::run_on_module(&context, &request.target, sabre_cost, &module);
-    let t_count = metrics::count_t_gates(&module);
-    native_gate_decomp::run_on_module(&context, &request.target, &module);
-    depth_scheduling::run_on_module(&context, &request.target, &module);
+    sabre_routing::run_on_module(context, &request.target, sabre_cost, module);
+    let t_count = metrics::count_t_gates(module);
+    native_gate_decomp::run_on_module(context, &request.target, module);
+    depth_scheduling::run_on_module(context, &request.target, module);
     if request.dump_ir {
         eprintln!("--- after physical passes ---\n{}", module.as_operation());
     }
 
-    let raw = metrics::collect_module_metrics(&module, &request.target);
-    let qubit_count = openqasm3::reify(&module, &request.target)
+    let raw = metrics::collect_module_metrics(module, &request.target);
+    let qubit_count = openqasm3::reify(module, &request.target)
         .map(|program| program.num_qubits() as u64)
         .unwrap_or(raw.qubit_count);
 
@@ -161,10 +228,122 @@ fn compile_inner(request: &CompileRequest) -> Result<(String, CircuitMetrics), S
         swap_count: raw.swap_count,
     };
 
-    let qasm = openqasm3::emit(&module, &request.target)
+    let qasm = openqasm3::emit(module, &request.target)
         .map_err(|e| format!("OpenQASM emission failed: {e}"))?;
 
-    Ok((qasm, circuit_metrics))
+    Ok(CompileArtifacts {
+        qasm: Some(qasm),
+        na_schedule: None,
+        resource_report: None,
+        na_logical_qubits: None,
+        circuit_metrics,
+    })
+}
+
+fn compile_neutral_atom(
+    request: &CompileRequest,
+    module: &melior::ir::Module<'_>,
+    na: &backend::NeutralAtomTarget,
+) -> Result<CompileArtifacts> {
+    na_target::validate_speed_model(na).map_err(|e| anyhow!("{e}"))?;
+
+    let graph = extract_interaction_graph(module)
+        .map_err(|e| anyhow!("interaction-graph extraction failed: {e}"))?;
+    let logical_qubits = graph.vertices.len() as u64;
+    if request.dump_ir {
+        eprintln!(
+            "--- interaction graph ---\nvertices={} interactions={}",
+            graph.vertices.len(),
+            graph.interactions.len()
+        );
+    }
+
+    let req = schedule_from_graph(graph).map_err(|e| anyhow!("schedule_from_graph failed: {e}"))?;
+    let max_pairs = na.interaction.max_parallel_entangling_pairs;
+    let scheduled = schedule_entangling_layers(req, max_pairs)
+        .map_err(|e| anyhow!("entangling-layer scheduling failed: {e}"))?;
+    let mut req = scheduled.request;
+
+    req = match request.na_backend {
+        NaBackendKind::Zoned => {
+            let arch = na_target::zoned_architecture(na);
+            let zoned = schedule_zoned(req, &arch, request.na_placer)
+                .map_err(|e| anyhow!("zoned scheduling failed: {e}"))?;
+            if request.dump_ir {
+                eprintln!(
+                    "--- after zoned schedule ---\nlayers={} routing_cost={:.4} rearrangements={} transfers={}",
+                    zoned.request.layers.len(),
+                    zoned.routing_cost,
+                    zoned.rearrangement_steps,
+                    zoned.trap_transfers
+                );
+            }
+            zoned.request
+        }
+        NaBackendKind::FlatAod => {
+            let placed =
+                place(req, request.na_placement).map_err(|e| anyhow!("placement failed: {e}"))?;
+            let params = na_target::movement_params(na);
+            let moved = plan_aod_movement(placed.request, &params)
+                .map_err(|e| anyhow!("AOD movement planning failed: {e}"))?;
+            if request.dump_ir {
+                eprintln!(
+                    "--- after flat AOD movement ---\nlayers={}",
+                    moved.request.layers.len()
+                );
+            }
+            moved.request
+        }
+    };
+
+    if request.na_compact && !req.layers.is_empty() {
+        let deps = infer_atom_dependencies(&req.layers);
+        let opts = na_target::compaction_options(na, true);
+        match compact_schedule(req.clone(), &deps, &opts) {
+            Ok(compacted) => {
+                if request.dump_ir {
+                    eprintln!(
+                        "--- after compaction ---\nlayers={} (was {})",
+                        compacted.request.layers.len(),
+                        req.layers.len()
+                    );
+                }
+                req = compacted.request;
+            }
+            Err(e) => {
+                // Compaction is best-effort for CLI readiness: keep the pre-compact
+                // schedule rather than failing an otherwise valid NA compile.
+                if request.dump_ir {
+                    eprintln!("--- compaction skipped ({e}) ---");
+                }
+            }
+        }
+    }
+
+    let report = build_resource_report(&req.layers, None, Some(logical_qubits.max(1)))
+        .map_err(|e| anyhow!("resource report failed: {e}"))?;
+
+    let circuit_metrics = CircuitMetrics {
+        depth: report.estimated_cycles,
+        depth_bound: Some(report.estimated_cycles.to_string()),
+        gate_count: report.entangle2_count + report.entangle_n_count,
+        t_count: 0,
+        qubit_count: logical_qubits,
+        swap_count: 0,
+    };
+
+    Ok(CompileArtifacts {
+        qasm: None,
+        na_schedule: Some(req.layers),
+        resource_report: Some(report),
+        na_logical_qubits: Some(logical_qubits),
+        circuit_metrics,
+    })
+}
+
+/// Serialize schedule layers to pretty JSON.
+pub fn schedule_to_json(layers: &[ScheduleLayer]) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(layers)
 }
 
 /// Renders frontend diagnostics with a caret at the offending source span.
@@ -286,4 +465,40 @@ fn probe_toolchain() -> ToolchainInfo {
         git_commit,
         git_dirty,
     }
+}
+
+/// Debug/stress entry: schedule a raw interaction graph without Quon source.
+pub fn schedule_raw_graph(
+    graph: quon_na::InteractionGraph,
+    na: &backend::NeutralAtomTarget,
+    backend: NaBackendKind,
+    placer: PlacerMode,
+    compact: bool,
+    placement: PlacementStrategy,
+) -> Result<(GraphScheduleRequest, ResourceReport)> {
+    na_target::validate_speed_model(na).map_err(|e| anyhow!("{e}"))?;
+    let logical_qubits = graph.vertices.len() as u64;
+    let req = schedule_from_graph(graph)?;
+    let scheduled = schedule_entangling_layers(req, na.interaction.max_parallel_entangling_pairs)?;
+    let mut req = scheduled.request;
+    req = match backend {
+        NaBackendKind::Zoned => {
+            let arch = na_target::zoned_architecture(na);
+            schedule_zoned(req, &arch, placer)?.request
+        }
+        NaBackendKind::FlatAod => {
+            let placed = place(req, placement)?;
+            let params = na_target::movement_params(na);
+            plan_aod_movement(placed.request, &params)?.request
+        }
+    };
+    if compact && !req.layers.is_empty() {
+        let deps = infer_atom_dependencies(&req.layers);
+        let opts = na_target::compaction_options(na, true);
+        if let Ok(compacted) = compact_schedule(req.clone(), &deps, &opts) {
+            req = compacted.request;
+        }
+    }
+    let report = build_resource_report(&req.layers, None, Some(logical_qubits.max(1)))?;
+    Ok((req, report))
 }

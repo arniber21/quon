@@ -28,3 +28,4 @@ __pycache__/
 *.pyc
 # CocoIndex Code (ccc)
 /.cocoindex_code/
+test/na/Output/

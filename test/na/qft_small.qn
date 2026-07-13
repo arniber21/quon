@@ -1,0 +1,19 @@
+-- Small QFT (n=4) for the NA path. Literature qft_18/29 sizes are for #111.
+
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+        H @0
+}
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+        (for i in (range(n - 1)) { controlled(Rz(PI / 4.0)) @(0, i + 1) })
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> = match n {
+0 => identity 0,
+_ => apply_hadamard n |> controlled_rotations n |> on_high(qft(n - 1), n) |> swap_reverse n
+}
+
+fn qft_small(): Q<List<Bit>> = run {
+        q <- (qft(4)) @ (qreg 4)
+        measure_all q
+}

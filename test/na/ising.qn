@@ -1,0 +1,18 @@
+-- Small Ising Trotter step (n=6). Literature ising_42/98 sizes are for #111.
+
+fn zz_layer(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+        (for i in (range(n - 1)) { (Rzz(((- 2.0) * j) * tau)) @(i, i + 1) })
+}
+
+fn x_layer(n: Nat, h: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+        (for q in (qubits n) { Rx(((- 2.0) * h) * tau, q) })
+}
+
+fn trotter_step(n: Nat, j: Float, h: Float, tau: Float): Circuit<n, n, n, Universal> = circuit {
+        zz_layer(n, j, tau) |> x_layer(n, h, tau)
+}
+
+fn ising_na(): Q<List<Bit>> = run {
+        q <- (trotter_step(6, 1.0, 0.5, 0.1)) @ (qreg 6)
+        measure_all q
+}

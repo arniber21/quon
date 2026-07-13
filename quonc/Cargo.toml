@@ -16,13 +16,16 @@ frontend    = { path = "../frontend" }
 mlir_bridge = { path = "../mlir_bridge" }
 backend     = { path = "../backend" }
 quon_core   = { path = "../quon_core" }
+quon_na     = { path = "../quon_na" }
 melior      = { workspace = true }
 clap        = { workspace = true }
 anyhow      = { workspace = true }
 ariadne     = { workspace = true }
+serde       = { workspace = true }
 serde_json  = { workspace = true }
 notify      = { workspace = true }
 sha2        = { workspace = true }
+anstyle     = "1"
 
 [dev-dependencies]
 tempfile = "3"

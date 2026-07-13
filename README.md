@@ -39,6 +39,16 @@ cargo build --release
 # Compile targeting a specific device
 ./target/release/quonc program.qn --target device.json --emit-qasm
 
+# Neutral-atom schedule + resource report (#112)
+./target/release/quonc test/na/bell.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-schedule \
+  --emit-resource-report
+
+# Debug: dump IR stages / list pass pipeline
+./target/release/quonc program.qn --dump-ir --verify-linear --emit-qasm
+./target/release/quonc --list-passes
+
 # Simulate with Qiskit Aer
 ./target/release/quonc program.qn --emit-qasm | python python/quon_aer.py --shots 4096
 
@@ -125,6 +135,7 @@ CI: `.github/workflows/flux.yml` (path-filtered to `flux_verify/`). Requires z3 
 | `mlir_bridge` | Melior wrappers, dialect registration, optimization passes, OpenQASM 3.0 emitter |
 | `backend` | `BackendTarget`, noise model, connectivity graph, JSON device loader |
 | `quon_core` | MLIR-free shared types (`DepthExpr`, the OpenQASM 3.0 typed IR) used by both `frontend` and `mlir_bridge` without pulling either into the other |
+| `quon_na` | Neutral-atom backend: interaction graph, placement, AOD/zoned scheduling, compaction, resource reports |
 | `flux_verify` | Flux refinement-type examples (nightly; `cargo flux -p flux_verify`) |
 
 ## Documentation
