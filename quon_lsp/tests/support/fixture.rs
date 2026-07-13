@@ -1,10 +1,10 @@
 use frontend::analysis::cursor_at;
 use frontend::analyze;
-use tower_lsp::lsp_types::{Position, Url};
+use tower_lsp::lsp_types::{CompletionItem, Position, SignatureHelp, Url};
 
 use quon_lsp::intel::{
     completions_at, definition_at, document_highlight_at, hover_at, prepare_rename_at,
-    references_at, rename_at, semantic_tokens_full,
+    references_at, rename_at, semantic_tokens_full, signature_help_at,
 };
 
 fn fixture_url() -> Url {
@@ -94,17 +94,26 @@ pub fn rename_at_marker(
     rename_at(&result.intelligence, &uri, pos, new_name)
 }
 
-pub fn completion_labels(src: &str) -> Vec<String> {
+pub fn completion_items(src: &str) -> Vec<CompletionItem> {
     let clean = src_without_marker(src);
     let pos = position_after_marker(src);
     let result = analyze_fixture(&clean);
     let resp = completions_at(&result.intelligence, pos).expect("completions");
     match resp {
-        tower_lsp::lsp_types::CompletionResponse::Array(items) => {
-            items.into_iter().map(|i| i.label).collect()
-        }
+        tower_lsp::lsp_types::CompletionResponse::Array(items) => items,
         _ => vec![],
     }
+}
+
+pub fn completion_labels(src: &str) -> Vec<String> {
+    completion_items(src).into_iter().map(|i| i.label).collect()
+}
+
+pub fn signature_help_at_marker(src: &str) -> Option<SignatureHelp> {
+    let clean = src_without_marker(src);
+    let pos = position_after_marker(src);
+    let result = analyze_fixture(&clean);
+    signature_help_at(&result.intelligence, pos)
 }
 
 pub fn semantic_token_count(src: &str) -> usize {

@@ -13,13 +13,14 @@ fn assert_lsp_span_on(src: &str, needle: &str, diag: &LspDiagnostic) {
 
 #[test]
 fn ascii_byte_offset_maps_to_lsp_position() {
-    let src = "fn f(x: Int): Int = x + y\n";
+    // Prefer an unbound name that is not a gate/builtin (`y` resolves to Pauli Y).
+    let src = "fn f(x: Int): Int = x + missing\n";
     let err = frontend::check_program(src).unwrap_err();
-    let y_start = src.find('y').expect("y in source");
+    let bad_start = src.find("missing").expect("missing in source");
     let lsp = diagnostic_to_lsp(&err[0], src, &LineIndex::new(src));
     assert_eq!(lsp.range.start.line, 0);
-    assert_eq!(lsp.range.start.character, y_start as u32);
-    assert_lsp_span_on(src, "y", &lsp);
+    assert_eq!(lsp.range.start.character, bad_start as u32);
+    assert_lsp_span_on(src, "missing", &lsp);
 }
 
 #[test]

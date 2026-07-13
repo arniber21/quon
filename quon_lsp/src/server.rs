@@ -10,7 +10,7 @@ use crate::diagnostics::code_actions_for_range;
 use crate::document::{DocumentError, DocumentStore};
 use crate::intel::{
     completions_at, definition_at, document_highlight_at, hover_at, prepare_rename_at,
-    references_at, rename_at, semantic_tokens_full, semantic_tokens_legend,
+    references_at, rename_at, semantic_tokens_full, semantic_tokens_legend, signature_help_at,
 };
 
 pub struct QuonLanguageServer {
@@ -58,6 +58,11 @@ impl LanguageServer for QuonLanguageServer {
                 })),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec!["@".into(), ":".into(), "<".into()]),
+                    ..Default::default()
+                }),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".into(), ",".into(), "@".into()]),
+                    retrigger_characters: Some(vec![",".into()]),
                     ..Default::default()
                 }),
                 semantic_tokens_provider: Some(
@@ -258,6 +263,22 @@ impl LanguageServer for QuonLanguageServer {
             return Ok(None);
         };
         Ok(completions_at(&analysis.intelligence, position))
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(signature_help_at(&analysis.intelligence, position))
     }
 
     async fn semantic_tokens_full(
