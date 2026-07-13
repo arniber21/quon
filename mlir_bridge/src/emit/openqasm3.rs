@@ -17,9 +17,7 @@ use backend::BackendTarget;
 use melior::ir::attribute::{FloatAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::{BlockLike, BlockRef, Module, OperationRef, RegionLike, Value, ValueLike};
-use quon_core::qasm::{
-    self, BitId, OneQubitGate, Program, QasmGate, QubitId, RotationGate, Stmt, TwoQubitGate,
-};
+use quon_core::qasm::{self, BitId, Program, QasmGate, QubitId, Stmt};
 use thiserror::Error;
 
 use crate::dialect::{quantum_circ, quantum_dynamic};
@@ -111,31 +109,8 @@ fn is_allocation<'c, 'a>(operation: OperationRef<'c, 'a>) -> bool {
             .all(|r| quantum_circ::is_qubit_type(r.r#type()))
 }
 
-fn check_arity(name: &str, expected: usize, found: usize) -> Result<(), EmitError> {
-    if qasm::operand_arity_ok(expected, found) {
-        Ok(())
-    } else {
-        Err(EmitError::ArityMismatch {
-            name: name.to_string(),
-            expected,
-            found,
-        })
-    }
-}
-
 fn is_rotation(name: &str) -> bool {
     quon_core::gates::lookup(name).is_some_and(|g| g.parametric && g.arity == 1)
-}
-
-fn gate_keyword(gate: &QasmGate) -> &'static str {
-    match gate {
-        QasmGate::One(g, _) => g.keyword(),
-        QasmGate::Rotation(g, _, _) => g.keyword(),
-        QasmGate::U2 { .. } => "u2",
-        QasmGate::U3 { .. } => "u3",
-        QasmGate::Two(g, _, _) => g.keyword(),
-        QasmGate::Ccx(..) => "ccx",
-    }
 }
 
 // ─── Reification ─────────────────────────────────────────────────────────────
@@ -208,54 +183,43 @@ impl Reifier<'_> {
     /// Resolve a Quon gate name + physical operands into a native `QasmGate`.
     /// `Ok(None)` for the identity gate (emits nothing); an error for any name
     /// not in the target's native set.
+    ///
+    /// Uses [`qasm::from_gate_info`] — the single registry → QASM adapter — so a
+    /// new OpenQASM spelling in `quon_core::gates::REGISTRY` emits without a
+    /// second hardcoded keyword match here.
     fn resolve_gate(
         &self,
         name: &str,
         angle: f64,
         qs: &[QubitId],
     ) -> Result<Option<QasmGate>, EmitError> {
-        // Case-insensitive: canonical Quon primitives ("H", "Rz", ...) and the
-        // lowercase QASM-keyword spellings `native_gate_decomp` synthesizes
-        // ("h", "rz", "sx", "cx", ...) name the same gates via quon_core::gates.
         let Some(info) = quon_core::gates::lookup(name) else {
             return Err(self.unsupported(name));
         };
-        if info.id == "I" {
-            return Ok(None);
-        }
-        let Some(qasm) = info.openqasm else {
-            return Err(self.unsupported(name));
-        };
-        let gate = match qasm {
-            "h" => one(name, OneQubitGate::H, qs)?,
-            "x" => one(name, OneQubitGate::X, qs)?,
-            "y" => one(name, OneQubitGate::Y, qs)?,
-            "z" => one(name, OneQubitGate::Z, qs)?,
-            "s" => one(name, OneQubitGate::S, qs)?,
-            "sdg" => one(name, OneQubitGate::Sdg, qs)?,
-            "sx" => one(name, OneQubitGate::Sx, qs)?,
-            "t" => one(name, OneQubitGate::T, qs)?,
-            "tdg" => one(name, OneQubitGate::Tdg, qs)?,
-            "cx" => two(name, TwoQubitGate::Cx, qs)?,
-            "cy" => two(name, TwoQubitGate::Cy, qs)?,
-            "cz" => two(name, TwoQubitGate::Cz, qs)?,
-            "swap" => two(name, TwoQubitGate::Swap, qs)?,
-            "rx" => rotation(name, RotationGate::Rx, angle, qs)?,
-            "ry" => rotation(name, RotationGate::Ry, angle, qs)?,
-            "rz" => rotation(name, RotationGate::Rz, angle, qs)?,
-            "ccx" => {
-                check_arity(name, 3, qs.len())?;
-                QasmGate::Ccx(qs[0], qs[1], qs[2])
+        let gate = match qasm::from_gate_info(info, angle, qs) {
+            Ok(gate) => gate,
+            Err(qasm::QasmGateBuildError::ArityMismatch {
+                keyword,
+                expected,
+                found,
+            }) => {
+                return Err(EmitError::ArityMismatch {
+                    name: keyword.to_string(),
+                    expected,
+                    found,
+                });
             }
-            _ => return Err(self.unsupported(name)),
+            Err(_) => return Err(self.unsupported(name)),
         };
         // The native-set gate: every emitted keyword must be supported by the
         // target. Total for `generic_openqasm`; a restricted target turns a
         // recognized-but-unsupported gate into a clear error.
-        if !self.native.contains(gate_keyword(&gate)) {
+        if let Some(ref g) = gate
+            && !self.native.contains(g.keyword())
+        {
             return Err(self.unsupported(name));
         }
-        Ok(Some(gate))
+        Ok(gate)
     }
 
     /// Walk a `quantum.circ` body block (a `unitary_region` body or an `if`
@@ -322,26 +286,6 @@ impl Reifier<'_> {
         }
         Ok((stmts, outputs))
     }
-}
-
-fn one(name: &str, g: OneQubitGate, qs: &[QubitId]) -> Result<QasmGate, EmitError> {
-    check_arity(name, 1, qs.len())?;
-    Ok(QasmGate::One(g, qs[0]))
-}
-
-fn two(name: &str, g: TwoQubitGate, qs: &[QubitId]) -> Result<QasmGate, EmitError> {
-    check_arity(name, 2, qs.len())?;
-    Ok(QasmGate::Two(g, qs[0], qs[1]))
-}
-
-fn rotation(
-    name: &str,
-    g: RotationGate,
-    angle: f64,
-    qs: &[QubitId],
-) -> Result<QasmGate, EmitError> {
-    check_arity(name, 1, qs.len())?;
-    Ok(QasmGate::Rotation(g, angle, qs[0]))
 }
 
 /// First pass: count qubit allocations and measurements to fix the register

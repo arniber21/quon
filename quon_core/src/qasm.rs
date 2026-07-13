@@ -205,6 +205,12 @@ impl TwoQubitGate {
 /// A fully-resolved native gate application. Every variant fixes its qubit arity
 /// structurally, so a malformed arity cannot be represented. Angles are `f64` and
 /// intentionally unrefined (Flux's f64 support is weak).
+///
+/// Prefer [`from_gate_info`] for compiler emission: it builds the registry-backed
+/// [`QasmGate::Std1`] / [`Std2`] / [`Std3`](QasmGate::Std3) forms so a new OpenQASM
+/// spelling in [`crate::gates::REGISTRY`] emits without a second keyword match.
+/// The typed [`One`](QasmGate::One) / [`Two`](QasmGate::Two) / [`Rotation`](QasmGate::Rotation)
+/// variants remain for hand-built test programs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum QasmGate {
     /// `h q[a];` and friends.
@@ -224,6 +230,122 @@ pub enum QasmGate {
     Two(TwoQubitGate, QubitId, QubitId),
     /// `ccx q[a], q[b], q[c];`
     Ccx(QubitId, QubitId, QubitId),
+    /// Registry-backed single-qubit stdgates application (`h q[a];` / `rz(θ) q[a];`).
+    /// Keyword comes from [`crate::gates::GateInfo::openqasm`].
+    Std1 {
+        keyword: &'static str,
+        angle: Option<f64>,
+        q: QubitId,
+    },
+    /// Registry-backed two-qubit stdgates application (`cx q[a], q[b];`).
+    Std2 {
+        keyword: &'static str,
+        a: QubitId,
+        b: QubitId,
+    },
+    /// Registry-backed three-qubit stdgates application (`ccx q[a], q[b], q[c];`).
+    Std3 {
+        keyword: &'static str,
+        a: QubitId,
+        b: QubitId,
+        c: QubitId,
+    },
+}
+
+/// Errors from [`from_gate_info`].
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum QasmGateBuildError {
+    #[error("gate `{id}` has no OpenQASM spelling in the registry")]
+    NotOpenQasm { id: &'static str },
+    #[error("gate `{keyword}` expected {expected} qubit operand(s), found {found}")]
+    ArityMismatch {
+        keyword: &'static str,
+        expected: usize,
+        found: usize,
+    },
+    #[error(
+        "gate `{keyword}` needs {n_angles} angle parameter(s); single-angle IR cannot construct it"
+    )]
+    MultiAngle {
+        keyword: &'static str,
+        n_angles: usize,
+    },
+    #[error("gate `{id}` has unsupported OpenQASM arity {arity}")]
+    UnsupportedArity { id: &'static str, arity: usize },
+}
+
+impl QasmGate {
+    /// OpenQASM keyword this gate will render as.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::One(g, _) => g.keyword(),
+            Self::Rotation(g, _, _) => g.keyword(),
+            Self::U2 { .. } => "u2",
+            Self::U3 { .. } => "u3",
+            Self::Two(g, _, _) => g.keyword(),
+            Self::Ccx(..) => "ccx",
+            Self::Std1 { keyword, .. }
+            | Self::Std2 { keyword, .. }
+            | Self::Std3 { keyword, .. } => keyword,
+        }
+    }
+}
+
+/// Build a [`QasmGate`] from registry metadata + physical operands.
+///
+/// This is the **single** emit adapter (issue #209): a new OpenQASM-emitable
+/// gate needs only a [`crate::gates::GateInfo`] row with `openqasm: Some(kw)`.
+/// Returns `Ok(None)` for the identity gate (elided on emit).
+///
+/// Multi-angle stdgates (`u2`, `u3`) are refused here — construct [`QasmGate::U2`]
+/// / [`QasmGate::U3`] explicitly when the IR carries multiple angles.
+pub fn from_gate_info(
+    info: &crate::gates::GateInfo,
+    angle: f64,
+    qs: &[QubitId],
+) -> Result<Option<QasmGate>, QasmGateBuildError> {
+    if info.id == "I" {
+        return Ok(None);
+    }
+    let Some(keyword) = info.openqasm else {
+        return Err(QasmGateBuildError::NotOpenQasm { id: info.id });
+    };
+    // u2/u3 live in the native set but need φ/λ (and θ) — not the single `angle` attr.
+    if matches!(keyword, "u2" | "u3") {
+        return Err(QasmGateBuildError::MultiAngle {
+            keyword,
+            n_angles: if keyword == "u2" { 2 } else { 3 },
+        });
+    }
+    if !operand_arity_ok(info.arity, qs.len()) {
+        return Err(QasmGateBuildError::ArityMismatch {
+            keyword,
+            expected: info.arity,
+            found: qs.len(),
+        });
+    }
+    let gate = match info.arity {
+        1 => QasmGate::Std1 {
+            keyword,
+            angle: info.parametric.then_some(angle),
+            q: qs[0],
+        },
+        2 => QasmGate::Std2 {
+            keyword,
+            a: qs[0],
+            b: qs[1],
+        },
+        3 => QasmGate::Std3 {
+            keyword,
+            a: qs[0],
+            b: qs[1],
+            c: qs[2],
+        },
+        arity => {
+            return Err(QasmGateBuildError::UnsupportedArity { id: info.id, arity });
+        }
+    };
+    Ok(Some(gate))
 }
 
 // ─── Condition expressions ────────────────────────────────────────────────────
@@ -460,12 +582,13 @@ impl Program {
             QasmGate::One(_, a)
             | QasmGate::Rotation(_, _, a)
             | QasmGate::U2 { q: a, .. }
-            | QasmGate::U3 { q: a, .. } => self.validate_qubit(*a),
-            QasmGate::Two(_, a, b) => {
+            | QasmGate::U3 { q: a, .. }
+            | QasmGate::Std1 { q: a, .. } => self.validate_qubit(*a),
+            QasmGate::Two(_, a, b) | QasmGate::Std2 { a, b, .. } => {
                 self.validate_qubit(*a)?;
                 self.validate_qubit(*b)
             }
-            QasmGate::Ccx(a, b, c) => {
+            QasmGate::Ccx(a, b, c) | QasmGate::Std3 { a, b, c, .. } => {
                 self.validate_qubit(*a)?;
                 self.validate_qubit(*b)?;
                 self.validate_qubit(*c)
@@ -717,6 +840,41 @@ fn render_gate(out: &mut String, gate: &QasmGate, q: &str) {
                 c.index()
             );
         }
+        QasmGate::Std1 {
+            keyword,
+            angle: None,
+            q: a,
+        } => {
+            let _ = writeln!(out, "{keyword} {}[{}];", q, a.index());
+        }
+        QasmGate::Std1 {
+            keyword,
+            angle: Some(theta),
+            q: a,
+        } => {
+            let _ = writeln!(
+                out,
+                "{keyword}({}) {}[{}];",
+                fmt_angle(*theta),
+                q,
+                a.index()
+            );
+        }
+        QasmGate::Std2 { keyword, a, b } => {
+            let _ = writeln!(out, "{keyword} {}[{}], {}[{}];", q, a.index(), q, b.index());
+        }
+        QasmGate::Std3 { keyword, a, b, c } => {
+            let _ = writeln!(
+                out,
+                "{keyword} {}[{}], {}[{}], {}[{}];",
+                q,
+                a.index(),
+                q,
+                b.index(),
+                q,
+                c.index()
+            );
+        }
     }
 }
 
@@ -853,5 +1011,54 @@ barrier q[0], q[1];
         let err = p.push_measure(q(&p, 0), b(&other, 0)).err();
         assert_eq!(err, Some(QasmError::BitOutOfContext { index: 0 }));
         assert!(p.body().is_empty());
+    }
+
+    #[test]
+    fn from_gate_info_builds_every_single_angle_openqasm_gate() {
+        // AC (#209): a registry row with openqasm spelling is enough to build an
+        // emitable QasmGate — no per-keyword match table required.
+        for info in crate::gates::REGISTRY {
+            let Some(keyword) = info.openqasm else {
+                continue;
+            };
+            let mut p = Program::new(3, 0);
+            let qs = [q(&p, 0), q(&p, 1), q(&p, 2)];
+            if matches!(keyword, "u2" | "u3") {
+                assert!(matches!(
+                    from_gate_info(info, 0.0, &qs[..info.arity]),
+                    Err(QasmGateBuildError::MultiAngle { .. })
+                ));
+                continue;
+            }
+            let gate = from_gate_info(info, 1.25, &qs[..info.arity])
+                .unwrap_or_else(|e| panic!("{}: {e}", info.id))
+                .unwrap_or_else(|| panic!("{} unexpectedly elided", info.id));
+            assert_eq!(gate.keyword(), keyword);
+            p.push_gate(gate).expect("push");
+            let text = render(&p);
+            assert!(
+                text.contains(keyword),
+                "{}: rendered QASM missing keyword:\n{text}",
+                info.id
+            );
+        }
+    }
+
+    #[test]
+    fn std1_rotation_renders_like_typed_rotation() -> Result<(), QasmError> {
+        let mut typed = Program::new(1, 0);
+        typed.push_gate(QasmGate::Rotation(
+            RotationGate::Rz,
+            std::f64::consts::FRAC_PI_4,
+            q(&typed, 0),
+        ))?;
+        let mut std = Program::new(1, 0);
+        std.push_gate(QasmGate::Std1 {
+            keyword: "rz",
+            angle: Some(std::f64::consts::FRAC_PI_4),
+            q: q(&std, 0),
+        })?;
+        assert_eq!(render(&typed), render(&std));
+        Ok(())
     }
 }

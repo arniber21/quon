@@ -9,10 +9,13 @@
 //!
 //! 1. Append a [`GateInfo`] entry to [`REGISTRY`] (canonical id, aliases, arity,
 //!    class, inverse id, OpenQASM spelling, parametric flag).
-//! 2. If the gate is OpenQASM-emitable, ensure `openqasm` is `Some(...)` so
-//!    [`std_gates`] and the backend `generic_openqasm` target pick it up.
-//! 3. Typecheck and emit then consume the new entry automatically via
-//!    [`lookup`] / [`surface_gate`] / [`std_gates`]. Specialized ZX / unitary
+//! 2. If the gate is OpenQASM-emitable, set `openqasm` to `Some(keyword)` so
+//!    [`std_gates`], the backend `generic_openqasm` target, and
+//!    [`crate::qasm::from_gate_info`] (used by emit) pick it up. Single- and
+//!    few-qubit 0/1-angle stdgates need **no** second match arm in emit.
+//! 3. Typecheck consumes the row via [`surface_gate`] (Quon surface gates only).
+//! 4. Multi-angle stdgates (`u2`/`u3`) still use the typed [`crate::qasm::QasmGate::U2`]
+//!    / [`U3`](crate::qasm::QasmGate::U3) constructors. Specialized ZX / unitary
 //!    tables may still need a one-line adapter until those islands migrate.
 
 use std::sync::OnceLock;
