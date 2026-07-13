@@ -26,8 +26,7 @@ fi
 # Positive anchors that must stay present (adapter of ci.yml reality).
 for needle in \
   'quonc/tests/lit.rs' \
-  'test/verify/bell.py' \
-  'test/verify/shor.py' \
+  'test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py' \
   'cargo llvm-cov' \
   'taskless.yml' \
   'flux.yml' \
