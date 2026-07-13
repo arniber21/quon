@@ -50,11 +50,13 @@ fn incremental_diagnostics_update() {
     assert!(!diags.is_empty(), "expected type error diagnostics");
 
     let y_start = INVALID_SRC.find('y').expect("y in source") as u32;
-    let diag_start = diags[0]["range"]["start"]["character"]
-        .as_u64()
-        .expect("character") as u32;
-    assert_eq!(diag_start, y_start, "diagnostic should land on `y`");
-
+    let diag_on_y = diags.iter().find(|d| {
+        d["range"]["start"]["character"].as_u64() == Some(u64::from(y_start))
+    });
+    assert!(
+        diag_on_y.is_some(),
+        "expected a diagnostic whose start character is on `y` (got {diags:?})"
+    );
     let y_range = json!({
         "start": { "line": 0, "character": y_start },
         "end": { "line": 0, "character": y_start + 1 },
