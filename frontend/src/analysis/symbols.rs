@@ -155,8 +155,10 @@ pub fn build_symbol_index(decls: &[Sp<Decl>], src_len: usize) -> SymbolIndex {
                 ret: _,
                 body,
             } => {
-                b.stack.push(*decl_span);
+                // Top-level functions live in the parent (file) scope so call sites
+                // in other decls can resolve them. Params/body stay in a child scope.
                 b.insert(name.0.clone(), SymbolKind::Function, name.1);
+                b.stack.push(*decl_span);
                 for (p, _) in params {
                     b.insert(p.0.clone(), SymbolKind::Parameter, p.1);
                 }
@@ -168,8 +170,9 @@ pub fn build_symbol_index(decls: &[Sp<Decl>], src_len: usize) -> SymbolIndex {
                 params,
                 ty: _,
             } => {
-                b.stack.push(*decl_span);
+                // Same as functions: alias names are file-scoped.
                 b.insert(name.0.clone(), SymbolKind::TypeAlias, name.1);
+                b.stack.push(*decl_span);
                 for p in params {
                     b.insert(p.0.clone(), SymbolKind::TypeParam, p.1);
                 }
@@ -338,5 +341,19 @@ fn f(): Circuit<1, 1, 1, Clifford> = circuit {
                 .find(|s| s.name == "x" && s.kind == SymbolKind::LocalBinding)
                 .map(|s| s.id)
         );
+    }
+
+    #[test]
+    fn call_site_sees_other_top_level_fn() {
+        let src = "fn g(): Int = 1\nfn f(): Int = g()\n";
+        let decls = crate::desugar_program(src).expect("parse");
+        let index = build_symbol_index(&decls, src.len());
+        let call = src.find("g()").expect("call");
+        let g = index
+            .symbols
+            .iter()
+            .find(|s| s.name == "g" && s.kind == SymbolKind::Function)
+            .map(|s| s.id);
+        assert_eq!(index.resolve_name_at("g", call), g);
     }
 }

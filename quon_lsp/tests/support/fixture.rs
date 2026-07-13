@@ -2,7 +2,10 @@ use frontend::analysis::cursor_at;
 use frontend::analyze;
 use tower_lsp::lsp_types::{Position, Url};
 
-use quon_lsp::intel::{completions_at, definition_at, hover_at, semantic_tokens_full};
+use quon_lsp::intel::{
+    completions_at, definition_at, document_highlight_at, hover_at, references_at,
+    semantic_tokens_full,
+};
 
 fn fixture_url() -> Url {
     Url::parse("file:///test.qn").expect("url")
@@ -51,6 +54,24 @@ pub fn definition_at_marker(src: &str) -> Option<tower_lsp::lsp_types::Range> {
         tower_lsp::lsp_types::GotoDefinitionResponse::Scalar(loc) => Some(loc.range),
         _ => None,
     }
+}
+
+pub fn references_at_marker(
+    src: &str,
+    include_declaration: bool,
+) -> Option<Vec<tower_lsp::lsp_types::Location>> {
+    let clean = src_without_marker(src);
+    let pos = position_after_marker(src);
+    let result = analyze_fixture(&clean);
+    let uri = fixture_url();
+    references_at(&result.intelligence, &uri, pos, include_declaration)
+}
+
+pub fn highlights_at_marker(src: &str) -> Option<Vec<tower_lsp::lsp_types::DocumentHighlight>> {
+    let clean = src_without_marker(src);
+    let pos = position_after_marker(src);
+    let result = analyze_fixture(&clean);
+    document_highlight_at(&result.intelligence, pos)
 }
 
 pub fn completion_labels(src: &str) -> Vec<String> {
