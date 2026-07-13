@@ -23,6 +23,19 @@ if grep -q 'FileCheck IR tests (not in CI yet)' "$CODE_QUALITY"; then
   fail "code-quality.md still claims lit is not in CI"
 fi
 
+# Paths that moved (DepthExpr's canonical home is quon_core, not mlir_bridge)
+# and must not be cited as if they still exist.
+for stale_path in \
+  'mlir_bridge/tests/depth_props.rs' \
+  'mlir_bridge/src/dialect/depth.rs' \
+  'mlir_bridge/fuzz/fuzz_targets/fuzz_depth_parse.rs' \
+  '`frontend/src/typecheck.rs`'
+do
+  if grep -qF "$stale_path" "$VALIDATION" "$CODE_QUALITY"; then
+    fail "a doc cites stale path: $stale_path"
+  fi
+done
+
 # Positive anchors that must stay present (adapter of ci.yml reality).
 for needle in \
   'quonc/tests/lit.rs' \
@@ -39,6 +52,9 @@ done
 
 if ! grep -qF 'quon_core' "$CODE_QUALITY"; then
   fail "code-quality.md must mention quon_core as DepthExpr home"
+fi
+if ! grep -qF 'frontend/src/typecheck/mod.rs' "$CODE_QUALITY"; then
+  fail "code-quality.md must cite the typecheck module (frontend/src/typecheck/mod.rs)"
 fi
 
 if [[ "$FAILED" -ne 0 ]]; then

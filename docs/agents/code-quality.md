@@ -29,8 +29,8 @@ Treat correctness as something you **evaluate constantly**, not only at integrat
 | ----- | ----------------- | --------------------- |
 | **Unit tests** | Concrete examples, regression locks | `frontend/tests/reference_algorithms.rs` — every SPEC §12 fixture must lex and parse |
 | **Property / fuzz tests** | Randomized invariants, differential oracles | `backend/tests/props.rs` — Floyd-Warshall vs petgraph Dijkstra; `quon_core/tests/depth_props.rs` — `DepthExpr` S-expr round-trip |
-| **cargo-fuzz** | Unbounded byte streams, panic-freedom | `mlir_bridge/fuzz/fuzz_targets/fuzz_depth_parse.rs` — parse never panics |
-| **Type checker** | Language invariants on real programs | `frontend/src/typecheck.rs` — linear context `Δ`, circuit qubit counts, `Circuit<n,m,d,C>` |
+| **cargo-fuzz** | Unbounded byte streams, panic-freedom | `quon_core/fuzz/fuzz_targets/fuzz_depth_parse.rs` — parse never panics |
+| **Type checker** | Language invariants on real programs | `frontend/src/typecheck/mod.rs` — linear context `Δ`, circuit qubit counts, `Circuit<n,m,d,C>` |
 | **IR verifiers** | Structural invariants on MLIR | `mlir_bridge/src/dialect/quantum_circ.rs` — `verify()` on every builder |
 | **Static rules** | Repo-specific antipatterns | `.taskless/rules/` — unwrap/expect, anyhow in libs, etc. |
 | **Flux** | Refinement proofs on small Rust kernels | `flux_verify/src/lib.rs` — specs like `{v: x < v}` |
@@ -51,7 +51,7 @@ When adding fallible parsing or serialization, add at least: happy-path unit tes
 | Domain | Type-level model | Where |
 | ------ | ---------------- | ----- |
 | Quon types | `Ty`, linear `Circuit { n, m, d, c }` | `frontend/src/types.rs`, `frontend/src/ast.rs` |
-| Depth bounds | `DepthExpr` AST + S-expr wire format | Canonical home: `quon_core/src/depth.rs` (re-exported for frontend / MLIR attrs); Z3 bridge in `frontend/src/refinement.rs`; MLIR attribute helpers in `mlir_bridge/src/dialect/depth.rs` |
+| Depth bounds | `DepthExpr` AST + S-expr wire format | Canonical home: `quon_core/src/depth.rs` (consumed by frontend / MLIR attrs); Z3 bridge in `frontend/src/refinement.rs`; MLIR attribute encoding in `mlir_bridge/src/dialect/quantum_circ.rs` (`depth_attribute`) |
 | Backend topology | `ConnectivityGraph`, `BackendTarget` after `TryFrom` | `backend/src/target.rs`, `backend/src/descriptor.rs` |
 | MLIR ops | Typed builders + `VerifyError` | `mlir_bridge/src/dialect/quantum_circ.rs` |
 | Refinement (Rust) | Flux `#[spec(...)]` on small functions | `flux_verify/` (nightly, separate CI job) |
