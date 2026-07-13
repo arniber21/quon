@@ -716,7 +716,36 @@ impl<'c> LoweringCtx<'c> {
                 self.lower_circuit_body_expr_with_locals(&lhs.0, block, wires, locals)?;
                 self.lower_circuit_body_expr_with_locals(&rhs.0, block, wires, locals)
             }
-            Expr::GateApp { gate, qubits } => self.apply_gate(gate, qubits, block, wires),
+            Expr::GateApp { gate, qubits } => {
+                // `controlled(c)` / `Rzz(θ)` have no native circ ops — rewrite via
+                // the elaborator (issue #182 / existing Rzz path) before apply.
+                if needs_gate_elaboration(gate) {
+                    let sp = (
+                        Expr::GateApp {
+                            gate: gate.clone(),
+                            qubits: qubits.clone(),
+                        },
+                        gate.1,
+                    );
+                    let mut fuel = elaborate::fresh_fuel();
+                    let ctx = elaborate::ElabCtx {
+                        parametric: self
+                            .parametric
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                    };
+                    let elaborated =
+                        elaborate::elaborate_circuit_body(&sp, &HashMap::new(), &ctx, &mut fuel)?;
+                    return self.lower_circuit_body_expr_with_locals(
+                        &elaborated.0,
+                        block,
+                        wires,
+                        locals,
+                    );
+                }
+                self.apply_gate(gate, qubits, block, wires)
+            }
             Expr::Adjoint(inner) => {
                 let name = zero_arg_callee_name(inner).ok_or(LowerError::Unsupported {
                     construct: "adjoint of non-call",
@@ -1051,6 +1080,19 @@ fn is_split_call(expr: &Sp<Expr>) -> bool {
     }
 }
 
+/// Gates that `elaborate_circuit_body` rewrites before `quantum.circ` emission
+/// (`controlled(c)`, `Rzz(θ)`).
+fn needs_gate_elaboration(gate: &Sp<Expr>) -> bool {
+    match &gate.0 {
+        Expr::Controlled(_) => true,
+        Expr::App(f, x) => {
+            let (head, args) = flatten_app(f, x);
+            matches!(&head.0, Expr::Var(name) if name == "Rzz") && args.len() == 1
+        }
+        _ => false,
+    }
+}
+
 /// The `(k, q)` arguments of a `split(k, q)` call already confirmed by
 /// [`is_split_call`].
 fn split_call_args(expr: &Sp<Expr>) -> Result<(Sp<Expr>, Sp<Expr>), LowerError> {
@@ -1171,6 +1213,7 @@ pub fn lower_program<'c>(context: &'c Context, src: &str) -> Result<Module<'c>, 
         // with no natural token to anchor on.
         let span = match &err {
             LowerError::Type(type_error) => type_error.span(),
+            LowerError::Elab(elab_error) => elab_error.span(),
             _ => chumsky::span::SimpleSpan::from(0..0),
         };
         vec![Diagnostic::new(err.to_string(), span)]

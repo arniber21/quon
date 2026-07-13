@@ -154,13 +154,19 @@ pub fn gate_unitary(name: &str) -> Option<M2> {
         "Z" | "z" => Some(M2([[ONE, ZERO], [ZERO, -ONE]])),
         "H" | "h" => Some(M2([[c(s, 0.0), c(s, 0.0)], [c(s, 0.0), c(-s, 0.0)]])),
         "S" | "s" => Some(M2([[ONE, ZERO], [ZERO, I]])),
-        "Sdag" | "S†" | "sdg" => Some(M2([[ONE, ZERO], [ZERO, -I]])),
+        "S_dag" | "Sdag" | "S†" | "sdg" => Some(M2([[ONE, ZERO], [ZERO, -I]])),
         "T" | "t" => Some(M2([[ONE, ZERO], [ZERO, c(0.0, PI / 4.0).exp()]])),
-        "Tdag" | "T†" | "tdg" => Some(M2([[ONE, ZERO], [ZERO, c(0.0, -PI / 4.0).exp()]])),
-        "sx" => Some(M2([
+        "T_dag" | "Tdag" | "T†" | "tdg" => {
+            Some(M2([[ONE, ZERO], [ZERO, c(0.0, -PI / 4.0).exp()]]))
+        }
+        "SX" | "sx" => Some(M2([
             [c(0.5, 0.5), c(0.5, -0.5)],
             [c(0.5, -0.5), c(0.5, 0.5)],
         ])),
+        "SX_dag" | "sx_dag" => {
+            // SX† = Rx(-π/2)
+            Some(rx(-PI / 2.0))
+        }
         _ => None,
     }
 }
@@ -188,6 +194,16 @@ pub fn cnot_unitary() -> M4 {
 pub fn two_qubit_gate_unitary(name: &str) -> Option<M4> {
     match normalize_name(name) {
         "CNOT" => Some(cnot_unitary()),
+        "CY" | "cy" => {
+            // CY = |0⟩⟨0| ⊗ I + |1⟩⟨1| ⊗ Y
+            let y = gate_unitary("Y")?;
+            Some(M4([
+                [ONE, ZERO, ZERO, ZERO],
+                [ZERO, ONE, ZERO, ZERO],
+                [ZERO, ZERO, y.0[0][0], y.0[0][1]],
+                [ZERO, ZERO, y.0[1][0], y.0[1][1]],
+            ]))
+        }
         "SWAP" | "swap" => Some(M4([
             [ONE, ZERO, ZERO, ZERO],
             [ZERO, ZERO, ONE, ZERO],

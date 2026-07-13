@@ -657,10 +657,18 @@ impl TypeChecker {
             Expr::Adjoint(c) => self.synth_adjoint(env, delta, c),
             Expr::Controlled(c) => self.synth_controlled(env, delta, c),
             Expr::For { pat, iter, body } => self.synth_for(env, delta, pat, iter, body, span),
-            Expr::CircuitBlock(_) => Err(TypeError::Unsupported {
-                construct: "circuit block without an expected type",
-                span,
-            }),
+            Expr::CircuitBlock(stmts) => {
+                // Free synthesis for circuit *values* used outside a declared
+                // annotation — e.g. `controlled(circuit { H |> T })` (issue #182).
+                // Bare gate composition does not need an ambient register; gate
+                // placement (`@`) grows a zero-width ambient as needed.
+                self.circuit_width.push(DepthExpr::Nat(0));
+                self.circuit_width_cap.push(DepthExpr::Nat(u64::MAX / 4));
+                let result = self.synth_block_body(env, delta, stmts, span);
+                self.circuit_width.pop();
+                self.circuit_width_cap.pop();
+                result
+            }
 
             Expr::BinOp { op, lhs, rhs } => self.synth_arith(env, delta, *op, lhs, rhs, span),
             Expr::Neg(e) => {
@@ -1396,12 +1404,17 @@ impl TypeChecker {
             });
         }
         let composed = Ty::Circuit {
-            n: ln,
+            n: ln.clone(),
             m: rm.clone(),
             d: ld.seq(rd),
             c: lc.join(&rc),
         };
+        // Only update the ambient register for compositions of *placements*
+        // on that register (`ln` matches ambient). Bare gate values such as
+        // `H |> T` under `controlled(...)` have their own width and must not
+        // shrink the surrounding circuit's ambient (issue #182).
         if let Some(top) = self.circuit_width.last_mut()
+            && self.refine.prove_eq(&self.assumptions, top, &ln).is_ok()
             && !top.equiv(&rm)
         {
             *top = rm;
