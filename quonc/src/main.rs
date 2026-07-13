@@ -198,6 +198,14 @@ struct Cli {
     /// SABRE noise-weight coefficient γ (SPEC §7.4). Fixed targets only.
     #[arg(long, default_value_t = 0.3, help_heading = "Target")]
     sabre_gamma: f64,
+
+    /// SABRE critical-path coefficient β (SPEC §7.4). Fixed targets only.
+    #[arg(long, default_value_t = 0.5, help_heading = "Target")]
+    sabre_beta: f64,
+
+    /// SABRE lookahead window size (SPEC §7.4). Fixed targets only.
+    #[arg(long, default_value_t = 20, help_heading = "Target")]
+    sabre_lookahead: usize,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -652,6 +660,8 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
         dump_ir: cli.dump_ir,
         verify_linear: cli.verify_linear,
         sabre_gamma: cli.sabre_gamma,
+        sabre_beta: cli.sabre_beta,
+        sabre_lookahead: cli.sabre_lookahead,
         na_backend: cli.na_backend,
         na_placer: cli.na_placer,
         na_compact: !cli.no_na_compact,

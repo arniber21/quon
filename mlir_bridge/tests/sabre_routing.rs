@@ -220,3 +220,124 @@ fn higher_gamma_keeps_noise_term_configurable() {
         );
     }
 }
+
+/// Depth-sensitive fixture: CNOT(0,2) on a linear chain (needs one SWAP), then
+/// CNOT(1,2). Both edges (0,1) and (1,2) equally reduce front-layer distance,
+/// but only (1,2) preserves q1–q2 adjacency for the lookahead gate. High β
+/// must therefore prefer a different SWAP than β = 0.
+fn depth_sensitive_module(context: &melior::Context) -> Module<'_> {
+    let location = Location::unknown(context);
+    let qubit = qc::qubit_type(context);
+    let block = Block::new(&[(qubit, location), (qubit, location), (qubit, location)]);
+    let q0 = Value::from(block.argument(0).unwrap());
+    let q1 = Value::from(block.argument(1).unwrap());
+    let q2 = Value::from(block.argument(2).unwrap());
+    let g0 = block.append_operation(qc::gate(context, "H", 1, true, &[q0], location).unwrap());
+    let g1 = block.append_operation(qc::gate(context, "H", 1, true, &[q1], location).unwrap());
+    let g2 = block.append_operation(qc::gate(context, "H", 1, true, &[q2], location).unwrap());
+    let q0 = Value::from(g0.result(0).unwrap());
+    let q1 = Value::from(g1.result(0).unwrap());
+    let q2 = Value::from(g2.result(0).unwrap());
+    let cx0 =
+        block.append_operation(qc::gate(context, "CNOT", 1, true, &[q0, q2], location).unwrap());
+    let q0 = Value::from(cx0.result(0).unwrap());
+    let q2 = Value::from(cx0.result(1).unwrap());
+    let cx1 =
+        block.append_operation(qc::gate(context, "CNOT", 1, true, &[q1, q2], location).unwrap());
+    let q1 = Value::from(cx1.result(0).unwrap());
+    let q2 = Value::from(cx1.result(1).unwrap());
+    block.append_operation(qc::r#return(&[q0, q1, q2], location).unwrap());
+    let region = Region::new();
+    region.append_block(block);
+    let func = qc::func(
+        context,
+        "depth_sensitive",
+        3,
+        3,
+        &quon_core::DepthExpr::Nat(5),
+        true,
+        region,
+        location,
+    )
+    .unwrap();
+    let module = Module::new(location);
+    module.body().append_operation(func);
+    module
+}
+
+fn route_text(cost: SabreCost) -> String {
+    let context = context();
+    let module = depth_sensitive_module(&context);
+    sabre_routing::run_on_module(&context, &linear_5q(), cost, &module);
+    module.as_operation().to_string()
+}
+
+#[test]
+fn default_sabre_beta_and_lookahead_match_spec() {
+    let cost = SabreCost::default();
+    assert!((cost.beta - 0.5).abs() < f64::EPSILON);
+    assert_eq!(cost.lookahead, 20);
+}
+
+#[test]
+fn high_beta_changes_swap_choice_on_depth_sensitive_circuit() {
+    let no_beta = SabreCost {
+        alpha: 1.0,
+        beta: 0.0,
+        gamma: 0.0,
+        lookahead: 20,
+    };
+    let high_beta = SabreCost {
+        alpha: 1.0,
+        beta: 10.0,
+        gamma: 0.0,
+        lookahead: 20,
+    };
+    let without = route_text(no_beta);
+    let with = route_text(high_beta);
+    assert!(
+        without.contains("gate_name = \"SWAP\""),
+        "expected SWAP with β=0:\n{without}"
+    );
+    assert!(
+        with.contains("gate_name = \"SWAP\""),
+        "expected SWAP with high β:\n{with}"
+    );
+    assert_ne!(
+        without, with,
+        "high β must change routing vs β=0 when lookahead distinguishes candidates"
+    );
+}
+
+#[test]
+fn zero_lookahead_disables_beta_effect() {
+    let high_beta_no_window = SabreCost {
+        alpha: 1.0,
+        beta: 10.0,
+        gamma: 0.0,
+        lookahead: 0,
+    };
+    let no_beta = SabreCost {
+        alpha: 1.0,
+        beta: 0.0,
+        gamma: 0.0,
+        lookahead: 20,
+    };
+    let high_beta_with_window = SabreCost {
+        alpha: 1.0,
+        beta: 10.0,
+        gamma: 0.0,
+        lookahead: 20,
+    };
+    let zero_look = route_text(high_beta_no_window);
+    let beta_off = route_text(no_beta);
+    let full = route_text(high_beta_with_window);
+    assert_eq!(
+        zero_look, beta_off,
+        "lookahead=0 must zero out β (empty W), matching β=0 routing"
+    );
+    assert_ne!(
+        zero_look, full,
+        "non-zero lookahead must let β change the SWAP choice"
+    );
+}

@@ -41,6 +41,10 @@ pub struct CompileRequest {
     pub verify_linear: bool,
     /// SABRE noise-weight coefficient γ (SPEC §7.4). Default 0.3.
     pub sabre_gamma: f64,
+    /// SABRE critical-path coefficient β (SPEC §7.4). Default 0.5.
+    pub sabre_beta: f64,
+    /// SABRE lookahead window size (SPEC §7.4). Default 20.
+    pub sabre_lookahead: usize,
     /// Neutral-atom movement backend (ignored for fixed targets).
     pub na_backend: NaBackendKind,
     /// Zoned placer mode (ignored unless `na_backend` is zoned).
@@ -61,6 +65,8 @@ impl Default for CompileRequest {
             dump_ir: false,
             verify_linear: false,
             sabre_gamma: 0.3,
+            sabre_beta: 0.5,
+            sabre_lookahead: 20,
             na_backend: NaBackendKind::Zoned,
             na_placer: PlacerMode::RoutingAgnostic,
             na_compact: true,
@@ -203,7 +209,9 @@ fn compile_fixed(
 ) -> Result<CompileArtifacts, String> {
     native_gate_decomp::run_on_module(context, &request.target, module);
     let sabre_cost = SabreCost {
+        beta: request.sabre_beta,
         gamma: request.sabre_gamma,
+        lookahead: request.sabre_lookahead,
         ..SabreCost::default()
     };
     sabre_routing::run_on_module(context, &request.target, sabre_cost, module);
