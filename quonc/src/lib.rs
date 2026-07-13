@@ -1,6 +1,8 @@
 //! Quon compiler driver library.
 //!
 //! Exposes the compile pipeline for integration tests, watch mode, and metrics.
+//! Pass orchestration lives in `mlir_bridge::pipeline` / `quon_na::pipeline`;
+//! this crate is the thin CLI/test adapter.
 
 pub mod compile;
 pub mod na_target;

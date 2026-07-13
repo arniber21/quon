@@ -9,3 +9,4 @@ pub mod dialect;
 pub mod emit;
 pub mod metrics;
 pub mod passes;
+pub mod pipeline;

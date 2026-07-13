@@ -1,23 +1,31 @@
-// Pass registration — all passes are registered as Melior external passes.
-// Pipeline order (SPEC.md §7.1):
-//
-//   quantum.circ passes (run to fixpoint before lowering to quantum.dynamic):
-//     1. gate_cancellation
-//     2. rotation_merging
-//     3. compiler_uncomputation
-//     4. zx_simplification
-//     5. clifford_t_opt — RESERVED for #96 (phase-polynomial T-count +
-//        Aaronson-Gottesman tableaux). Not implemented; do NOT add a module
-//        that merely forwards to gate_cancellation (#214 removed that alias).
-//
-//   quantum.dynamic passes:
-//     6. measurement_deferral
-//     7. classical_region_fusion
-//
-//   quantum.physical passes (after physical lowering, strict order):
-//     8. native_gate_decomp
-//     9. sabre_routing
-//    10. depth_scheduling
+//! Individual MLIR pass implementations.
+//!
+//! Pass *order* and Fixed vs NA fork live in [`crate::pipeline`] (and
+//! `quon_na::pipeline` for the neutral-atom schedule path), not only as comments
+//! here. Summary of the Fixed / shared stages:
+//!
+//! ```text
+//! quantum.circ (fixpoint):
+//!   1. gate_cancellation
+//!   2. rotation_merging
+//!   3. compiler_uncomputation
+//!   4. zx_simplification
+//!   5. clifford_t_opt — RESERVED for #96 (not implemented; do not alias)
+//!
+//! monadic_lowering → quantum.dynamic:
+//!   6. measurement_deferral
+//!   7. classical_region_fusion
+//!
+//! Fixed physical (strict, implemented order):
+//!   8. native_gate_decomp
+//!   9. sabre_routing
+//!  10. native_gate_decomp (post-SWAP)
+//!  11. depth_scheduling
+//! ```
+//!
+//! See SPEC.md §7.1 for the normative pipeline description; physical steps 8–10
+//! in the SPEC text differ slightly from the implemented pre-route decomp +
+//! post-SWAP decomp sequence above — callers must use [`crate::pipeline`].
 
 pub mod classical_region_fusion;
 pub mod compiler_uncomputation;
