@@ -1,5 +1,6 @@
 mod annotations;
 mod cursor;
+mod docs;
 mod prelude_names;
 mod resolution;
 mod scopes;
@@ -8,6 +9,7 @@ mod typed;
 
 pub use annotations::TypeAnnotations;
 pub use cursor::{NodeAt, cursor_at, node_at_offset, partial_ident};
+pub use docs::extract_leading_docs;
 pub use prelude_names::{
     classical_builtins, gate_type, gates, is_quantum_builtin, keywords, quantum_builtins,
 };
@@ -88,7 +90,7 @@ pub fn analyze_with_rich(src: &str) -> crate::diagnostics::AnalysisResult {
         }
     };
 
-    intelligence.symbols = build_symbol_index(&decls, src.len());
+    intelligence.symbols = build_symbol_index(&decls, src);
 
     let mut checker = TypeChecker::new();
     checker.enable_analysis(&intelligence.symbols);
@@ -241,6 +243,9 @@ pub fn format_hover(query: &ResolvedQuery, analysis: &DocumentAnalysis) -> Strin
             let Some(sym) = analysis.symbols.get(*id) else {
                 return "`(unknown)`".to_string();
             };
+            if let Some(docs) = sym.docs.as_deref() {
+                lines.push(docs.to_string());
+            }
             let kind = match sym.kind {
                 SymbolKind::Function => "(function)",
                 SymbolKind::Parameter => "(parameter)",
@@ -293,6 +298,9 @@ pub fn format_hover(query: &ResolvedQuery, analysis: &DocumentAnalysis) -> Strin
         }
         ResolvedTarget::TypeAlias(id) => {
             if let Some(sym) = analysis.symbols.get(*id) {
+                if let Some(docs) = sym.docs.as_deref() {
+                    lines.push(docs.to_string());
+                }
                 lines.push(format!("**(type alias)** `{}`", sym.name));
             }
         }

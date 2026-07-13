@@ -6,7 +6,8 @@ use serde_json::json;
 use support::lsp_client::LspClient;
 
 const TEST_URI: &str = "file:///test.qn";
-const INVALID_SRC: &str = "fn f(x: Int): Int = x + y\n";
+/// Use an unbound name that is not a gate/builtin (`y` would resolve to Pauli Y).
+const INVALID_SRC: &str = "fn f(x: Int): Int = x + missing\n";
 const VALID_SRC: &str = "fn f(x: Int): Int = x + x\n";
 
 fn init_client(client: &mut LspClient) {
@@ -49,24 +50,27 @@ fn incremental_diagnostics_update() {
     let diags = params["diagnostics"].as_array().expect("diagnostics array");
     assert!(!diags.is_empty(), "expected type error diagnostics");
 
-    let y_start = INVALID_SRC.find('y').expect("y in source") as u32;
-    let diag_on_y = diags.iter().find(|d| {
-        d["range"]["start"]["character"].as_u64() == Some(u64::from(y_start))
+    let bad_start = INVALID_SRC.find("missing").expect("missing in source") as u32;
+    let bad_end = bad_start + "missing".len() as u32;
+    let diag_on_missing = diags.iter().find(|d| {
+        let start = d["range"]["start"]["character"].as_u64().unwrap_or(0);
+        let end = d["range"]["end"]["character"].as_u64().unwrap_or(0);
+        start <= u64::from(bad_start) && end >= u64::from(bad_end)
     });
     assert!(
-        diag_on_y.is_some(),
-        "expected a diagnostic whose start character is on `y` (got {diags:?})"
+        diag_on_missing.is_some(),
+        "expected a diagnostic covering unbound `missing` (got {diags:?})"
     );
-    let y_range = json!({
-        "start": { "line": 0, "character": y_start },
-        "end": { "line": 0, "character": y_start + 1 },
+    let bad_range = json!({
+        "start": { "line": 0, "character": bad_start },
+        "end": { "line": 0, "character": bad_end },
     });
     client.send_notification(
         "textDocument/didChange",
         json!({
             "textDocument": { "uri": TEST_URI, "version": 2 },
             "contentChanges": [{
-                "range": y_range,
+                "range": bad_range,
                 "text": "x",
             }],
         }),

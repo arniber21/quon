@@ -1,6 +1,7 @@
 use crate::ast::{Decl, Expr, Pat, Stmt};
 use crate::lexer::{SimpleSpan, Sp};
 
+use super::docs::extract_leading_docs;
 use super::prelude_names::{classical_builtins, gates, quantum_builtins};
 use super::scopes::{ScopeId, ScopeStack};
 
@@ -28,6 +29,8 @@ pub struct Symbol {
     pub name_span: SimpleSpan,
     pub scope: ScopeId,
     pub ty: Option<crate::types::Ty>,
+    /// Leading `--` / `{- -}` comments immediately above the declaration.
+    pub docs: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,16 +41,18 @@ pub struct SymbolIndex {
     by_def_span: std::collections::HashMap<(usize, usize), SymbolId>,
 }
 
-struct Builder {
+struct Builder<'a> {
+    src: &'a str,
     index: SymbolIndex,
     stack: ScopeStack,
     next_id: u32,
 }
 
-impl Builder {
-    fn new(src_len: usize) -> Self {
-        let root_span = SimpleSpan::from(0..src_len);
+impl<'a> Builder<'a> {
+    fn new(src: &'a str) -> Self {
+        let root_span = SimpleSpan::from(0..src.len());
         Self {
+            src,
             index: SymbolIndex {
                 symbols: Vec::new(),
                 scopes: Vec::new(),
@@ -59,7 +64,13 @@ impl Builder {
         }
     }
 
-    fn insert(&mut self, name: String, kind: SymbolKind, name_span: SimpleSpan) -> SymbolId {
+    fn insert(
+        &mut self,
+        name: String,
+        kind: SymbolKind,
+        name_span: SimpleSpan,
+        docs: Option<String>,
+    ) -> SymbolId {
         let id = SymbolId(self.next_id);
         self.next_id += 1;
         let scope = self.stack.current();
@@ -74,9 +85,14 @@ impl Builder {
             name_span,
             scope,
             ty: None,
+            docs,
         });
         self.stack.add_symbol(id);
         id
+    }
+
+    fn insert_plain(&mut self, name: String, kind: SymbolKind, name_span: SimpleSpan) -> SymbolId {
+        self.insert(name, kind, name_span, None)
     }
 
     fn finish(mut self) -> SymbolIndex {
@@ -87,7 +103,7 @@ impl Builder {
 
 impl SymbolIndex {
     pub fn empty() -> Self {
-        Builder::new(0).finish()
+        Builder::new("").finish()
     }
 
     pub fn get(&self, id: SymbolId) -> Option<&Symbol> {
@@ -151,17 +167,17 @@ impl SymbolIndex {
     }
 }
 
-pub fn build_symbol_index(decls: &[Sp<Decl>], src_len: usize) -> SymbolIndex {
-    let mut b = Builder::new(src_len);
+pub fn build_symbol_index(decls: &[Sp<Decl>], src: &str) -> SymbolIndex {
+    let mut b = Builder::new(src);
     let empty = SimpleSpan::from(0..0);
     for name in classical_builtins() {
-        b.insert(name.to_string(), SymbolKind::Builtin, empty);
+        b.insert_plain(name.to_string(), SymbolKind::Builtin, empty);
     }
     for name in gates() {
-        b.insert(name.to_string(), SymbolKind::Gate, empty);
+        b.insert_plain(name.to_string(), SymbolKind::Gate, empty);
     }
     for name in quantum_builtins() {
-        b.insert(name.to_string(), SymbolKind::QuantumBuiltin, empty);
+        b.insert_plain(name.to_string(), SymbolKind::QuantumBuiltin, empty);
     }
 
     for (decl, decl_span) in decls {
@@ -174,10 +190,11 @@ pub fn build_symbol_index(decls: &[Sp<Decl>], src_len: usize) -> SymbolIndex {
             } => {
                 // Top-level functions live in the parent (file) scope so call sites
                 // in other decls can resolve them. Params/body stay in a child scope.
-                b.insert(name.0.clone(), SymbolKind::Function, name.1);
+                let docs = extract_leading_docs(b.src, decl_span.start);
+                b.insert(name.0.clone(), SymbolKind::Function, name.1, docs);
                 b.stack.push(*decl_span);
                 for (p, _) in params {
-                    b.insert(p.0.clone(), SymbolKind::Parameter, p.1);
+                    b.insert_plain(p.0.clone(), SymbolKind::Parameter, p.1);
                 }
                 walk_expr(body, &mut b);
                 b.stack.pop();
@@ -188,10 +205,11 @@ pub fn build_symbol_index(decls: &[Sp<Decl>], src_len: usize) -> SymbolIndex {
                 ty: _,
             } => {
                 // Same as functions: alias names are file-scoped.
-                b.insert(name.0.clone(), SymbolKind::TypeAlias, name.1);
+                let docs = extract_leading_docs(b.src, decl_span.start);
+                b.insert(name.0.clone(), SymbolKind::TypeAlias, name.1, docs);
                 b.stack.push(*decl_span);
                 for p in params {
-                    b.insert(p.0.clone(), SymbolKind::TypeParam, p.1);
+                    b.insert_plain(p.0.clone(), SymbolKind::TypeParam, p.1);
                 }
                 b.stack.pop();
             }
@@ -200,7 +218,7 @@ pub fn build_symbol_index(decls: &[Sp<Decl>], src_len: usize) -> SymbolIndex {
     b.finish()
 }
 
-fn walk_expr(expr: &Sp<Expr>, b: &mut Builder) {
+fn walk_expr(expr: &Sp<Expr>, b: &mut Builder<'_>) {
     let (e, span) = expr;
     match e {
         Expr::Lam { params, body } => {
@@ -221,7 +239,7 @@ fn walk_expr(expr: &Sp<Expr>, b: &mut Builder) {
         Expr::Bind { rhs, param, body } => {
             walk_expr(rhs, b);
             b.stack.push(*span);
-            b.insert(param.0.clone(), SymbolKind::LocalBinding, param.1);
+            b.insert_plain(param.0.clone(), SymbolKind::LocalBinding, param.1);
             walk_expr(body, b);
             b.stack.pop();
         }
@@ -250,7 +268,7 @@ fn walk_expr(expr: &Sp<Expr>, b: &mut Builder) {
         Expr::Borrow { bindings, body } => {
             b.stack.push(*span);
             for (name, _) in bindings {
-                b.insert(name.0.clone(), SymbolKind::Parameter, name.1);
+                b.insert_plain(name.0.clone(), SymbolKind::Parameter, name.1);
             }
             walk_stmts(body, b);
             b.stack.pop();
@@ -289,7 +307,7 @@ fn walk_expr(expr: &Sp<Expr>, b: &mut Builder) {
     }
 }
 
-fn walk_stmts(stmts: &[Sp<Stmt>], b: &mut Builder) {
+fn walk_stmts(stmts: &[Sp<Stmt>], b: &mut Builder<'_>) {
     if stmts.is_empty() {
         return;
     }
@@ -308,10 +326,10 @@ fn walk_stmts(stmts: &[Sp<Stmt>], b: &mut Builder) {
     b.stack.pop();
 }
 
-fn bind_pat(pat: &Sp<Pat>, kind: SymbolKind, b: &mut Builder) {
+fn bind_pat(pat: &Sp<Pat>, kind: SymbolKind, b: &mut Builder<'_>) {
     match &pat.0 {
         Pat::Var(name) => {
-            b.insert(name.clone(), kind, pat.1);
+            b.insert_plain(name.clone(), kind, pat.1);
         }
         Pat::Tuple(ps) => {
             for p in ps {
@@ -330,13 +348,26 @@ mod tests {
     fn top_level_fn_symbol() {
         let src = "fn f(): Int = 1\n";
         let decls = crate::desugar_program(src).expect("parse");
-        let index = build_symbol_index(&decls, src.len());
+        let index = build_symbol_index(&decls, src);
         assert!(
             index
                 .symbols
                 .iter()
                 .any(|s| s.kind == SymbolKind::Function && s.name == "f")
         );
+    }
+
+    #[test]
+    fn leading_docs_attach_to_fn_symbol() {
+        let src = "-- Prepare a Bell pair\nfn bell_state(): Int = 1\n";
+        let decls = crate::desugar_program(src).expect("parse");
+        let index = build_symbol_index(&decls, src);
+        let sym = index
+            .symbols
+            .iter()
+            .find(|s| s.name == "bell_state")
+            .expect("bell_state");
+        assert_eq!(sym.docs.as_deref(), Some("Prepare a Bell pair"));
     }
 
     #[test]
@@ -348,7 +379,7 @@ fn f(): Circuit<1, 1, 1, Clifford> = circuit {
 }
 "#;
         let decls = crate::desugar_program(src).expect("parse");
-        let index = build_symbol_index(&decls, src.len());
+        let index = build_symbol_index(&decls, src);
         let h_offset = src.find("H @").expect("H");
         assert_eq!(
             index.resolve_name_at("x", h_offset),
@@ -364,7 +395,7 @@ fn f(): Circuit<1, 1, 1, Clifford> = circuit {
     fn call_site_sees_other_top_level_fn() {
         let src = "fn g(): Int = 1\nfn f(): Int = g()\n";
         let decls = crate::desugar_program(src).expect("parse");
-        let index = build_symbol_index(&decls, src.len());
+        let index = build_symbol_index(&decls, src);
         let call = src.find("g()").expect("call");
         let g = index
             .symbols

@@ -54,6 +54,43 @@ fn local_use_site_hover_shows_inferred_type() {
 }
 
 #[test]
+fn hover_on_fn_use_shows_leading_docs() {
+    let src = r#"
+-- Prepare a Bell pair on two qubits
+fn bell_state(): Int = 1
+
+fn use_bell(): Int = bell_state()
+"#;
+    let analysis = analyze_program(src);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+    let use_offset = src.rfind("bell_state").expect("use site");
+    let query = resolve_at(&analysis, use_offset).expect("resolve bell_state use");
+    let md = format_hover(&query, &analysis);
+    assert!(
+        md.contains("Prepare a Bell pair on two qubits"),
+        "hover should include docs: {md}"
+    );
+    assert!(md.contains("Int"), "hover should include type: {md}");
+}
+
+#[test]
+fn hover_on_fn_decl_name_shows_leading_docs() {
+    let src = "-- Docs for f\nfn f(): Int = 1\n";
+    let analysis = analyze_program(src);
+    let name_offset = src.find("fn f").expect("fn") + 3;
+    let query = resolve_at(&analysis, name_offset).expect("resolve f decl");
+    let md = format_hover(&query, &analysis);
+    assert!(
+        md.contains("Docs for f"),
+        "hover on decl should include docs: {md}"
+    );
+}
+
+#[test]
 fn completion_scope_excludes_outer_fn_binding() {
     let src = "fn f(): Int = let x = 1 in x\nfn g(): Int = 0\n";
     let analysis = analyze_program(src);

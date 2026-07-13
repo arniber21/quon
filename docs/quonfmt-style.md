@@ -9,6 +9,11 @@ sources use `quonfmt`.
 - Deterministic: fixed style constants in code (no user config file in v1).
 - Correctness oracle: `parse(format(src))` equals `parse(src)` up to spans.
 - Comments (`--` and `{- -}`) are stripped on format (not preserved in v1).
+  **Interaction with LSP docs (#173 / ADR-0010):** leading comments immediately
+  above `fn` / `type` are the source of hover and completion documentation. Running
+  `quonfmt` removes those comments and therefore clears symbol docs until the
+  buffer is edited again (or comments are restored). Do not rely on format-on-save
+  if you need documentation comments to persist in the file.
 
 ## Lexical formatting
 
