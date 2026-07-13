@@ -1,18 +1,15 @@
 //! Extract an [`InteractionGraph`] from lowered `quantum.dynamic` IR.
 //!
-//! Walk pattern mirrors `mlir_bridge::metrics` / `depth_scheduling`: recurse
-//! into `unitary_region` and both `if` arms; barriers flush
-//! [`SegmentKind::DependencyDag`] segments; multi-qubit `quantum.circ.gate`
-//! ops become interactions. ASAP layers and critical-path marks follow Enola's
-//! ordered-DAG case; edge weights use Atomique `γ^l`.
+//! Uses [`mlir_bridge::dynamic_walk`] (same walker as metrics / depth
+//! scheduling): recurse into `unitary_region` and both `if` arms; barriers
+//! flush [`SegmentKind::DependencyDag`] segments; multi-qubit
+//! `quantum.circ.gate` ops become interactions. ASAP layers and critical-path
+//! marks follow Enola's ordered-DAG case; edge weights use Atomique `γ^l`.
 //!
 //! Prefer the module top-level body (post-monadic executed program). Named
 //! `quantum.circ.func`s are a fallback for standalone circ-only fixtures — never
 //! merged with a non-empty top-level extract (avoids double-counting inlined
 //! callees). Logical qubit ids are densified to `0..n` after extraction.
-//!
-//! Keep the collect loop in sync with those mlir_bridge walks (short-term
-//! duplication; a shared collector may land later).
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -21,7 +18,8 @@ use melior::ir::operation::OperationLike;
 use melior::ir::{BlockLike, Module, OperationRef, RegionLike, Value, ValueLike};
 use thiserror::Error;
 
-use mlir_bridge::dialect::{quantum_circ, quantum_dynamic};
+use mlir_bridge::dialect::quantum_circ;
+use mlir_bridge::dynamic_walk::{self, DynamicVisitor};
 
 use crate::graph::{
     DEFAULT_GAMMA, GraphError, Interaction, InteractionGraph, InteractionId, InteractionSegment,
@@ -143,8 +141,6 @@ fn extract_block<'c, 'a>(
     next_id: &mut u32,
     used_qubits: &mut BTreeSet<LogicalQubitId>,
 ) {
-    let mut tracker = LocalWireTracker::new();
-    tracker.seed_block_args(&block);
     for index in 0..block.argument_count() {
         if let Ok(argument) = block.argument(index) {
             let value = Value::from(argument);
@@ -154,10 +150,12 @@ fn extract_block<'c, 'a>(
         }
     }
 
-    let mut raw_segments: Vec<Vec<RawGate>> = vec![Vec::new()];
-    collect_gates(block, &mut tracker, &mut raw_segments);
+    let mut visitor = ExtractVisitor {
+        segments: vec![Vec::new()],
+    };
+    dynamic_walk::walk_block(block, &mut visitor);
 
-    for raw in raw_segments {
+    for raw in visitor.segments {
         if raw.is_empty() {
             continue;
         }
@@ -195,6 +193,30 @@ struct RawGate {
     gate_name: String,
 }
 
+struct ExtractVisitor {
+    segments: Vec<Vec<RawGate>>,
+}
+
+impl<'c, 'a> DynamicVisitor<'c, 'a> for ExtractVisitor {
+    fn gate(&mut self, op: OperationRef<'c, 'a>, qubit_roots: &[usize]) {
+        if qubit_roots.len() < 2 {
+            return;
+        }
+        let gate_name = read_string_attr(&op, quantum_circ::attr::GATE_NAME).unwrap_or_default();
+        let qubits = qubit_roots
+            .iter()
+            .map(|root| LogicalQubitId(*root as u32))
+            .collect();
+        if let Some(segment) = self.segments.last_mut() {
+            segment.push(RawGate { qubits, gate_name });
+        }
+    }
+
+    fn barrier(&mut self, _op: OperationRef<'c, 'a>, _qubit_roots: &[usize]) {
+        self.segments.push(Vec::new());
+    }
+}
+
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
     operation
         .name()
@@ -212,157 +234,4 @@ fn read_string_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     StringAttribute::try_from(value)
         .ok()
         .map(|string| string.value().to_string())
-}
-
-/// Local copy of mlir_bridge's WireTracker (crate-private there).
-/// Keep root-aliasing semantics aligned with `qubit_wiring::WireTracker`.
-struct LocalWireTracker {
-    roots: HashMap<usize, usize>,
-}
-
-impl LocalWireTracker {
-    fn new() -> Self {
-        Self {
-            roots: HashMap::new(),
-        }
-    }
-
-    fn value_key<'a>(value: &impl ValueLike<'a>) -> usize {
-        value.to_raw().ptr as usize
-    }
-
-    fn seed_block_args<'c, 'a, B: BlockLike<'c, 'a>>(&mut self, block: &B) {
-        for index in 0..block.argument_count() {
-            if let Ok(argument) = block.argument(index) {
-                let value = Value::from(argument);
-                if quantum_circ::is_qubit_type(value.r#type()) {
-                    self.roots.insert(Self::value_key(&value), index);
-                }
-            }
-        }
-    }
-
-    fn root<'c, 'a>(&mut self, value: Value<'c, 'a>) -> usize {
-        let key = Self::value_key(&value);
-        *self.roots.entry(key).or_insert(key)
-    }
-
-    fn alias<'c, 'a>(&mut self, value: Value<'c, 'a>, root: usize) {
-        self.roots.insert(Self::value_key(&value), root);
-    }
-
-    fn qubit_operands<'c, 'a>(operation: OperationRef<'c, 'a>) -> Vec<Value<'c, 'a>> {
-        operation
-            .operands()
-            .filter(|operand| quantum_circ::is_qubit_type(operand.r#type()))
-            .collect()
-    }
-
-    fn qubit_results<'c, 'a>(operation: OperationRef<'c, 'a>) -> Vec<Value<'c, 'a>> {
-        operation
-            .results()
-            .filter(|result| quantum_circ::is_qubit_type(result.r#type()))
-            .map(Value::from)
-            .collect()
-    }
-
-    fn roots_for_operands<'c, 'a>(&mut self, operation: OperationRef<'c, 'a>) -> Vec<usize> {
-        Self::qubit_operands(operation)
-            .into_iter()
-            .map(|value| self.root(value))
-            .collect()
-    }
-
-    fn observe_operation<'c, 'a>(&mut self, operation: OperationRef<'c, 'a>) {
-        let operand_roots = self.roots_for_operands(operation);
-        let results = Self::qubit_results(operation);
-        if operand_roots.len() == results.len() {
-            for (result, root) in results.into_iter().zip(operand_roots) {
-                self.roots.insert(Self::value_key(&result), root);
-            }
-        } else if operand_roots.is_empty() {
-            for result in results {
-                let key = Self::value_key(&result);
-                self.roots.insert(key, key);
-            }
-        }
-    }
-}
-
-fn collect_gates<'c, 'a>(
-    block: melior::ir::BlockRef<'c, 'a>,
-    tracker: &mut LocalWireTracker,
-    segments: &mut Vec<Vec<RawGate>>,
-) {
-    let mut op = block.first_operation();
-    while let Some(current) = op {
-        op = current.next_in_block();
-        let name = op_name(&current);
-        if name == quantum_circ::op::RETURN || name == quantum_dynamic::op::YIELD {
-            break;
-        }
-        if name == quantum_dynamic::op::BARRIER {
-            tracker.observe_operation(current);
-            segments.push(Vec::new());
-            continue;
-        }
-        if name == quantum_dynamic::op::UNITARY_REGION {
-            recurse_region(current, 0, tracker, segments);
-            continue;
-        }
-        if name == quantum_dynamic::op::IF {
-            // Both arms (conservative), consistent with metrics.
-            recurse_region(current, 0, tracker, segments);
-            recurse_region(current, 1, tracker, segments);
-            continue;
-        }
-        if name == quantum_dynamic::op::MEASURE || name == quantum_dynamic::op::RESET {
-            tracker.observe_operation(current);
-            continue;
-        }
-        if name != quantum_circ::op::GATE {
-            tracker.observe_operation(current);
-            continue;
-        }
-
-        let roots = tracker.roots_for_operands(current);
-        tracker.observe_operation(current);
-        if roots.len() < 2 {
-            continue;
-        }
-        let gate_name =
-            read_string_attr(&current, quantum_circ::attr::GATE_NAME).unwrap_or_default();
-        let qubits = roots
-            .into_iter()
-            .map(|root| LogicalQubitId(root as u32))
-            .collect();
-        if let Some(segment) = segments.last_mut() {
-            segment.push(RawGate { qubits, gate_name });
-        }
-    }
-}
-
-fn recurse_region<'c, 'a>(
-    op: OperationRef<'c, 'a>,
-    region_index: usize,
-    tracker: &mut LocalWireTracker,
-    segments: &mut Vec<Vec<RawGate>>,
-) {
-    let operand_roots = tracker.roots_for_operands(op);
-    let Ok(region) = op.region(region_index) else {
-        return;
-    };
-    let Some(inner_block) = region.first_block() else {
-        return;
-    };
-    for (index, root) in operand_roots.iter().enumerate() {
-        if let Ok(argument) = inner_block.argument(index) {
-            tracker.alias(Value::from(argument), *root);
-        }
-    }
-    collect_gates(inner_block, tracker, segments);
-    let results = LocalWireTracker::qubit_results(op);
-    for (result, root) in results.into_iter().zip(operand_roots.iter()) {
-        tracker.alias(result, *root);
-    }
 }

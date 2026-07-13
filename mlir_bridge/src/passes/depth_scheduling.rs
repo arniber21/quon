@@ -9,13 +9,13 @@ use backend::target::BackendTarget;
 use melior::ir::attribute::IntegerAttribute;
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
-use melior::ir::{AttributeLike, BlockLike, OperationRef, RegionLike, Value};
+use melior::ir::{AttributeLike, BlockLike, OperationRef, RegionLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, StringRef};
 use mlir_sys::mlirOperationSetAttributeByName;
 
-use crate::dialect::{quantum_circ, quantum_dynamic};
-use crate::passes::qubit_wiring::{self, WireTracker};
+use crate::dialect::quantum_circ;
+use crate::dynamic_walk::{self, DynamicVisitor};
 
 const GATE_TIME_US: f64 = 0.1;
 
@@ -32,13 +32,6 @@ fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
         .as_str()
         .unwrap_or("")
         .to_string()
-}
-
-fn read_i32_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str) -> Option<i32> {
-    let value = operation.attribute(key).ok()?;
-    IntegerAttribute::try_from(value)
-        .ok()
-        .map(|integer| integer.value() as i32)
 }
 
 fn set_schedule_time<'c>(context: &'c Context, op: OperationRef<'c, '_>, time: i64) {
@@ -62,98 +55,38 @@ struct GateStep<'c, 'a> {
     barrier: bool,
 }
 
-/// Collects every gate/barrier reachable from `block` into `steps`, in program
-/// order, recursing into nested `quantum.dynamic.unitary_region` and
-/// `quantum.dynamic.if` bodies so a qubit's dependency chain stays continuous
-/// across those boundaries. `tracker` is shared across the whole recursive
-/// walk (not reset per region) for the same reason `sabre_routing::RouteState`
-/// threads its `Layout` across regions: a nested region's block arguments are
-/// literally the same wires as the region op's outer operands.
-fn collect_gates<'c, 'a>(
-    block: melior::ir::BlockRef<'c, 'a>,
-    tracker: &mut WireTracker,
-    steps: &mut Vec<GateStep<'c, 'a>>,
-) {
-    let mut op = block.first_operation();
-    while let Some(current) = op {
-        op = current.next_in_block();
-        let name = op_name(&current);
-        if name == quantum_circ::op::RETURN || name == quantum_dynamic::op::YIELD {
-            break;
-        }
-        if name == quantum_dynamic::op::BARRIER {
-            steps.push(GateStep {
-                op: current,
-                phys_qubits: vec![],
-                barrier: true,
-            });
-            tracker.observe_operation(current);
-            continue;
-        }
-        if name == quantum_dynamic::op::UNITARY_REGION {
-            recurse_region(current, 0, tracker, steps);
-            continue;
-        }
-        if name == quantum_dynamic::op::IF {
-            recurse_region(current, 0, tracker, steps);
-            recurse_region(current, 1, tracker, steps);
-            continue;
-        }
-        if name != quantum_circ::op::GATE {
-            tracker.observe_operation(current);
-            continue;
-        }
-        let roots = tracker.roots_for_operands(current);
-        let mut phys = if roots.is_empty() {
-            read_i32_attr(&current, "phys_qubit")
-                .map(|value| vec![value])
-                .unwrap_or_default()
-        } else {
-            roots.into_iter().map(|root| root as i32).collect()
-        };
-        if let Some(attr_phys) = read_i32_attr(&current, "phys_qubit")
-            && !phys.contains(&attr_phys)
-        {
-            phys.push(attr_phys);
-        }
-        steps.push(GateStep {
-            op: current,
-            phys_qubits: phys,
+#[derive(Default)]
+struct SchedulingVisitor<'c, 'a> {
+    steps: Vec<GateStep<'c, 'a>>,
+}
+
+impl<'c, 'a> DynamicVisitor<'c, 'a> for SchedulingVisitor<'c, 'a> {
+    fn gate(&mut self, op: OperationRef<'c, 'a>, qubit_roots: &[usize]) {
+        let phys_qubits = dynamic_walk::resolve_phys_qubits(&op, qubit_roots);
+        self.steps.push(GateStep {
+            op,
+            phys_qubits,
             barrier: false,
         });
-        tracker.observe_operation(current);
+    }
+
+    fn barrier(&mut self, op: OperationRef<'c, 'a>, _qubit_roots: &[usize]) {
+        self.steps.push(GateStep {
+            op,
+            phys_qubits: vec![],
+            barrier: true,
+        });
     }
 }
 
-/// Aliases region `region_index`'s block arguments to `op`'s own qubit-operand
-/// roots (instead of the fresh roots `seed_block_args` would assign), recurses
-/// `collect_gates` into it, then aliases `op`'s qubit results back to those
-/// same roots so the caller's continued walk sees a continuous wire.
-fn recurse_region<'c, 'a>(
-    op: OperationRef<'c, 'a>,
-    region_index: usize,
-    tracker: &mut WireTracker,
-    steps: &mut Vec<GateStep<'c, 'a>>,
-) {
-    let operand_roots = tracker.roots_for_operands(op);
-    let Ok(region) = op.region(region_index) else {
-        return;
-    };
-    let Some(inner_block) = region.first_block() else {
-        return;
-    };
-    for (index, root) in operand_roots.iter().enumerate() {
-        if let Ok(argument) = inner_block.argument(index) {
-            tracker.alias(Value::from(argument), *root);
-        }
-    }
-    collect_gates(inner_block, tracker, steps);
-    for (result, root) in qubit_wiring::qubit_results(op)
-        .into_iter()
-        .zip(operand_roots.iter())
-    {
-        tracker.alias(result, *root);
-    }
+/// Collects every gate/barrier reachable from `block`, in program order, via
+/// [`dynamic_walk::walk_block`] — which recurses into nested
+/// `quantum.dynamic.unitary_region` and `quantum.dynamic.if` bodies so a
+/// qubit's dependency chain stays continuous across those boundaries.
+fn collect_gates<'c, 'a>(block: melior::ir::BlockRef<'c, 'a>) -> Vec<GateStep<'c, 'a>> {
+    let mut visitor = SchedulingVisitor::default();
+    dynamic_walk::walk_block(block, &mut visitor);
+    visitor.steps
 }
 
 fn schedule_segment<'c, 'a>(
@@ -283,11 +216,7 @@ fn schedule_module<'c, 'a>(
     // The module's own top-level block is the real, executed program after
     // `monadic_lowering` (see `native_gate_decomp::decompose_block`'s doc
     // comment) — a `quantum.circ.func` may no longer wrap it at all.
-    let mut top_level_tracker = WireTracker::new();
-    top_level_tracker.seed_block_args(&body);
-    let mut top_level_gates = Vec::new();
-    collect_gates(body, &mut top_level_tracker, &mut top_level_gates);
-    schedule_gates(context, target, top_level_gates);
+    schedule_gates(context, target, collect_gates(body));
 
     // Named `quantum.circ.func`s are dead code post-inlining for `main`'s
     // callees, but standalone `quantum.circ.func`-only modules (this pass's
@@ -304,12 +233,7 @@ fn schedule_module<'c, 'a>(
         let Some(block) = region.first_block() else {
             continue;
         };
-
-        let mut tracker = WireTracker::new();
-        tracker.seed_block_args(&block);
-        let mut gates = Vec::new();
-        collect_gates(block, &mut tracker, &mut gates);
-        schedule_gates(context, target, gates);
+        schedule_gates(context, target, collect_gates(block));
     }
 }
 

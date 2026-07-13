@@ -1,16 +1,17 @@
 //! Circuit metrics collection from lowered MLIR modules.
 //!
-//! Walks the executed top-level program path (post-`monadic_lowering`), reusing
-//! the same gate recursion as [`crate::passes::depth_scheduling`]. For programs
-//! with `quantum.dynamic.if`, **both** branches are counted (conservative upper
+//! Walks the executed top-level program path (post-`monadic_lowering`) with
+//! [`crate::dynamic_walk`], the same shared walker
+//! [`crate::passes::depth_scheduling`] uses. For programs with
+//! `quantum.dynamic.if`, **both** branches are counted (conservative upper
 //! bound).
 
 use melior::ir::attribute::{IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
-use melior::ir::{BlockLike, Module, OperationRef, RegionLike, Value};
+use melior::ir::{Module, OperationRef, RegionLike};
 
-use crate::dialect::{quantum_circ, quantum_dynamic};
-use crate::passes::qubit_wiring::{self, WireTracker};
+use crate::dialect::quantum_circ;
+use crate::dynamic_walk::{self, DynamicVisitor};
 use backend::target::BackendTarget;
 
 /// Raw circuit metrics extracted from IR.
@@ -22,15 +23,6 @@ pub struct CircuitMetricsRaw {
     pub qubit_count: u64,
     pub swap_count: u64,
     pub depth_bound: Option<String>,
-}
-
-fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
-    operation
-        .name()
-        .as_string_ref()
-        .as_str()
-        .unwrap_or("")
-        .to_string()
 }
 
 fn read_string_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
@@ -65,102 +57,31 @@ fn is_swap_gate(name: &str) -> bool {
     matches!(normalize_gate_name(name).as_str(), "swap")
 }
 
-struct GateVisit<'c, 'a> {
-    op: OperationRef<'c, 'a>,
+struct GateVisit {
     gate_name: String,
     schedule_time: Option<i64>,
     phys_qubits: Vec<i32>,
-    is_gate: bool,
 }
 
-fn collect_gate_visits<'c, 'a>(
-    block: melior::ir::BlockRef<'c, 'a>,
-    tracker: &mut WireTracker,
-    visits: &mut Vec<GateVisit<'c, 'a>>,
-) {
-    let mut op = block.first_operation();
-    while let Some(current) = op {
-        op = current.next_in_block();
-        let name = op_name(&current);
-        if name == quantum_circ::op::RETURN || name == quantum_dynamic::op::YIELD {
-            break;
-        }
-        if name == quantum_dynamic::op::BARRIER {
-            tracker.observe_operation(current);
-            continue;
-        }
-        if name == quantum_dynamic::op::UNITARY_REGION {
-            recurse_region(current, 0, tracker, visits);
-            continue;
-        }
-        if name == quantum_dynamic::op::IF {
-            recurse_region(current, 0, tracker, visits);
-            recurse_region(current, 1, tracker, visits);
-            continue;
-        }
-        if name == quantum_dynamic::op::MEASURE || name == quantum_dynamic::op::RESET {
-            tracker.observe_operation(current);
-            continue;
-        }
-        if name != quantum_circ::op::GATE {
-            tracker.observe_operation(current);
-            continue;
-        }
-        let gate_name =
-            read_string_attr(&current, quantum_circ::attr::GATE_NAME).unwrap_or_default();
-        let schedule_time = read_i64_attr(&current, "schedule_time");
-        let roots = tracker.roots_for_operands(current);
-        let mut phys = if roots.is_empty() {
-            read_i64_attr(&current, "phys_qubit")
-                .map(|value| vec![value as i32])
-                .unwrap_or_default()
-        } else {
-            roots.into_iter().map(|root| root as i32).collect()
-        };
-        if let Some(attr_phys) = read_i64_attr(&current, "phys_qubit")
-            && !phys.contains(&(attr_phys as i32))
-        {
-            phys.push(attr_phys as i32);
-        }
-        visits.push(GateVisit {
-            op: current,
+#[derive(Default)]
+struct MetricsVisitor {
+    visits: Vec<GateVisit>,
+}
+
+impl<'c, 'a> DynamicVisitor<'c, 'a> for MetricsVisitor {
+    fn gate(&mut self, op: OperationRef<'c, 'a>, qubit_roots: &[usize]) {
+        let gate_name = read_string_attr(&op, quantum_circ::attr::GATE_NAME).unwrap_or_default();
+        let schedule_time = read_i64_attr(&op, "schedule_time");
+        let phys_qubits = dynamic_walk::resolve_phys_qubits(&op, qubit_roots);
+        self.visits.push(GateVisit {
             gate_name,
             schedule_time,
-            phys_qubits: phys,
-            is_gate: true,
+            phys_qubits,
         });
-        tracker.observe_operation(current);
     }
 }
 
-fn recurse_region<'c, 'a>(
-    op: OperationRef<'c, 'a>,
-    region_index: usize,
-    tracker: &mut WireTracker,
-    visits: &mut Vec<GateVisit<'c, 'a>>,
-) {
-    let operand_roots = tracker.roots_for_operands(op);
-    let Ok(region) = op.region(region_index) else {
-        return;
-    };
-    let Some(inner_block) = region.first_block() else {
-        return;
-    };
-    for (index, root) in operand_roots.iter().enumerate() {
-        if let Ok(argument) = inner_block.argument(index) {
-            tracker.alias(Value::from(argument), *root);
-        }
-    }
-    collect_gate_visits(inner_block, tracker, visits);
-    for (result, root) in qubit_wiring::qubit_results(op)
-        .into_iter()
-        .zip(operand_roots.iter())
-    {
-        tracker.alias(result, *root);
-    }
-}
-
-fn aggregate_visits(visits: &[GateVisit<'_, '_>], count_t: bool) -> CircuitMetricsRaw {
+fn aggregate_visits(visits: &[GateVisit], count_t: bool) -> CircuitMetricsRaw {
     let mut gate_count = 0u64;
     let mut t_count = 0u64;
     let mut swap_count = 0u64;
@@ -168,9 +89,6 @@ fn aggregate_visits(visits: &[GateVisit<'_, '_>], count_t: bool) -> CircuitMetri
     let mut max_phys = None::<i32>;
 
     for visit in visits {
-        if !visit.is_gate {
-            continue;
-        }
         gate_count += 1;
         if count_t && is_t_gate(&visit.gate_name) {
             t_count += 1;
@@ -199,21 +117,19 @@ fn aggregate_visits(visits: &[GateVisit<'_, '_>], count_t: bool) -> CircuitMetri
     }
 }
 
-fn visits_from_module<'c>(module: &'c Module<'c>) -> Vec<GateVisit<'c, 'c>> {
-    let mut visits = Vec::new();
+fn visits_from_module(module: &Module<'_>) -> Vec<GateVisit> {
     let Some(body) = module
         .as_operation()
         .region(0)
         .ok()
         .and_then(|region| region.first_block())
     else {
-        return visits;
+        return Vec::new();
     };
 
-    let mut tracker = WireTracker::new();
-    tracker.seed_block_args(&body);
-    collect_gate_visits(body, &mut tracker, &mut visits);
-    visits
+    let mut visitor = MetricsVisitor::default();
+    dynamic_walk::walk_block(body, &mut visitor);
+    visitor.visits
 }
 
 /// Collect circuit metrics from `module` after the full physical pipeline.
@@ -230,8 +146,5 @@ pub fn collect_module_metrics(module: &Module<'_>, _target: &BackendTarget) -> C
 /// native gate decomposition pass.
 pub fn count_t_gates(module: &Module<'_>) -> u64 {
     let visits = visits_from_module(module);
-    visits
-        .iter()
-        .filter(|v| v.is_gate && is_t_gate(&v.gate_name))
-        .count() as u64
+    visits.iter().filter(|v| is_t_gate(&v.gate_name)).count() as u64
 }

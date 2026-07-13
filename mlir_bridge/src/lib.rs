@@ -6,6 +6,7 @@
 
 pub mod diagnostics;
 pub mod dialect;
+pub mod dynamic_walk;
 pub mod emit;
 pub mod metrics;
 pub mod passes;
