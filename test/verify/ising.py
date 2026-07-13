@@ -26,17 +26,23 @@ EXPECTED = "0000"
 
 
 def main() -> int:
-    qasm = quon_aer.compile_to_qasm(SOURCE)
-    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
-    print(f"counts: {counts}")
-
-    matches = sum(n for key, n in counts.items() if key.replace(" ", "") == EXPECTED)
-    fidelity = matches / SHOTS
-    print(f"P(result={EXPECTED}) = {fidelity}")
-    if fidelity < 0.99:
-        print(f"FAIL: Ising t=0 fidelity {fidelity} <= 0.99")
+    # Point-mass expected distribution -> Hellinger fidelity reduces to
+    # exactly P(EXPECTED), matching the pre-#204 `count / SHOTS` check.
+    result = quon_aer.verify_distribution(
+        SOURCE,
+        expected={EXPECTED: 1.0},
+        shots=SHOTS,
+        seed=SEED,
+        min_fidelity=0.99,
+    )
+    print(f"counts: {result.counts}")
+    print(f"P(result={EXPECTED}) = {result.fidelity}")
+    if not result:
+        print(f"FAIL: Ising t=0 fidelity {result.fidelity} <= 0.99")
         return 1
-    print(f"PASS: Ising t=0 evolution is the identity, recovered |{EXPECTED}> with P = {fidelity}")
+    print(
+        f"PASS: Ising t=0 evolution is the identity, recovered |{EXPECTED}> with P = {result.fidelity}"
+    )
     return 0
 
 

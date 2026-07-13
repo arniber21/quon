@@ -20,14 +20,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "python"))
+
+import quon_aer  # noqa: E402
 
 PROGRAMS = [
     "bell",
@@ -39,16 +39,6 @@ PROGRAMS = [
     "qaoa",
     "shor",
 ]
-
-
-def hellinger_fidelity(p: dict[str, float], q: dict[str, float]) -> float:
-    keys = set(p) | set(q)
-    return sum(math.sqrt(p.get(k, 0.0) * q.get(k, 0.0)) for k in keys) ** 2
-
-
-def normalize(counts: dict[str, int]) -> dict[str, float]:
-    total = sum(counts.values()) or 1
-    return {k: v / total for k, v in counts.items()}
 
 
 def load_target(path: Path) -> dict:
@@ -103,41 +93,9 @@ def build_noise_model(target: dict):
     return noise
 
 
-def run_counts(qasm: str, shots: int, seed: int, noise_model=None) -> dict[str, int]:
-    import quon_aer
-    from qiskit import qasm3
-    from qiskit_aer import AerSimulator
-
-    circuit = qasm3.loads(quon_aer._qiskit_qasm3_compat(qasm))
-    if circuit.num_clbits == 0:
-        circuit.measure_all()
-    sim = AerSimulator(noise_model=noise_model) if noise_model is not None else AerSimulator()
-    job = sim.run(circuit, shots=shots, seed_simulator=seed)
-    return dict(job.result().get_counts())
-
-
-def compile_program(source: Path, target: Path | None) -> str:
-    import quon_aer
-
-    return quon_aer.compile_to_qasm(str(source), str(target) if target else None)
-
-
 def compile_with(source: Path, target: Path, gamma: float | None) -> str:
-    import quon_aer
-
-    if gamma is None:
-        return compile_program(source, target)
-    cmd = [
-        quon_aer.quonc_binary(),
-        "--emit-qasm",
-        "--target",
-        str(target),
-        "--sabre-gamma",
-        str(gamma),
-        str(source),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    return result.stdout
+    extra = ["--sabre-gamma", str(gamma)] if gamma is not None else None
+    return quon_aer.compile_to_qasm(str(source), target=str(target), extra_args=extra)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -195,19 +153,25 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             try:
-                ideal = normalize(run_counts(qasm_a2a, args.shots, args.seed, None))
-                noisy_a2a = normalize(
-                    run_counts(qasm_a2a, args.shots, args.seed, noise_ibm)
+                ideal = quon_aer.normalize_counts(
+                    quon_aer.run_on_aer(qasm_a2a, shots=args.shots, seed=args.seed)
                 )
-                noisy_ibm = normalize(
-                    run_counts(qasm_ibm, args.shots, args.seed, noise_ibm)
+                noisy_a2a = quon_aer.normalize_counts(
+                    quon_aer.run_on_aer(
+                        qasm_a2a, shots=args.shots, seed=args.seed, noise_model=noise_ibm
+                    )
+                )
+                noisy_ibm = quon_aer.normalize_counts(
+                    quon_aer.run_on_aer(
+                        qasm_ibm, shots=args.shots, seed=args.seed, noise_model=noise_ibm
+                    )
                 )
             except Exception as exc:  # noqa: BLE001
                 print(f"{name:<22} ERROR simulate: {exc}")
                 continue
 
-            f_a2a = hellinger_fidelity(ideal, noisy_a2a)
-            f_ibm = hellinger_fidelity(ideal, noisy_ibm)
+            f_a2a = quon_aer.hellinger_fidelity(ideal, noisy_a2a)
+            f_ibm = quon_aer.hellinger_fidelity(ideal, noisy_ibm)
             delta = f_ibm - f_a2a
             rows.append(
                 {

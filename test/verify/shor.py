@@ -31,8 +31,8 @@ EXPECTED_OUTCOMES = {"00", "01"}
 
 def main() -> int:
     qasm = quon_aer.compile_to_qasm(SOURCE)
-    counts_a = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
-    counts_b = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
+    counts_a = quon_aer.run_on_aer(qasm, shots=SHOTS, seed=SEED)
+    counts_b = quon_aer.run_on_aer(qasm, shots=SHOTS, seed=SEED)
     print(f"run 1: {counts_a}")
     print(f"run 2: {counts_b}")
 
@@ -40,7 +40,7 @@ def main() -> int:
         print("FAIL: not reproducible with a fixed sampler seed")
         return 1
 
-    seen = {key.replace(" ", "") for key in counts_a}
+    seen = {quon_aer.normalize_key(key) for key in counts_a}
     if not seen <= EXPECTED_OUTCOMES:
         print(f"FAIL: saw outcomes {seen}, expected a subset of {EXPECTED_OUTCOMES}")
         return 1

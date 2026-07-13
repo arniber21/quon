@@ -74,18 +74,19 @@ def main() -> int:
         failures.append(f"expected {EXPECTED_CX} CNOTs from Rzz decompositions")
 
     # Qiskit's OpenQASM 3 importer is much faster than simulating this workload,
-    # and still catches malformed output from the emitter.
+    # and still catches malformed output from the emitter. Goes through
+    # quon_aer.load_circuit (dialect-normalize + qasm3.loads) rather than a
+    # raw qasm3.loads(qasm) call, per issue #204: raw piping into Qiskit
+    # without the compat rewrite is unsupported, even for a fixture that
+    # happens not to need it today (no mid-circuit bit conditions).
     parsed_with_qiskit = False
     try:
-        from qiskit import qasm3
-    except ImportError:
-        print("NOTE: qiskit is not installed; skipped OpenQASM importer parse check")
-    else:
-        try:
-            qasm3.loads(qasm)
-            parsed_with_qiskit = True
-        except Exception as exc:  # pragma: no cover - only used for CLI diagnostics
-            failures.append(f"Qiskit failed to parse emitted OpenQASM 3: {exc}")
+        quon_aer.load_circuit(qasm)
+        parsed_with_qiskit = True
+    except quon_aer.SimulationDependencyMissingError as exc:
+        print(f"NOTE: skipped OpenQASM importer parse check: {exc}")
+    except Exception as exc:  # pragma: no cover - only used for CLI diagnostics
+        failures.append(f"Qiskit failed to parse emitted OpenQASM 3: {exc}")
 
     if failures:
         for failure in failures:

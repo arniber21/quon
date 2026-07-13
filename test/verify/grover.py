@@ -25,18 +25,25 @@ MARKED = "11"
 
 
 def main() -> int:
-    qasm = quon_aer.compile_to_qasm(SOURCE)
-    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
+    # A point-mass expected distribution reduces the Hellinger-fidelity
+    # oracle to exactly P(marked) — see quon_aer.hellinger_fidelity's
+    # docstring — so this is the same acceptance threshold as before #204's
+    # refactor, just expressed via the shared oracle instead of a hand-rolled
+    # `count / SHOTS` check.
+    result = quon_aer.verify_distribution(
+        SOURCE,
+        expected={MARKED: 1.0},
+        shots=SHOTS,
+        seed=SEED,
+        min_fidelity=0.9,
+    )
 
-    marked_count = sum(n for key, n in counts.items() if key.replace(" ", "") == MARKED)
-    fidelity = marked_count / SHOTS
-
-    print(f"counts: {counts}")
-    print(f"P(marked={MARKED}) = {fidelity}")
-    if fidelity < 0.9:
-        print(f"FAIL: Grover success probability {fidelity} <= 0.9")
+    print(f"counts: {result.counts}")
+    print(f"P(marked={MARKED}) = {result.fidelity}")
+    if not result:
+        print(f"FAIL: Grover success probability {result.fidelity} <= 0.9")
         return 1
-    print(f"PASS: Grover recovered the marked state |{MARKED}> with P = {fidelity}")
+    print(f"PASS: Grover recovered the marked state |{MARKED}> with P = {result.fidelity}")
     return 0
 
 

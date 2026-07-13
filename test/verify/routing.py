@@ -36,18 +36,15 @@ SECRET = (1, 1, 0)  # (c0, c1, c2) — same secret as bernstein_vazirani.py
 TARGETS = ("device_5q.json", "device_linear_chain.json")
 
 
-def clbit(key: str, k: int, nbits: int) -> int:
-    """Value of classical bit c[k]; Qiskit prints bits high-index-first."""
-    return int(key.replace(" ", "")[nbits - 1 - k])
-
-
 def verify_target(target_name: str) -> bool:
     target_path = os.path.join(REPO_ROOT, "backend", "tests", "fixtures", target_name)
     qasm = quon_aer.compile_to_qasm(SOURCE, target=target_path)
-    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
-    nbits = len(next(iter(counts)).replace(" ", ""))
+    counts = quon_aer.run_on_aer(qasm, shots=SHOTS, seed=SEED)
+    nbits = len(quon_aer.normalize_key(next(iter(counts))))
 
-    recovered = {tuple(clbit(key, i, nbits) for i in range(3)) for key in counts}
+    recovered = {
+        tuple(quon_aer.clbit(key, i, nbits) for i in range(3)) for key in counts
+    }
 
     print(f"{target_name} counts: {counts}")
     print(f"{target_name} distinct (c0,c1,c2) across shots: {recovered}")
