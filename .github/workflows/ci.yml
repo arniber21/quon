@@ -79,6 +79,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Assert validation docs match CI reality (issue #203)
+        run: ./scripts/assert-validation-docs.sh
+
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: website/package.json

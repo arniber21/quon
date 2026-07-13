@@ -17,9 +17,9 @@ Run these before opening or updating a PR (same order CI uses):
 
 Optional but valuable before large IR or emitter changes:
 
-- `lit test/lit/` — FileCheck IR tests (not in CI yet)
+- `lit test/lit/ -v` — verbose FileCheck IR output (CI already runs the suite via `quonc/tests/lit.rs` inside `cargo test` when `lit`/`FileCheck` + example oracles are available; see [validation.md](./validation.md))
 - `cargo +nightly fuzz run …` in `mlir_bridge/fuzz/` — continuous fuzzing for parsers
-- Python Aer checks — see [README.md](../../README.md#testing)
+- Python Aer checks — nine `test/verify/*.py` scripts (same list as CI); see [README.md](../../README.md#testing) and [validation.md](./validation.md)
 
 ## Constant evaluation mindset
 
@@ -28,9 +28,9 @@ Treat correctness as something you **evaluate constantly**, not only at integrat
 | Layer | What it gives you | Examples in this repo |
 | ----- | ----------------- | --------------------- |
 | **Unit tests** | Concrete examples, regression locks | `frontend/tests/reference_algorithms.rs` — every SPEC §12 fixture must lex and parse |
-| **Property / fuzz tests** | Randomized invariants, differential oracles | `backend/tests/props.rs` — Floyd-Warshall vs petgraph Dijkstra; `mlir_bridge/tests/depth_props.rs` — `DepthExpr` S-expr round-trip |
-| **cargo-fuzz** | Unbounded byte streams, panic-freedom | `mlir_bridge/fuzz/fuzz_targets/fuzz_depth_parse.rs` — parse never panics |
-| **Type checker** | Language invariants on real programs | `frontend/src/typecheck.rs` — linear context `Δ`, circuit qubit counts, `Circuit<n,m,d,C>` |
+| **Property / fuzz tests** | Randomized invariants, differential oracles | `backend/tests/props.rs` — Floyd-Warshall vs petgraph Dijkstra; `quon_core/tests/depth_props.rs` — `DepthExpr` S-expr round-trip |
+| **cargo-fuzz** | Unbounded byte streams, panic-freedom | `quon_core/fuzz/fuzz_targets/fuzz_depth_parse.rs` — parse never panics |
+| **Type checker** | Language invariants on real programs | `frontend/src/typecheck/mod.rs` — linear context `Δ`, circuit qubit counts, `Circuit<n,m,d,C>` |
 | **IR verifiers** | Structural invariants on MLIR | `mlir_bridge/src/dialect/quantum_circ.rs` — `verify()` on every builder |
 | **Static rules** | Repo-specific antipatterns | `.taskless/rules/` — unwrap/expect, anyhow in libs, etc. |
 | **Flux** | Refinement proofs on small Rust kernels | `flux_verify/src/lib.rs` — specs like `{v: x < v}` |
@@ -51,7 +51,7 @@ When adding fallible parsing or serialization, add at least: happy-path unit tes
 | Domain | Type-level model | Where |
 | ------ | ---------------- | ----- |
 | Quon types | `Ty`, linear `Circuit { n, m, d, c }` | `frontend/src/types.rs`, `frontend/src/ast.rs` |
-| Depth bounds | `DepthExpr` AST + S-expr wire format | `frontend/src/refinement.rs`, `mlir_bridge/src/dialect/depth.rs` |
+| Depth bounds | `DepthExpr` AST + S-expr wire format | Canonical home: `quon_core/src/depth.rs` (consumed by frontend / MLIR attrs); Z3 bridge in `frontend/src/refinement.rs`; MLIR attribute encoding in `mlir_bridge/src/dialect/quantum_circ.rs` (`depth_attribute`) |
 | Backend topology | `ConnectivityGraph`, `BackendTarget` after `TryFrom` | `backend/src/target.rs`, `backend/src/descriptor.rs` |
 | MLIR ops | Typed builders + `VerifyError` | `mlir_bridge/src/dialect/quantum_circ.rs` |
 | Refinement (Rust) | Flux `#[spec(...)]` on small functions | `flux_verify/` (nightly, separate CI job) |
@@ -103,8 +103,9 @@ When adding fallible parsing or serialization, add at least: happy-path unit tes
 
 | Crate | Role | Quality focus |
 | ----- | ---- | ------------- |
-| **frontend** | Lex, parse, typecheck, Z3 refinement | Fixture tests for SPEC algorithms; `TypeError` / `Ty`; `DepthExpr` in AST |
-| **mlir_bridge** | MLIR dialects, passes, emit | `Diagnostics`; `quantum_circ` builders + `verify`; `depth_props` / fuzz for parsers |
+| **quon_core** | Shared IR-free kernels (`DepthExpr`, packing helpers) | Property tests for depth ser/de; keep Melior out |
+| **frontend** | Lex, parse, typecheck, Z3 refinement | Fixture tests for SPEC algorithms; `TypeError` / `Ty`; consumes `quon_core::DepthExpr` |
+| **mlir_bridge** | MLIR dialects, passes, emit | `Diagnostics`; `quantum_circ` builders + `verify`; fuzz for parsers |
 | **backend** | Target descriptor, connectivity, gates | `BackendError`; `deny_unknown_fields`; `props.rs` differential tests |
 | **zx** | ZX-calculus rewriting | Graph invariants; typed errors |
 | **quonc** | CLI driver | `anyhow`; clap; thin orchestration — no heavy logic |

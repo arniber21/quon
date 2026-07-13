@@ -4,15 +4,23 @@ Static analysis and refinement-type checks for the Quon workspace.
 
 ## CI matrix
 
+This table is an adapter of `.github/workflows/` — keep it in sync, and run
+`./scripts/assert-validation-docs.sh` (also on the `ci.yml` docs job) so known-stale
+claims cannot return.
+
 | Workflow | Trigger | What runs |
 | -------- | ------- | --------- |
-| [coverage.yml](../../.github/workflows/coverage.yml) | every PR (non-blocking) | `cargo llvm-cov` summary via `./scripts/coverage.sh` (stable, excludes `flux_verify`; needs LLVM 22 + MLIR) |
-| [ci.yml](../../.github/workflows/ci.yml) | every push and PR | `cargo fmt --check`, `clippy`, `build --release`, `test --workspace` on stable (excludes `flux_verify`; needs LLVM 22 + MLIR + z3), then Qiskit Aer verification for Bell/teleport/BV |
+| [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `cargo fmt --check`, `clippy`, `build --release` (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` (needs LLVM 22 + MLIR + z3). CI installs `lit`; FileCheck IR suite runs via [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) when `lit`/`FileCheck` and example oracles are on `PATH`. Then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`. |
+| [ci.yml](../../.github/workflows/ci.yml) `docs` | every push and PR | Starlight build under `website/` + `./scripts/assert-validation-docs.sh` |
 | [ci.yml](../../.github/workflows/ci.yml) `tooling` | every push and PR | `quonfmt --check`, `quonlint`, `quon_lsp` smoke tests on CI corpus |
-| [taskless.yml](../../.github/workflows/taskless.yml) | every PR; push to `main` | diff-scoped `@taskless/cli check` (Node 22+) |
-| [flux.yml](../../.github/workflows/flux.yml) | PR when `flux_verify/` or lockfile changes; push to `main` | `cargo flux -p flux_verify` (nightly + z3) |
+| [taskless.yml](../../.github/workflows/taskless.yml) | every PR (diff-scoped); push to `main` (full) | `@taskless/cli check` (Node 22+) |
+| [flux.yml](../../.github/workflows/flux.yml) | PR when `flux_verify/`, `quon_core/`, `backend/`, or lockfile changes; push to `main` (unconditional) | `cargo flux -p flux_verify`, `cargo flux -p quon_core --features flux`, `cargo flux -p backend --features flux` (nightly + z3) |
+| [coverage.yml](../../.github/workflows/coverage.yml) | every PR (non-blocking) | `cargo llvm-cov` summary via `./scripts/coverage.sh` (stable, excludes `flux_verify`; needs LLVM 22 + MLIR) |
+| [vscode-extension.yml](../../.github/workflows/vscode-extension.yml) | path-filtered push/PR | tree-sitter corpus + VS Code extension package checks |
 
-Not in CI yet: `lit test/lit/` (FileCheck IR tests) — run locally per [README.md](../../README.md#testing).
+Local `lit test/lit/ -v` remains useful for verbose FileCheck output; CI already covers the suite through `cargo test` when tools are present.
+
+**ADR/docs drift:** borrow cleanup semantics vs ADR-0003 are tracked in [#180](https://github.com/arniber21/quon/issues/180) — do not “fix” borrow docs from this validation matrix.
 
 ## Tooling gates (quonfmt · quonlint · LSP)
 
@@ -116,7 +124,7 @@ Agents should treat validation as a **stack of fast feedback loops**, not a sing
 
 1. **Every PR** — fmt, clippy, `cargo test --workspace --exclude flux_verify`, Taskless on changed files, tooling gates (see [validation.md](./validation.md#tooling-gates-quonfmt--quonlint--lsp)).
 2. **Language / parser / typechecker work** — add or extend unit tests; keep reference-algorithm fixtures passing (`frontend/tests/reference_algorithms.rs`).
-3. **Algorithms and serializers** — add proptest coverage where an oracle or invariant exists (`backend/tests/props.rs`, `mlir_bridge/tests/depth_props.rs`); consider `cargo fuzz` for byte/text parsers.
+3. **Algorithms and serializers** — add proptest coverage where an oracle or invariant exists (`backend/tests/props.rs`, `quon_core/tests/depth_props.rs`); consider `cargo fuzz` for byte/text parsers.
 4. **MLIR dialect changes** — unit/integration tests in `mlir_bridge/tests/`; builders must call `verify()` (enforced by Taskless).
 5. **Refinement-heavy Rust** — Flux specs in `flux_verify` when `{v: …}` contracts clarify intent beyond tests.
 
