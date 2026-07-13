@@ -6,6 +6,11 @@
 //! ops become interactions. ASAP layers and critical-path marks follow Enola's
 //! ordered-DAG case; edge weights use Atomique `γ^l`.
 //!
+//! Prefer the module top-level body (post-monadic executed program). Named
+//! `quantum.circ.func`s are a fallback for standalone circ-only fixtures — never
+//! merged with a non-empty top-level extract (avoids double-counting inlined
+//! callees). Logical qubit ids are densified to `0..n` after extraction.
+//!
 //! Keep the collect loop in sync with those mlir_bridge walks (short-term
 //! duplication; a shared collector may land later).
 
@@ -59,6 +64,9 @@ pub fn extract_interaction_graph_with_gamma<'c>(
     let mut used_qubits = BTreeSet::new();
 
     // Top-level executed program (post-monadic-lowering), same as metrics.
+    // After inlining, leftover `quantum.circ.func` callees are dead code — do
+    // **not** merge them into the same graph (that double-counted interactions
+    // and mixed block-arg ids with SSA-pointer roots).
     extract_block(
         body,
         &mut interactions,
@@ -67,36 +75,65 @@ pub fn extract_interaction_graph_with_gamma<'c>(
         &mut used_qubits,
     );
 
-    // Named `quantum.circ.func`s — used by standalone lit-style fixtures (same
-    // dual path as depth_scheduling). Roots are per-func block-arg indices.
-    let mut op = body.first_operation();
-    while let Some(current) = op {
-        op = current.next_in_block();
-        if op_name(&current) != quantum_circ::op::FUNC {
-            continue;
+    // Named `quantum.circ.func`s only when the top-level body contributed no
+    // multi-qubit gates — standalone lit-style `quantum.circ.func`-only
+    // modules (same fallback idea as depth_scheduling / sabre_routing).
+    if interactions.is_empty() {
+        used_qubits.clear();
+        let mut op = body.first_operation();
+        while let Some(current) = op {
+            op = current.next_in_block();
+            if op_name(&current) != quantum_circ::op::FUNC {
+                continue;
+            }
+            let Ok(region) = current.region(0) else {
+                continue;
+            };
+            let Some(block) = region.first_block() else {
+                continue;
+            };
+            extract_block(
+                block,
+                &mut interactions,
+                &mut segments,
+                &mut next_id,
+                &mut used_qubits,
+            );
         }
-        let Ok(region) = current.region(0) else {
-            continue;
-        };
-        let Some(block) = region.first_block() else {
-            continue;
-        };
-        extract_block(
-            block,
-            &mut interactions,
-            &mut segments,
-            &mut next_id,
-            &mut used_qubits,
-        );
     }
 
-    let vertices: Vec<LogicalQubitId> = used_qubits.into_iter().collect();
+    let (vertices, interactions) = densify_logical_qubits(used_qubits, interactions);
     Ok(InteractionGraph::from_interactions(
         vertices,
         interactions,
         segments,
         gamma,
     )?)
+}
+
+/// Remap possibly sparse / pointer-derived [`LogicalQubitId`]s to dense `0..n`.
+fn densify_logical_qubits(
+    used_qubits: BTreeSet<LogicalQubitId>,
+    mut interactions: Vec<Interaction>,
+) -> (Vec<LogicalQubitId>, Vec<Interaction>) {
+    let vertices: Vec<LogicalQubitId> = used_qubits.into_iter().collect();
+    let remap: HashMap<LogicalQubitId, LogicalQubitId> = vertices
+        .iter()
+        .enumerate()
+        .map(|(i, &old)| (old, LogicalQubitId(i as u32)))
+        .collect();
+    for interaction in &mut interactions {
+        for q in &mut interaction.qubits {
+            if let Some(&mapped) = remap.get(q) {
+                *q = mapped;
+            }
+        }
+        interaction.qubits.sort();
+        interaction.qubits.dedup();
+    }
+    let dense_vertices: Vec<LogicalQubitId> =
+        (0..vertices.len() as u32).map(LogicalQubitId).collect();
+    (dense_vertices, interactions)
 }
 
 fn extract_block<'c, 'a>(

@@ -254,3 +254,55 @@ fn isolated_qubit_appears_in_vertices() {
     }
     assert_eq!(degree[2], 0);
 }
+
+#[test]
+fn top_level_program_ignores_leftover_circ_func() {
+    // Simulates post-monadic-lowering: executed program on the module body
+    // plus a leftover inlined `quantum.circ.func` callee. Extract must not
+    // merge both (pre-#112 bug: Bell reported 4 logical qubits / 2 CXs).
+    let context = dynamic_context();
+    let location = Location::unknown(&context);
+    let qubit = qc::qubit_type(&context);
+    let module = Module::new(location);
+    let body = module.body();
+
+    // Top-level executed CX.
+    let q0 = foreign_qubit(&context, &body, location);
+    let q1 = foreign_qubit(&context, &body, location);
+    let _ = append_gate(&context, &body, "CX", &[q0, q1], location);
+
+    // Dead leftover callee with its own CX.
+    let func_block = Block::new(&[(qubit, location), (qubit, location)]);
+    let fq0 = Value::from(func_block.argument(0).unwrap());
+    let fq1 = Value::from(func_block.argument(1).unwrap());
+    let fout = append_gate(&context, &func_block, "CX", &[fq0, fq1], location);
+    func_block.append_operation(qc::r#return(&fout, location).unwrap());
+    let region = Region::new();
+    region.append_block(func_block);
+    body.append_operation(
+        qc::func(
+            &context,
+            "dead_callee",
+            2,
+            2,
+            &DepthExpr::Nat(1),
+            true,
+            region,
+            location,
+        )
+        .unwrap(),
+    );
+
+    let graph = extract_interaction_graph(&module).unwrap();
+    assert_eq!(
+        graph.vertices.len(),
+        2,
+        "must not merge leftover circ.func qubits"
+    );
+    assert_eq!(
+        graph.interactions.len(),
+        1,
+        "must not double-count the callee CX"
+    );
+    assert_eq!(graph.vertices, vec![LogicalQubitId(0), LogicalQubitId(1)]);
+}
