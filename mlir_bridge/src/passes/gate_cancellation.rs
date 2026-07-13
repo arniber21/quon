@@ -66,30 +66,8 @@ fn read_depth_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> quon_
         .unwrap_or(quon_core::DepthExpr::Nat(0))
 }
 
-fn normalize_gate_name(name: &str) -> &str {
-    match name {
-        "CX" => "CNOT",
-        other => other,
-    }
-}
-
 fn inverse_pair(a: &str, b: &str) -> bool {
-    let a = normalize_gate_name(a);
-    let b = normalize_gate_name(b);
-    if a == b {
-        return matches!(a, "H" | "X" | "Y" | "Z" | "CNOT" | "CZ" | "SWAP");
-    }
-    matches!(
-        (a, b),
-        ("S", "S†")
-            | ("S†", "S")
-            | ("S", "Sdag")
-            | ("Sdag", "S")
-            | ("T", "T†")
-            | ("T†", "T")
-            | ("T", "Tdag")
-            | ("Tdag", "T")
-    )
+    quon_core::gates::is_inverse_pair(a, b)
 }
 
 fn parse_gate<'c, 'a>(operation: OperationRef<'c, 'a>) -> Option<(GateRef<'c, 'a>, GateInfo)> {

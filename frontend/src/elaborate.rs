@@ -1062,15 +1062,7 @@ fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<GatePlacement>, ElabEr
 }
 
 fn inverse_gate_name(name: &str) -> String {
-    match name {
-        "S" => "S_dag".to_string(),
-        "S_dag" => "S".to_string(),
-        "T" => "T_dag".to_string(),
-        "T_dag" => "T".to_string(),
-        "SX" => "SX_dag".to_string(),
-        "SX_dag" => "SX".to_string(),
-        other => other.to_string(),
-    }
+    quon_core::gates::inverse_or_self(name)
 }
 
 fn flatten_app<'a>(f: &'a Sp<Expr>, x: &'a Sp<Expr>) -> (&'a Sp<Expr>, Vec<&'a Sp<Expr>>) {

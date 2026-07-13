@@ -100,14 +100,11 @@ fn extract_gates_from_region<'c, 'a>(
 }
 
 fn invert_clifford_gate(name: &str) -> Option<String> {
-    match name {
-        "X" | "Y" | "Z" | "H" | "CNOT" | "CZ" | "CX" | "SWAP" => Some(name.to_string()),
-        "S" => Some("S†".to_string()),
-        "S†" | "Sdag" => Some("S".to_string()),
-        "T" => Some("T†".to_string()),
-        "T†" | "Tdag" => Some("T".to_string()),
-        _ => None,
+    let info = quon_core::gates::lookup(name)?;
+    if info.parametric {
+        return None;
     }
+    Some(info.inverse.to_string())
 }
 
 /// Builds the gate list whose composite operator is `U · V†` (then = `U`,
