@@ -16,9 +16,9 @@ use backend::{BackendTarget, TargetKind};
 use mlir_bridge::emit::openqasm3;
 use mlir_bridge::metrics;
 use mlir_bridge::passes::{
-    classical_region_fusion, clifford_t_opt, compiler_uncomputation, depth_scheduling,
-    dynamic_linearity_verifier, gate_cancellation, linearity_verifier, measurement_deferral,
-    monadic_lowering, native_gate_decomp, rotation_merging,
+    classical_region_fusion, compiler_uncomputation, depth_scheduling, dynamic_linearity_verifier,
+    gate_cancellation, linearity_verifier, measurement_deferral, monadic_lowering,
+    native_gate_decomp, rotation_merging,
     sabre_routing::{self, SabreCost},
     zx_simplification,
 };
@@ -368,6 +368,13 @@ pub fn print_diagnostics(
     }
 }
 
+/// Runs the `quantum.circ` optimization passes to fixpoint.
+///
+/// `clifford_t_opt` is intentionally not part of this pipeline: it used to be a
+/// shallow alias that just re-ran `gate_cancellation` (double-running the same
+/// kernel every round). That name is reserved for #96's real Clifford+T pass
+/// (phase-polynomial T-count minimization + Aaronson-Gottesman stabilizer
+/// tableaux); see #214.
 fn run_circ_passes_to_fixpoint(context: &melior::Context, module: &melior::ir::Module<'_>) {
     const MAX_ROUNDS: usize = 10;
     for _ in 0..MAX_ROUNDS {
@@ -376,7 +383,6 @@ fn run_circ_passes_to_fixpoint(context: &melior::Context, module: &melior::ir::M
         rotation_merging::run_on_module(context, module);
         compiler_uncomputation::run_on_module(context, module);
         zx_simplification::run_on_module(context, module);
-        clifford_t_opt::run_on_module(context, module);
         let after = module.as_operation().to_string();
         if before == after {
             break;

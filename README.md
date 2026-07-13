@@ -63,7 +63,10 @@ QUONC=./target/release/quonc python python/quon_aer.py program.qn --shots 4096
 
 ## Compiler pipeline
 
-`quonc` runs the SPEC §7 pass order for fixed (gate-model) targets: circ fixpoint → monadic lowering → dynamic passes → native-gate decomp → SABRE routing → depth scheduling → OpenQASM 3.0. Neutral-atom targets take a separate schedule/resource path (`--emit-na-schedule` / `--emit-resource-report`). Inspect stages with:
+`quonc` runs the fixed (gate-model) pipeline: circ fixpoint (`gate_cancellation`,
+`rotation_merging`, `compiler_uncomputation`, `zx_simplification`) → monadic
+lowering → dynamic passes → native-gate decomp → SABRE routing → depth
+scheduling → OpenQASM 3.0. (`clifford_t_opt` is reserved for [#96](https://github.com/arniber21/quon/issues/96), not in the fixpoint — see #214.) Neutral-atom targets take a separate schedule/resource path (`--emit-na-schedule` / `--emit-resource-report`). Inspect stages with:
 
 ```bash
 ./target/release/quonc --list-passes

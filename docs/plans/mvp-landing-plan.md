@@ -21,10 +21,12 @@ Do not re-derive this; spot-check only what you touch.
   reference fixtures in `frontend/tests/fixtures/` **type-check**.
 - Dialects `quantum.circ` / `quantum.dynamic` + roundtrips; linearity verifiers
   (`mlir_bridge/src/passes/linearity_verifier.rs`, `dynamic_linearity_verifier.rs`).
-- All ten passes exist with lit coverage: gate_cancellation, rotation_merging,
-  compiler_uncomputation, zx_simplification, clifford_t_opt (thin — delegates to
-  gate cancellation), measurement_deferral (#22), classical_region_fusion (#23),
-  native_gate_decomp (#24), sabre_routing (#25), depth_scheduling (#26).
+- Nine optimization/physical passes exist with lit coverage: gate_cancellation,
+  rotation_merging, compiler_uncomputation, zx_simplification,
+  measurement_deferral (#22), classical_region_fusion (#23), native_gate_decomp
+  (#24), sabre_routing (#25), depth_scheduling (#26). `clifford_t_opt` does **not**
+  ship and is **not** in the circ fixpoint — name reserved for #96 (#214 removed
+  a prior shallow alias that only re-ran gate cancellation).
 - Emitter (#27): `mlir_bridge/src/emit/openqasm3.rs` reify (fallible) →
   `quon_core::qasm` render (total). Reads `phys_qubit` attrs if present.
 - Clifford e2e (#29): Bell / teleport / Bernstein–Vazirani verified on Aer in CI
@@ -82,7 +84,8 @@ Wire `compile_to_qasm` (`quonc/src/main.rs:59`) to the SPEC §7.1 order already
 documented in `mlir_bridge/src/passes/mod.rs`:
 
 1. `quantum.circ` passes, iterated to fixpoint: gate_cancellation,
-   rotation_merging, compiler_uncomputation, zx_simplification, clifford_t_opt.
+   rotation_merging, compiler_uncomputation, zx_simplification.
+   (Do **not** wire `clifford_t_opt` here — #214; reserve that name for #96.)
    Fixpoint = repeat until a pass round reports no change (add a cheap
    changed-flag return or compare op counts; cap iterations, e.g. 10).
 2. monadic_lowering (already wired).
@@ -254,13 +257,13 @@ Environment gotchas (already learned the hard way): use the venv with
 
 - Walk PRD #1's 38 user stories; for each, either point at the test that
   demonstrates it or file a follow-up issue. Known intentional deviations to
-  record: clifford_t_opt is peephole-only (no phase-polynomial T-count
-  minimization / stabilizer tableaux — file as post-MVP), ZX extraction limits
+  record: Clifford+T pass absent (misleading `clifford_t_opt` alias removed in
+  #214; real phase-polynomial / tableau work is #96), ZX extraction limits
   (#75 already tracks), parametric IR (post-MVP note from M2).
 - Close #22–#30 (with #28 pointing at the CI job) and update `CONTEXT.md` /
   `README.md` for the now-real pipeline and `--target` semantics.
 - Post-MVP queue, in rough value order: real Clifford+T optimization
-  (phase polynomials + Aaronson–Gottesman), #75 ZX multi-qubit extraction,
+  (phase polynomials + Aaronson–Gottesman, #96), #75 ZX multi-qubit extraction,
   #82 IBM hardware targeting, tooling track #43–#49.
 
 ## 9. Workflow rules

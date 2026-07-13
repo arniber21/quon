@@ -6,7 +6,9 @@
 //     2. rotation_merging
 //     3. compiler_uncomputation
 //     4. zx_simplification
-//     5. clifford_t_opt
+//     5. clifford_t_opt — RESERVED for #96 (phase-polynomial T-count +
+//        Aaronson-Gottesman tableaux). Not implemented; do NOT add a module
+//        that merely forwards to gate_cancellation (#214 removed that alias).
 //
 //   quantum.dynamic passes:
 //     6. measurement_deferral
@@ -18,7 +20,6 @@
 //    10. depth_scheduling
 
 pub mod classical_region_fusion;
-pub mod clifford_t_opt;
 pub mod compiler_uncomputation;
 pub mod depth_scheduling;
 pub mod dynamic_linearity_verifier;

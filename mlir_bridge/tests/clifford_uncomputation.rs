@@ -5,7 +5,7 @@ mod support;
 use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike, Value};
 
 use mlir_bridge::dialect::quantum_circ as qc;
-use mlir_bridge::passes::{clifford_t_opt, compiler_uncomputation, gate_cancellation};
+use mlir_bridge::passes::{compiler_uncomputation, gate_cancellation};
 use quon_core::DepthExpr;
 
 use support::context;
@@ -19,7 +19,7 @@ fn count_gate(module: &Module<'_>, gate_name: &str) -> usize {
 }
 
 #[test]
-fn t_t_dagger_cancels_via_clifford_t_opt() {
+fn t_t_dagger_cancels_via_gate_cancellation() {
     let context = context();
     let location = Location::unknown(&context);
     let qubit = qc::qubit_type(&context);
@@ -46,7 +46,7 @@ fn t_t_dagger_cancels_via_clifford_t_opt() {
     .expect("func");
     let module = Module::new(location);
     module.body().append_operation(func);
-    clifford_t_opt::run_on_module(&context, &module);
+    gate_cancellation::run_on_module(&context, &module);
     assert_eq!(count_gate(&module, "T"), 0);
     assert_eq!(count_gate(&module, "T†"), 0);
 }

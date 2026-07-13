@@ -971,7 +971,9 @@ quantum.physical passes (after physical lowering):
   10. depth-optimal-scheduling
 ```
 
-Passes 1–5 run to fixpoint before lowering to `quantum.dynamic`. Passes 8–10 run in strict order.
+Passes 1–4 run to fixpoint before lowering to `quantum.dynamic` today. Pass 5 is reserved (see note). Passes 8–10 run in strict order.
+
+> **Implementation note (#214 / #96):** Pass 5 (`clifford-t-optimization`) is specified above but **not shipped and not invoked**. A prior shallow alias that only re-ran gate cancellation (double-running cancellation each fixpoint round) was removed in #214. Real Clifford+T (phase polynomials + Aaronson–Gottesman tableaux) remains #96. Do not reintroduce a pass named `clifford_t_opt` that merely forwards to `gate_cancellation`.
 
 ### 7.2 `quantum.circ` Passes
 
@@ -1305,7 +1307,7 @@ quon/
 │       │   ├── rotation_merging.rs
 │       │   ├── compiler_uncomputation.rs
 │       │   ├── zx_simplification.rs  # Calls into zx crate directly (no FFI)
-│       │   ├── clifford_t_opt.rs
+│       │   ├── clifford_t_opt.rs     # Reserved for #96 (not present; see #214)
 │       │   ├── measurement_deferral.rs
 │       │   ├── classical_region_fusion.rs
 │       │   ├── sabre_routing.rs
