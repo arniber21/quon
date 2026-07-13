@@ -49,8 +49,13 @@ cargo build --release
 ./target/release/quonc program.qn --dump-ir --verify-linear --emit-qasm
 ./target/release/quonc --list-passes
 
-# Simulate with Qiskit Aer
+# Simulate with Qiskit Aer (via python/quon_aer.py — the verify seam)
+# Prefer the bridge directly (it compiles + dialect-normalizes for Qiskit's importer):
+QUONC=./target/release/quonc python python/quon_aer.py program.qn --shots 4096
+# Or pipe QASM into the same bridge (still applies dialect normalize):
 ./target/release/quonc program.qn --emit-qasm | python python/quon_aer.py --shots 4096
+# Unsupported: piping quonc QASM straight into qiskit.qasm3.loads without
+# python/quon_aer.py — quonc emits spec-valid `bit[i] == 1` that the importer rejects.
 
 # Experiment loop: live metrics and watch mode (see docs/agents/experiment-loop.md)
 ./target/release/quonc program.qn --watch --target device.json --metrics
@@ -103,7 +108,7 @@ python test/verify/bell.py   # end-to-end Aer verification against a known refer
 
 `cargo test` drives `test/lit/`'s IR-round-trip and emission FileCheck suite too (`quonc/tests/lit.rs`, PRD story 38) — it shells out to `lit`, which needs `lit`/`FileCheck` on `PATH` and the oracle binaries from `cargo build --examples` above; without those it skips with a message instead of failing, so a bare `cargo test` on a fresh checkout stays green. Run `lit test/lit/ -v` directly for verbose per-test output.
 
-`test/verify/*.py` Aer-verifies all 8 PRD reference algorithms (Bell, teleportation, Bernstein-Vazirani, Grover, QFT, Ising, QAOA, Shor) plus SABRE routing, each against a known theoretical output distribution.
+`test/verify/*.py` Aer-verifies all 8 PRD reference algorithms (Bell, teleportation, Bernstein-Vazirani, Grover, QFT, Ising, QAOA, Shor) plus SABRE routing, each against a known theoretical output distribution. Those scripts share `python/quon_aer.py` (compile → Qiskit dialect normalize → Aer → oracle); unit tests for the compat rewrite live in `python/test_quon_aer.py`.
 
 CI (`.github/workflows/ci.yml`) runs the same stable checks, the lit suite, and all `test/verify/` scripts on every push and pull request. `flux_verify` is checked separately via `cargo flux` in `.github/workflows/flux.yml`.
 

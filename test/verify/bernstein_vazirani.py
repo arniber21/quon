@@ -23,17 +23,14 @@ SOURCE = os.path.join(REPO_ROOT, "test", "verify", "bernstein_vazirani.qn")
 SECRET = (1, 1, 0)  # (c0, c1, c2)
 
 
-def clbit(key: str, k: int, nbits: int) -> int:
-    """Value of classical bit c[k]; Qiskit prints bits high-index-first."""
-    return int(key.replace(" ", "")[nbits - 1 - k])
-
-
 def main() -> int:
     qasm = quon_aer.compile_to_qasm(SOURCE)
-    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
-    nbits = len(next(iter(counts)).replace(" ", ""))
+    counts = quon_aer.run_on_aer(qasm, shots=SHOTS, seed=SEED)
+    nbits = len(quon_aer.normalize_key(next(iter(counts))))
 
-    recovered = {tuple(clbit(key, i, nbits) for i in range(3)) for key in counts}
+    recovered = {
+        tuple(quon_aer.clbit(key, i, nbits) for i in range(3)) for key in counts
+    }
 
     print(f"counts: {counts}")
     print(f"distinct (c0,c1,c2) across shots: {recovered}")

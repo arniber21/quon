@@ -23,7 +23,7 @@ SOURCE = os.path.join(REPO_ROOT, "test", "verify", "bell.qn")
 
 def main() -> int:
     qasm = quon_aer.compile_to_qasm(SOURCE)
-    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
+    counts = quon_aer.run_on_aer(qasm, shots=SHOTS, seed=SEED)
 
     correlated = counts.get("00", 0) + counts.get("11", 0)
     leakage = counts.get("01", 0) + counts.get("10", 0)

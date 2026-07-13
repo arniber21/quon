@@ -43,16 +43,23 @@ def main() -> int:
     if non_native_ops:
         print(f"NOTE: round trip did not fully cancel structurally: {non_native_ops}")
 
-    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
-    print(f"counts: {counts}")
-
-    matches = sum(n for key, n in counts.items() if key.replace(" ", "") == EXPECTED)
-    fidelity = matches / SHOTS
-    print(f"P(result={EXPECTED}) = {fidelity}")
-    if fidelity < 0.99:
-        print(f"FAIL: qft |> adjoint(qft) round trip fidelity {fidelity} <= 0.99")
+    # Point-mass expected distribution -> Hellinger fidelity reduces to
+    # exactly P(EXPECTED), matching the pre-#204 `count / SHOTS` check. Reuse
+    # the already-compiled `qasm` (is_qasm=True) rather than recompiling.
+    result = quon_aer.verify_distribution(
+        qasm,
+        expected={EXPECTED: 1.0},
+        shots=SHOTS,
+        seed=SEED,
+        min_fidelity=0.99,
+        is_qasm=True,
+    )
+    print(f"counts: {result.counts}")
+    print(f"P(result={EXPECTED}) = {result.fidelity}")
+    if not result:
+        print(f"FAIL: qft |> adjoint(qft) round trip fidelity {result.fidelity} <= 0.99")
         return 1
-    print(f"PASS: qft(3) |> adjoint(qft(3)) recovered |{EXPECTED}> with P = {fidelity}")
+    print(f"PASS: qft(3) |> adjoint(qft(3)) recovered |{EXPECTED}> with P = {result.fidelity}")
     return 0
 
 

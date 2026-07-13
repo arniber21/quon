@@ -27,8 +27,8 @@ NON_OPTIMAL = {"000", "111"}
 
 def main() -> int:
     qasm = quon_aer.compile_to_qasm(SOURCE)
-    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
-    normalized = {key.replace(" ", ""): n for key, n in counts.items()}
+    counts = quon_aer.run_on_aer(qasm, shots=SHOTS, seed=SEED)
+    normalized = {quon_aer.normalize_key(key): n for key, n in counts.items()}
     print(f"counts: {normalized}")
 
     optimal = {k: v for k, v in normalized.items() if k not in NON_OPTIMAL}

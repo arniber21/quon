@@ -25,19 +25,16 @@ Z_SOURCE = os.path.join(REPO_ROOT, "test", "verify", "teleport.qn")
 X_SOURCE = os.path.join(REPO_ROOT, "test", "verify", "teleport_plus.qn")
 
 
-def clbit(key: str, k: int, nbits: int) -> int:
-    """Value of classical bit c[k]; Qiskit prints bits high-index-first."""
-    return int(key.replace(" ", "")[nbits - 1 - k])
-
-
 def verify_case(source: str, expected: int, label: str) -> bool:
     qasm = quon_aer.compile_to_qasm(source)
-    counts = quon_aer.run(qasm, shots=SHOTS, seed=SEED)
-    nbits = len(next(iter(counts)).replace(" ", ""))
+    counts = quon_aer.run_on_aer(qasm, shots=SHOTS, seed=SEED)
+    nbits = len(quon_aer.normalize_key(next(iter(counts))))
     result_bit = nbits - 1
     total = sum(counts.values())
     matches = sum(
-        n for key, n in counts.items() if clbit(key, result_bit, nbits) == expected
+        n
+        for key, n in counts.items()
+        if quon_aer.clbit(key, result_bit, nbits) == expected
     )
     fidelity = matches / total
 
