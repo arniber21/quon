@@ -38,6 +38,7 @@ pub mod extract;
 pub mod graph;
 pub mod layout;
 pub mod movement;
+pub mod pipeline;
 pub mod placement;
 pub mod qec;
 pub mod report;
@@ -93,3 +94,9 @@ pub use zoned::{
 
 #[cfg(feature = "mlir")]
 pub use extract::{ExtractError, extract_interaction_graph, extract_interaction_graph_with_gamma};
+#[cfg(feature = "mlir")]
+pub use pipeline::run_from_module;
+pub use pipeline::{
+    NaBackendKind, NaPipelineError, NaScheduleArtifacts, NaScheduleOptions, compaction_options,
+    movement_params, run_from_graph, validate_speed_model, zoned_architecture,
+};
