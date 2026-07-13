@@ -40,7 +40,7 @@ Issues **#22–#30** were already closed (2026-07-05); this audit does not re-cl
 | 1 Dialect foundation | `quantum.circ` / `quantum.dynamic` + verifiers | Done; plus `quantum.na` (#102) beyond PRD |
 | 2 Frontend | Linear TC, depth, Clifford, Z3 | Done (#5–#15, #57–#60) |
 | 3 Lowering | AST→circ, monadic lowering | Done + `elaborate.rs` partial evaluation |
-| 4 circ passes | Cancel, merge, ZX, Clifford+T, uncompute | Done with **thin** ZX / Clifford+T (see stories 24–25) |
+| 4 circ passes | Cancel, merge, ZX, Clifford+T, uncompute | Cancel/merge/uncompute done; ZX **thin** (#75); Clifford+T **not shipped** (#96; alias removed #214) |
 | 5 Physical | BackendTarget, SABRE, decomp, schedule | Done; SABRE β/lookahead **unwired** (story 29 / #181) |
 | 6 Emit + verify | OpenQASM 3, Aer on 8 algs | Done; lit+verify in CI |
 
