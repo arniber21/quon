@@ -545,7 +545,8 @@ quonc pass stages
 Shared front-end
   1. lower            Quon → quantum.circ
   2. circ fixpoint    gate_cancellation, rotation_merging,
-                      compiler_uncomputation, zx_simplification, clifford_t_opt
+                      compiler_uncomputation, zx_simplification
+                      (clifford_t_opt reserved for #96 — real Clifford+T)
   3. monadic_lowering quantum.circ → quantum.dynamic
   4. dynamic          measurement_deferral, classical_region_fusion
 

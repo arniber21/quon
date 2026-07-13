@@ -23,8 +23,10 @@ Do not re-derive this; spot-check only what you touch.
   (`mlir_bridge/src/passes/linearity_verifier.rs`, `dynamic_linearity_verifier.rs`).
 - All ten passes exist with lit coverage: gate_cancellation, rotation_merging,
   compiler_uncomputation, zx_simplification, clifford_t_opt (thin — delegates to
-  gate cancellation), measurement_deferral (#22), classical_region_fusion (#23),
-  native_gate_decomp (#24), sabre_routing (#25), depth_scheduling (#26).
+  gate cancellation; **later removed by #214** as a misleading alias — name
+  reserved for #96's real Clifford+T pass), measurement_deferral (#22),
+  classical_region_fusion (#23), native_gate_decomp (#24), sabre_routing (#25),
+  depth_scheduling (#26).
 - Emitter (#27): `mlir_bridge/src/emit/openqasm3.rs` reify (fallible) →
   `quon_core::qasm` render (total). Reads `phys_qubit` attrs if present.
 - Clifford e2e (#29): Bell / teleport / Bernstein–Vazirani verified on Aer in CI

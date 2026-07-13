@@ -92,7 +92,7 @@ ADR-0003 and `CONTEXT.md` still describe the stricter structural rule. Operation
 | 22 | Gate cancellation | DONE | lit `gate_cancellation_hh.mlir`; unit+prop | #22 closed |
 | 23 | Rotation merging | DONE | lit `rotation_merging_rz.mlir`; unit+prop | |
 | 24 | ZX rewrite | **INTENTIONAL_DEVIATION** | `zx_simplification.rs` single-wire only | **#75** |
-| 25 | Clifford+T phase poly / tableaux | **INTENTIONAL_DEVIATION** | `clifford_t_opt.rs` → `gate_cancellation` only | **#96** |
+| 25 | Clifford+T phase poly / tableaux | **NOT_STARTED** | Shallow `clifford_t_opt.rs` alias removed (#214); name reserved | **#96** |
 | 26 | Compiler uncomputation | DONE | `compiler_uncomputation.rs`; unit+prop | |
 | 27 | Measurement deferral | DONE | lit `measurement_deferral_single_if.mlir` | #22 closed |
 | 28 | Classical region fusion | **INTENTIONAL_DEVIATION** | `same_condition` required | **#97** (PRD said independent conditions) |
@@ -123,7 +123,7 @@ CLI exposes `--sabre-gamma` only. Depth operationalization claimed in SPEC §7.4
 | Pass | Claimed in PRD | Shipped | Tracker |
 |------|----------------|---------|---------|
 | ZX | Non-local rewrite | Sound, single-wire extract only | #75 |
-| Clifford+T | Phase polynomials + tableaux | Peephole via gate cancellation | #96 |
+| Clifford+T | Phase polynomials + tableaux | Not implemented; misleading alias removed (#214) | #96 |
 | Classical fusion | Independent conditions | Same classical bit only | #97 |
 
 ---
@@ -133,7 +133,8 @@ CLI exposes `--sabre-gamma` only. Depth operationalization claimed in SPEC §7.4
 From `quonc/src/compile.rs` + `--list-passes`:
 
 1. Lower Quon → `quantum.circ` (via elaborate when needed)
-2. Circ fixpoint: gate_cancellation, rotation_merging, compiler_uncomputation, zx_simplification, clifford_t_opt
+2. Circ fixpoint: gate_cancellation, rotation_merging, compiler_uncomputation, zx_simplification
+   (`clifford_t_opt` removed as a misleading alias — #214; name reserved for #96)
 3. Monadic lowering → `quantum.dynamic`
 4. measurement_deferral, classical_region_fusion
 5. Fixed path: native_gate_decomp → sabre_routing → native_gate_decomp → depth_scheduling → OpenQASM 3
