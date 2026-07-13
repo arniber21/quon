@@ -33,10 +33,6 @@
           "named": true
         },
         {
-          "type": "delimiter",
-          "named": true
-        },
-        {
           "type": "fn_declaration",
           "named": true
         },
@@ -88,15 +84,35 @@
     }
   },
   {
+    "type": "(",
+    "named": false
+  },
+  {
+    "type": ")",
+    "named": false
+  },
+  {
+    "type": "<",
+    "named": false
+  },
+  {
+    "type": ">",
+    "named": false
+  },
+  {
+    "type": "[",
+    "named": false
+  },
+  {
+    "type": "]",
+    "named": false
+  },
+  {
     "type": "block_comment",
     "named": true
   },
   {
     "type": "boolean",
-    "named": true
-  },
-  {
-    "type": "delimiter",
     "named": true
   },
   {
@@ -129,6 +145,14 @@
   },
   {
     "type": "type",
+    "named": false
+  },
+  {
+    "type": "{",
+    "named": false
+  },
+  {
+    "type": "}",
     "named": false
   }
 ]

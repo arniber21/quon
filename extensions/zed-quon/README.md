@@ -95,6 +95,7 @@ Zed defaults semantic tokens to off. For richer Quon highlighting from `quon_lsp
 | Symptom | What to try |
 | ------- | ----------- |
 | No LSP / binary error | Build `quon_lsp`, fix `PATH`, or set `lsp.quon-lsp.binary.path` |
+| `failed to load language Quon` / `Invalid node type "{"` | Grammar pin is stale or still uses a lumped `delimiter` token. Pull `main`, bump `[grammars.quon].rev` to a commit that has anonymous `"{"`/`"}"` tokens + matching `brackets.scm`, then reinstall the Dev Extension |
 | Stale / missing highlights | Bump `[grammars.quon].rev`; reinstall the Dev Extension |
 | Published extension overrides Dev | Disable the registry copy while developing |
 | Logs | Command palette: `zed: open log`, or run `zed --foreground` |

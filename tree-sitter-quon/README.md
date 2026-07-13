@@ -53,5 +53,6 @@ Generated `src/parser.c` is committed so consumers do not need the CLI at runtim
 | Query | Consumers |
 | ----- | --------- |
 | `queries/highlights.scm` | Zed, Neovim |
+| `queries/brackets.scm` | Zed (pair matching). Requires anonymous `"{"` / `"}"` tokens in `grammar.js` — do **not** collapse delimiters into a named `delimiter` node |
 | `queries/indents.scm` | Neovim / Zed (minimal stub) |
 | `queries/locals.scm` | Optional / minimal |
