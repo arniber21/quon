@@ -324,25 +324,30 @@ pub fn from_gate_info(
             found: qs.len(),
         });
     }
-    let gate = match info.arity {
-        1 => QasmGate::Std1 {
+    // Match on the slice shape (not `qs[i]`) so Flux sees the length is
+    // exactly the arity already checked by `operand_arity_ok`.
+    let gate = match qs {
+        [q] => QasmGate::Std1 {
             keyword,
             angle: info.parametric.then_some(angle),
-            q: qs[0],
+            q: *q,
         },
-        2 => QasmGate::Std2 {
+        [a, b] => QasmGate::Std2 {
             keyword,
-            a: qs[0],
-            b: qs[1],
+            a: *a,
+            b: *b,
         },
-        3 => QasmGate::Std3 {
+        [a, b, c] => QasmGate::Std3 {
             keyword,
-            a: qs[0],
-            b: qs[1],
-            c: qs[2],
+            a: *a,
+            b: *b,
+            c: *c,
         },
-        arity => {
-            return Err(QasmGateBuildError::UnsupportedArity { id: info.id, arity });
+        _ => {
+            return Err(QasmGateBuildError::UnsupportedArity {
+                id: info.id,
+                arity: info.arity,
+            });
         }
     };
     Ok(Some(gate))
