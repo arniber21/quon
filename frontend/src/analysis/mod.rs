@@ -20,6 +20,7 @@ pub use prelude_names::{
     quantum_builtins,
 };
 pub use resolution::{ResolutionMap, ResolvedTarget};
+pub use scopes::{Scope, ScopeId};
 pub use signature::{SignatureParam, SignatureSite, signature_site_at};
 pub use symbols::{Symbol, SymbolId, SymbolIndex, SymbolKind, build_symbol_index};
 pub use typed::TypedProgram;

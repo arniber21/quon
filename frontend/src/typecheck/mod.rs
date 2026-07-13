@@ -1354,6 +1354,7 @@ impl TypeChecker {
                     span: ann.1,
                 });
             }
+            self.record_annotation(name.1, &ty);
             delta.introduce(name.0.clone(), ty, name.1)?;
             introduced.push((name.0.clone(), name.1));
             borrowed.insert(name.0.clone());
@@ -2525,6 +2526,8 @@ impl TypeChecker {
                 if name.starts_with('_') && matches!(resolved, Ty::QReg(_)) {
                     return Ok(());
                 }
+                // Binding-site annotation powers inlay hints / hover on `let` names (#176).
+                self.record_annotation(span, &resolved);
                 if resolved.is_linear_resource() {
                     delta.introduce(name.clone(), resolved, span)?;
                     introduced.push((name.clone(), span));

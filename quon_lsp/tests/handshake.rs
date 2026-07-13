@@ -25,6 +25,9 @@ fn lsp_lifecycle_handshake() {
     assert_eq!(caps["referencesProvider"], true);
     assert_eq!(caps["documentHighlightProvider"], true);
     assert_eq!(caps["renameProvider"]["prepareProvider"], true);
+    assert_eq!(caps["documentSymbolProvider"], true);
+    assert_eq!(caps["foldingRangeProvider"], true);
+    assert_eq!(caps["inlayHintProvider"], true);
 
     client.send_notification("initialized", json!({}));
     client.shutdown_and_exit();
