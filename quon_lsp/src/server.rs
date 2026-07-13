@@ -9,8 +9,8 @@ use crate::analysis::{AnalysisScheduler, debounce_from_env};
 use crate::diagnostics::code_actions_for_range;
 use crate::document::{DocumentError, DocumentStore};
 use crate::intel::{
-    completions_at, definition_at, document_highlight_at, hover_at, references_at,
-    semantic_tokens_full, semantic_tokens_legend,
+    completions_at, definition_at, document_highlight_at, hover_at, prepare_rename_at,
+    references_at, rename_at, semantic_tokens_full, semantic_tokens_legend,
 };
 
 pub struct QuonLanguageServer {
@@ -52,6 +52,10 @@ impl LanguageServer for QuonLanguageServer {
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec!["@".into(), ":".into(), "<".into()]),
                     ..Default::default()
@@ -202,6 +206,42 @@ impl LanguageServer for QuonLanguageServer {
             return Ok(None);
         };
         Ok(document_highlight_at(&analysis.intelligence, position))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let position = params.position;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        prepare_rename_at(&analysis.intelligence, position)
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let new_name = params.new_name;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        rename_at(&analysis.intelligence, &uri, position, &new_name)
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {

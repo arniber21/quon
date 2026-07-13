@@ -24,6 +24,7 @@ fn lsp_lifecycle_handshake() {
     assert_eq!(caps["definitionProvider"], true);
     assert_eq!(caps["referencesProvider"], true);
     assert_eq!(caps["documentHighlightProvider"], true);
+    assert_eq!(caps["renameProvider"]["prepareProvider"], true);
 
     client.send_notification("initialized", json!({}));
     client.shutdown_and_exit();

@@ -99,13 +99,30 @@ impl SymbolIndex {
     }
 
     pub fn resolve_name_at(&self, name: &str, offset: usize) -> Option<SymbolId> {
+        self.resolve_name_at_assuming_rename(name, offset, None)
+    }
+
+    /// Like [`Self::resolve_name_at`], but treats `renamed` as already named `new_name`.
+    ///
+    /// Used to preview whether a rename would still resolve every occurrence to the
+    /// same binding (no intervening / sibling shadow).
+    pub fn resolve_name_at_assuming_rename(
+        &self,
+        name: &str,
+        offset: usize,
+        renamed: Option<(SymbolId, &str)>,
+    ) -> Option<SymbolId> {
         let mut scope_id = self.innermost_scope(offset)?;
         while let Some(scope) = self.scopes.get(scope_id.0 as usize) {
             for &sym_id in scope.symbols.iter().rev() {
-                if let Some(sym) = self.get(sym_id)
-                    && sym.name == name
-                {
-                    return Some(sym_id);
+                if let Some(sym) = self.get(sym_id) {
+                    let effective = match renamed {
+                        Some((id, new_name)) if id == sym_id => new_name,
+                        _ => sym.name.as_str(),
+                    };
+                    if effective == name {
+                        return Some(sym_id);
+                    }
                 }
             }
             scope_id = scope.parent?;

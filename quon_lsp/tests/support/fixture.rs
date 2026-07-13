@@ -3,8 +3,8 @@ use frontend::analyze;
 use tower_lsp::lsp_types::{Position, Url};
 
 use quon_lsp::intel::{
-    completions_at, definition_at, document_highlight_at, hover_at, references_at,
-    semantic_tokens_full,
+    completions_at, definition_at, document_highlight_at, hover_at, prepare_rename_at,
+    references_at, rename_at, semantic_tokens_full,
 };
 
 fn fixture_url() -> Url {
@@ -72,6 +72,26 @@ pub fn highlights_at_marker(src: &str) -> Option<Vec<tower_lsp::lsp_types::Docum
     let pos = position_after_marker(src);
     let result = analyze_fixture(&clean);
     document_highlight_at(&result.intelligence, pos)
+}
+
+pub fn prepare_rename_at_marker(
+    src: &str,
+) -> tower_lsp::jsonrpc::Result<Option<tower_lsp::lsp_types::PrepareRenameResponse>> {
+    let clean = src_without_marker(src);
+    let pos = position_after_marker(src);
+    let result = analyze_fixture(&clean);
+    prepare_rename_at(&result.intelligence, pos)
+}
+
+pub fn rename_at_marker(
+    src: &str,
+    new_name: &str,
+) -> tower_lsp::jsonrpc::Result<Option<tower_lsp::lsp_types::WorkspaceEdit>> {
+    let clean = src_without_marker(src);
+    let pos = position_after_marker(src);
+    let result = analyze_fixture(&clean);
+    let uri = fixture_url();
+    rename_at(&result.intelligence, &uri, pos, new_name)
 }
 
 pub fn completion_labels(src: &str) -> Vec<String> {
