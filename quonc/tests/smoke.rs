@@ -106,10 +106,10 @@ fn non_native_gate_fails_loudly() {
 /// a bystander qubit displaced by an unrelated swap kept a stale SSA operand
 /// on its next gate and on the block terminator, and `wires[logical]` was
 /// never updated to a gate's own result — see git history on this test for
-/// the full analysis. Golden updated for issue #181 (β · critical_path_delta
-/// + lookahead) which changes SWAP choice vs the α/γ-only cost. Verified
-/// against Qiskit Aer to recover the BV secret (1,1,0) unchanged from the
-/// unrouted `generic_openqasm` result.
+/// the full analysis. Golden updated for issue #181 (beta * critical_path_delta
+/// and lookahead), which changes SWAP choice vs the alpha/gamma-only cost.
+/// Verified against Qiskit Aer to recover the BV secret (1,1,0) unchanged from
+/// the unrouted `generic_openqasm` result.
 #[test]
 fn bernstein_vazirani_routes_and_emits_only_native_gates_on_linear_chain() {
     let source = workspace_path("../test/verify/bernstein_vazirani.qn");
