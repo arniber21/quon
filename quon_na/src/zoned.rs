@@ -39,13 +39,10 @@ use crate::schedule_entry::GraphScheduleRequest;
 use flux_rs::attrs::*;
 
 /// Zone capability taxonomy ([AbstractModel] Sec. III-A; [RAP] Sec. II-A).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ZoneKind {
-    Storage,
-    Entanglement,
-    Readout,
-}
+///
+/// Owned by `backend` (issue #212): one `ZoneKind` for the workspace,
+/// re-exported here so the zoned placer's public API is unchanged.
+pub use backend::ZoneKind;
 
 /// One zone on a zoned neutral-atom architecture.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

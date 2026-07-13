@@ -144,21 +144,13 @@ pub struct NeutralAtomGridDescriptor {
 #[serde(deny_unknown_fields)]
 pub struct NeutralAtomZoneDescriptor {
     pub zone_id: u32,
-    pub kind: ZoneKindDescriptor,
+    pub kind: ZoneKind,
     pub rows: i64,
     pub cols: i64,
     pub origin_um: [f64; 2],
     pub site_pitch_um: [f64; 2],
     #[serde(default)]
     pub pair_gap_um: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ZoneKindDescriptor {
-    Storage,
-    Entanglement,
-    Readout,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -433,11 +425,7 @@ fn neutral_atom_from_descriptor(
 }
 
 fn zone_from_descriptor(d: NeutralAtomZoneDescriptor) -> Result<NeutralAtomZone, BackendError> {
-    let kind = match d.kind {
-        ZoneKindDescriptor::Storage => ZoneKind::Storage,
-        ZoneKindDescriptor::Entanglement => ZoneKind::Entanglement,
-        ZoneKindDescriptor::Readout => ZoneKind::Readout,
-    };
+    let kind = d.kind;
     let pair_gap_um = match (kind, d.pair_gap_um) {
         (ZoneKind::Entanglement, Some(gap)) => Some(positive_f64("zones[].pair_gap_um", gap)?),
         (ZoneKind::Entanglement, None) => {
@@ -527,11 +515,7 @@ fn neutral_atom_to_descriptor(id: &str, target: &NeutralAtomTarget) -> NeutralAt
             .iter()
             .map(|zone| NeutralAtomZoneDescriptor {
                 zone_id: zone.zone_id,
-                kind: match zone.kind {
-                    ZoneKind::Storage => ZoneKindDescriptor::Storage,
-                    ZoneKind::Entanglement => ZoneKindDescriptor::Entanglement,
-                    ZoneKind::Readout => ZoneKindDescriptor::Readout,
-                },
+                kind: zone.kind,
                 rows: i64::from(zone.rows),
                 cols: i64::from(zone.cols),
                 origin_um: [zone.origin_um.0, zone.origin_um.1],
