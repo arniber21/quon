@@ -28,6 +28,22 @@ fn lsp_lifecycle_handshake() {
     assert_eq!(caps["documentSymbolProvider"], true);
     assert_eq!(caps["foldingRangeProvider"], true);
     assert_eq!(caps["inlayHintProvider"], true);
+    assert_eq!(
+        caps["documentFormattingProvider"], true,
+        "expected documentFormattingProvider"
+    );
+    let sem = &caps["semanticTokensProvider"];
+    assert_eq!(
+        sem["range"], true,
+        "expected semanticTokens range support, got {sem}"
+    );
+    let mods = sem["legend"]["tokenModifiers"]
+        .as_array()
+        .expect("tokenModifiers");
+    assert!(
+        mods.iter().any(|m| m == "definition") && mods.iter().any(|m| m == "readonly"),
+        "expected definition+readonly modifiers, got {mods:?}"
+    );
 
     client.send_notification("initialized", json!({}));
     client.shutdown_and_exit();

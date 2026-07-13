@@ -8,10 +8,11 @@ use tower_lsp::{Client, LanguageServer};
 use crate::analysis::{AnalysisScheduler, debounce_from_env};
 use crate::diagnostics::code_actions_for_range;
 use crate::document::{DocumentError, DocumentStore};
+use crate::format::format_document;
 use crate::intel::{
     completions_at, definition_at, document_highlight_at, document_symbols, folding_ranges,
     hover_at, inlay_hints, prepare_rename_at, references_at, rename_at, semantic_tokens_full,
-    semantic_tokens_legend, signature_help_at,
+    semantic_tokens_legend, semantic_tokens_range, signature_help_at,
 };
 
 pub struct QuonLanguageServer {
@@ -71,10 +72,16 @@ impl LanguageServer for QuonLanguageServer {
                         SemanticTokensOptions {
                             legend: semantic_tokens_legend(),
                             full: Some(SemanticTokensFullOptions::Bool(true)),
+                            range: Some(true),
                             ..Default::default()
                         },
                     ),
                 ),
+                // Optional document formatting via embedded quonfmt. Editors that
+                // already shell out to quonfmt must not also enable this provider
+                // (double-format hazard). quonfmt v1 strips comments — see
+                // `crate::format` module docs.
+                document_formatting_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Options(
                     CodeActionOptions {
                         code_action_kinds: Some(vec![
@@ -307,6 +314,37 @@ impl LanguageServer for QuonLanguageServer {
                 character: 0,
             },
         ))
+    }
+
+    async fn semantic_tokens_range(
+        &self,
+        params: SemanticTokensRangeParams,
+    ) -> Result<Option<SemanticTokensRangeResult>> {
+        let uri = params.text_document.uri;
+        let range = params.range;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        let Some(analysis) = doc.cached_analysis.as_ref() else {
+            return Ok(None);
+        };
+        Ok(semantic_tokens_range(&analysis.intelligence, range))
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+        let Ok(docs) = self.documents.read() else {
+            tracing::error!("document store read lock poisoned");
+            return Ok(None);
+        };
+        let Some(doc) = docs.get(&uri) else {
+            return Ok(None);
+        };
+        Ok(format_document(&doc.text))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {

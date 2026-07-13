@@ -101,6 +101,10 @@ Only after reading the comment-stripping warning below:
 
 Version 1 of `quonfmt` removes line (`--`) and block (`{- -}`) comments. Silent format-on-save would destroy comments, which is why the default is off. Format Document remains available from the command palette.
 
+## Double-format hazard
+
+`quon_lsp` optionally advertises `textDocument/formatting` (embedded `quonfmt`), and this extension also registers its own Format Document provider that shells out to `quonfmt`. **Use only one.** The extension is the default (`editor.defaultFormatter`: `quon.quon-vscode`). Do not also select the language-server formatter for the same Quon buffer — applying both is redundant and can race on save.
+
 ## Shared Tree-sitter grammar
 
 Canonical grammar for Zed (#132) and Neovim (#133): [`tree-sitter-quon/`](../../tree-sitter-quon/). Corpus: `tree-sitter-quon/test/corpus/`.

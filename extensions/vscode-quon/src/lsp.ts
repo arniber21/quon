@@ -57,9 +57,10 @@ export async function startLanguageClient(context: vscode.ExtensionContext): Pro
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher("**/*.qn"),
     },
-    // Formatting is provided by quonfmt, not the LSP server.
-    // Default client capabilities include codeAction (quickfix + refactor.rewrite)
-    // and semantic tokens; do not disable them.
+    // Formatting: keep the extension's DocumentFormattingEditProvider (format.ts).
+    // quon_lsp also advertises textDocument/formatting (#178). Do **not** enable
+    // both for the same buffer — double-format hazard. Default formatter stays
+    // `quon.quon-vscode` (see package.json configurationDefaults).
     outputChannelName: "Quon Language Server",
   };
 

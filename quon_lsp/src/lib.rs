@@ -29,6 +29,7 @@ pub mod analysis;
 pub mod convert;
 pub mod diagnostics;
 pub mod document;
+pub mod format;
 pub mod intel;
 pub mod server;
 pub mod span;

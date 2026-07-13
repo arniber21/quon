@@ -78,6 +78,10 @@ Both enable Quon `format_on_save` with external `quonfmt` and empty `arguments` 
 
 **Note:** `quonfmt` strips comments in v1 — see [`quonfmt/README.md`](../../quonfmt/README.md) and [`docs/quonfmt-style.md`](../../docs/quonfmt-style.md).
 
+### Double-format hazard
+
+`quon_lsp` can format via `textDocument/formatting` (embedded `quonfmt`). Zed's Quon settings use an **external** `quonfmt` command for format-on-save. **Do not enable both** for the same project — pick external `format_on_save` (as shipped) **or** LSP formatting, never both.
+
 ### Manual verification
 
 1. Put `quonfmt` on `PATH`.
