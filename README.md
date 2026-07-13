@@ -56,6 +56,16 @@ cargo build --release
 ./target/release/quonc program.qn --watch --target device.json --metrics
 ```
 
+## Compiler pipeline
+
+`quonc` runs the SPEC §7 pass order for fixed (gate-model) targets: circ fixpoint → monadic lowering → dynamic passes → native-gate decomp → SABRE routing → depth scheduling → OpenQASM 3.0. Neutral-atom targets take a separate schedule/resource path (`--emit-na-schedule` / `--emit-resource-report`). Inspect stages with:
+
+```bash
+./target/release/quonc --list-passes
+```
+
+`--target device.json` selects connectivity, native gates, and noise for the fixed path; omitting it uses the built-in `generic_openqasm` all-to-all target. MVP story-by-story close-out: [`docs/plans/m5-closeout-audit.md`](docs/plans/m5-closeout-audit.md).
+
 ## Developer tooling
 
 | Tool | Purpose |
