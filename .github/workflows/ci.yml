@@ -97,6 +97,9 @@ jobs:
         working-directory: website
         run: pnpm build
 
+      - name: Assert validation docs match CI reality (issue #203)
+        run: ./scripts/assert-validation-docs.sh
+
   tooling:
     name: quonfmt · quonlint · LSP smoke
     runs-on: ubuntu-latest
