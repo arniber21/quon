@@ -30,6 +30,9 @@ _Avoid_: gate class, circuit class
 **Borrow block**: A scoped ancilla qubit allocation written `borrow q: Qubit in { body }`. The type checker requires each ancilla to be consumed exactly once inside the block and forbids it from appearing in the block’s result (no escape). Valid cleanup includes `measure`, `reset`, and `discard` (not only a structural `reset`/`discard` terminal — ADR-0003 / older PRD wording is stale; resolution tracked in issue #180).
 _Avoid_: ancilla block, borrow scope
 
+**Documentation comment**: Leading `--` line comments or `{- -}` block comments immediately above a top-level `fn` or `type` (only whitespace between the comment run and the declaration). Attached to the symbol for LSP hover and completion (ADR-0010). Not a separate syntax; ordinary comments in that position. `quonfmt` v1 strips comments, so formatting clears these docs from the file.
+_Avoid_: doc comment syntax, `///`, javadoc
+
 **Sequential composition**: The `|>` operator. Chains two circuits end-to-end; depth adds.
 _Avoid_: compose, then, pipe
 

@@ -4,7 +4,8 @@ use frontend::analysis::{
     DocumentAnalysis, SymbolKind, classical_builtins, gate_type, gates, keywords, partial_ident,
 };
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionResponse, InsertTextFormat, Position,
+    CompletionItem, CompletionItemKind, CompletionResponse, Documentation, InsertTextFormat,
+    MarkupContent, MarkupKind, Position,
 };
 
 use crate::convert::position_to_offset;
@@ -69,22 +70,33 @@ pub fn completions_at(
         push_item(
             &mut items,
             &mut seen_labels,
-            item(
+            item_with_docs(
                 &sym.name,
-                CompletionItemKind::VARIABLE,
+                match sym.kind {
+                    SymbolKind::Function => CompletionItemKind::FUNCTION,
+                    _ => CompletionItemKind::VARIABLE,
+                },
                 sym.ty.as_ref().map(|t| t.to_string()),
+                sym.docs.clone(),
             ),
         );
     }
 
-    for alias in analysis.symbols.alias_names() {
-        if prefix.is_empty() || alias.starts_with(prefix.as_str()) {
-            push_item(
-                &mut items,
-                &mut seen_labels,
-                item(alias, CompletionItemKind::CLASS, None),
-            );
+    for sym in &analysis.symbols.symbols {
+        if sym.kind != SymbolKind::TypeAlias {
+            continue;
         }
+        if sym.name_span.start == sym.name_span.end {
+            continue;
+        }
+        if !(prefix.is_empty() || sym.name.starts_with(prefix.as_str())) {
+            continue;
+        }
+        push_item(
+            &mut items,
+            &mut seen_labels,
+            item_with_docs(&sym.name, CompletionItemKind::CLASS, None, sym.docs.clone()),
+        );
     }
 
     static TYPE_NAMES: &[&str] = &[
@@ -125,10 +137,25 @@ fn push_item(items: &mut Vec<CompletionItem>, seen: &mut HashSet<String>, item: 
 }
 
 fn item(label: &str, kind: CompletionItemKind, detail: Option<String>) -> CompletionItem {
+    item_with_docs(label, kind, detail, None)
+}
+
+fn item_with_docs(
+    label: &str,
+    kind: CompletionItemKind,
+    detail: Option<String>,
+    docs: Option<String>,
+) -> CompletionItem {
     CompletionItem {
         label: label.to_string(),
         kind: Some(kind),
         detail,
+        documentation: docs.map(|value| {
+            Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            })
+        }),
         ..Default::default()
     }
 }

@@ -15,5 +15,8 @@ cargo run -p quonfmt -- --check program.qn
 
 Style rules: [`docs/quonfmt-style.md`](../docs/quonfmt-style.md).
 
-Comments are stripped on format. Uses `frontend` with `default-features = false` — no
-MLIR/LLVM toolchain required.
+Comments are stripped on format. **Leading comments used as LSP documentation
+(hover / completion) are therefore removed by `quonfmt`** — see
+[`docs/quonfmt-style.md`](../docs/quonfmt-style.md) and
+[`docs/adr/0010-leading-doc-comments.md`](../docs/adr/0010-leading-doc-comments.md).
+Uses `frontend` with `default-features = false` — no MLIR/LLVM toolchain required.
