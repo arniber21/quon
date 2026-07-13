@@ -1,19 +1,26 @@
 mod annotations;
+mod completion_context;
 mod cursor;
 mod docs;
 mod prelude_names;
 mod resolution;
 mod scopes;
+mod signature;
 mod symbols;
 mod typed;
 
 pub use annotations::TypeAnnotations;
+pub use completion_context::{
+    CompletionContext, applyables, completion_context_at, in_circuit_block, type_names,
+};
 pub use cursor::{NodeAt, cursor_at, node_at_offset, partial_ident};
 pub use docs::extract_leading_docs;
 pub use prelude_names::{
-    classical_builtins, gate_type, gates, is_quantum_builtin, keywords, quantum_builtins,
+    builtin_type, classical_builtins, gate_type, gates, is_quantum_builtin, keywords,
+    quantum_builtins,
 };
 pub use resolution::{ResolutionMap, ResolvedTarget};
+pub use signature::{SignatureParam, SignatureSite, signature_site_at};
 pub use symbols::{Symbol, SymbolId, SymbolIndex, SymbolKind, build_symbol_index};
 pub use typed::TypedProgram;
 

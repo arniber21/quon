@@ -91,3 +91,8 @@ pub fn is_quantum_builtin(name: &str) -> bool {
 pub fn gate_type(name: &str) -> Option<crate::types::Ty> {
     crate::typecheck::circuit::gate_type(name)
 }
+
+/// Classical / quantum prelude type body for completion detail, if known.
+pub fn builtin_type(name: &str) -> Option<crate::types::Ty> {
+    crate::typecheck::builtins::lookup(name).map(|s| s.body)
+}
