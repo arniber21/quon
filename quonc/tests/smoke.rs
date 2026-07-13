@@ -106,8 +106,10 @@ fn non_native_gate_fails_loudly() {
 /// a bystander qubit displaced by an unrelated swap kept a stale SSA operand
 /// on its next gate and on the block terminator, and `wires[logical]` was
 /// never updated to a gate's own result — see git history on this test for
-/// the full analysis. Verified against Qiskit Aer to recover the BV secret
-/// (1,1,0) unchanged from the unrouted `generic_openqasm` result.
+/// the full analysis. Golden updated for issue #181 (beta * critical_path_delta
+/// and lookahead), which changes SWAP choice vs the alpha/gamma-only cost.
+/// Verified against Qiskit Aer to recover the BV secret (1,1,0) unchanged from
+/// the unrouted `generic_openqasm` result.
 #[test]
 fn bernstein_vazirani_routes_and_emits_only_native_gates_on_linear_chain() {
     let source = workspace_path("../test/verify/bernstein_vazirani.qn");
@@ -147,34 +149,28 @@ sx q[3];
 rz(4.71238898038469) q[3];
 sx q[3];
 rz(3.141592653589793) q[3];
-cx q[0], q[1];
-cx q[1], q[0];
-cx q[0], q[1];
+cx q[2], q[3];
+cx q[3], q[2];
+cx q[2], q[3];
 cx q[1], q[2];
 cx q[2], q[1];
 cx q[1], q[2];
-cx q[2], q[3];
 cx q[0], q[1];
-cx q[1], q[0];
-cx q[0], q[1];
-cx q[1], q[2];
 cx q[2], q[1];
-cx q[1], q[2];
-cx q[2], q[3];
-rz(3.141592653589793) q[1];
-sx q[1];
-rz(4.71238898038469) q[1];
-sx q[1];
-rz(3.141592653589793) q[1];
+rz(3.141592653589793) q[0];
+sx q[0];
+rz(4.71238898038469) q[0];
+sx q[0];
+rz(3.141592653589793) q[0];
 rz(3.141592653589793) q[2];
 sx q[2];
 rz(4.71238898038469) q[2];
 sx q[2];
 rz(3.141592653589793) q[2];
-c[0] = measure q[1];
+c[0] = measure q[0];
 c[1] = measure q[2];
-c[2] = measure q[0];
-c[3] = measure q[3];
+c[2] = measure q[3];
+c[3] = measure q[1];
 ";
     assert_eq!(qasm, expected);
     for gate in ["h", "cnot", "swap", "id"] {

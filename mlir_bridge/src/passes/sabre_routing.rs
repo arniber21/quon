@@ -96,6 +96,7 @@ fn append_swap<'c, 'a>(
     ))
 }
 
+#[derive(Clone)]
 struct Layout {
     /// logical value key -> physical index
     mapping: HashMap<usize, usize>,
@@ -211,8 +212,15 @@ fn route_two_qubit<'c, 'a>(
     let mut p_a = layout.phys(logical_a)?;
     let mut p_b = layout.phys(logical_b)?;
 
+    // The lookahead window `W` (SPEC §7.4): the next `cost.lookahead` two-qubit
+    // interactions after this gate, by logical-qubit identity. Fixed once per
+    // gate (not recomputed per hop) since it's independent of which physical
+    // swap we're currently scoring — only the *candidate mapping* varies
+    // across `best_swap`'s calls, not the set of upcoming interactions.
+    let window = collect_lookahead_window(gate, cost.lookahead, tracker);
+
     while target.topology.dist(p_a, p_b) > 1 {
-        let (u, v) = best_swap(target, cost, layout, p_a, p_b)?;
+        let (u, v) = best_swap(target, cost, layout, &window, p_a, p_b)?;
 
         let logical_u = layout.logical_at(u)?;
         let logical_v = layout.logical_at(v)?;
@@ -249,11 +257,23 @@ fn best_swap(
     target: &FixedTarget,
     cost: SabreCost,
     layout: &Layout,
+    window: &[(usize, usize)],
     p_a: usize,
     p_b: usize,
 ) -> Result<(usize, usize), RouteError> {
-    let mut best: Option<((usize, usize), f64)> = None;
+    // Lexicographic score: (post-swap front distance, secondary). Distance is
+    // primary so β / γ can never prefer a hop that lengthens the front-layer
+    // pair — otherwise `while dist > 1` can oscillate forever. Secondary folds
+    // β·critical_path_delta and γ·noise only among equal-distance candidates.
+    let mut best: Option<((usize, usize), usize, f64)> = None;
+    let current_dist = target.topology.dist(p_a, p_b);
+    let baseline_window_cost = window_swap_depth(target, layout, window);
     for &(u, v) in &target.topology.edges {
+        // Only SWAPs that move at least one front-layer endpoint can reduce
+        // `current_dist`; unrelated edges preserve distance and would spin.
+        if u != p_a && u != p_b && v != p_a && v != p_b {
+            continue;
+        }
         if layout.inverse.get(u).and_then(|value| *value).is_none()
             || layout.inverse.get(v).and_then(|value| *value).is_none()
         {
@@ -273,16 +293,108 @@ fn best_swap(
         } else {
             p_b
         };
-        let distance = target.topology.dist(swapped_a, swapped_b) as f64;
-        let score = cost.alpha * distance + cost.gamma * noise_penalty(target, u, v);
-        if best.is_none_or(|(_, best_score)| score < best_score) {
-            best = Some(((u, v), score));
+        let distance = target.topology.dist(swapped_a, swapped_b);
+        // Hard progress: never accept a connectivity regression for the gate
+        // we are currently routing.
+        if distance > current_dist {
+            continue;
+        }
+        let critical_path_delta = if cost.beta == 0.0 || window.is_empty() {
+            0.0
+        } else {
+            let mut candidate = layout.clone();
+            match candidate.swap_phys(u, v) {
+                Ok(_) => window_swap_depth(target, &candidate, window) - baseline_window_cost,
+                Err(_) => 0.0,
+            }
+        };
+        let secondary = cost.beta * critical_path_delta + cost.gamma * noise_penalty(target, u, v);
+        // `alpha` remains on SabreCost for SPEC §7.4 / CLI parity; lexicographic
+        // distance-first makes it redundant for ranking (distance is primary).
+        let better = match best {
+            None => true,
+            Some((_, best_dist, best_secondary)) => {
+                distance < best_dist || (distance == best_dist && secondary < best_secondary)
+            }
+        };
+        if better {
+            best = Some(((u, v), distance, secondary));
         }
     }
-    best.map(|(edge, _)| edge).ok_or_else(|| RouteError::Build {
-        op: quantum_circ::op::GATE,
-        message: "no legal swap candidate".to_string(),
-    })
+    best.map(|(edge, _, _)| edge)
+        .ok_or_else(|| RouteError::Build {
+            op: quantum_circ::op::GATE,
+            message: "no legal swap candidate".to_string(),
+        })
+}
+
+/// Collects the lookahead window `W` (SPEC §7.4): the logical-qubit pairs of
+/// up to `limit` two-qubit `quantum.circ.gate` ops following `after` in
+/// program order, within the same block. `limit == 0` (the CLI/SPEC knob for
+/// disabling lookahead) yields an empty window, which zeroes out `beta`'s
+/// contribution below regardless of its value.
+///
+/// Only tracks straight-line successors: it does not recurse into
+/// `quantum.dynamic.unitary_region`/`if` bodies encountered along the way, so
+/// interactions nested inside those regions are not part of the window. This
+/// is a scoring heuristic only — it never affects the SWAPs actually emitted
+/// for correctness, only which of several equally-distant candidates is
+/// preferred, so under-counting the window here costs some routing quality,
+/// never correctness.
+fn collect_lookahead_window<'c, 'a>(
+    after: OperationRef<'c, 'a>,
+    limit: usize,
+    tracker: &WireTracker,
+) -> Vec<(usize, usize)> {
+    // Peek with a clone so scoring never mutates the live tracker. Observe
+    // `after` first: successors often consume this gate's results, and those
+    // SSA values are not yet aliased on the live tracker (observe happens
+    // after routing in `route_block`).
+    let mut peek = tracker.clone();
+    peek.observe_operation(after);
+    let mut window = Vec::with_capacity(limit.min(64));
+    let mut op = after.next_in_block();
+    while let Some(current) = op {
+        if window.len() >= limit {
+            break;
+        }
+        let name = op_name(&current);
+        if name == quantum_circ::op::RETURN || name == quantum_dynamic::op::YIELD {
+            break;
+        }
+        op = current.next_in_block();
+        if name != quantum_circ::op::GATE {
+            continue;
+        }
+        let roots = peek.roots_for_operands(current);
+        if let [logical_a, logical_b] = roots[..] {
+            window.push((logical_a, logical_b));
+        }
+        peek.observe_operation(current);
+    }
+    window
+}
+
+/// Estimated additional SWAP-induced depth (SPEC §7.4 `critical_path_delta`)
+/// to execute the lookahead window's interactions under `layout`: each
+/// interaction whose endpoints are `d` hops apart needs `d - 1` more SWAPs
+/// (hence `d - 1` more depth layers) before it is directly executable.
+///
+/// This approximates `depth(schedule_ASAP(apply_mapping(M, W)))` from the
+/// SPEC formula via connectivity distance rather than running a full ASAP
+/// scheduler per candidate mapping — cheap enough to evaluate once per
+/// topology edge in `best_swap`'s inner loop, while still being sensitive to
+/// exactly the thing `beta` is meant to penalize: a swap that moves a qubit
+/// away from its next partner(s).
+fn window_swap_depth(target: &FixedTarget, layout: &Layout, window: &[(usize, usize)]) -> f64 {
+    window
+        .iter()
+        .filter_map(|&(logical_a, logical_b)| {
+            let phys_a = layout.phys(logical_a).ok()?;
+            let phys_b = layout.phys(logical_b).ok()?;
+            Some(target.topology.dist(phys_a, phys_b).saturating_sub(1) as f64)
+        })
+        .sum()
 }
 
 /// Noise cost for swapping / using the physical edge `(a, b)`.

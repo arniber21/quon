@@ -91,6 +91,8 @@ fn help_lists_all_documented_flags() {
         "--color",
         "--quiet",
         "--sabre-gamma",
+        "--sabre-beta",
+        "--sabre-lookahead",
     ] {
         assert!(stdout.contains(flag), "missing {flag} in --help");
     }

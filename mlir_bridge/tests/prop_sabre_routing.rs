@@ -138,6 +138,29 @@ proptest! {
     fn sabre_preserves_statevector_up_to_swaps(spec in sabre_circuit_strategy()) {
         assert_sabre_preserves(&spec)?;
     }
+
+    /// Routing with non-default β / lookahead must still emit connectivity-
+    /// respecting SWAPs (statevector equivalence up to layout).
+    #[test]
+    fn sabre_preserves_with_beta_lookahead(
+        spec in sabre_circuit_strategy(),
+        beta in prop_oneof![Just(0.0), Just(0.5), Just(10.0)],
+        lookahead in prop_oneof![Just(0usize), Just(1), Just(20)],
+    ) {
+        prop_assert!(spec.width >= 2);
+        let ctx = context();
+        let module = lower_func_module(&ctx, &spec);
+        let target = linear_topology(spec.width.max(3) as usize);
+        let cost = SabreCost {
+            alpha: 1.0,
+            beta,
+            gamma: 0.0,
+            lookahead,
+        };
+        sabre_routing::run_on_module(&ctx, &target, cost, &module);
+        let post = extract_func_circuit(read_func_op(&module));
+        sabre_equiv(&spec, &post).map_err(TestCaseError::fail)?;
+    }
 }
 
 #[test]
