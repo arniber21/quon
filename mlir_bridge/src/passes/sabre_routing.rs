@@ -261,9 +261,19 @@ fn best_swap(
     p_a: usize,
     p_b: usize,
 ) -> Result<(usize, usize), RouteError> {
-    let mut best: Option<((usize, usize), f64)> = None;
+    // Lexicographic score: (post-swap front distance, secondary). Distance is
+    // primary so β / γ can never prefer a hop that lengthens the front-layer
+    // pair — otherwise `while dist > 1` can oscillate forever. Secondary folds
+    // β·critical_path_delta and γ·noise only among equal-distance candidates.
+    let mut best: Option<((usize, usize), usize, f64)> = None;
+    let current_dist = target.topology.dist(p_a, p_b);
     let baseline_window_cost = window_swap_depth(target, layout, window);
     for &(u, v) in &target.topology.edges {
+        // Only SWAPs that move at least one front-layer endpoint can reduce
+        // `current_dist`; unrelated edges preserve distance and would spin.
+        if u != p_a && u != p_b && v != p_a && v != p_b {
+            continue;
+        }
         if layout.inverse.get(u).and_then(|value| *value).is_none()
             || layout.inverse.get(v).and_then(|value| *value).is_none()
         {
@@ -283,7 +293,12 @@ fn best_swap(
         } else {
             p_b
         };
-        let distance = target.topology.dist(swapped_a, swapped_b) as f64;
+        let distance = target.topology.dist(swapped_a, swapped_b);
+        // Hard progress: never accept a connectivity regression for the gate
+        // we are currently routing.
+        if distance > current_dist {
+            continue;
+        }
         let critical_path_delta = if cost.beta == 0.0 || window.is_empty() {
             0.0
         } else {
@@ -293,17 +308,24 @@ fn best_swap(
                 Err(_) => 0.0,
             }
         };
-        let score = cost.alpha * distance
-            + cost.beta * critical_path_delta
-            + cost.gamma * noise_penalty(target, u, v);
-        if best.is_none_or(|(_, best_score)| score < best_score) {
-            best = Some(((u, v), score));
+        let secondary = cost.beta * critical_path_delta + cost.gamma * noise_penalty(target, u, v);
+        // `alpha` remains on SabreCost for SPEC §7.4 / CLI parity; lexicographic
+        // distance-first makes it redundant for ranking (distance is primary).
+        let better = match best {
+            None => true,
+            Some((_, best_dist, best_secondary)) => {
+                distance < best_dist || (distance == best_dist && secondary < best_secondary)
+            }
+        };
+        if better {
+            best = Some(((u, v), distance, secondary));
         }
     }
-    best.map(|(edge, _)| edge).ok_or_else(|| RouteError::Build {
-        op: quantum_circ::op::GATE,
-        message: "no legal swap candidate".to_string(),
-    })
+    best.map(|(edge, _, _)| edge)
+        .ok_or_else(|| RouteError::Build {
+            op: quantum_circ::op::GATE,
+            message: "no legal swap candidate".to_string(),
+        })
 }
 
 /// Collects the lookahead window `W` (SPEC §7.4): the logical-qubit pairs of

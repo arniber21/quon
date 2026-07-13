@@ -272,6 +272,38 @@ fn route_text(cost: SabreCost) -> String {
     module.as_operation().to_string()
 }
 
+/// First SWAP in program order: operands are SSA results of the H gates on
+/// physical qubits assigned in order (H@0 → %0, H@1 → %1, H@2 → %2), so
+/// `(%0, %1)` means physical edge (0,1) and `(%1, %2)` means (1,2).
+fn first_swap_operand_snippet(ir: &str) -> &str {
+    let marker = "gate_name = \"SWAP\"";
+    let swap_attr = ir.find(marker).expect("expected a SWAP in routed IR");
+    let line_start = ir[..swap_attr].rfind("quantum.circ.gate").expect("SWAP op");
+    let line_end = ir[swap_attr..]
+        .find('\n')
+        .map(|i| swap_attr + i)
+        .unwrap_or(ir.len());
+    &ir[line_start..line_end]
+}
+
+fn first_cnot_phys_qubit(ir: &str) -> i32 {
+    let cnot_marker = "gate_name = \"CNOT\"";
+    let mut from = 0usize;
+    while let Some(rel) = ir[from..].find(cnot_marker) {
+        let abs = from + rel;
+        let line_start = ir[..abs].rfind("quantum.circ.gate").expect("CNOT op");
+        let line_end = ir[abs..].find('\n').map(|i| abs + i).unwrap_or(ir.len());
+        let line = &ir[line_start..line_end];
+        if let Some(phys_rel) = line.find("phys_qubit = ") {
+            let rest = &line[phys_rel + "phys_qubit = ".len()..];
+            let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            return num.parse().expect("phys_qubit i32");
+        }
+        from = abs + cnot_marker.len();
+    }
+    panic!("no CNOT with phys_qubit in:\n{ir}");
+}
+
 #[test]
 fn default_sabre_beta_and_lookahead_match_spec() {
     let cost = SabreCost::default();
@@ -295,17 +327,41 @@ fn high_beta_changes_swap_choice_on_depth_sensitive_circuit() {
     };
     let without = route_text(no_beta);
     let with = route_text(high_beta);
+
+    // β = 0: both (0,1) and (1,2) equally reduce front distance; edge order
+    // picks physical SWAP (0,1). After that swap, q0 lives at phys 1.
+    let swap0 = first_swap_operand_snippet(&without);
     assert!(
-        without.contains("gate_name = \"SWAP\""),
-        "expected SWAP with β=0:\n{without}"
+        swap0.contains("(%0, %1)"),
+        "β=0 must SWAP physical endpoints 0–1 (H results %0,%1), got:\n{swap0}\nfull:\n{without}"
     );
+    assert_eq!(
+        first_cnot_phys_qubit(&without),
+        1,
+        "β=0: after SWAP(0,1), first CNOT's control q0 is at phys 1:\n{without}"
+    );
+
+    // High β: SWAP(1,2) preserves q1–q2 adjacency for the lookahead CNOT.
+    // After that swap, q0 remains at phys 0; only one SWAP is needed.
+    let swap1 = first_swap_operand_snippet(&with);
     assert!(
-        with.contains("gate_name = \"SWAP\""),
-        "expected SWAP with high β:\n{with}"
+        swap1.contains("(%1, %2)"),
+        "high β must SWAP physical endpoints 1–2 (H results %1,%2), got:\n{swap1}\nfull:\n{with}"
+    );
+    assert_eq!(
+        first_cnot_phys_qubit(&with),
+        0,
+        "high β: after SWAP(1,2), first CNOT's control q0 stays at phys 0:\n{with}"
+    );
+    assert_eq!(
+        with.matches("gate_name = \"SWAP\"").count(),
+        1,
+        "high β lookahead should need only one SWAP:\n{with}"
     );
     assert_ne!(
-        without, with,
-        "high β must change routing vs β=0 when lookahead distinguishes candidates"
+        without.matches("gate_name = \"SWAP\"").count(),
+        1,
+        "β=0 path should insert an extra SWAP for the follow-on CNOT:\n{without}"
     );
 }
 
@@ -333,11 +389,17 @@ fn zero_lookahead_disables_beta_effect() {
     let beta_off = route_text(no_beta);
     let full = route_text(high_beta_with_window);
     assert_eq!(
-        zero_look, beta_off,
-        "lookahead=0 must zero out β (empty W), matching β=0 routing"
+        first_swap_operand_snippet(&zero_look),
+        first_swap_operand_snippet(&beta_off),
+        "lookahead=0 must zero out β (empty W), matching β=0 SWAP endpoints"
     );
-    assert_ne!(
-        zero_look, full,
-        "non-zero lookahead must let β change the SWAP choice"
+    assert_eq!(
+        first_cnot_phys_qubit(&zero_look),
+        first_cnot_phys_qubit(&beta_off)
     );
+    assert!(
+        first_swap_operand_snippet(&full).contains("(%1, %2)"),
+        "non-zero lookahead must let β select SWAP(1,2):\n{full}"
+    );
+    assert_eq!(first_cnot_phys_qubit(&full), 0);
 }
