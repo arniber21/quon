@@ -86,3 +86,42 @@ fn bell_state_fixture_passes_linearity_verifier() {
         "bell_state fixture should be linear"
     );
 }
+
+#[test]
+fn controlled_h_and_compose_lower() {
+    // Issue #182: controlled(H) and controlled(H |> T) must elaborate under a
+    // generic target (emit path goes through the same lower → circ → QASM).
+    let src = "\
+fn ch(): Circuit<2, 2, 2, Universal> = circuit { controlled(H) @(0, 1) }
+fn cht(): Circuit<2, 2, 3, Universal> = circuit { controlled(H |> T) @(0, 1) }
+fn cht_block(): Circuit<2, 2, 3, Universal> = circuit { controlled(circuit { H |> T }) @(0, 1) }
+";
+    let text = lower_text(src);
+    assert!(text.contains(r#"sym_name = "ch""#), "missing ch: {text}");
+    assert!(
+        text.contains(r#"sym_name = "cht""#) && text.contains(r#"sym_name = "cht_block""#),
+        "missing cht forms: {text}"
+    );
+    assert!(
+        text.contains(r#"gate_name = "CNOT""#) || text.contains(r#"gate_name = "CX""#),
+        "expected CNOT in CH decomposition: {text}"
+    );
+}
+
+#[test]
+fn controlled_unsupported_body_is_diagnostic() {
+    // `identity(1)` is a valid 1-qubit circuit value, but not a single-qubit
+    // generator the controlled elaborator knows how to decompose.
+    let src = "fn bad(): Circuit<2, 2, 1, Clifford> = circuit { controlled(identity(1)) @(0, 1) }";
+    let context = Context::new();
+    let err = lower_program(&context, src).expect_err("unsupported controlled body");
+    let msg = err
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert!(
+        msg.contains("controlled()") || msg.contains("elaboration is not implemented"),
+        "unexpected diagnostic: {msg}"
+    );
+}

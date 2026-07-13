@@ -18,33 +18,52 @@
 //! functions via `match n { 0 => .., _ => .. }` (including as a *bare* body,
 //! not just inside `circuit { }` — `qft`'s own definition), `identity`,
 //! `on_high`/`on_low`, `swap_reverse`, and nested parametric calls are
-//! supported. `Rzz(theta) @ (i, j)` and `controlled(X | Z | Rz(theta)) @
-//! (control, target)` have no native gate of their own, so they are rewritten
-//! here into the existing `CNOT`/`Rz` primitives every other gate already
-//! lowers through — see `decompose_rzz`/`decompose_controlled`. `tensored`/
-//! `split`, `fold` over a circuit accumulator, and `controlled` of anything
-//! other than `X`/`Z`/`Rz` are not yet elaborated — a program using them is
-//! rejected with [`ElabError::Unsupported`], not silently miscompiled.
+//! supported. `Rzz(theta) @ (i, j)` and `controlled(c) @ (control, target)`
+//! have no native gate of their own, so they are rewritten here into existing
+//! primitives (`CNOT`/`CZ`/`CY`/`Rz`/…) — see `decompose_rzz`/
+//! `decompose_controlled`. Control distributes over `|>` / `par` / circuit
+//! blocks; Clifford+T single-qubit generators (and `Rx`/`Ry`/`Rz`) lower via
+//! known decompositions. `tensored`/`split`, `fold` over a circuit accumulator,
+//! and residual unsupported controlled bodies are rejected with
+//! [`ElabError::Unsupported`] (span-accurate), not silently miscompiled.
 
 use std::collections::HashMap;
 
+use chumsky::span::SimpleSpan;
 use quon_core::DepthExpr;
 use thiserror::Error;
 
-use crate::ast::{BinOp, Expr, LitPat, Pat};
+use crate::ast::{BinOp, Expr, LitPat, Pat, Stmt};
 use crate::lexer::Sp;
 use crate::typecheck::circuit;
 
 #[derive(Debug, Error)]
 pub enum ElabError {
     #[error("elaboration is not implemented for `{construct}`")]
-    Unsupported { construct: &'static str },
+    Unsupported {
+        construct: &'static str,
+        span: SimpleSpan,
+    },
     #[error("`{name}` is not a classically evaluable expression")]
     NotClassical { name: &'static str },
     #[error("unbound variable `{name}` during elaboration")]
     UnboundVar { name: String },
     #[error("elaboration exceeded its evaluation budget (possible non-terminating recursion)")]
     FuelExhausted,
+}
+
+impl ElabError {
+    fn unsupported(construct: &'static str, span: SimpleSpan) -> Self {
+        Self::Unsupported { construct, span }
+    }
+
+    /// Source span for diagnostics (controlled / elaboration failures).
+    pub fn span(&self) -> SimpleSpan {
+        match self {
+            Self::Unsupported { span, .. } => *span,
+            _ => SimpleSpan::from(0..0),
+        }
+    }
 }
 
 /// A classically-evaluated value: the elaborator's evaluation domain for the
@@ -105,6 +124,10 @@ pub struct ElabCtx {
 type ClassicalEnv = HashMap<String, Value>;
 
 const FUEL_START: u32 = 1_000_000;
+
+fn no_span() -> SimpleSpan {
+    SimpleSpan::from(0..0)
+}
 
 /// Evaluates a classical (non-quantum) expression to a [`Value`] under `env`.
 ///
@@ -194,15 +217,17 @@ pub fn eval_classical(
                         return eval_classical(body, &inner, fuel);
                     }
                     Pat::Tuple(_) => {
-                        return Err(ElabError::Unsupported {
-                            construct: "tuple pattern in classical match",
-                        });
+                        return Err(ElabError::unsupported(
+                            "tuple pattern in classical match",
+                            no_span(),
+                        ));
                     }
                 }
             }
-            Err(ElabError::Unsupported {
-                construct: "non-exhaustive classical match",
-            })
+            Err(ElabError::unsupported(
+                "non-exhaustive classical match",
+                no_span(),
+            ))
         }
         Expr::App(f, x) => {
             let (head, args) = flatten_app(f, x);
@@ -215,13 +240,9 @@ pub fn eval_classical(
                     return Ok(result);
                 }
             }
-            Err(ElabError::Unsupported {
-                construct: "classical function call",
-            })
+            Err(ElabError::unsupported("classical function call", no_span()))
         }
-        _ => Err(ElabError::Unsupported {
-            construct: "classical expression",
-        }),
+        _ => Err(ElabError::unsupported("classical expression", no_span())),
     }
 }
 
@@ -309,23 +330,26 @@ fn bind_classical_pat(
         Pat::Wildcard => Ok(()),
         Pat::Tuple(pats) => {
             let Value::Tuple(values) = value else {
-                return Err(ElabError::Unsupported {
-                    construct: "tuple pattern bound to a non-tuple value",
-                });
+                return Err(ElabError::unsupported(
+                    "tuple pattern bound to a non-tuple value",
+                    no_span(),
+                ));
             };
             if pats.len() != values.len() {
-                return Err(ElabError::Unsupported {
-                    construct: "tuple pattern arity mismatch",
-                });
+                return Err(ElabError::unsupported(
+                    "tuple pattern arity mismatch",
+                    no_span(),
+                ));
             }
             for (p, v) in pats.iter().zip(values) {
                 bind_classical_pat(p, v, env)?;
             }
             Ok(())
         }
-        Pat::Lit(_) => Err(ElabError::Unsupported {
-            construct: "literal pattern in classical let",
-        }),
+        Pat::Lit(_) => Err(ElabError::unsupported(
+            "literal pattern in classical let",
+            no_span(),
+        )),
     }
 }
 
@@ -346,16 +370,15 @@ pub fn elaborate_circuit_body(
     match &expr.0 {
         Expr::CircuitBlock(stmts) => {
             let Some((last, leading)) = stmts.split_last() else {
-                return Err(ElabError::Unsupported {
-                    construct: "empty circuit block",
-                });
+                return Err(ElabError::unsupported("empty circuit block", no_span()));
             };
             let mut inner_env = classical_env.clone();
             for stmt in leading {
                 let crate::ast::Stmt::Let { pat, rhs } = &stmt.0 else {
-                    return Err(ElabError::Unsupported {
-                        construct: "non-let statement inside a circuit block",
-                    });
+                    return Err(ElabError::unsupported(
+                        "non-let statement inside a circuit block",
+                        no_span(),
+                    ));
                 };
                 // A `let` inside a `circuit { }` block binds a classical
                 // value (e.g. a per-iteration angle); a local bound to
@@ -367,9 +390,10 @@ pub fn elaborate_circuit_body(
                 bind_classical_pat(pat, value, &mut inner_env)?;
             }
             let crate::ast::Stmt::Expr(last_expr) = &last.0 else {
-                return Err(ElabError::Unsupported {
-                    construct: "circuit block not ending in an expression",
-                });
+                return Err(ElabError::unsupported(
+                    "circuit block not ending in an expression",
+                    no_span(),
+                ));
             };
             elaborate_circuit_body(last_expr, &inner_env, ctx, fuel)
         }
@@ -412,15 +436,17 @@ pub fn elaborate_circuit_body(
                         return elaborate_circuit_body(body, &inner, ctx, fuel);
                     }
                     Pat::Tuple(_) => {
-                        return Err(ElabError::Unsupported {
-                            construct: "tuple pattern in circuit-body match",
-                        });
+                        return Err(ElabError::unsupported(
+                            "tuple pattern in circuit-body match",
+                            no_span(),
+                        ));
                     }
                 }
             }
-            Err(ElabError::Unsupported {
-                construct: "non-exhaustive circuit-body match",
-            })
+            Err(ElabError::unsupported(
+                "non-exhaustive circuit-body match",
+                no_span(),
+            ))
         }
         // A bare `let x = e in body` as a circuit function's whole
         // definition (e.g. `ising_evolve`'s `let tau = t / float(n_steps) in
@@ -474,9 +500,10 @@ pub fn elaborate_circuit_body(
         Expr::For { pat, iter, body } => {
             let items = eval_classical(iter, classical_env, fuel)?;
             let Value::List(items) = items else {
-                return Err(ElabError::Unsupported {
-                    construct: "for-loop iterator (expected qubits/range/diag)",
-                });
+                return Err(ElabError::unsupported(
+                    "for-loop iterator (expected qubits/range/diag)",
+                    no_span(),
+                ));
             };
             // A zero-iteration loop (e.g. `controlled_rotations(1)`'s `for i
             // in range(n - 1)` at `n = 1`, a real case in a recursive
@@ -504,9 +531,10 @@ pub fn elaborate_circuit_body(
             let _ = name;
             Ok(expr.clone())
         }
-        _ => Err(ElabError::Unsupported {
-            construct: "circuit body expression during elaboration",
-        }),
+        _ => Err(ElabError::unsupported(
+            "circuit body expression during elaboration",
+            no_span(),
+        )),
     }
 }
 
@@ -637,9 +665,10 @@ fn elaborate_app(
             _ => {
                 if let Some(def) = ctx.parametric.get(name) {
                     if def.params.len() != args.len() {
-                        return Err(ElabError::Unsupported {
-                            construct: "parametric circuit call arity mismatch",
-                        });
+                        return Err(ElabError::unsupported(
+                            "parametric circuit call arity mismatch",
+                            no_span(),
+                        ));
                     }
                     let mut callee_env = ClassicalEnv::new();
                     for (param, arg) in def.params.iter().zip(args.iter()) {
@@ -734,6 +763,35 @@ fn subst_classical_vars(expr: &Sp<Expr>, env: &ClassicalEnv) -> Result<Sp<Expr>,
             ),
             span,
         )),
+        Expr::Compose(lhs, rhs) => Ok((
+            Expr::Compose(
+                Box::new(subst_classical_vars(lhs, env)?),
+                Box::new(subst_classical_vars(rhs, env)?),
+            ),
+            span,
+        )),
+        Expr::Par(body, count) => Ok((
+            Expr::Par(
+                Box::new(subst_classical_vars(body, env)?),
+                Box::new(subst_classical_vars(count, env)?),
+            ),
+            span,
+        )),
+        Expr::Adjoint(inner) => Ok((
+            Expr::Adjoint(Box::new(subst_classical_vars(inner, env)?)),
+            span,
+        )),
+        Expr::Controlled(inner) => Ok((
+            Expr::Controlled(Box::new(subst_classical_vars(inner, env)?)),
+            span,
+        )),
+        Expr::GateApp { gate, qubits } => Ok((
+            Expr::GateApp {
+                gate: Box::new(subst_classical_vars(gate, env)?),
+                qubits: Box::new(subst_classical_vars(qubits, env)?),
+            },
+            span,
+        )),
         _ => Ok(expr.clone()),
     }
 }
@@ -775,9 +833,10 @@ fn on_high_width(
             }
             if let Some(def) = ctx.parametric.get(name) {
                 let crate::types::Ty::Circuit { n, .. } = &def.ret_ty else {
-                    return Err(ElabError::Unsupported {
-                        construct: "on_high/on_low of a non-Circuit-returning call",
-                    });
+                    return Err(ElabError::unsupported(
+                        "on_high/on_low of a non-Circuit-returning call",
+                        no_span(),
+                    ));
                 };
                 let mut nat_env: HashMap<String, DepthExpr> = HashMap::new();
                 for (param, arg) in def.params.iter().zip(args.iter()) {
@@ -788,16 +847,18 @@ fn on_high_width(
                     }
                 }
                 return n.subst(&nat_env).as_const().map(|w| w as i64).ok_or(
-                    ElabError::Unsupported {
-                        construct: "on_high/on_low of a call with an unresolved width",
-                    },
+                    ElabError::unsupported(
+                        "on_high/on_low of a call with an unresolved width",
+                        no_span(),
+                    ),
                 );
             }
         }
     }
-    Err(ElabError::Unsupported {
-        construct: "on_high/on_low of an expression with no statically known width",
-    })
+    Err(ElabError::unsupported(
+        "on_high/on_low of an expression with no statically known width",
+        no_span(),
+    ))
 }
 
 /// Adds `offset` to every literal qubit index in an already-elaborated
@@ -847,9 +908,10 @@ fn shift_qubit_targets(qubits: &Sp<Expr>, offset: i64) -> Sp<Expr> {
 fn tuple2(qubits: &Sp<Expr>) -> Result<(Sp<Expr>, Sp<Expr>), ElabError> {
     match &qubits.0 {
         Expr::Tuple(items) if items.len() == 2 => Ok((items[0].clone(), items[1].clone())),
-        _ => Err(ElabError::Unsupported {
-            construct: "expected a 2-qubit target tuple `(a, b)`",
-        }),
+        _ => Err(ElabError::unsupported(
+            "expected a 2-qubit target tuple `(a, b)`",
+            no_span(),
+        )),
     }
 }
 
@@ -900,86 +962,299 @@ fn halve_angle(angle: &Sp<Expr>) -> Sp<Expr> {
 /// · Rz(θ) · X = Rz(-θ)`. Comparing all four computational-basis phases
 /// against `Rzz(θ) = diag(e^{-iθ/2}, e^{iθ/2}, e^{iθ/2}, e^{-iθ/2})`
 /// (the ±1 eigenvalues of `Z⊗Z`) confirms the match exactly.
-fn decompose_rzz(
-    angle: &Sp<Expr>,
-    q0: &Sp<Expr>,
-    q1: &Sp<Expr>,
-    span: chumsky::span::SimpleSpan,
-) -> Sp<Expr> {
-    let cnot = gate_app(
-        "CNOT",
-        &(Expr::Tuple(vec![q0.clone(), q1.clone()]), span),
-        span,
-    );
+fn decompose_rzz(angle: &Sp<Expr>, q0: &Sp<Expr>, q1: &Sp<Expr>, span: SimpleSpan) -> Sp<Expr> {
+    let cnot = cnot_app(control_target_tuple(q0, q1, span), span);
     let rz = rz_gate_app(angle, q1, span);
     compose(vec![cnot.clone(), rz, cnot], span)
 }
 
-/// `controlled(g) @ (control, target)` for the two forms this codebase's
-/// reference algorithms use: `controlled(X)`/`controlled(Z)` are exactly
-/// `CNOT`/`CZ` (no decomposition needed), and `controlled(Rz(theta))` (Shor's
-/// `controlled_rotations`/`modmul`) decomposes as `Rz(theta/2) @ target |>
-/// CNOT(control,target) |> Rz(-theta/2) @ target |> CNOT(control,target)` —
-/// verified by cases: `control = 0` cancels to `Rz(θ/2)·Rz(-θ/2) = I`
-/// (`CRz`'s `|0⟩⟨0|⊗I` block); `control = 1` conjugates the second `Rz` by `X`
-/// (`X·Rz(-θ/2)·X = Rz(θ/2)`), giving `Rz(θ/2)·Rz(θ/2) = Rz(θ)` (`CRz`'s
-/// `|1⟩⟨1|⊗Rz(θ)` block).
+fn control_target_tuple(control: &Sp<Expr>, target: &Sp<Expr>, span: SimpleSpan) -> Sp<Expr> {
+    (Expr::Tuple(vec![control.clone(), target.clone()]), span)
+}
+
+fn cnot_app(qubits: Sp<Expr>, span: SimpleSpan) -> Sp<Expr> {
+    gate_app("CNOT", &qubits, span)
+}
+
+/// `controlled(c) @ (control, target)` (SPEC §4.4 / issue #182).
+///
+/// Control distributes over sequential composition and circuit blocks:
+/// `controlled(A |> B) = controlled(A) |> controlled(B)` on the same wires.
+/// `par { body } * k` expands to `k` controlled copies on contiguous targets
+/// `target, target+1, …` when `body` is width-1 (the only shape this path
+/// places with a 2-tuple `(control, target)` start). Clifford+T single-qubit
+/// generators and `Rx`/`Ry`/`Rz` use known decompositions into `CNOT`/`CZ`/
+/// `CY`/`Rz`/local singles. Anything else is a span-accurate
+/// [`ElabError::Unsupported`].
 fn decompose_controlled(
     inner: &Sp<Expr>,
     control: &Sp<Expr>,
     target: &Sp<Expr>,
     classical_env: &ClassicalEnv,
-    span: chumsky::span::SimpleSpan,
+    span: SimpleSpan,
 ) -> Result<Sp<Expr>, ElabError> {
+    let fail = |construct: &'static str| ElabError::unsupported(construct, inner.1);
     match &inner.0 {
-        Expr::Var(name) if name == "X" => Ok(gate_app(
-            "CNOT",
-            &(Expr::Tuple(vec![control.clone(), target.clone()]), span),
-            span,
-        )),
-        Expr::Var(name) if name == "Z" => Ok(gate_app(
-            "CZ",
-            &(Expr::Tuple(vec![control.clone(), target.clone()]), span),
-            span,
-        )),
+        Expr::Compose(lhs, rhs) => {
+            let left = decompose_controlled(lhs, control, target, classical_env, span)?;
+            let right = decompose_controlled(rhs, control, target, classical_env, span)?;
+            Ok(compose_nonempty(left, right, span))
+        }
+        Expr::CircuitBlock(stmts) => {
+            let body = circuit_block_expr(stmts, classical_env, inner.1)?;
+            decompose_controlled(&body, control, target, classical_env, span)
+        }
+        Expr::Par(body, count) => {
+            let mut fuel = 10_000u32;
+            let k = eval_classical(count, classical_env, &mut fuel)?
+                .as_i64()
+                .ok_or_else(|| fail("controlled(par) count (expected Int)"))?;
+            if k < 0 {
+                return Err(fail("controlled(par) with a negative count"));
+            }
+            if k == 0 {
+                return Ok(empty_circuit(span));
+            }
+            // Width-1 body copies land on contiguous targets starting at `target`.
+            let mut composed = empty_circuit(span);
+            for i in 0..k {
+                let t = shift_qubit_targets(target, i);
+                let step = decompose_controlled(body, control, &t, classical_env, span)?;
+                composed = compose_nonempty(composed, step, span);
+            }
+            Ok(composed)
+        }
+        Expr::Adjoint(c) => {
+            // For unitary `U`, `controlled(U†) = controlled(U)†` (control wire
+            // is unchanged by the adjoint).
+            let controlled = decompose_controlled(c, control, target, classical_env, span)?;
+            reverse_and_invert(&controlled)
+        }
+        Expr::Var(name) => controlled_named_gate(name, None, control, target, classical_env, span),
         Expr::App(f, x) => {
             let (head, args) = flatten_app(f, x);
             let Expr::Var(name) = &head.0 else {
-                return Err(ElabError::Unsupported {
-                    construct: "controlled() of an unrecognized gate expression",
-                });
+                return Err(fail("controlled() of an unrecognized gate expression"));
             };
-            if name != "Rz" || args.len() != 1 {
-                return Err(ElabError::Unsupported {
-                    construct: "controlled() is only implemented for X, Z, and Rz",
-                });
+            if args.len() != 1 {
+                return Err(fail("controlled() of a multi-argument gate expression"));
             }
             let angle = subst_classical_vars(args[0], classical_env)?;
-            let cnot = gate_app(
-                "CNOT",
-                &(Expr::Tuple(vec![control.clone(), target.clone()]), span),
-                span,
-            );
-            let rz_half = rz_gate_app(&halve_angle(&angle), target, span);
-            let rz_neg_half = rz_gate_app(&negate_angle(&halve_angle(&angle)), target, span);
-            Ok(compose(
-                vec![rz_half, cnot.clone(), rz_neg_half, cnot],
-                span,
-            ))
+            controlled_named_gate(name, Some(angle), control, target, classical_env, span)
         }
-        _ => Err(ElabError::Unsupported {
-            construct: "controlled() is only implemented for X, Z, and Rz",
-        }),
+        Expr::Controlled(_) => Err(fail(
+            "nested controlled() (multi-controlled gates are not elaborated yet)",
+        )),
+        _ => Err(fail("controlled() of an unsupported circuit body")),
     }
 }
 
+/// Evaluate `let`s in a circuit block and return the trailing expression.
+fn circuit_block_expr(
+    stmts: &[Sp<Stmt>],
+    classical_env: &ClassicalEnv,
+    span: SimpleSpan,
+) -> Result<Sp<Expr>, ElabError> {
+    let Some((last, leading)) = stmts.split_last() else {
+        return Err(ElabError::unsupported(
+            "empty circuit block under controlled()",
+            span,
+        ));
+    };
+    let mut inner_env = classical_env.clone();
+    let mut fuel = 10_000u32;
+    for stmt in leading {
+        let Stmt::Let { pat, rhs } = &stmt.0 else {
+            return Err(ElabError::unsupported(
+                "non-let statement inside a circuit block under controlled()",
+                stmt.1,
+            ));
+        };
+        let value = eval_classical(rhs, &inner_env, &mut fuel)?;
+        bind_classical_pat(pat, value, &mut inner_env)?;
+    }
+    let Stmt::Expr(last_expr) = &last.0 else {
+        return Err(ElabError::unsupported(
+            "circuit block under controlled() not ending in an expression",
+            last.1,
+        ));
+    };
+    // Substitute classical bindings into the body so angles/indices resolve.
+    subst_classical_vars(last_expr, &inner_env)
+}
+
+fn compose_nonempty(left: Sp<Expr>, right: Sp<Expr>, span: SimpleSpan) -> Sp<Expr> {
+    if is_empty_circuit(&left) {
+        return right;
+    }
+    if is_empty_circuit(&right) {
+        return left;
+    }
+    (Expr::Compose(Box::new(left), Box::new(right)), span)
+}
+
+/// Controlled single-qubit Clifford+T / rotation generators (issue #182).
+fn controlled_named_gate(
+    name: &str,
+    angle: Option<Sp<Expr>>,
+    control: &Sp<Expr>,
+    target: &Sp<Expr>,
+    _classical_env: &ClassicalEnv,
+    span: SimpleSpan,
+) -> Result<Sp<Expr>, ElabError> {
+    let ct = control_target_tuple(control, target, span);
+    let cnot = || cnot_app(ct.clone(), span);
+    match (name, angle) {
+        ("I", None) => Ok(empty_circuit(span)),
+        ("X", None) => Ok(gate_app("CNOT", &ct, span)),
+        ("Y", None) => Ok(gate_app("CY", &ct, span)),
+        ("Z", None) => Ok(gate_app("CZ", &ct, span)),
+        // CH: S·H·T·CX·T†·H·S† on the target (standard OpenQASM/Qiskit form).
+        ("H", None) => Ok(compose(
+            vec![
+                gate_app("S", target, span),
+                gate_app("H", target, span),
+                gate_app("T", target, span),
+                cnot(),
+                gate_app("T_dag", target, span),
+                gate_app("H", target, span),
+                gate_app("S_dag", target, span),
+            ],
+            span,
+        )),
+        // CS = CP(π/2), CT = CP(π/4); S†/T† use the negated phase.
+        ("S", None) => Ok(decompose_controlled_phase(
+            std::f64::consts::FRAC_PI_2,
+            control,
+            target,
+            span,
+        )),
+        ("S_dag", None) => Ok(decompose_controlled_phase(
+            -std::f64::consts::FRAC_PI_2,
+            control,
+            target,
+            span,
+        )),
+        ("T", None) => Ok(decompose_controlled_phase(
+            std::f64::consts::FRAC_PI_4,
+            control,
+            target,
+            span,
+        )),
+        ("T_dag", None) => Ok(decompose_controlled_phase(
+            -std::f64::consts::FRAC_PI_4,
+            control,
+            target,
+            span,
+        )),
+        // SX = Rx(π/2); controlled via H·CRz·H.
+        ("SX", None) => controlled_rx_angle(
+            (Expr::Float(std::f64::consts::FRAC_PI_2), span),
+            control,
+            target,
+            span,
+        ),
+        ("SX_dag", None) => controlled_rx_angle(
+            (Expr::Float(-std::f64::consts::FRAC_PI_2), span),
+            control,
+            target,
+            span,
+        ),
+        ("Rz", Some(theta)) => Ok(decompose_controlled_rz(&theta, control, target, span)),
+        ("Rx", Some(theta)) => controlled_rx_angle(theta, control, target, span),
+        ("Ry", Some(theta)) => Ok(decompose_controlled_ry(&theta, control, target, span)),
+        ("Rz" | "Rx" | "Ry", None) => Err(ElabError::unsupported(
+            "controlled() of a rotation missing its angle",
+            span,
+        )),
+        (other, _) if circuit::gate_type(other).is_some() => Err(ElabError::unsupported(
+            "controlled() of a multi-qubit or unrecognized single-qubit gate",
+            span,
+        )),
+        _ => Err(ElabError::unsupported(
+            "controlled() of an unsupported gate expression",
+            span,
+        )),
+    }
+}
+
+/// `CRz(θ) = Rz(θ/2)@t |> CNOT |> Rz(-θ/2)@t |> CNOT`.
+fn decompose_controlled_rz(
+    angle: &Sp<Expr>,
+    control: &Sp<Expr>,
+    target: &Sp<Expr>,
+    span: SimpleSpan,
+) -> Sp<Expr> {
+    let cnot = cnot_app(control_target_tuple(control, target, span), span);
+    let rz_half = rz_gate_app(&halve_angle(angle), target, span);
+    let rz_neg_half = rz_gate_app(&negate_angle(&halve_angle(angle)), target, span);
+    compose(vec![rz_half, cnot.clone(), rz_neg_half, cnot], span)
+}
+
+/// `CRy(θ) = Ry(θ/2)@t |> CNOT |> Ry(-θ/2)@t |> CNOT`.
+fn decompose_controlled_ry(
+    angle: &Sp<Expr>,
+    control: &Sp<Expr>,
+    target: &Sp<Expr>,
+    span: SimpleSpan,
+) -> Sp<Expr> {
+    let cnot = cnot_app(control_target_tuple(control, target, span), span);
+    let ry_half = rotation_gate_app("Ry", &halve_angle(angle), target, span);
+    let ry_neg_half = rotation_gate_app("Ry", &negate_angle(&halve_angle(angle)), target, span);
+    compose(vec![ry_half, cnot.clone(), ry_neg_half, cnot], span)
+}
+
+/// `CRx(θ) = H@t |> CRz(θ) |> H@t` (since `H·Rz·H = Rx`).
+fn controlled_rx_angle(
+    angle: Sp<Expr>,
+    control: &Sp<Expr>,
+    target: &Sp<Expr>,
+    span: SimpleSpan,
+) -> Result<Sp<Expr>, ElabError> {
+    let h = gate_app("H", target, span);
+    let crz = decompose_controlled_rz(&angle, control, target, span);
+    Ok(compose(vec![h.clone(), crz, h], span))
+}
+
+/// Controlled phase `CP(φ) = |1⟩⟨1| ⊗ P(φ)` as
+/// `Rz(φ/2)@c |> CNOT |> Rz(-φ/2)@t |> CNOT |> Rz(φ/2)@t`.
+fn decompose_controlled_phase(
+    phi: f64,
+    control: &Sp<Expr>,
+    target: &Sp<Expr>,
+    span: SimpleSpan,
+) -> Sp<Expr> {
+    let half = (Expr::Float(phi / 2.0), span);
+    let neg_half = (Expr::Float(-phi / 2.0), span);
+    let cnot = cnot_app(control_target_tuple(control, target, span), span);
+    compose(
+        vec![
+            rz_gate_app(&half, control, span),
+            cnot.clone(),
+            rz_gate_app(&neg_half, target, span),
+            cnot,
+            rz_gate_app(&half, target, span),
+        ],
+        span,
+    )
+}
+
 /// Builds `Rz(angle) @ target`.
-fn rz_gate_app(angle: &Sp<Expr>, target: &Sp<Expr>, span: chumsky::span::SimpleSpan) -> Sp<Expr> {
+fn rz_gate_app(angle: &Sp<Expr>, target: &Sp<Expr>, span: SimpleSpan) -> Sp<Expr> {
+    rotation_gate_app("Rz", angle, target, span)
+}
+
+fn rotation_gate_app(
+    name: &str,
+    angle: &Sp<Expr>,
+    target: &Sp<Expr>,
+    span: SimpleSpan,
+) -> Sp<Expr> {
     (
         Expr::GateApp {
             gate: Box::new((
                 Expr::App(
-                    Box::new((Expr::Var("Rz".to_string()), span)),
+                    Box::new((Expr::Var(name.to_string()), span)),
                     Box::new(angle.clone()),
                 ),
                 span,
@@ -1010,9 +1285,10 @@ fn reverse_and_invert(expr: &Sp<Expr>) -> Result<Sp<Expr>, ElabError> {
             Expr::App(f, x) => {
                 let (head, args) = flatten_app(f, x);
                 let (Expr::Var(name), [angle]) = (&head.0, args.as_slice()) else {
-                    return Err(ElabError::Unsupported {
-                        construct: "adjoint of an unrecognized rotation gate",
-                    });
+                    return Err(ElabError::unsupported(
+                        "adjoint of an unrecognized rotation gate",
+                        gate.1,
+                    ));
                 };
                 (
                     Expr::App(
@@ -1023,9 +1299,10 @@ fn reverse_and_invert(expr: &Sp<Expr>) -> Result<Sp<Expr>, ElabError> {
                 )
             }
             _ => {
-                return Err(ElabError::Unsupported {
-                    construct: "adjoint of a non-primitive gate",
-                });
+                return Err(ElabError::unsupported(
+                    "adjoint of a non-primitive gate",
+                    gate.1,
+                ));
             }
         };
         let step = (
@@ -1040,9 +1317,7 @@ fn reverse_and_invert(expr: &Sp<Expr>) -> Result<Sp<Expr>, ElabError> {
             Some(acc) => (Expr::Compose(Box::new(acc), Box::new(step)), span),
         });
     }
-    result.ok_or(ElabError::Unsupported {
-        construct: "adjoint of an empty circuit",
-    })
+    result.ok_or(ElabError::unsupported("adjoint of an empty circuit", span))
 }
 
 type GatePlacement = (Sp<Expr>, Sp<Expr>);
@@ -1055,9 +1330,11 @@ fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<GatePlacement>, ElabEr
             Ok(out)
         }
         Expr::GateApp { gate, qubits } => Ok(vec![(*gate.clone(), *qubits.clone())]),
-        _ => Err(ElabError::Unsupported {
-            construct: "adjoint of a non-gate-sequence circuit",
-        }),
+        Expr::CircuitBlock(stmts) if stmts.is_empty() => Ok(Vec::new()),
+        _ => Err(ElabError::unsupported(
+            "adjoint of a non-gate-sequence circuit",
+            expr.1,
+        )),
     }
 }
 
@@ -1079,4 +1356,232 @@ fn flatten_app<'a>(f: &'a Sp<Expr>, x: &'a Sp<Expr>) -> (&'a Sp<Expr>, Vec<&'a S
 /// A fresh, deterministic fuel budget for one top-level elaboration.
 pub fn fresh_fuel() -> u32 {
     FUEL_START
+}
+
+#[cfg(test)]
+mod controlled_tests {
+    use super::*;
+    use backend::unitary::{
+        Complex, M2, M4, gate_unitary, mul4, rotation_unitary, tensor, two_qubit_gate_unitary,
+        unitary_distance,
+    };
+    use std::collections::HashMap;
+    use std::f64::consts::PI;
+
+    fn lit_int(n: i64) -> Sp<Expr> {
+        (Expr::Int(n), no_span())
+    }
+
+    fn var(name: &str) -> Sp<Expr> {
+        (Expr::Var(name.to_string()), no_span())
+    }
+
+    fn controlled_of(inner: Sp<Expr>) -> Result<Sp<Expr>, ElabError> {
+        decompose_controlled(&inner, &lit_int(0), &lit_int(1), &HashMap::new(), no_span())
+    }
+
+    fn ideal_controlled(u: M2) -> M4 {
+        let zero = Complex::new(0.0, 0.0);
+        let one = Complex::new(1.0, 0.0);
+        M4([
+            [one, zero, zero, zero],
+            [zero, one, zero, zero],
+            [zero, zero, u.0[0][0], u.0[0][1]],
+            [zero, zero, u.0[1][0], u.0[1][1]],
+        ])
+    }
+
+    fn expand_placement(gate: &Sp<Expr>, qubits: &Sp<Expr>) -> M4 {
+        let targets: Vec<i64> = match &qubits.0 {
+            Expr::Int(n) => vec![*n],
+            Expr::Tuple(items) => items
+                .iter()
+                .map(|q| match q.0 {
+                    Expr::Int(n) => n,
+                    _ => panic!("non-literal qubit"),
+                })
+                .collect(),
+            _ => panic!("bad qubit expr"),
+        };
+        let (name, angle) = match &gate.0 {
+            Expr::Var(n) => (n.as_str(), None),
+            Expr::App(f, x) => {
+                let (head, args) = flatten_app(f, x);
+                let Expr::Var(n) = &head.0 else {
+                    panic!("bad rotation head");
+                };
+                let Expr::Float(a) = args[0].0 else {
+                    panic!("non-float angle");
+                };
+                (n.as_str(), Some(a))
+            }
+            _ => panic!("bad gate"),
+        };
+        match targets.as_slice() {
+            [q] => {
+                let u = if let Some(a) = angle {
+                    rotation_unitary(name, a).unwrap()
+                } else {
+                    gate_unitary(name).unwrap_or_else(|| panic!("unknown gate {name}"))
+                };
+                if *q == 0 {
+                    tensor(u, gate_unitary("I").unwrap())
+                } else {
+                    tensor(gate_unitary("I").unwrap(), u)
+                }
+            }
+            [0, 1] => {
+                if let Some(u) = two_qubit_gate_unitary(name) {
+                    u
+                } else {
+                    panic!("unknown two-qubit gate {name}")
+                }
+            }
+            _ => panic!("unexpected qubit targets {targets:?}"),
+        }
+    }
+
+    fn unitary_of_elaborated(expr: &Sp<Expr>) -> M4 {
+        let placements = collect_gate_placements(expr).expect("placements");
+        let id = tensor(gate_unitary("I").unwrap(), gate_unitary("I").unwrap());
+        placements.iter().fold(id, |acc, (gate, qubits)| {
+            // Circuit composition A |> B applies A first, then B: U_B · U_A · |ψ⟩.
+            mul4(expand_placement(gate, qubits), acc)
+        })
+    }
+
+    fn assert_controlled_equiv(inner: Sp<Expr>, u: M2) {
+        let elaborated = controlled_of(inner).expect("decompose");
+        let got = unitary_of_elaborated(&elaborated);
+        let want = ideal_controlled(u);
+        let dist = unitary_distance(got, want);
+        assert!(
+            dist < 1e-9,
+            "controlled body not unitary-equivalent (distance {dist})"
+        );
+    }
+
+    #[test]
+    fn controlled_x_z_y_match_natives() {
+        assert_controlled_equiv(var("X"), gate_unitary("X").unwrap());
+        assert_controlled_equiv(var("Y"), gate_unitary("Y").unwrap());
+        assert_controlled_equiv(var("Z"), gate_unitary("Z").unwrap());
+    }
+
+    #[test]
+    fn controlled_h_s_t_clifford_t() {
+        assert_controlled_equiv(var("H"), gate_unitary("H").unwrap());
+        assert_controlled_equiv(var("S"), gate_unitary("S").unwrap());
+        assert_controlled_equiv(var("T"), gate_unitary("T").unwrap());
+        assert_controlled_equiv(var("S_dag"), gate_unitary("S_dag").unwrap());
+        assert_controlled_equiv(var("T_dag"), gate_unitary("T_dag").unwrap());
+    }
+
+    #[test]
+    fn controlled_rotations_rx_ry_rz() {
+        let theta = PI / 5.0;
+        let rz = (
+            Expr::App(
+                Box::new(var("Rz")),
+                Box::new((Expr::Float(theta), no_span())),
+            ),
+            no_span(),
+        );
+        let rx = (
+            Expr::App(
+                Box::new(var("Rx")),
+                Box::new((Expr::Float(theta), no_span())),
+            ),
+            no_span(),
+        );
+        let ry = (
+            Expr::App(
+                Box::new(var("Ry")),
+                Box::new((Expr::Float(theta), no_span())),
+            ),
+            no_span(),
+        );
+        assert_controlled_equiv(rz, rotation_unitary("Rz", theta).unwrap());
+        assert_controlled_equiv(rx, rotation_unitary("Rx", theta).unwrap());
+        assert_controlled_equiv(ry, rotation_unitary("Ry", theta).unwrap());
+    }
+
+    #[test]
+    fn controlled_distributes_over_compose() {
+        let body = (
+            Expr::Compose(Box::new(var("H")), Box::new(var("T"))),
+            no_span(),
+        );
+        let u = {
+            // H then T: U = T · H
+            let h = gate_unitary("H").unwrap();
+            let t = gate_unitary("T").unwrap();
+            backend::unitary::mul2(t, h)
+        };
+        assert_controlled_equiv(body, u);
+    }
+
+    #[test]
+    fn controlled_circuit_block_h_then_t() {
+        let body = (
+            Expr::CircuitBlock(vec![(
+                Stmt::Expr((
+                    Expr::Compose(Box::new(var("H")), Box::new(var("T"))),
+                    no_span(),
+                )),
+                no_span(),
+            )]),
+            no_span(),
+        );
+        let u = backend::unitary::mul2(gate_unitary("T").unwrap(), gate_unitary("H").unwrap());
+        assert_controlled_equiv(body, u);
+    }
+
+    #[test]
+    fn controlled_par_two_hadamards() {
+        // par { H } * 2 under control on targets 1 and 2 — use control=0, target=1 start.
+        let body = (
+            Expr::Par(Box::new(var("H")), Box::new(lit_int(2))),
+            no_span(),
+        );
+        let elaborated = controlled_of(body).expect("decompose par");
+        // Ideal: CH on (0,1) then CH on (0,2). Build 8×8? Our helpers are 4×4 only.
+        // Instead check the elaborated form expands to two CH decompositions with
+        // targets 1 and 2.
+        let placements = collect_gate_placements(&elaborated).unwrap();
+        let targets: Vec<Vec<i64>> = placements
+            .iter()
+            .map(|(_, q)| match &q.0 {
+                Expr::Int(n) => vec![*n],
+                Expr::Tuple(items) => items
+                    .iter()
+                    .map(|i| match i.0 {
+                        Expr::Int(n) => n,
+                        _ => panic!(),
+                    })
+                    .collect(),
+                _ => panic!(),
+            })
+            .collect();
+        assert!(
+            targets.iter().any(|t| t == &[0, 1]) && targets.iter().any(|t| t == &[0, 2]),
+            "expected CNOT/CY-style pairs on (0,1) and (0,2), got {targets:?}"
+        );
+    }
+
+    #[test]
+    fn unsupported_nested_controlled_names_construct_and_span() {
+        let nested = (
+            Expr::Controlled(Box::new(var("X"))),
+            SimpleSpan::from(10..20),
+        );
+        let err = controlled_of(nested).expect_err("nested controlled");
+        match err {
+            ElabError::Unsupported { construct, span } => {
+                assert!(construct.contains("nested controlled"));
+                assert_eq!((span.start, span.end), (10, 20));
+            }
+            other => panic!("unexpected {other}"),
+        }
+    }
 }
