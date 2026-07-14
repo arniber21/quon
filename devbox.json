@@ -12,13 +12,20 @@
     },
     "python312": "3.12.13",
     "nodejs_22": "22.23.1",
-    "pkg-config": "0.29.2"
+    "pkg-config": "0.29.2",
+    "libxml2": {
+      "version": "latest",
+      "outputs": [
+        "out",
+        "dev"
+      ]
+    }
   },
   "shell": {
     "init_hook": [
       "export MLIR_SYS_220_PREFIX=\"$(llvm-config --prefix)\"",
       "export PATH=\"$MLIR_SYS_220_PREFIX/bin:$PATH\"",
-      "export LIBCLANG_PATH=\"$MLIR_SYS_220_PREFIX/lib${LIBCLANG_PATH:+:$LIBCLANG_PATH}\"",
+      "export LIBCLANG_PATH=\"$MLIR_SYS_220_PREFIX/lib\"",
       "_z3_prefix=\"$(pkg-config --variable=prefix z3 2>/dev/null || true)\"",
       "if [ -z \"$_z3_prefix\" ] && command -v z3 >/dev/null 2>&1; then",
       "  _z3_bin=\"$(command -v z3)\"",
@@ -28,10 +35,14 @@
       "  export LIBRARY_PATH=\"$_z3_prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}\"",
       "  export BINDGEN_EXTRA_CLANG_ARGS=\"-I$_z3_prefix/include ${BINDGEN_EXTRA_CLANG_ARGS:-}\"",
       "  if [ \"$(uname -s)\" = Darwin ]; then",
-      "    export DYLD_LIBRARY_PATH=\"$_z3_prefix/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}\"",
+      "    _z3_libdir=\"$_z3_prefix/lib\"",
+      "    if [ -e \"$_z3_libdir/libz3.dylib\" ]; then",
+      "      _z3_libdir=\"$(dirname \"$(readlink -f \"$_z3_libdir/libz3.dylib\")\")\"",
+      "    fi",
+      "    export DYLD_FALLBACK_LIBRARY_PATH=\"$_z3_libdir${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}\"",
       "  fi",
       "fi",
-      "unset _z3_prefix _z3_bin"
+      "unset _z3_prefix _z3_bin _z3_libdir"
     ],
     "scripts": {
       "build": [

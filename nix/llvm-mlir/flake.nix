@@ -50,6 +50,12 @@
             postBuild = ''
               # Replace the LLVM-only llvm-config with a wrapper that reports
               # this joined prefix so Melior/mlir-sys find libMLIR + mlir-c.
+              # It must rewrite paths for ANY invocation, not just single-flag
+              # ones: mlir-sys queries e.g.
+              #   llvm-config --link-static --ignore-libllvm --includedir
+              # so we run the real llvm-config and substitute every LLVM/MLIR
+              # store path in its output with the joined prefix (which
+              # symlinks all of them).
               real_llvm_config="${llvmPkgs.llvm.dev}/bin/llvm-config"
               if [ ! -x "$real_llvm_config" ]; then
                 real_llvm_config="${llvmPkgs.llvm}/bin/llvm-config"
@@ -59,16 +65,13 @@
                 echo '#!/bin/sh'
                 echo "JOINED=\"$out\""
                 echo "REAL=\"$real_llvm_config\""
-                echo 'if [ "$#" -eq 1 ]; then'
-                echo '  case "$1" in'
-                echo '    --prefix) echo "$JOINED"; exit 0 ;;'
-                echo '    --bindir) echo "$JOINED/bin"; exit 0 ;;'
-                echo '    --libdir) echo "$JOINED/lib"; exit 0 ;;'
-                echo '    --includedir) echo "$JOINED/include"; exit 0 ;;'
-                echo '    --cmakedir) echo "$JOINED/lib/cmake/llvm"; exit 0 ;;'
-                echo '  esac'
-                echo 'fi'
-                echo 'exec "$REAL" "$@"'
+                echo "LLVM_DEV=\"${llvmPkgs.llvm.dev}\""
+                echo "LLVM_LIB=\"${llvmPkgs.llvm.lib}\""
+                echo "LLVM_OUT=\"${llvmPkgs.llvm}\""
+                echo "MLIR_DEV=\"${llvmPkgs.mlir.dev}\""
+                echo "MLIR_OUT=\"${llvmPkgs.mlir}\""
+                echo 'res=$("$REAL" "$@") || exit $?'
+                echo 'printf "%s\n" "$res" | sed -e "s|$LLVM_DEV|$JOINED|g" -e "s|$LLVM_LIB|$JOINED|g" -e "s|$LLVM_OUT|$JOINED|g" -e "s|$MLIR_DEV|$JOINED|g" -e "s|$MLIR_OUT|$JOINED|g"'
               } > "$out/bin/llvm-config"
               chmod +x "$out/bin/llvm-config"
             '';
