@@ -1,78 +1,114 @@
 ---
 title: Install Quon
-description: Install Quon's native toolchain, build the compiler, and prepare Qiskit Aer.
+description: Install Quon CLIs for users, or set up the Devbox toolchain for contributors.
 ---
 
-Quon compiles from source with Rust and LLVM/MLIR 22. Contributors should use **Devbox** for the native toolchain. Qiskit Aer provides the local simulator used in the quickstart.
+Quon ships **self-contained** CLI binaries (`quonc`, `quonfmt`, `quon_lsp`, `quonlint`).
+End users do **not** need LLVM, MLIR, or Z3 on their machine. Contributors who build
+from source should use **Devbox** for the native toolchain. Qiskit Aer remains optional
+for local simulation.
 
-## Prerequisites
+## Users — prebuilt binaries (no LLVM required)
+
+Pick one channel. All install the same statically linked Release artifacts from
+[GitHub Releases](https://github.com/arniber21/quon/releases).
+
+### Homebrew (macOS / Linuxbrew)
+
+Once the tap is published (`arniber21/homebrew-quon`):
+
+```bash
+brew install arniber21/quon/quon
+quonc --version
+```
+
+The formula downloads a Release bottle and has **no** runtime `depends_on "llvm@22"`
+or `z3`. Until the tap exists, use the curl installer or a Release tarball below.
+See [`packaging/homebrew/README.md`](https://github.com/arniber21/quon/blob/main/packaging/homebrew/README.md)
+for tap publish steps.
+
+### Debian / Ubuntu (`.deb`)
+
+Download the `.deb` for your architecture from the latest
+[GitHub Release](https://github.com/arniber21/quon/releases), then:
+
+```bash
+sudo apt install ./quon_*.deb
+quonc --version
+```
+
+Binaries land in `/usr/bin`. Runtime needs only glibc / libstdc++ — not libMLIR or libz3.
+
+### Curl installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/arniber21/quon/main/scripts/install.sh | bash
+# optional:
+# curl -fsSL ... | bash -s -- --version 0.1.0
+# PREFIX="$HOME/.local" bash scripts/install.sh
+```
+
+The script picks the right Release asset for your OS/arch and installs into
+`PREFIX` (default `/usr/local`).
+
+### GitHub Release tarball
+
+```bash
+# Example for Apple Silicon:
+tar -xzf quon-*-aarch64-apple-darwin.tar.gz
+sudo install -m 755 quon-*/quonc quon-*/quonfmt quon-*/quon_lsp quon-*/quonlint /usr/local/bin/
+```
+
+### Optional: Qiskit Aer simulation
+
+The compiler CLIs do not require Python. For the Aer verify seam / quickstart
+simulator, install Python deps from a clone (or copy `python/requirements.txt`):
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r python/requirements.txt
+```
+
+You are ready to [compile and simulate a Bell pair](/getting-started/quickstart/).
+
+---
+
+## Contributors — Devbox
 
 You need:
 
 - **Rust stable** via [rustup](https://rustup.rs/) — Quon uses the toolchain selected by `rust-toolchain.toml` (kept outside Devbox).
-- **Devbox** (recommended) — provides LLVM/MLIR 22, libz3, Python 3.12, and Node 22 from a locked Nix environment.
-- **Python 3.10 or newer** — used by the Qiskit Aer bridge (`devbox run setup-python` creates a venv).
-
-Start by cloning the repository and entering it:
+- **Devbox** — LLVM/MLIR 22, libz3, Python 3.12, and Node 22 from a locked Nix environment.
 
 ```bash
 git clone https://github.com/arniber21/quon.git
 cd quon
-```
-
-All remaining commands on this page run from the repository root.
-
-## Contributor setup (Devbox)
-
-Install [Devbox](https://www.jetify.com/devbox/docs/installing_devbox/) if you do not already have it (Nix is installed on first use):
-
-```bash
-curl -fsSL https://get.jetify.com/devbox | bash
-```
-
-Enter the project shell (or allow direnv; this repo commits a `.envrc`):
-
-```bash
-devbox shell
-# optional: direnv allow
-```
-
-Confirm LLVM 22 and build:
-
-```bash
-llvm-config --version   # expect 22.x
+curl -fsSL https://get.jetify.com/devbox | bash   # if needed
+devbox shell          # or: direnv allow
+llvm-config --version # expect 22.x
 cargo build --release
 ./target/release/quonc --version
 ```
 
 `devbox.json` sets `MLIR_SYS_220_PREFIX` from `llvm-config --prefix` via a local flake (`nix/llvm-mlir`) that joins Nix's separate LLVM and MLIR packages into one Melior-compatible prefix.
 
-Useful scripts: `devbox run build`, `devbox run test`, `devbox run check`, `devbox run setup-python`.
+Useful scripts: `devbox run build`, `devbox run test`, `devbox run check`, `devbox run setup-python`, `devbox run release`.
 
 Release packaging (`devbox run release` / `./scripts/release.sh`) builds self-contained
-`quonc` / `quonfmt` / `quon_lsp` / `quonlint` archives with static MLIR/LLVM and a
-release-built static `libz3.a` (see `scripts/build-static-z3.sh` and comments in
-`scripts/release.sh` for env vars). Tag builds upload those archives via
-`.github/workflows/release.yml`. Homebrew / apt channels are Phase D.
+archives with static MLIR/LLVM and a release-built static `libz3.a`. Tag builds upload
+tarballs, a Linux `.deb`, and a filled Homebrew `quon.rb` via `.github/workflows/release.yml`.
 
-## Install Rust
+### Install Rust
 
-If `rustup` is not installed, use its official installer:
+If `rustup` is not installed:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
-```
-
-The repository selects stable Rust automatically. Confirm:
-
-```bash
 rustc --version
 ```
 
-## Install the Aer bridge
-
-Inside a Devbox shell (or any Python 3.10+):
+### Install the Aer bridge
 
 ```bash
 devbox run setup-python
@@ -80,21 +116,14 @@ source .venv/bin/activate
 python -c "from qiskit_aer import AerSimulator; print(AerSimulator())"
 ```
 
-You are ready to [compile and simulate a Bell pair](/getting-started/quickstart/).
-
 ## Building from source (manual)
 
 Prefer Devbox for day-to-day work. The steps below remain as an advanced fallback if you install LLVM/MLIR and Z3 yourself.
 
 ### macOS (Homebrew)
 
-Install Apple's command-line tools if they are not already present:
-
 ```bash
 xcode-select --install
-```
-
-```bash
 brew install llvm@22 z3 python
 export MLIR_SYS_220_PREFIX="$(brew --prefix llvm@22)"
 export PATH="$MLIR_SYS_220_PREFIX/bin:$PATH"
