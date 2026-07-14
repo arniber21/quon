@@ -2,6 +2,8 @@
 
 Static analysis and refinement-type checks for the Quon workspace.
 
+**Native toolchain:** prefer `devbox shell` / `devbox run check` for a locked LLVM/MLIR 22 + Z3 environment (see root `devbox.json`). Rust stays on rustup. Manual brew/apt LLVM remains an advanced fallback — see [README](../../README.md) and the [install guide](../../website/src/content/docs/getting-started/install.md).
+
 ## CI matrix
 
 This table is an adapter of `.github/workflows/` — keep it in sync, and run
