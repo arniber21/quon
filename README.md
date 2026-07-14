@@ -30,6 +30,7 @@ devbox run setup-python && source .venv/bin/activate
 `devbox.json` / `devbox.lock` pin the native toolchain. A local flake at `nix/llvm-mlir` joins Nix's separate LLVM and MLIR store paths into one Melior-compatible prefix and sets `MLIR_SYS_220_PREFIX` in the shell `init_hook`.
 
 Useful scripts: `devbox run build`, `devbox run test`, `devbox run check`.
+Tag releases: `devbox run release` (static MLIR/LLVM + static libz3; see `scripts/release.sh`).
 
 ### Building from source (manual)
 

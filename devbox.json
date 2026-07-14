@@ -70,7 +70,7 @@
         "./scripts/coverage.sh"
       ],
       "release": [
-        "cargo build --release -p quonc -p quonfmt -p quon_lsp -p quonlint-cli"
+        "./scripts/release.sh"
       ]
     }
   }

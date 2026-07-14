@@ -43,6 +43,7 @@ for needle in \
   'cargo llvm-cov' \
   'taskless.yml' \
   'flux.yml' \
+  'release.yml' \
   '#180'
 do
   if ! grep -qF "$needle" "$VALIDATION"; then

@@ -49,6 +49,12 @@ cargo build --release
 
 Useful scripts: `devbox run build`, `devbox run test`, `devbox run check`, `devbox run setup-python`.
 
+Release packaging (`devbox run release` / `./scripts/release.sh`) builds self-contained
+`quonc` / `quonfmt` / `quon_lsp` / `quonlint` archives with static MLIR/LLVM and a
+release-built static `libz3.a` (see `scripts/build-static-z3.sh` and comments in
+`scripts/release.sh` for env vars). Tag builds upload those archives via
+`.github/workflows/release.yml`. Homebrew / apt channels are Phase D.
+
 ## Install Rust
 
 If `rustup` is not installed, use its official installer:
