@@ -23,7 +23,15 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
 
-    if let Err(error) = writeln!(io::stdout(), "{}", module.as_operation()) {
+    // The module's textual form already ends with a newline; only append one
+    // when it does not, so dump → parse → dump is byte-stable.
+    let text = module.as_operation().to_string();
+    let result = if text.ends_with('\n') {
+        write!(io::stdout(), "{text}")
+    } else {
+        writeln!(io::stdout(), "{text}")
+    };
+    if let Err(error) = result {
         eprintln!("write stdout: {error}");
         return ExitCode::from(1);
     }
