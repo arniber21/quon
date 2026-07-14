@@ -303,6 +303,28 @@ pub enum VerifyError {
         distance_um: f64,
         min_spacing_um: f64,
     },
+    #[error(
+        "cycle {cycle}: atom {atom} uses AOD trap ({aod_id}, {row}, {col}) inconsistent with its slm_to_aod load into ({bound_aod_id}, {bound_row}, {bound_col})"
+    )]
+    AodRefMismatch {
+        cycle: u32,
+        atom: u32,
+        aod_id: u32,
+        row: u32,
+        col: u32,
+        bound_aod_id: u32,
+        bound_row: u32,
+        bound_col: u32,
+    },
+    #[error(
+        "cycle {cycle}: AOD trap ({aod_id}, {row}, {col}) is claimed by moves from different source positions"
+    )]
+    AodTrapDoubleClaim {
+        cycle: u32,
+        aod_id: u32,
+        row: u32,
+        col: u32,
+    },
     #[error("cycle {cycle}: AOD {aod_id} row {row} has inconsistent y displacement")]
     AodRowCoupling { cycle: u32, aod_id: u32, row: u32 },
     #[error("cycle {cycle}: AOD {aod_id} column {col} has inconsistent x displacement")]
@@ -365,7 +387,7 @@ pub fn verify<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(),
         op::MEASURE => verify_measure(operation),
         op::RESET => verify_reset(operation),
         op::WAIT => verify_wait(operation),
-        op::LAYER => verify_layer(operation, None),
+        op::LAYER => verify_layer(operation, None, None),
         op::SCHEDULE => verify_schedule(operation),
         _ => Ok(()),
     }
@@ -704,6 +726,7 @@ fn verify_schedule<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Resul
         .first_block()
         .ok_or(VerifyError::MissingRegion { op: op::SCHEDULE })?;
     let mut inner = block.first_operation();
+    let mut aod_bindings: BTreeMap<u32, AodTrapKey> = BTreeMap::new();
     while let Some(operation) = inner {
         let identifier = operation.name();
         let name = identifier.as_string_ref().as_str().unwrap_or("").to_owned();
@@ -713,15 +736,19 @@ fn verify_schedule<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Resul
                 found: name,
             });
         }
-        verify_layer(&operation, Some(limits))?;
+        verify_layer(&operation, Some(limits), Some(&mut aod_bindings))?;
         inner = operation.next_in_block();
     }
     Ok(())
 }
 
+/// `(aod_id, row, col)` of an AOD trap, as carried by transfer and move ops.
+type AodTrapKey = (u32, u32, u32);
+
 fn verify_layer<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
     limits: Option<ScheduleLimits>,
+    aod_bindings: Option<&mut BTreeMap<u32, AodTrapKey>>,
 ) -> Result<(), VerifyError> {
     expect_counts(operation, op::LAYER, 0, 0)?;
     let cycle = require_non_negative_i64(operation, op::LAYER, attr::CYCLE)? as u32;
@@ -735,18 +762,23 @@ fn verify_layer<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     let region = operation
         .region(0)
         .map_err(|_| VerifyError::MissingRegion { op: op::LAYER })?;
-    verify_layer_region(region, cycle, limits)
+    verify_layer_region(region, cycle, limits, aod_bindings)
 }
 
 fn verify_layer_region(
     region: RegionRef<'_, '_>,
     cycle: u32,
     limits: Option<ScheduleLimits>,
+    aod_bindings: Option<&mut BTreeMap<u32, AodTrapKey>>,
 ) -> Result<(), VerifyError> {
     let block = region
         .first_block()
         .ok_or(VerifyError::MissingRegion { op: op::LAYER })?;
     let mut context = LayerContext::default();
+    // Transfers take effect for later layers (an atom never transfers and
+    // moves in one layer), so binding updates are buffered until the walk
+    // finishes.
+    let mut binding_updates: Vec<(u32, TransferDirection, AodTrapKey)> = Vec::new();
     let mut inner = block.first_operation();
     while let Some(operation) = inner {
         let identifier = operation.name();
@@ -756,6 +788,16 @@ fn verify_layer_region(
                 verify_move(&operation)?;
                 let moves: Vec<MoveSpec> =
                     parse_json_attr(&operation, op::MOVE, attr::MOVES, "Vec<MoveSpec>")?;
+                if let Some(bindings) = aod_bindings.as_deref() {
+                    for spec in &moves {
+                        check_bound_trap(
+                            cycle,
+                            spec.atom,
+                            (spec.aod_id, spec.row, spec.col),
+                            bindings,
+                        )?;
+                    }
+                }
                 context.record_moves(cycle, &moves)?;
             }
             op::TRANSFER => {
@@ -763,6 +805,25 @@ fn verify_layer_region(
                 let atom = require_non_negative_i64(&operation, op::TRANSFER, attr::ATOM)? as u32;
                 let site = require_non_negative_i64(&operation, op::TRANSFER, attr::SITE)? as u32;
                 context.claim_occupancy(cycle, atom, site)?;
+                if aod_bindings.is_some() {
+                    let trap = (
+                        require_non_negative_i64(&operation, op::TRANSFER, attr::AOD_ID)? as u32,
+                        require_non_negative_i64(&operation, op::TRANSFER, attr::ROW)? as u32,
+                        require_non_negative_i64(&operation, op::TRANSFER, attr::COL)? as u32,
+                    );
+                    let direction =
+                        match require_string(&operation, op::TRANSFER, attr::DIRECTION)?.as_str() {
+                            "slm_to_aod" => TransferDirection::SlmToAod,
+                            _ => TransferDirection::AodToSlm,
+                        };
+                    if direction == TransferDirection::AodToSlm
+                        && let Some(bindings) = aod_bindings.as_deref()
+                    {
+                        // A store references the trap the atom rode in.
+                        check_bound_trap(cycle, atom, trap, bindings)?;
+                    }
+                    binding_updates.push((atom, direction, trap));
+                }
             }
             op::ENTANGLE => {
                 verify_entangle(&operation)?;
@@ -803,7 +864,43 @@ fn verify_layer_region(
         context.verify_entangling_geometry(cycle, limits)?;
         context.verify_aod_legality(cycle, limits.aod_min_separation_um)?;
     }
+    if let Some(bindings) = aod_bindings {
+        for (atom, direction, trap) in binding_updates {
+            match direction {
+                TransferDirection::SlmToAod => {
+                    bindings.insert(atom, trap);
+                }
+                TransferDirection::AodToSlm => {
+                    bindings.remove(&atom);
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+/// A move or store must use the trap its atom's `slm_to_aod` load
+/// established. Atoms with no recorded load (hand-built move-only specs)
+/// are exempt.
+fn check_bound_trap(
+    cycle: u32,
+    atom: u32,
+    trap: AodTrapKey,
+    bindings: &BTreeMap<u32, AodTrapKey>,
+) -> Result<(), VerifyError> {
+    match bindings.get(&atom) {
+        Some(&bound) if bound != trap => Err(VerifyError::AodRefMismatch {
+            cycle,
+            atom,
+            aod_id: trap.0,
+            row: trap.1,
+            col: trap.2,
+            bound_aod_id: bound.0,
+            bound_row: bound.1,
+            bound_col: bound.2,
+        }),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Default)]
@@ -813,6 +910,8 @@ struct LayerContext {
     entangling_atoms: BTreeSet<u32>,
     entangle_pairs: Vec<EntanglePairSpec>,
     moves: Vec<MoveSpec>,
+    /// Source position each AOD trap was claimed from this cycle.
+    trap_claims: BTreeMap<AodTrapKey, (f64, f64)>,
 }
 
 impl LayerContext {
@@ -829,6 +928,22 @@ impl LayerContext {
     fn record_moves(&mut self, cycle: u32, moves: &[MoveSpec]) -> Result<(), VerifyError> {
         for atom_move in moves {
             self.claim_occupancy(cycle, atom_move.atom, atom_move.to_site)?;
+            // One AOD trap can hold one atom: a second same-cycle claim is
+            // only tolerable as an exact duplicate (same source position).
+            let trap = (atom_move.aod_id, atom_move.row, atom_move.col);
+            let source = (atom_move.from_x_um, atom_move.from_y_um);
+            if let Some(&(x, y)) = self.trap_claims.get(&trap) {
+                if x.total_cmp(&source.0).is_ne() || y.total_cmp(&source.1).is_ne() {
+                    return Err(VerifyError::AodTrapDoubleClaim {
+                        cycle,
+                        aod_id: trap.0,
+                        row: trap.1,
+                        col: trap.2,
+                    });
+                }
+            } else {
+                self.trap_claims.insert(trap, source);
+            }
             self.moves.push(*atom_move);
         }
         Ok(())
