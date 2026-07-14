@@ -1,0 +1,30 @@
+-- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-mlir - --quiet | %FileCheck %s
+--
+-- Bell → quantum.na MLIR (#167, ADR-0011): the canonical schedule artifact
+-- for a neutral-atom target. Zoned pipeline: load transfers, one grouped
+-- move to the entangle pair, store transfers, then the Rydberg layer.
+
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+        H @0 |> CNOT @(0, 1)
+}
+
+fn bell_na(): Q<(Bit, Bit)> = run {
+        (q0, q1) <- (bell_state()) @ (qreg 2)
+        b0 <- measure q0
+        b1 <- measure q1
+        return (b0, b1)
+}
+
+-- CHECK: "quantum.na.schedule"()
+-- CHECK: "quantum.na.layer"()
+-- CHECK: "quantum.na.transfer"()
+-- CHECK-SAME: direction = "slm_to_aod"
+-- CHECK: cycle = 0 : i64
+-- CHECK: "quantum.na.move"()
+-- CHECK-SAME: to_y_um\22:310.0
+-- CHECK: "quantum.na.transfer"()
+-- CHECK-SAME: direction = "aod_to_slm"
+-- CHECK: "quantum.na.entangle"()
+-- CHECK-SAME: pairs =
+-- CHECK: rydberg_range_um = 7.500000e+00
+-- CHECK-SAME: target_id = "generic_reconfigurable_neutral_atom_v0"

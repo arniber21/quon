@@ -1,0 +1,48 @@
+-- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-mlir - --quiet | %FileCheck %s
+--
+-- Multi-layer Ising Trotter step (n=6) → quantum.na MLIR (#167, ADR-0011).
+-- Exercises the ScheduleLayer → ScheduleSpec lowering across many cycles:
+-- repeated transfer / move / entangle stages with reconstructed positions.
+
+fn zz_layer(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+        (for i in (range(n - 1)) { (Rzz(((- 2.0) * j) * tau)) @(i, i + 1) })
+}
+
+fn x_layer(n: Nat, h: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+        (for q in (qubits n) { Rx(((- 2.0) * h) * tau, q) })
+}
+
+fn trotter_step(n: Nat, j: Float, h: Float, tau: Float): Circuit<n, n, n, Universal> = circuit {
+        zz_layer(n, j, tau) |> x_layer(n, h, tau)
+}
+
+fn ising_na(): Q<List<Bit>> = run {
+        q <- (trotter_step(6, 1.0, 0.5, 0.1)) @ (qreg 6)
+        measure_all q
+}
+
+-- The schedule op wraps every layer.
+-- CHECK: "quantum.na.schedule"()
+--
+-- First movement stage: load, grouped move, store, entangle.
+-- CHECK: "quantum.na.transfer"()
+-- CHECK-SAME: direction = "slm_to_aod"
+-- CHECK: "quantum.na.move"()
+-- CHECK-SAME: from_site
+-- CHECK: "quantum.na.transfer"()
+-- CHECK-SAME: direction = "aod_to_slm"
+-- CHECK: "quantum.na.entangle"()
+-- CHECK-SAME: pairs =
+-- CHECK: cycle = 3 : i64
+--
+-- Later stages keep interleaving movement and Rydberg layers.
+-- CHECK: "quantum.na.move"()
+-- CHECK: "quantum.na.entangle"()
+-- CHECK: cycle = 8 : i64
+-- CHECK: "quantum.na.entangle"()
+--
+-- Schedule-level legality attributes come from the target descriptor.
+-- CHECK: aod_min_separation_um = 2.000000e+00
+-- CHECK-SAME: min_rydberg_spacing_um = 1.875000e+01
+-- CHECK-SAME: rydberg_range_um = 7.500000e+00
+-- CHECK-SAME: target_id = "generic_reconfigurable_neutral_atom_v0"

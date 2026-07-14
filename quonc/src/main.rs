@@ -14,7 +14,7 @@ use quon_na::{
 };
 
 use backend::{BackendTarget, TargetKind};
-use quonc::compile::{CompileRequest, compile, schedule_to_json};
+use quonc::compile::{CompileRequest, compile, schedule_to_json, schedule_to_mlir};
 use quonc::na_target::{NaBackendKind, parse_na_backend, parse_placer_mode};
 use quonc::watch::{print_watch_metrics, run_watch_loop};
 
@@ -24,7 +24,11 @@ Examples:
   quonc program.qn --emit-qasm
   quonc program.qn --target targets/ibm/fake_manila.json --emit-qasm --metrics
 
-  # Neutral-atom path (#112)
+  # Neutral-atom path (#112, #167): quantum.na MLIR is the primary artifact
+  quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
+    --emit-na-mlir
+
+  # Neutral-atom debug artifacts: schedule JSON + resource report
   quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
     --emit-na-schedule --emit-resource-report
 
@@ -38,7 +42,8 @@ Notes:
   Fixed targets run SABRE routing and emit OpenQASM 3.0.
   Neutral-atom targets extract an interaction graph, schedule entangling
   layers, run zoned RAP (default) or flat AOD movement, optionally compact,
-  then emit schedule JSON and/or a resource report.
+  then lower to quantum.na MLIR (--emit-na-mlir, the canonical schedule IR).
+  Schedule JSON (--emit-na-schedule) is a debug/visualization view.
 ";
 
 #[derive(Parser, Debug)]
@@ -48,7 +53,8 @@ Notes:
     long_about = "Quon quantum compiler — OpenQASM 3.0 and neutral-atom schedules.\n\n\
 Compile Quon programs through the MLIR pipeline. Fixed (gate-model) targets \
 emit OpenQASM 3.0. Neutral-atom reconfigurable targets schedule AOD movement \
-/ zoned RAP and emit schedule JSON plus resource reports.",
+/ zoned RAP and emit quantum.na MLIR (the canonical schedule IR), plus \
+schedule JSON and resource reports as debug artifacts.",
     after_help = AFTER_HELP,
     version,
     color = ColorChoice::Auto,
@@ -71,7 +77,17 @@ struct Cli {
     #[arg(long, help_heading = "Emit", action = ArgAction::SetTrue)]
     emit_qasm: bool,
 
-    /// Emit neutral-atom schedule JSON (`-` = stdout)
+    /// Emit quantum.na MLIR, the primary neutral-atom artifact (`-` = stdout)
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = "-",
+        help_heading = "Emit"
+    )]
+    emit_na_mlir: Option<String>,
+
+    /// Emit neutral-atom schedule JSON, a debug/visualization view (`-` = stdout)
     #[arg(
         long,
         value_name = "PATH",
@@ -431,12 +447,17 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
     if cli.emit_qasm && is_na {
         bail!(
             "--emit-qasm requires a fixed (gate-model) target; \
-             use --emit-na-schedule / --emit-resource-report for neutral-atom targets"
+             use --emit-na-mlir (or --emit-na-schedule / --emit-resource-report) \
+             for neutral-atom targets"
         );
     }
-    if (cli.emit_na_schedule.is_some() || cli.emit_resource_report.is_some()) && !is_na {
+    if (cli.emit_na_mlir.is_some()
+        || cli.emit_na_schedule.is_some()
+        || cli.emit_resource_report.is_some())
+        && !is_na
+    {
         bail!(
-            "--emit-na-schedule / --emit-resource-report require a \
+            "--emit-na-mlir / --emit-na-schedule / --emit-resource-report require a \
              neutral_atom_reconfigurable target (see targets/neutral_atom/)"
         );
     }
@@ -457,12 +478,28 @@ fn emit_artifacts(cli: &Cli, report: &quonc::CompileReport) -> Result<()> {
         }
     }
 
+    // quantum.na MLIR is the primary NA artifact (ADR-0011): it takes stdout
+    // ahead of the JSON debug view when both target `-`.
+    if let Some(path) = &cli.emit_na_mlir {
+        let spec = report.na_schedule_spec.as_ref().ok_or_else(|| {
+            anyhow!("no quantum.na schedule available (compile with a neutral-atom target)")
+        })?;
+        let mlir = schedule_to_mlir(spec)?;
+        write_output(path, &mlir, qasm_owns_stdout && path == "-")?;
+        emitted = true;
+    }
+    let mlir_owns_stdout = cli.emit_na_mlir.as_ref().is_some_and(|p| p == "-");
+
     if let Some(path) = &cli.emit_na_schedule {
         let layers = report.na_schedule.as_ref().ok_or_else(|| {
             anyhow!("no NA schedule available (compile with a neutral-atom target)")
         })?;
         let json = schedule_to_json(layers)?;
-        write_output(path, &json, qasm_owns_stdout && path == "-")?;
+        write_output(
+            path,
+            &json,
+            (qasm_owns_stdout || mlir_owns_stdout) && path == "-",
+        )?;
         emitted = true;
     }
 
@@ -474,13 +511,14 @@ fn emit_artifacts(cli: &Cli, report: &quonc::CompileReport) -> Result<()> {
             ReportFormat::Json => resource_report_to_json(report_body)?,
             ReportFormat::Markdown => resource_report_to_markdown(report_body),
         };
-        // If schedule already printed to stdout on `-`, send the report to stderr
-        // so both artifacts remain recoverable without interleaving JSON values.
+        // If MLIR or schedule JSON already printed to stdout on `-`, send the
+        // report to stderr so all artifacts remain recoverable without
+        // interleaving values.
         let schedule_on_stdout = cli.emit_na_schedule.as_ref().is_some_and(|p| p == "-");
         write_output(
             path,
             &text,
-            (qasm_owns_stdout || schedule_on_stdout) && path == "-",
+            (qasm_owns_stdout || mlir_owns_stdout || schedule_on_stdout) && path == "-",
         )?;
         emitted = true;
     }
@@ -496,7 +534,8 @@ fn emit_artifacts(cli: &Cli, report: &quonc::CompileReport) -> Result<()> {
             id if report.na_schedule.is_some() => {
                 eprintln!(
                     "{dim}(compiled successfully for neutral-atom target `{id}`; \
-                     pass --emit-na-schedule / --emit-resource-report){dim:#}"
+                     pass --emit-na-mlir for quantum.na MLIR, or \
+                     --emit-na-schedule / --emit-resource-report for debug views){dim:#}"
                 );
             }
             id => {
@@ -570,7 +609,8 @@ Neutral-atom path
   6. schedule_entangling_layers (Misra–Gries / ASAP)
   7. schedule_zoned (default)  OR  place + plan_aod_movement (--na-backend flat)
   8. compact_schedule (unless --no-na-compact)
-  9. build_resource_report / emit schedule JSON
+  9. lower to quantum.na MLIR (canonical schedule IR, ADR-0011)
+ 10. build_resource_report / schedule JSON (debug views)
 "
     );
 }
