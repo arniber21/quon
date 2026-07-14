@@ -33,3 +33,6 @@ test/na/Output/
 
 # Devbox / Nix local state (keep devbox.json + devbox.lock committed)
 .devbox/
+
+# Release packaging output (issue #234)
+/dist/

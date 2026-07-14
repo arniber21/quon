@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and audit without uploading a GitHub Release"
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: ${{ matrix.name }}
+    # Cold Devbox LLVM + static z3 cmake can exceed default timeouts.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            archive_os: unknown-linux-gnu
+            archive_arch: x86_64
+          - name: macos-aarch64
+            os: macos-14
+            archive_os: apple-darwin
+            archive_arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Devbox toolchain
+        uses: jetify-com/devbox-install-action@v0.12.0
+        with:
+          enable-cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.name }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build, audit, and package
+        env:
+          QUON_RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Fail loudly if Devbox cache is somehow disabled for this job —
+          # cold LLVM is multi-GB and release builds already take a long time.
+          if [[ "${{ env.DEVBOX_CACHE_HIT:-}}" == "false" ]]; then
+            echo "release: Devbox Nix cache miss (expected on first tag; continuing)"
+          fi
+          # cmake is required to build static libz3.a (scripts/build-static-z3.sh).
+          if ! command -v cmake >/dev/null 2>&1; then
+            echo "release: installing cmake (needed for static z3)"
+            if [[ "$(uname -s)" == "Linux" ]]; then
+              sudo apt-get update
+              sudo apt-get install -y cmake
+            else
+              brew install cmake
+            fi
+          fi
+          # Prefer Devbox's cmake if the package is present.
+          devbox run release
+
+      - name: Locate archive
+        id: archive
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          version="${version#v}"
+          archive="dist/quon-${version}-${{ matrix.archive_arch }}-${{ matrix.archive_os }}.tar.gz"
+          if [[ ! -f "$archive" ]]; then
+            echo "missing archive: $archive" >&2
+            ls -la dist/ || true
+            exit 1
+          fi
+          echo "path=$archive" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$archive")" >> "$GITHUB_OUTPUT"
+          ls -lh "$archive"
+
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: ${{ steps.archive.outputs.path }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release assets
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.archive.outputs.path }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
