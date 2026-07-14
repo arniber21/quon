@@ -181,7 +181,12 @@ fn push_scope_symbols(
             SymbolKind::Parameter => "parameter",
             _ => "variable",
         };
-        let docs = symbol_docs(sym.docs.as_deref(), kind_label, &sym.name, detail.as_deref());
+        let docs = symbol_docs(
+            sym.docs.as_deref(),
+            kind_label,
+            &sym.name,
+            detail.as_deref(),
+        );
         push_item(items, seen, rich_item(&sym.name, kind, detail, docs));
     }
 }
