@@ -1,0 +1,62 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/main/.schema/devbox.schema.json",
+  "packages": {
+    "path:nix/llvm-mlir#default": "",
+    "z3": {
+      "version": "4.16.0",
+      "outputs": [
+        "out",
+        "lib",
+        "dev"
+      ]
+    },
+    "python312": "3.12.13",
+    "nodejs_22": "22.23.1",
+    "pkg-config": "0.29.2"
+  },
+  "shell": {
+    "init_hook": [
+      "export MLIR_SYS_220_PREFIX=\"$(llvm-config --prefix)\"",
+      "export PATH=\"$MLIR_SYS_220_PREFIX/bin:$PATH\"",
+      "export LIBCLANG_PATH=\"$MLIR_SYS_220_PREFIX/lib${LIBCLANG_PATH:+:$LIBCLANG_PATH}\"",
+      "_z3_prefix=\"$(pkg-config --variable=prefix z3 2>/dev/null || true)\"",
+      "if [ -z \"$_z3_prefix\" ] && command -v z3 >/dev/null 2>&1; then",
+      "  _z3_bin=\"$(command -v z3)\"",
+      "  _z3_prefix=\"$(cd \"$(dirname \"$_z3_bin\")/..\" && pwd)\"",
+      "fi",
+      "if [ -n \"$_z3_prefix\" ]; then",
+      "  export LIBRARY_PATH=\"$_z3_prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}\"",
+      "  export BINDGEN_EXTRA_CLANG_ARGS=\"-I$_z3_prefix/include ${BINDGEN_EXTRA_CLANG_ARGS:-}\"",
+      "  if [ \"$(uname -s)\" = Darwin ]; then",
+      "    export DYLD_LIBRARY_PATH=\"$_z3_prefix/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}\"",
+      "  fi",
+      "fi",
+      "unset _z3_prefix _z3_bin"
+    ],
+    "scripts": {
+      "build": [
+        "cargo build --workspace --exclude flux_verify"
+      ],
+      "test": [
+        "cargo test --workspace --exclude flux_verify"
+      ],
+      "setup-python": [
+        "python3 -m venv .venv",
+        ".venv/bin/python -m pip install --upgrade pip",
+        ".venv/bin/python -m pip install -r python/requirements.txt",
+        "echo \"Activate with: source .venv/bin/activate\""
+      ],
+      "check": [
+        "cargo fmt --all -- --check",
+        "cargo clippy --workspace --exclude flux_verify --all-targets -- -D warnings",
+        "cargo test --workspace --exclude flux_verify"
+      ],
+      "ci": [
+        "cargo test --workspace --exclude flux_verify"
+      ],
+      "release": [
+        "cargo build --release -p quonc -p quonfmt -p quon_lsp -p quonlint-cli"
+      ]
+    }
+  }
+}

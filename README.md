@@ -6,14 +6,34 @@ An MLIR-based optimizing compiler for quantum programs. Accepts programs in the 
 
 | Dependency | Version | Notes |
 |---|---|---|
-| Rust | stable | edition 2024; see `rust-toolchain.toml` |
-| LLVM + MLIR | **22** | Build with `-DLLVM_ENABLE_PROJECTS=mlir` and the C API enabled |
+| Rust | stable | via **rustup** (outside Devbox); see `rust-toolchain.toml` |
+| Devbox + Nix | latest | recommended contributor toolchain — LLVM/MLIR 22, Z3, Python 3.12, Node 22 |
 | Melior | **0.27.x** | Pinned in the workspace `Cargo.toml`; requires LLVM 22 |
-| libz3 | any recent | C API; required at link time by the `z3` crate (`frontend`) |
-| Python + Qiskit Aer | 3.10+ | Simulation verification (`test/verify/`) |
+| Python + Qiskit Aer | 3.10+ | Simulation verification (`test/verify/`); `devbox run setup-python` |
 | Flux (optional) | nightly + z3 | Refinement types in `flux_verify`; install via [Flux install script](https://flux-rs.github.io/flux/guide/install.html) |
 
-If LLVM 22 is not on your default search path, set:
+### Contributor setup (Devbox)
+
+Install [Devbox](https://www.jetify.com/devbox/docs/installing_devbox/) (pulls in Nix on first use), then:
+
+```bash
+# rustup remains outside Devbox so rust-toolchain.toml is honored
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # if needed
+
+devbox shell          # or: direnv allow  (committed .envrc)
+llvm-config --version # expect 22.x
+cargo build -p mlir_bridge -p quonc
+# optional Aer bridge:
+devbox run setup-python && source .venv/bin/activate
+```
+
+`devbox.json` / `devbox.lock` pin the native toolchain. A local flake at `nix/llvm-mlir` joins Nix's separate LLVM and MLIR store paths into one Melior-compatible prefix and sets `MLIR_SYS_220_PREFIX` in the shell `init_hook`.
+
+Useful scripts: `devbox run build`, `devbox run test`, `devbox run check`.
+
+### Building from source (manual)
+
+If you prefer not to use Devbox, install LLVM/MLIR 22 and libz3 yourself and set:
 
 ```bash
 export MLIR_SYS_220_PREFIX=/path/to/llvm22   # e.g. /usr/lib/llvm-22 or $(brew --prefix llvm@22)

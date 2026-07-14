@@ -26,6 +26,10 @@ out/
 # Python
 __pycache__/
 *.pyc
+.venv/
 # CocoIndex Code (ccc)
 /.cocoindex_code/
 test/na/Output/
+
+# Devbox / Nix local state (keep devbox.json + devbox.lock committed)
+.devbox/
