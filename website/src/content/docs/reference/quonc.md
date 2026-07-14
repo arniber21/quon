@@ -3,12 +3,16 @@ title: quonc CLI
 description: Command-line reference for the Quon compiler.
 ---
 
-`quonc` compiles a Quon (`.qn`) source file for a fixed-connectivity target. It
-always runs the compiler; pass `--emit-qasm` when you also want the generated
-OpenQASM 3 on standard output.
+`quonc` compiles Quon (`.qn`) source through the shared compiler pipeline and
+emits target-specific artifacts.
 
-```sh
+```bash
 quonc program.qn --emit-qasm > program.qasm
+
+quonc program.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-schedule schedule.json \
+  --emit-resource-report report.md
 ```
 
 Without output or metrics flags, a successful compile prints a short
@@ -20,66 +24,140 @@ confirmation to standard error.
 quonc [OPTIONS] [SOURCE]
 ```
 
-`SOURCE` is the `.qn` file to compile. It may be omitted only when
-`--print-target` is used.
+`SOURCE` is the `.qn` file to compile. It may be omitted with `--print-target`
+or `--list-passes`.
 
-## Options
+## Emission options
 
 ### `--emit-qasm`
 
-Write the generated OpenQASM 3 program to standard output.
+Write the generated OpenQASM 3 program to standard output. This is the fixed
+gate-model output path.
 
-```sh
+```bash
 quonc program.qn --emit-qasm > program.qasm
 ```
 
-### `--target <PATH>`
+### `--emit-na-schedule [PATH]`
 
-Load a backend target descriptor from a JSON file. Without this option, `quonc`
-uses the built-in 64-qubit, all-to-all `generic_openqasm` fixed target.
+Emit neutral-atom schedule JSON. With no path, or with `-`, the schedule is
+written to standard output.
 
-```sh
-quonc program.qn --target targets/device.json --emit-qasm
+```bash
+quonc program.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-schedule schedule.json
 ```
 
-See [Target selection](#target-selection) for the descriptor kinds the loader
-accepts and the kinds the compiler can currently compile.
+### `--emit-resource-report [PATH]`
+
+Emit a neutral-atom resource report. With no path, or with `-`, the report is
+written to standard output. A `.md` path selects Markdown; other paths select
+JSON unless `--resource-report-format` overrides it.
+
+```bash
+quonc program.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-resource-report report.md
+```
+
+### `--resource-report-format <json|markdown>`
+
+Force the resource-report format.
+
+```bash
+quonc program.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-resource-report - \
+  --resource-report-format markdown
+```
+
+## Target options
+
+### `--target <PATH>`
+
+Load a backend target descriptor from JSON. Without this option, `quonc` uses
+the built-in 64-qubit all-to-all `generic_openqasm` fixed target.
+
+```bash
+quonc program.qn --target backend/tests/fixtures/device_5q.json --emit-qasm
+```
 
 ### `--print-target`
 
 Print a summary of the selected target and exit without compiling. A source
 file is not required.
 
-```sh
-quonc --target targets/device.json --print-target
+```bash
+quonc --target targets/neutral_atom/generic_rna_v0.json --print-target
 ```
+
+### `--sabre-gamma <FLOAT>`
+### `--sabre-beta <FLOAT>`
+### `--sabre-lookahead <N>`
+
+Tune the fixed-target SABRE routing cost model. Defaults are `0.3`, `0.5`, and
+`20`.
+
+```bash
+quonc program.qn \
+  --target backend/tests/fixtures/device_5q.json \
+  --sabre-gamma 0.2 \
+  --sabre-beta 0.7 \
+  --sabre-lookahead 30 \
+  --emit-qasm
+```
+
+## Neutral-atom options
+
+### `--na-backend <zoned|flat>`
+
+Select the neutral-atom movement backend. `zoned` is the default; aliases such
+as `rap`, `aod`, and `enola` are accepted by the parser.
+
+### `--na-placer <routing-agnostic|routing-aware>`
+
+Select the zoned placement mode.
+
+### `--no-na-compact`
+
+Skip schedule compaction after neutral-atom movement or zoned scheduling.
+
+### `--na-placement <row-major|degree|clustering>`
+
+Select the flat AOD placement strategy.
+
+## Debug options
 
 ### `--dump-ir`
 
 Print MLIR snapshots to standard error at the compiler's lowering, circuit,
-monadic, dynamic, and physical pipeline checkpoints.
-
-```sh
-quonc program.qn --dump-ir
-```
+monadic, dynamic, and physical checkpoints.
 
 ### `--verify-linear`
 
-Run the debug linearity verifiers on circuit IR and again after lowering to
-dynamic IR.
+Run debug linearity verifiers on circuit IR and again after lowering to dynamic
+IR.
 
-```sh
-quonc program.qn --verify-linear
-```
+### `--list-passes`
+
+Print the compiler pass stages and exit. A source file is not required.
+
+### `-q`, `--quiet`
+
+Suppress the successful-compile hint.
+
+### `--color <auto|always|never>`
+
+Control colorized diagnostics and help. The same setting can be supplied with
+`QUONC_COLOR`.
+
+## Metrics and watch options
 
 ### `--metrics`
 
-Print a one-line, human-readable metrics summary to standard error after a
+Print a one-line human-readable metrics summary to standard error after a
 successful compile.
-
-```sh
-quonc program.qn --metrics
-```
 
 ### `--metrics-json <PATH>`
 
@@ -87,97 +165,43 @@ Write the versioned metrics snapshot as JSON. Use `-` for standard output; when
 combined with `--emit-qasm`, `-` writes JSON to standard error so QASM can keep
 standard output.
 
-```sh
-quonc program.qn --metrics-json metrics/run.json
-```
+### `--metrics-snapshot <save|compare> <PATH>`
 
-### `--metrics-snapshot <ACTION> <PATH>`
-
-Save the current metrics snapshot as a baseline, or compare it with a saved
-baseline. `ACTION` is `save` or `compare`.
-
-```sh
-quonc program.qn --metrics-snapshot save metrics/baseline.json
-quonc program.qn --metrics-snapshot compare metrics/baseline.json
-```
+Save the current metrics snapshot as a baseline, or compare the current run
+with a saved baseline.
 
 ### `--regression-config <PATH>`
 
-Load TOML or JSON metric tolerances for a `--metrics-snapshot compare`.
-
-```sh
-quonc program.qn \
-  --metrics-snapshot compare metrics/baseline.json \
-  --regression-config metrics/tolerances.toml
-```
+Load TOML or JSON metric tolerances for `--metrics-snapshot compare`.
 
 ### `--watch`
 
-Watch the source file, and the target JSON when `--target` is set, then
-recompile after changes. Watch mode implicitly enables `--metrics`.
-
-```sh
-quonc program.qn --watch --target targets/device.json
-```
+Watch the source file and the target JSON, when `--target` is set, then
+recompile after changes. Watch mode implicitly enables metrics.
 
 ### `--watch-debounce-ms <MILLISECONDS>`
 
-Set the watch-mode filesystem-event debounce window. The default is 300 ms.
+Set the watch-mode filesystem-event debounce window. The default is `300`.
 
-```sh
-quonc program.qn --watch --watch-debounce-ms 500
-```
+## Target selection
 
-### `-h`, `--help`
+`BackendTarget` descriptors use a `kind` field to select the architecture
+family:
 
-Print command help and exit.
+- `fixed` selects the fixed-connectivity gate-model path. Legacy fixed
+  descriptors may omit `kind`.
+- `neutral_atom_reconfigurable` selects the reconfigurable neutral-atom path.
 
-```sh
-quonc --help
-```
+Fixed targets use `--emit-qasm`. Neutral-atom targets use
+`--emit-na-schedule` and/or `--emit-resource-report`.
 
-### `-V`, `--version`
+## What runs
 
-Print the `quonc` version and exit.
-
-```sh
-quonc --version
-```
+Every compile parses and typechecks the source, elaborates circuit calls,
+lowers through MLIR generic-form IR, runs optimization and normalization
+passes, then adapts to the selected target family. See the
+[compiler pipeline reference](../compiler/).
 
 For baseline formats, tolerance semantics, watch behavior, output routing, and
 exit codes, read the
 [experiment-loop guide](https://github.com/arniber21/quon/blob/main/docs/agents/experiment-loop.md).
-
-## Target selection
-
-`BackendTarget` has an `id` and a `TargetKind`. The JSON loader chooses the
-kind from the descriptor's `kind` field:
-
-- `fixed` selects the fixed-connectivity gate-model architecture. Legacy fixed
-  descriptors may omit `kind`.
-- `neutral_atom_reconfigurable` selects the separate reconfigurable
-  neutral-atom architecture family.
-
-The current OpenQASM compile pipeline accepts **fixed targets only**. For a
-fixed target, `--target` controls its qubit count, connectivity, native gates,
-noise data, measurement latency, and dynamic-circuit capability flags. Native
-gate decomposition, routing, scheduling, metrics, and emission use that loaded
-target.
-
-Neutral-atom descriptors can currently be loaded and inspected with
-`--print-target`, but `quonc` rejects them for compilation. This is a distinct
-architecture family, not a fixed target with extra fields. See the
-[neutral-atom architecture model](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/architecture_model.md).
-
-```sh
-quonc \
-  --target targets/neutral_atom/generic_rna_v0.json \
-  --print-target
-```
-
-## What runs
-
-Every compile follows the same high-level path: parse and typecheck the source,
-elaborate and lower it to MLIR, optimize and lower the IR, adapt it to the
-fixed target, then emit OpenQASM 3. See the
-[compiler pipeline reference](../compiler/).

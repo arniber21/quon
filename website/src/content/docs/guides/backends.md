@@ -1,155 +1,138 @@
 ---
 title: Backends and verification
-description: Compile Quon programs for fixed gate-model targets and verify the emitted OpenQASM 3 with Qiskit Aer.
+description: Compile Quon programs for fixed gate-model targets, neutral-atom targets, and Qiskit Aer verification.
 ---
 
-Quon's fixed backend path compiles a program for a gate-model `BackendTarget`,
-emits OpenQASM 3, and can run that output on Qiskit Aer. This path works locally:
-it does not require an account or access to live quantum hardware.
+Quon separates the shared frontend from target-specific artifact generation.
+Fixed gate-model targets produce OpenQASM 3. Reconfigurable neutral-atom
+targets produce schedule JSON and resource reports. The Qiskit Aer bridge
+verifies the OpenQASM path locally without a hardware account.
 
-## Fixed backend targets
+## Fixed gate-model targets
 
-A fixed `BackendTarget` JSON file records the gate-model constraints and
-capabilities associated with a compilation:
+A fixed `BackendTarget` JSON file records the gate-model constraints associated
+with a compilation:
 
 - `id` names the target in diagnostics and metrics.
 - `num_qubits` sets the available physical qubits.
-- `topology.edges` lists directly connected qubit pairs. The routing pass inserts
-  swaps when a two-qubit operation is not adjacent.
+- `topology.edges` lists directly connected qubit pairs. Routing inserts swaps
+  when a two-qubit operation is not adjacent.
 - `native_gates` lists the OpenQASM gate names the target accepts. The compiler
-  decomposes other operations before emission. Unknown gate names are rejected.
-- `noise` can record per-qubit and per-edge gate fidelity, T1/T2 times, and
-  readout error. It is optional; T1 values can influence scheduling, while the
-  other values are currently descriptive. These values do **not** configure the
-  Aer verifier's simulator noise model.
+  decomposes unsupported operations before emission and rejects unknown gate
+  names.
+- `noise` can record gate fidelity, T1/T2 times, and readout error. T1 values
+  can inform scheduling; the values are target metadata rather than an Aer
+  simulator noise model.
 - `meas_latency_us`, `supports_mid_circuit_meas`, and
   `supports_feed_forward` record measurement and dynamic-circuit capabilities.
-  The current pipeline loads and reports them but does not yet reject programs
-  based on those values.
 
 The optional top-level `"kind": "fixed"` makes the architecture family
-explicit. A descriptor without `kind` is also read as a fixed target for
-backward compatibility. For a complete working example, see
-[`backend/tests/fixtures/device_5q.json`](https://github.com/arniber21/quon/blob/main/backend/tests/fixtures/device_5q.json).
+explicit. A descriptor without `kind` is read as a fixed target for backward
+compatibility. See
+[`backend/tests/fixtures/device_5q.json`](https://github.com/arniber21/quon/blob/main/backend/tests/fixtures/device_5q.json)
+for a complete example.
 
-Inspect a descriptor before compiling:
+Inspect a descriptor:
 
-```sh
+```bash
 cargo run -p quonc -- \
   --target backend/tests/fixtures/device_5q.json \
   --print-target
 ```
 
-The loader validates the JSON, including field names, gate names, and topology
-indices. A non-zero exit means the descriptor could not be loaded.
+## Emit OpenQASM 3
 
-## Compile and emit OpenQASM 3
+Compile a Bell-state program for the five-qubit fixture:
 
-From the repository root, compile a checked-in Bell-state program for the
-five-qubit fixture:
-
-```sh
+```bash
 cargo run -p quonc -- \
   test/verify/bell.qn \
   --target backend/tests/fixtures/device_5q.json \
-  --emit-qasm > /tmp/bell.qasm
+  --emit-qasm
 ```
 
-The output begins with the OpenQASM 3 header and declarations, followed by
-target-native gates and explicit measurement statements:
+With no `--target`, `quonc` uses the built-in `generic_openqasm` target: 64
+all-to-all qubits, the standard OpenQASM gate set, and no device noise data.
 
-```text
-OPENQASM 3.0;
-include "stdgates.inc";
-qubit[2] q;
-bit[2] c;
-// target-native operations...
-c[0] = measure q[0];
-c[1] = measure q[1];
+## Neutral-atom targets
+
+A `neutral_atom_reconfigurable` descriptor models a different architecture
+family: zones, array geometry, AOD movement, Rydberg interactions, timing,
+fidelity, and a cost model. Quon compiles these targets to schedule and
+resource artifacts rather than OpenQASM.
+
+```bash
+cargo run -p quonc -- test/na/qaoa_graph.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-schedule schedule.json \
+  --emit-resource-report report.md \
+  --resource-report-format markdown
 ```
 
-With no `--target`, `quonc` uses the built-in `generic_openqasm` fixed target:
-64 all-to-all qubits, the standard OpenQASM gate set, and no noise data.
+The neutral-atom path extracts the interaction graph, schedules entangling
+layers, chooses a movement backend, optionally compacts the result, and reports
+timing/resource estimates.
 
-## Run the emitted program on Aer
+Useful neutral-atom options:
 
-Install the verification dependencies into a virtual environment and build the
-compiler:
+- `--na-backend zoned` uses zoned RAP scheduling.
+- `--na-backend flat` uses the flat AOD movement path.
+- `--na-placer routing-agnostic` or `--na-placer routing-aware` selects the
+  zoned placement mode.
+- `--na-placement row-major` selects the flat AOD placement strategy.
+- `--no-na-compact` leaves the schedule uncompacted for inspection.
 
-```sh
-python3 -m venv .venv
+See the
+[neutral-atom architecture model](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/architecture_model.md)
+for the target schema, assumptions, and citations.
+
+## Run OpenQASM output on Aer
+
+Install the optional verification dependencies and build the compiler:
+
+```bash
+just setup-python
 source .venv/bin/activate
-python3 -m pip install -r python/requirements.txt
 cargo build -p quonc
 export QUONC="$PWD/target/debug/quonc"
 ```
 
 `python/quon_aer.py` accepts either Quon source or OpenQASM on standard input:
 
-```sh
-python3 python/quon_aer.py test/verify/bell.qn --shots 4096 --seed 1234
+```bash
+python python/quon_aer.py test/verify/bell.qn --shots 4096 --seed 1234
 
-"$QUONC" test/verify/bell.qn \
+cargo run -p quonc -- test/verify/bell.qn \
   --target backend/tests/fixtures/device_5q.json \
   --emit-qasm |
-  python3 python/quon_aer.py --shots 4096 --seed 1234
+  python python/quon_aer.py --shots 4096 --seed 1234
 ```
 
 The bridge imports the emitted OpenQASM and runs an ideal `AerSimulator`.
-`--seed` makes sampling reproducible. Its printed counts are raw simulation
-results, not a pass/fail judgment and not an estimate of live-hardware
-performance.
+`--seed` makes sampling reproducible. The printed counts are raw simulation
+results, not live-hardware performance estimates.
 
-## Run the reference verifiers
+## Run reference verifiers
 
 The scripts in `test/verify/` add assertions to compilation and simulation.
 Run all same-stem `.qn`/`.py` cases:
 
-```sh
+```bash
 QUONC="$PWD/target/debug/quonc" bash test/verify/run_e2e.sh
 ```
 
 Or run one case by stem:
 
-```sh
+```bash
 QUONC="$PWD/target/debug/quonc" bash test/verify/run_e2e.sh bell
 ```
 
-Exit status `0` and a final `PASS:` line mean that the script's oracle held;
-any failed assertion exits non-zero. The reference oracles cover:
+The reference oracles cover Bell, teleportation, Bernstein-Vazirani, Grover,
+QFT, Ising, QAOA, dense spin-glass QAOA, and Shor's quantum kernel.
 
-- Bell: only `00` and `11`, each within the script's statistical tolerance.
-- Teleportation: the recovered Z- and X-basis states each have fidelity above
-  `0.99`.
-- Bernstein–Vazirani: every shot recovers the fixed secret `(1, 1, 0)`.
-- Grover: the marked state `11` has probability above `0.9`.
-- QFT and Ising: their identity cases recover the expected state with fidelity
-  above `0.99`.
-- QAOA: every optimal K3 MaxCut bitstring is sampled more often than `000` or
-  `111`.
-- Dense spin-glass QAOA: the emitted workload has the expected operation counts
-  and is parseable as OpenQASM 3.
-- Shor kernel: fixed-seed runs agree and only the fixture's two expected
-  outcomes appear.
+The routing verifier checks constrained fixed targets against the all-to-all
+baseline:
 
-The routing verifier uses the Bernstein–Vazirani source with two fixed target
-fixtures, so run it directly:
-
-```sh
-QUONC="$PWD/target/debug/quonc" python3 test/verify/routing.py
+```bash
+QUONC="$PWD/target/debug/quonc" python test/verify/routing.py
 ```
-
-It passes only when both constrained topologies recover the same secret as the
-all-to-all baseline after swap insertion and native-gate decomposition.
-
-## Different architecture: neutral atoms
-
-Fixed targets model gate connectivity and OpenQASM emission. A
-`neutral_atom_reconfigurable` target instead describes zones, array geometry,
-AOD movement, Rydberg interactions, timing, fidelity, and a cost model. Those
-fields and that lowering path are intentionally separate; the OpenQASM pipeline
-currently accepts fixed targets only.
-
-See the
-[neutral-atom architecture model](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/architecture_model.md)
-for that architecture family.

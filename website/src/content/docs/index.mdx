@@ -1,17 +1,17 @@
 ---
 title: Quon
-description: A functional quantum programming language with linear types, compiled to OpenQASM 3.
+description: A Rust quantum compiler toolkit for typed programs, OpenQASM 3 emission, and neutral-atom schedule/resource artifacts.
 template: splash
 hero:
   title: Quon
-  tagline: A functional quantum language with linear types. Write circuits the compiler proves are physically valid, then compile straight to OpenQASM 3.
+  tagline: A Rust quantum compiler toolkit for typed quantum programs, backend-aware lowering, OpenQASM 3 emission, and neutral-atom schedule/resource artifacts.
   actions:
-    - text: Get started
+    - text: Run the quickstart
       link: /getting-started/quickstart/
       icon: right-arrow
       variant: primary
-    - text: See the language
-      link: /language/
+    - text: Read the compiler pipeline
+      link: /reference/compiler/
       icon: right-arrow
       variant: minimal
     - text: View on GitHub
@@ -22,11 +22,40 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## A Bell pair, start to finish
+## A compiler toolkit for quantum software engineers
 
-Quon's linear type checker ensures every qubit is consumed exactly once. This
-program prepares two entangled qubits, measures both, and never lets a qubit
-escape unused:
+Quon brings the language, compiler, backend model, verification seam, and
+developer tooling into one Rust workspace. It is built around a typed quantum
+frontend, a lowering pipeline through MLIR generic-form IR, and backend
+artifacts that can be inspected, simulated, and regression-tested.
+
+<CardGrid>
+	<Card title="Typed quantum frontend" icon="document">
+		`Circuit<n, m, d, C>` types, linear `Qubit` / `QReg<n>` values,
+		symbolic depth bounds, Clifford classification, and monadic allocation,
+		measurement, and feed-forward.
+		[Read the language guide ->](/language/)
+	</Card>
+	<Card title="Compiler pipeline" icon="setting">
+		Parsing, desugaring, typechecking, circuit elaboration, MLIR lowering,
+		simplification passes, target adaptation, metrics, and backend emission.
+		[See the pipeline ->](/reference/compiler/)
+	</Card>
+	<Card title="Backend artifacts" icon="puzzle">
+		Fixed gate-model targets emit OpenQASM 3. Reconfigurable neutral-atom
+		targets emit schedule JSON and resource reports from the same compiler
+		driver.
+		[Read the backend guide ->](/guides/backends/)
+	</Card>
+	<Card title="Engineering workflow" icon="rocket">
+		`quonc`, `quonfmt`, `quonlint`, `quon_lsp`, Tree-sitter grammar,
+		editor integrations, Devbox bootstrap, CI-parity recipes, lit/FileCheck
+		tests, fuzz/property tests, and Aer verification.
+		[Install Quon ->](/getting-started/install/)
+	</Card>
+</CardGrid>
+
+## One source, target-specific outputs
 
 ```kotlin
 fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
@@ -41,50 +70,37 @@ fn main(): Q<(Bit, Bit)> = run {
 }
 ```
 
-`quonc` compiles this straight to OpenQASM 3 for Qiskit Aer or real hardware —
-walk through it yourself in the [quickstart](/getting-started/quickstart/).
+Compile for a fixed gate-model target:
 
-## From language to running program
+```bash
+cargo run -p quonc -- test/verify/bell.qn --emit-qasm
+```
 
-<CardGrid stagger>
-	<Card title="1. See the language" icon="document">
-		`Circuit` values, linear qubits, the Quantum Monad, and depth-bounded
-		composition — the concepts you need to read and write Quon.
-		[Read the language guide →](/language/)
-	</Card>
-	<Card title="2. Install Quon" icon="download">
-		Self-contained CLI binaries via Homebrew, `.deb`, or a curl installer —
-		no LLVM, MLIR, or Z3 required. Devbox covers contributors building from source.
-		[Install Quon →](/getting-started/install/)
-	</Card>
-	<Card title="3. Get started" icon="rocket">
-		Compile a Bell pair to OpenQASM 3 and simulate it with Qiskit Aer in a
-		handful of commands.
-		[Run the quickstart →](/getting-started/quickstart/)
-	</Card>
-</CardGrid>
+Compile for a reconfigurable neutral-atom target:
 
-## Explore further
+```bash
+cargo run -p quonc -- test/na/bell.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-schedule \
+  --emit-resource-report
+```
+
+## Growing toward production-grade workflows
+
+Quon is a living compiler toolkit with a deliberate hardening path: boring
+installation, reproducible local CI commands, clearer backend artifact
+inspection, stronger benchmark regressions, deeper neutral-atom validation, and
+more static invariants connected to backend legality.
 
 <CardGrid>
-	<Card title="Cookbook" icon="open-book">
-		Teleportation, Grover, QFT, QAOA, Shor's kernel, and more — real
-		algorithms verified against Qiskit Aer.
-		[Browse the cookbook →](/cookbook/)
+	<Card title="Quickstart" icon="right-arrow">
+		Compile a Bell pair to OpenQASM 3 and run it through the Qiskit Aer
+		verification seam.
+		[Run it ->](/getting-started/quickstart/)
 	</Card>
-	<Card title="Developer tooling" icon="setting">
-		LSP-backed editor support for VS Code, Neovim, and Zed, plus `quonfmt`
-		and `quonlint`.
-		[Set up your editor →](/guides/tooling/)
-	</Card>
-	<Card title="Backends and verification" icon="puzzle">
-		Target generic all-to-all devices or neutral-atom hardware, and verify
-		output against Qiskit Aer.
-		[Read the backends guide →](/guides/backends/)
-	</Card>
-	<Card title="quonc reference" icon="list-format">
-		Full CLI flag reference and a stage-by-stage tour of the compiler
-		pipeline.
-		[Browse the reference →](/reference/quonc/)
+	<Card title="Maturation path" icon="list-format">
+		See how the toolkit is being hardened without mixing roadmap work into
+		the feature surface.
+		[Read the roadmap ->](/guides/roadmap/)
 	</Card>
 </CardGrid>

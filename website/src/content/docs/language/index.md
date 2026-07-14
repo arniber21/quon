@@ -88,8 +88,9 @@ work that can occupy the same depth layer.
 ## Borrow blocks
 
 A **borrow block** allocates scoped ancilla qubits. Borrowed qubits enter the
-linear context and cannot escape the block. Consume each one before the block
-ends, and terminate its use with `reset` or `discard`.
+linear context, cannot escape the block, and must be consumed before the block
+ends. Measurement, reset, discard, or another consuming operation can discharge
+the borrowed value depending on the computation.
 
 ```kotlin
 fn use_ancilla(): Q<Unit> = run {
@@ -100,8 +101,9 @@ fn use_ancilla(): Q<Unit> = run {
 }
 ```
 
-Returning `anc` from the block is rejected. This makes the lifetime and cleanup
-of temporary quantum resources explicit.
+Returning `anc` from the block is rejected. This makes the lifetime of
+temporary quantum resources explicit and keeps scoped ancilla use visible to
+the typechecker.
 
 ## The Quantum Monad
 

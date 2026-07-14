@@ -36,7 +36,7 @@ Configure an LSP client to:
 - use `quon` as the language ID; and
 - communicate with the process over stdio.
 
-The server currently provides:
+The server provides:
 
 - compiler and `quonlint` diagnostics as you edit;
 - hover information for resolved symbols, gates, and built-ins;

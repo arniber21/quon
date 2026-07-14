@@ -1,21 +1,20 @@
 ---
 title: Quickstart
-description: Compile a Bell pair from Quon to OpenQASM 3 and simulate it with Qiskit Aer.
+description: Compile a Bell pair from Quon to OpenQASM 3 and sample it with Qiskit Aer.
 ---
 
-This walkthrough prepares two entangled qubits, compiles them to OpenQASM 3, and samples their measurements with Qiskit Aer.
+This walkthrough uses a checked-in Bell program, compiles it to OpenQASM 3, and
+samples the emitted program through Quon's Qiskit Aer verification seam.
 
-Complete the [installation guide](/getting-started/install/) first. Run these commands from the Quon repository root with the Python virtual environment active:
+Run the commands from the repository root after completing the
+[installation guide](/getting-started/install/).
 
-```bash
-source .venv/bin/activate
-```
+## 1. Inspect the program
 
-## 1. Write a Bell program
+`test/verify/bell.qn` prepares a Bell state, measures both qubits, and returns
+the correlated classical bits:
 
-Create `bell.qn`:
-
-```text
+```kotlin
 fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
     H @0 |> CNOT @(0, 1)
 }
@@ -28,57 +27,86 @@ fn main(): Q<(Bit, Bit)> = run {
 }
 ```
 
-`H @0` puts the first qubit into an equal superposition. `CNOT @(0, 1)` uses it as the control for the second qubit, producing the Bell state `(|00⟩ + |11⟩) / √2`.
+`H @0` puts the first qubit into superposition. `CNOT @(0, 1)` entangles the
+second qubit with the first. The linear typechecker tracks the two output
+qubits until measurement consumes them.
 
-The `main` function allocates two qubits, applies the circuit, and measures both. Quon's linear type checker ensures each qubit is consumed exactly once.
-
-## 2. Compile to OpenQASM
-
-Compile the program with Quon's generic all-to-all target:
+## 2. Compile to OpenQASM 3
 
 ```bash
-./target/release/quonc bell.qn --emit-qasm > bell.qasm
+cargo run -p quonc -- test/verify/bell.qn --emit-qasm
 ```
 
-Inspect the generated OpenQASM:
+The output has the OpenQASM 3 header, typed qubit/classical declarations,
+target-native operations, and explicit measurements:
 
-```bash
-less bell.qasm
+```text
+OPENQASM 3.0;
+include "stdgates.inc";
+qubit[2] q;
+bit[2] c;
+h q[0];
+cx q[0], q[1];
+c[0] = measure q[0];
+c[1] = measure q[1];
 ```
 
-The output declares two qubits and two classical bits, applies the Bell gates, and measures both qubits. The generic target is the default, so this quickstart does not need a device descriptor or `--target`.
+With no `--target`, `quonc` uses the built-in all-to-all fixed gate-model
+target. Pass `--target backend/tests/fixtures/device_5q.json` to compile
+through a constrained fixed topology.
 
-## 3. Simulate with Aer
+## 3. Sample with Aer
 
-Pipe the compiler output directly into Quon's Aer bridge:
+Set up the optional Python environment if you have not already:
 
 ```bash
-./target/release/quonc bell.qn --emit-qasm \
+just setup-python
+source .venv/bin/activate
+```
+
+Then pipe the emitted OpenQASM into the Aer bridge:
+
+```bash
+cargo run -p quonc -- test/verify/bell.qn --emit-qasm \
   | python python/quon_aer.py --shots 1024 --seed 7
 ```
 
-The output will resemble:
+The output resembles:
 
 ```text
 00: 520
 11: 504
 ```
 
-Shot counts are samples, so the exact numbers can differ across dependency versions. The important result is that only `00` and `11` appear, each close to half of the 1,024 shots: the two measurements are correlated even though either value is individually random.
+Shot counts are samples, so exact values can differ. The important result is
+that only `00` and `11` appear: the measurements are correlated even though
+each individual bit is random.
 
-You have now completed Quon's end-to-end path:
+## 4. Emit a neutral-atom artifact
 
-```text
-Quon source → quonc → OpenQASM 3 → Qiskit Aer
-```
-
-## Run the bridge without a pipe
-
-The bridge can also invoke `quonc` itself. Point it at the release binary and pass the source file:
+The same compiler driver also targets reconfigurable neutral-atom descriptors.
+This command emits a schedule JSON document and a resource report:
 
 ```bash
-QUONC=./target/release/quonc \
-  python python/quon_aer.py bell.qn --shots 1024 --seed 7
+cargo run -p quonc -- test/na/bell.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-schedule \
+  --emit-resource-report
 ```
 
-Both forms use the same compiler and simulator. The piped form makes the OpenQASM boundary explicit; the direct form is convenient for repeated experiments.
+That path extracts the interaction graph, schedules entangling layers, applies
+the selected movement backend, compacts the schedule, and reports resource and
+timing estimates.
+
+## What this exercised
+
+```text
+Quon source
+  -> parse / typecheck / elaborate
+  -> lower through MLIR generic-form IR
+  -> optimize and adapt to the target
+  -> emit OpenQASM 3 or neutral-atom schedule/resource artifacts
+```
+
+For deeper examples, browse the [cookbook](/cookbook/) and the
+[backend guide](/guides/backends/).

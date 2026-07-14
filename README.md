@@ -1,200 +1,240 @@
 # Quon
 
-An MLIR-based optimizing compiler for quantum programs. Accepts programs in the Quon language — a functional language with linear types and a monadic quantum interface — and emits OpenQASM 3.0 for execution on Qiskit Aer or real hardware.
+Quon is a Rust quantum compiler toolkit for writing typed quantum programs,
+checking quantum-specific resource invariants, and lowering programs into
+backend artifacts: OpenQASM 3 for gate-model workflows and schedule/resource
+reports for reconfigurable neutral-atom targets.
 
-## Install (users — no LLVM required)
+The project is past the prototype phase and is being shaped into a usable
+toolset for quantum software engineers: a language frontend, compiler pipeline,
+backend target model, verification harness, formatter, linter, LSP, and
+packaging path in one workspace.
 
-Self-contained CLIs from [GitHub Releases](https://github.com/arniber21/quon/releases) — no system LLVM, MLIR, or Z3:
+## Toolkit Features
 
-```bash
-# Homebrew (once arniber21/homebrew-quon is published)
-brew install arniber21/quon/quon
+- **Typed quantum language.** Quon programs use `Circuit<n, m, d, C>` types,
+  linear `Qubit` / `QReg<n>` values, symbolic depth bounds, Clifford
+  classification, and a `Q<T>` quantum monad for allocation, measurement, and
+  feed-forward.
+- **Static resource checks.** The frontend rejects qubit cloning, unconsumed
+  quantum values, invalid register widths, overly tight depth annotations, and
+  incorrect Clifford annotations before lowering.
+- **Compiler pipeline.** `quonc` parses, desugars, type-checks, elaborates,
+  lowers to MLIR generic-form IR, runs circuit and dynamic passes, adapts to
+  target constraints, collects metrics, and emits backend artifacts.
+- **OpenQASM 3 output.** Fixed gate-model targets compile to typed OpenQASM 3
+  through native-gate decomposition, SABRE-style routing, depth scheduling, and
+  a validating emitter.
+- **Backend target model.** JSON descriptors model topology, native gates,
+  noise/fidelity data, measurement latency, and dynamic-circuit capabilities.
+- **Neutral-atom scheduling.** Reconfigurable neutral-atom targets compile to
+  schedule JSON and resource reports through interaction-graph extraction,
+  entangling-layer scheduling, zoned or flat AOD movement, compaction, and
+  timing/resource accounting.
+- **Verification seam.** Python tools compile Quon, normalize OpenQASM for
+  Qiskit import, run Qiskit Aer, and check reference distributions.
+- **Developer toolchain.** The workspace includes `quonfmt`, `quonlint`,
+  `quon_lsp`, Tree-sitter grammar, VS Code/Zed/Neovim integration, Devbox
+  bootstrap, CI-parity recipes, lit/FileCheck tests, fuzz/property tests, and
+  optional Flux refinement examples.
 
-# Debian / Ubuntu
-sudo apt install ./quon_*.deb
+## Quick Example
 
-# Curl installer
-curl -fsSL https://raw.githubusercontent.com/arniber21/quon/main/scripts/install.sh | bash
+```qn
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1)
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- bell_state() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+}
 ```
 
-Full details: [website install docs](website/src/content/docs/getting-started/install.md). Qiskit Aer remains optional for simulation.
-
-## Prerequisites (contributors)
-
-| Dependency | Version | Notes |
-|---|---|---|
-| Rust | stable | via **rustup** (outside Devbox); see `rust-toolchain.toml` |
-| Devbox + Nix | latest | recommended contributor toolchain — LLVM/MLIR 22, Z3, Python 3.12, Node 22 |
-| Melior | **0.27.x** | Pinned in the workspace `Cargo.toml`; requires LLVM 22 |
-| Python + Qiskit Aer | 3.10+ | Simulation verification (`test/verify/`); `just setup-python` |
-| just | latest | Devbox package — root Justfile is the contributor/CI orchestrator (ADR-0012) |
-| Flux (optional) | nightly + z3 | Refinement types in `flux_verify`; install via [Flux install script](https://flux-rs.github.io/flux/guide/install.html) |
-
-### Contributor setup (Devbox)
-
-Install [Devbox](https://www.jetify.com/devbox/docs/installing_devbox/) (pulls in Nix on first use), then:
+Compile it to OpenQASM 3:
 
 ```bash
-# rustup remains outside Devbox so rust-toolchain.toml is honored
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # if needed
-
-devbox shell          # or: direnv allow  (committed .envrc)
-llvm-config --version # expect 22.x
-just doctor           # readiness matrix (LLVM, z3, lit, Python, …)
-cargo build -p mlir_bridge -p quonc
-# optional Aer / lit bridge:
-just setup-python && source .venv/bin/activate
+cargo run -p quonc -- test/verify/bell.qn --emit-qasm
 ```
 
-`devbox.json` / `devbox.lock` pin the native toolchain (including `just`). A local flake at `nix/llvm-mlir` joins Nix's separate LLVM and MLIR store paths into one Melior-compatible prefix and sets `MLIR_SYS_220_PREFIX` in the shell `init_hook`.
+Expected shape:
 
-Primary contributor commands: `just doctor`, `just test-fast`, `just test-ci` (or `devbox run -- just …`). Tag releases: `devbox run release` (static MLIR/LLVM + static libz3; see `scripts/release.sh`) — uploads tarballs, `.deb`, and a Homebrew formula asset.
+```qasm
+OPENQASM 3.0;
+include "stdgates.inc";
+qubit[2] q;
+bit[2] c;
+h q[0];
+cx q[0], q[1];
+c[0] = measure q[0];
+c[1] = measure q[1];
+```
 
-### Building from source (manual)
-
-If you prefer not to use Devbox, install LLVM/MLIR 22 and libz3 yourself and set:
+Compile the same style of program for the neutral-atom schedule path:
 
 ```bash
-export MLIR_SYS_220_PREFIX=/path/to/llvm22   # e.g. /usr/lib/llvm-22 or $(brew --prefix llvm@22)
+cargo run -p quonc -- test/na/bell.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-schedule \
+  --emit-resource-report
+```
+
+## Install and Build
+
+### Recommended contributor setup
+
+Use Devbox for LLVM/MLIR 22, Z3, Python, Node, and `just`:
+
+```bash
+git clone https://github.com/arniber21/quon.git
+cd quon
+devbox shell
+just doctor
+cargo build -p quonc
+```
+
+`devbox.json` pins the native toolchain and sets `MLIR_SYS_220_PREFIX` for
+Melior. Rust itself is selected by `rust-toolchain.toml`.
+
+### Manual source setup
+
+Install LLVM/MLIR 22 and libz3, then set:
+
+```bash
+export MLIR_SYS_220_PREFIX=/path/to/llvm22
 export PATH="$MLIR_SYS_220_PREFIX/bin:$PATH"
 ```
 
-On macOS with Homebrew: `brew install llvm@22 z3`, then point `MLIR_SYS_220_PREFIX` at `$(brew --prefix llvm@22)`.
-
-On Ubuntu/Debian: use [apt.llvm.org](https://apt.llvm.org/) (`./llvm.sh 22`) and `apt install libz3-dev`.
-
-## Build
+On macOS with Homebrew:
 
 ```bash
-cargo build --release
+brew install llvm@22 z3
+export MLIR_SYS_220_PREFIX="$(brew --prefix llvm@22)"
+export PATH="$MLIR_SYS_220_PREFIX/bin:$PATH"
 ```
 
-## Usage
+On Ubuntu/Debian, use [apt.llvm.org](https://apt.llvm.org/) for LLVM 22 and
+install `libz3-dev`.
+
+### Release packaging path
+
+The project includes scripts for self-contained release artifacts:
+
+- `scripts/install.sh` for curl-style installs from GitHub Releases.
+- `scripts/package-deb.sh` for Debian packages.
+- `scripts/generate-homebrew-formula.sh` for Homebrew formula generation.
+- `scripts/release.sh` for static release assembly.
+
+These scripts make the intended release path concrete: prebuilt CLIs that do
+not require a local LLVM/MLIR or Z3 install. Contributors building from source
+should still use Devbox.
+
+## CLI Usage
 
 ```bash
-# Compile to OpenQASM 3.0 (generic all-to-all target)
-./target/release/quonc program.qn --emit-qasm
+# Compile to OpenQASM 3 with the default all-to-all fixed target.
+cargo run -p quonc -- test/verify/bell.qn --emit-qasm
 
-# Compile targeting a specific device
-./target/release/quonc program.qn --target device.json --emit-qasm
+# Compile for a fixed target descriptor.
+cargo run -p quonc -- test/verify/bernstein_vazirani.qn \
+  --target backend/tests/fixtures/device_5q.json \
+  --emit-qasm \
+  --metrics
 
-# Neutral-atom schedule + resource report (#112)
-./target/release/quonc test/na/bell.qn \
+# Emit a neutral-atom schedule and resource report.
+cargo run -p quonc -- test/na/qaoa_graph.qn \
   --target targets/neutral_atom/generic_rna_v0.json \
   --emit-na-schedule \
   --emit-resource-report
 
-# Debug: dump IR stages / list pass pipeline
-./target/release/quonc program.qn --dump-ir --verify-linear --emit-qasm
-./target/release/quonc --list-passes
+# Inspect the compiler pipeline.
+cargo run -p quonc -- --list-passes
 
-# Simulate with Qiskit Aer (via python/quon_aer.py — the verify seam)
-# Prefer the bridge directly (it compiles + dialect-normalizes for Qiskit's importer):
-QUONC=./target/release/quonc python python/quon_aer.py program.qn --shots 4096
-# Or pipe QASM into the same bridge (still applies dialect normalize):
-./target/release/quonc program.qn --emit-qasm | python python/quon_aer.py --shots 4096
-# Unsupported: piping quonc QASM straight into qiskit.qasm3.loads without
-# python/quon_aer.py — quonc emits spec-valid `bit[i] == 1` that the importer rejects.
-
-# Experiment loop: live metrics and watch mode (see docs/agents/experiment-loop.md)
-./target/release/quonc program.qn --watch --target device.json --metrics
+# Dump intermediate IR checkpoints.
+cargo run -p quonc -- test/verify/bell.qn --dump-ir --emit-qasm
 ```
 
-## Compiler pipeline
+## Compiler Pipeline
 
-`quonc` runs the fixed (gate-model) pipeline: circ fixpoint (`gate_cancellation`,
-`rotation_merging`, `compiler_uncomputation`, `zx_simplification`) → monadic
-lowering → dynamic passes → native-gate decomp → SABRE routing → depth
-scheduling → OpenQASM 3.0. (`clifford_t_opt` is reserved for [#96](https://github.com/arniber21/quon/issues/96), not in the fixpoint — see #214.) Neutral-atom targets take a separate schedule/resource path (`--emit-na-schedule` / `--emit-resource-report`). Inspect stages with:
+`quonc` runs a shared frontend and optimization path before selecting a backend
+artifact:
+
+```text
+Quon source
+  -> parse / desugar / typecheck
+  -> elaborate parametric circuits
+  -> lower to quantum.circ
+  -> circuit simplification passes
+  -> monadic lowering to quantum.dynamic
+  -> dynamic passes
+  -> fixed OpenQASM path OR neutral-atom schedule path
+```
+
+The fixed path runs native-gate decomposition, routing, post-routing
+decomposition, scheduling, metrics, and OpenQASM 3 emission. The neutral-atom
+path extracts an interaction graph, schedules entangling layers, applies zoned
+or flat movement planning, compacts the schedule, and emits schedule/resource
+artifacts.
+
+The custom IRs are represented as MLIR generic-form operations through Melior.
+Quon uses explicit Rust builders and verifiers around unregistered dialects
+rather than a C++/TableGen dialect build.
+
+## Verification and Testing
 
 ```bash
-./target/release/quonc --list-passes
+just doctor
+just test-fast
+just test-ci
 ```
 
-`--target device.json` selects connectivity, native gates, and noise for the fixed path; omitting it uses the built-in `generic_openqasm` all-to-all target. MVP story-by-story close-out: [`docs/plans/m5-closeout-audit.md`](docs/plans/m5-closeout-audit.md).
+`just test-ci` is the local CI-parity path: formatting, clippy, release build,
+example binaries for lit/FileCheck, Rust tests, Python Aer verifiers, tooling
+checks, and validation-doc assertions.
 
-## Developer tooling
-
-| Tool | Purpose |
-|------|---------|
-| `quon_lsp` | Language server (diagnostics, hover, completion, go-to-definition, semantic tokens) |
-| `quonfmt` | Canonical Quon formatter (`quonfmt --check`, `-w`) — see [docs/quonfmt-style.md](docs/quonfmt-style.md) |
-| `quonlint` | Algorithm-quality linter (`quonlint`, `quonlint.toml`) |
-| VS Code | First-party extension: [`extensions/vscode-quon/`](extensions/vscode-quon/) (TextMate + LSP + `quonfmt`) |
-| Neovim | First-party module: [`nvim-quon/`](nvim-quon/) (LSP + Tree-sitter + `quonfmt`) — see [`docs/agents/editor-setup.md`](docs/agents/editor-setup.md) |
-| Zed | Dev extension: [`extensions/zed-quon/`](extensions/zed-quon/) (Tree-sitter + LSP + `quonfmt`) |
-| Tree-sitter | Shared grammar for editors: [`tree-sitter-quon/`](tree-sitter-quon/) |
-
-```bash
-# All tooling gates (mirrors CI tooling job)
-just ci-tooling
-
-# Broader local sweep over fixture .qn files
-just tooling-full
-```
-
-See [docs/agents/validation.md](docs/agents/validation.md) for the full pre-PR checklist.
-
-## Testing
-
-```bash
-just doctor          # readiness matrix
-just test-fast       # unit + integration (lit soft-skips if tools missing)
-just test-ci         # CI parity: rust + tooling + validation-doc assert
-```
-
-`just test-ci` is the primary pre-PR path. It runs `ci-rust` (fmt, clippy, release build, examples, tests with `QUON_REQUIRE_LIT=1`, nine Aer verify scripts), `ci-tooling`, and `ci-docs-assert`. Actions invokes the same `ci-*` recipes via `devbox run -- just …` (ADR-0012).
-
-Bare `cargo test` / `just test-fast` still soft-skip the FileCheck suite in [`quonc/tests/lit.rs`](quonc/tests/lit.rs) when `lit`/`FileCheck`/oracles are missing. CI and `just test-ci` set `QUON_REQUIRE_LIT` so a missing lit toolchain fails loudly. Run `lit test/lit/ -v` directly for verbose per-test output.
-
-`test/verify/*.py` Aer-verifies all 8 PRD reference algorithms (Bell, teleportation, Bernstein-Vazirani, Grover, QFT, Ising, QAOA, Shor) plus SABRE routing, each against a known theoretical output distribution. Those scripts share `python/quon_aer.py` (compile → Qiskit dialect normalize → Aer → oracle); unit tests for the compat rewrite live in `python/test_quon_aer.py`.
-
-`flux_verify` is checked separately via `cargo flux` in `.github/workflows/flux.yml`.
-
-### Taskless validation
-
-Project-specific ast-grep rules live in `.taskless/rules/`. Run locally:
-
-```bash
-npx @taskless/cli@latest check
-```
-
-CI: `.github/workflows/taskless.yml`. See [docs/agents/validation.md](docs/agents/validation.md).
-
-### Flux refinement types
-
-The `flux_verify` crate demonstrates Flux refinement types on a **nightly** toolchain (the rest of the workspace stays on stable).
-
-**Install Flux** (once per machine):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/flux-rs/flux/main/install.sh | bash
-```
-
-**Run checks:**
-
-```bash
-cargo flux -p flux_verify
-```
-
-CI: `.github/workflows/flux.yml` (path-filtered to `flux_verify/`). Requires z3 on PATH.
+Reference verification scripts live in `test/verify/` and cover Bell,
+teleportation, Bernstein-Vazirani, Grover, QFT, Ising, QAOA, Shor's quantum
+kernel, and routing on constrained fixed targets.
 
 ## Workspace
 
 | Crate | Role |
 |---|---|
-| `quonc` | Compiler driver binary (`quonc`) |
-| `frontend` | Lexer, parser, type checker (linear + Clifford + depth), Z3 refinement, AST→IR lowering |
-| `zx` | ZX-graph data structure (`petgraph::StableGraph`) and rewrite engine |
-| `mlir_bridge` | Melior wrappers, dialect registration, optimization passes, OpenQASM 3.0 emitter |
-| `backend` | `BackendTarget`, noise model, connectivity graph, JSON device loader |
-| `quon_core` | MLIR-free shared types (`DepthExpr`, the OpenQASM 3.0 typed IR) used by both `frontend` and `mlir_bridge` without pulling either into the other |
-| `quon_na` | Neutral-atom backend: interaction graph, placement, AOD/zoned scheduling, compaction, resource reports |
-| `flux_verify` | Flux refinement-type examples (nightly; `cargo flux -p flux_verify`) |
+| `quonc` | Compiler driver binary |
+| `frontend` | Lexer, parser, desugaring, typechecker, refinement checks, AST lowering |
+| `mlir_bridge` | Melior IR builders, dialect wrappers, passes, metrics, OpenQASM emitter |
+| `backend` | Target descriptors, topology, native gates, noise model, JSON loader |
+| `quon_core` | MLIR-free shared kernels and typed OpenQASM data model |
+| `quon_na` | Neutral-atom interaction graph, placement, movement, scheduling, resource reports |
+| `zx` | ZX graph representation and rewrite engine |
+| `quonfmt` | Formatter |
+| `quonlint` / `quonlint-cli` | Algorithm-quality linter |
+| `quon_lsp` | Language server |
+| `flux_verify` | Optional Flux refinement examples |
 
 ## Documentation
 
-- [SPEC.md](SPEC.md) — full language and compiler specification
-- [CONTEXT.md](CONTEXT.md) — domain glossary
-- [docs/adr/](docs/adr/) — architectural decision records
-- [GitHub Issues](../../issues) — implementation tracker; #1 is the master PRD
+- [SPEC.md](SPEC.md) - language and compiler specification.
+- [CONTEXT.md](CONTEXT.md) - domain glossary and project vocabulary.
+- [docs/adr/](docs/adr/) - architectural decisions.
+- [docs/neutral_atom/architecture_model.md](docs/neutral_atom/architecture_model.md) - neutral-atom model and citations.
+- [docs/plans/m5-closeout-audit.md](docs/plans/m5-closeout-audit.md) - M5 close-out audit and implementation evidence.
+- [website/](website/) - Starlight docs site.
+
+## Maturation Path
+
+Quon is growing along a deliberate production-tooling path:
+
+- make installation increasingly boring through self-contained releases;
+- keep the compiler pipeline reproducible with CI-parity local commands;
+- make backend artifacts more inspectable with schedule/IR visualization;
+- deepen neutral-atom validation with benchmark regressions and first-class
+  schedule IR;
+- broaden optimization coverage while preserving verifier-backed correctness;
+- connect more static invariants to backend legality and resource accounting.
+
+Roadmap issues are tracked openly, but the repository's public surface is built
+around the toolkit capabilities already represented in source, tests, docs, and
+command-line workflows.
