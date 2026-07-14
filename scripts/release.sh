@@ -242,6 +242,11 @@ Install (example):
   sudo install -m 755 ${ARCHIVE_NAME}/quonc ${ARCHIVE_NAME}/quonfmt \\
     ${ARCHIVE_NAME}/quon_lsp ${ARCHIVE_NAME}/quonlint /usr/local/bin/
 
+Or use a distribution channel (no LLVM/Z3 required):
+  brew install arniber21/quon/quon          # after tap publish
+  sudo apt install ./quon_*.deb             # Linux Release asset
+  curl -fsSL https://raw.githubusercontent.com/arniber21/quon/main/scripts/install.sh | bash
+
 Optional Qiskit Aer simulation still needs Python deps from the Quon repo
 (\`pip install -r python/requirements.txt\`); the CLIs themselves do not.
 

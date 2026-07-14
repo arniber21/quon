@@ -31,10 +31,12 @@ jobs:
             os: ubuntu-latest
             archive_os: unknown-linux-gnu
             archive_arch: x86_64
+            package_deb: true
           - name: macos-aarch64
             os: macos-14
             archive_os: apple-darwin
             archive_arch: aarch64
+            package_deb: false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -98,6 +100,34 @@ jobs:
           echo "name=$(basename "$archive")" >> "$GITHUB_OUTPUT"
           ls -lh "$archive"
 
+      - name: Build .deb package (Linux)
+        id: deb
+        if: matrix.package_deb
+        env:
+          QUON_RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev
+          chmod +x scripts/package-deb.sh
+          ./scripts/package-deb.sh
+          version="${{ steps.version.outputs.version }}"
+          version="${version#v}"
+          # Map archive arch → Debian arch (x86_64→amd64, aarch64→arm64).
+          case "${{ matrix.archive_arch }}" in
+            x86_64) deb_arch=amd64 ;;
+            aarch64) deb_arch=arm64 ;;
+            *) echo "unknown arch" >&2; exit 1 ;;
+          esac
+          deb="dist/quon_${version}_${deb_arch}.deb"
+          if [[ ! -f "$deb" ]]; then
+            echo "missing deb: $deb" >&2
+            ls -la dist/ || true
+            exit 1
+          fi
+          echo "path=$deb" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$deb")" >> "$GITHUB_OUTPUT"
+          ls -lh "$deb"
+
       - name: Upload archive artifact
         uses: actions/upload-artifact@v4
         with:
@@ -105,11 +135,88 @@ jobs:
           path: ${{ steps.archive.outputs.path }}
           if-no-files-found: error
 
-      - name: Publish GitHub Release assets
+      - name: Upload .deb artifact
+        if: matrix.package_deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.deb.outputs.name }}
+          path: ${{ steps.deb.outputs.path }}
+          if-no-files-found: error
+
+      - name: Publish archive on GitHub Release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.archive.outputs.path }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish .deb on GitHub Release
+        if: >
+          matrix.package_deb &&
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.deb.outputs.path }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  homebrew-formula:
+    name: homebrew-formula
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage archives into dist/
+        run: |
+          mkdir -p dist
+          # Artifacts land as artifacts/<filename>/<filename> or flat files.
+          find artifacts -type f \( -name 'quon-*.tar.gz' -o -name 'quon_*.deb' \) -print
+          find artifacts -type f -name 'quon-*.tar.gz' -exec cp -v {} dist/ \;
+          ls -lh dist/ || true
+
+      - name: Generate Homebrew formula
+        env:
+          QUON_RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          chmod +x scripts/generate-homebrew-formula.sh
+          ./scripts/generate-homebrew-formula.sh --out dist/quon.rb
+          echo "---- generated formula ----"
+          cat dist/quon.rb
+
+      - name: Upload formula artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quon.rb
+          path: dist/quon.rb
+          if-no-files-found: error
+
+      - name: Publish formula on GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/quon.rb
           fail_on_unmatched_files: true
           generate_release_notes: true
         env:

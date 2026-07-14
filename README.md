@@ -2,7 +2,24 @@
 
 An MLIR-based optimizing compiler for quantum programs. Accepts programs in the Quon language — a functional language with linear types and a monadic quantum interface — and emits OpenQASM 3.0 for execution on Qiskit Aer or real hardware.
 
-## Prerequisites
+## Install (users — no LLVM required)
+
+Self-contained CLIs from [GitHub Releases](https://github.com/arniber21/quon/releases) — no system LLVM, MLIR, or Z3:
+
+```bash
+# Homebrew (once arniber21/homebrew-quon is published)
+brew install arniber21/quon/quon
+
+# Debian / Ubuntu
+sudo apt install ./quon_*.deb
+
+# Curl installer
+curl -fsSL https://raw.githubusercontent.com/arniber21/quon/main/scripts/install.sh | bash
+```
+
+Full details: [website install docs](website/src/content/docs/getting-started/install.md). Qiskit Aer remains optional for simulation.
+
+## Prerequisites (contributors)
 
 | Dependency | Version | Notes |
 |---|---|---|
@@ -30,7 +47,7 @@ devbox run setup-python && source .venv/bin/activate
 `devbox.json` / `devbox.lock` pin the native toolchain. A local flake at `nix/llvm-mlir` joins Nix's separate LLVM and MLIR store paths into one Melior-compatible prefix and sets `MLIR_SYS_220_PREFIX` in the shell `init_hook`.
 
 Useful scripts: `devbox run build`, `devbox run test`, `devbox run check`.
-Tag releases: `devbox run release` (static MLIR/LLVM + static libz3; see `scripts/release.sh`).
+Tag releases: `devbox run release` (static MLIR/LLVM + static libz3; see `scripts/release.sh`) — uploads tarballs, `.deb`, and a Homebrew formula asset.
 
 ### Building from source (manual)
 
