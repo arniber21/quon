@@ -28,7 +28,8 @@ use mlir_bridge::pipeline::{
 };
 use quon_na::{
     GraphScheduleRequest, NaBackendKind, NaScheduleOptions, PlacementStrategy, PlacerMode,
-    ResourceReport, ScheduleLayer, run_from_graph, run_from_module,
+    ResourceReport, ScheduleLayer, ScheduleLowerParams, ScheduleSpec, dump_schedule_text,
+    lower_schedule, run_from_graph, run_from_module,
 };
 
 /// Inputs for one compile invocation.
@@ -83,6 +84,8 @@ pub struct CompileReport {
     pub qasm: Option<String>,
     /// Neutral-atom schedule layers when the NA path ran.
     pub na_schedule: Option<Vec<ScheduleLayer>>,
+    /// Canonical `quantum.na` schedule spec (ADR-0011) when the NA path ran.
+    pub na_schedule_spec: Option<ScheduleSpec>,
     /// Neutral-atom resource report when the NA path ran.
     pub resource_report: Option<ResourceReport>,
     /// Interaction-graph vertex count (logical qubits) for NA compiles.
@@ -113,6 +116,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
             CompileReport {
                 qasm: artifacts.qasm,
                 na_schedule: artifacts.na_schedule,
+                na_schedule_spec: artifacts.na_schedule_spec,
                 resource_report: artifacts.resource_report,
                 na_logical_qubits: artifacts.na_logical_qubits,
                 snapshot: MetricsSnapshot::ok(
@@ -129,6 +133,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
             CompileReport {
                 qasm: None,
                 na_schedule: None,
+                na_schedule_spec: None,
                 resource_report: None,
                 na_logical_qubits: None,
                 snapshot: MetricsSnapshot {
@@ -152,6 +157,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
 struct CompileArtifacts {
     qasm: Option<String>,
     na_schedule: Option<Vec<ScheduleLayer>>,
+    na_schedule_spec: Option<ScheduleSpec>,
     resource_report: Option<ResourceReport>,
     na_logical_qubits: Option<u64>,
     circuit_metrics: CircuitMetrics,
@@ -196,6 +202,12 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 dump_ir: request.dump_ir,
             };
             let artifacts = run_from_module(&module, na, opts).map_err(|e| e.to_string())?;
+            // ADR-0011: quantum.na is the canonical schedule IR. A planner
+            // schedule that cannot lower to it is a compile failure, not a
+            // degraded artifact.
+            let lower_params = ScheduleLowerParams::from_target(request.target.id.clone(), na);
+            let schedule_spec = lower_schedule(&artifacts.request, &lower_params)
+                .map_err(|e| format!("lowering schedule to quantum.na failed: {e}"))?;
             let circuit_metrics = CircuitMetrics {
                 depth: artifacts.resource_report.estimated_cycles,
                 depth_bound: Some(artifacts.resource_report.estimated_cycles.to_string()),
@@ -208,6 +220,7 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
             Ok(CompileArtifacts {
                 qasm: None,
                 na_schedule: Some(artifacts.layers),
+                na_schedule_spec: Some(schedule_spec),
                 resource_report: Some(artifacts.resource_report),
                 na_logical_qubits: Some(artifacts.logical_qubits),
                 circuit_metrics,
@@ -251,15 +264,22 @@ fn compile_fixed(
     Ok(CompileArtifacts {
         qasm: Some(qasm),
         na_schedule: None,
+        na_schedule_spec: None,
         resource_report: None,
         na_logical_qubits: None,
         circuit_metrics,
     })
 }
 
-/// Serialize schedule layers to pretty JSON.
+/// Serialize schedule layers to pretty JSON (debug/visualization view;
+/// `quantum.na` MLIR is the canonical schedule artifact, ADR-0011).
 pub fn schedule_to_json(layers: &[ScheduleLayer]) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(layers)
+}
+
+/// Render the canonical `quantum.na` schedule as generic-form textual MLIR.
+pub fn schedule_to_mlir(spec: &ScheduleSpec) -> Result<String> {
+    dump_schedule_text(spec).map_err(|e| anyhow!("emitting quantum.na MLIR failed: {e}"))
 }
 
 /// Renders frontend diagnostics with a caret at the offending source span.

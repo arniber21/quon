@@ -9,7 +9,7 @@ use melior::ir::{
 use quon_na::dialect::attr;
 use quon_na::dialect::{
     self as qna, ActionSpec, EntanglePairSpec, LayerSpec, MoveSpec, PositionedAtom, ScheduleSpec,
-    VerifyError,
+    TransferDirection, TransferSpec, VerifyError,
 };
 
 fn context() -> Context {
@@ -378,6 +378,154 @@ fn generic_op<'c>(
         .add_attributes(&attributes)
         .build()
         .expect("generic op builds")
+}
+
+fn transfer(
+    atom: u32,
+    site: u32,
+    row: u32,
+    col: u32,
+    direction: TransferDirection,
+) -> TransferSpec {
+    TransferSpec {
+        atom,
+        site,
+        aod_id: 0,
+        row,
+        col,
+        direction,
+        duration_us: 15,
+    }
+}
+
+#[test]
+fn verifier_rejects_move_ref_inconsistent_with_load() {
+    // Atom 0 is loaded into trap (0, 0, 0) but the move claims (0, 0, 5).
+    let mut spec = valid_spec();
+    spec.layers.insert(
+        0,
+        LayerSpec {
+            cycle: 0,
+            actions: vec![ActionSpec::Transfer(transfer(
+                0,
+                0,
+                0,
+                0,
+                TransferDirection::SlmToAod,
+            ))],
+        },
+    );
+    let LayerSpec { actions, .. } = &mut spec.layers[1];
+    let ActionSpec::Move { moves, .. } = &mut actions[0] else {
+        panic!("expected move layer");
+    };
+    moves[0].col = 5;
+    moves[0].from_x_um = 50.0;
+    moves[0].to_x_um = 50.0;
+    assert!(matches!(
+        verify_spec(&spec),
+        Err(VerifyError::AodRefMismatch {
+            atom: 0,
+            col: 5,
+            bound_col: 0,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn verifier_accepts_move_ref_matching_load_and_store() {
+    let mut spec = valid_spec();
+    spec.layers.insert(
+        0,
+        LayerSpec {
+            cycle: 0,
+            actions: vec![
+                ActionSpec::Transfer(transfer(0, 0, 0, 0, TransferDirection::SlmToAod)),
+                ActionSpec::Transfer(transfer(1, 1, 1, 1, TransferDirection::SlmToAod)),
+            ],
+        },
+    );
+    spec.layers.insert(
+        2,
+        LayerSpec {
+            cycle: 2,
+            actions: vec![
+                ActionSpec::Transfer(transfer(0, 10, 0, 0, TransferDirection::AodToSlm)),
+                ActionSpec::Transfer(transfer(1, 11, 1, 1, TransferDirection::AodToSlm)),
+            ],
+        },
+    );
+    for (index, layer) in spec.layers.iter_mut().enumerate() {
+        layer.cycle = index as u32;
+    }
+    verify_spec(&spec).expect("consistent transfer/move refs verify");
+}
+
+#[test]
+fn verifier_rejects_store_ref_inconsistent_with_load() {
+    let mut spec = valid_spec();
+    spec.layers.insert(
+        0,
+        LayerSpec {
+            cycle: 0,
+            actions: vec![ActionSpec::Transfer(transfer(
+                0,
+                0,
+                0,
+                0,
+                TransferDirection::SlmToAod,
+            ))],
+        },
+    );
+    // Store claims a different trap than the load.
+    spec.layers.insert(
+        2,
+        LayerSpec {
+            cycle: 2,
+            actions: vec![ActionSpec::Transfer(transfer(
+                0,
+                10,
+                3,
+                3,
+                TransferDirection::AodToSlm,
+            ))],
+        },
+    );
+    for (index, layer) in spec.layers.iter_mut().enumerate() {
+        layer.cycle = index as u32;
+    }
+    assert!(matches!(
+        verify_spec(&spec),
+        Err(VerifyError::AodRefMismatch {
+            atom: 0,
+            row: 3,
+            bound_row: 0,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn verifier_rejects_two_moves_claiming_one_trap_from_different_sources() {
+    let mut spec = valid_spec();
+    let LayerSpec { actions, .. } = &mut spec.layers[0];
+    let ActionSpec::Move { moves, .. } = &mut actions[0] else {
+        panic!("expected move layer");
+    };
+    // Second move claims the same (aod, row, col) as the first but starts
+    // somewhere else.
+    moves[1].row = moves[0].row;
+    moves[1].col = moves[0].col;
+    assert!(matches!(
+        verify_spec(&spec),
+        Err(VerifyError::AodTrapDoubleClaim {
+            aod_id: 0,
+            row: 0,
+            col: 0,
+            ..
+        })
+    ));
 }
 
 #[test]

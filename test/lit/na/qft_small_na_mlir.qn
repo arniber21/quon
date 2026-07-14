@@ -1,0 +1,35 @@
+-- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-mlir %t.mlir --quiet
+-- RUN: %na-roundtrip < %t.mlir > %t.rt.mlir
+-- RUN: diff %t.mlir %t.rt.mlir
+-- RUN: %FileCheck %s < %t.mlir
+--
+-- Occupancy regression: sequential gates that revisit entanglement pairs.
+-- The zoned placer used to reassign a pair while an earlier gate's atom was
+-- still parked on it, producing two same-cycle transfers claiming one site
+-- ("site N has multiple occupancy claims" at MLIR emit). With cross-layer
+-- occupancy tracking the whole schedule verifies and round-trips.
+
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+        H @0
+}
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+        (for i in (range(n - 1)) { controlled(Rz(PI / 4.0)) @(0, i + 1) })
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> = match n {
+0 => identity 0,
+_ => apply_hadamard n |> controlled_rotations n |> on_high(qft(n - 1), n) |> swap_reverse n
+}
+
+fn qft_small(): Q<List<Bit>> = run {
+        q <- (qft(4)) @ (qreg 4)
+        measure_all q
+}
+
+-- CHECK: "quantum.na.schedule"()
+-- CHECK: "quantum.na.transfer"()
+-- CHECK-SAME: direction = "slm_to_aod"
+-- CHECK: "quantum.na.move"()
+-- CHECK: "quantum.na.entangle"()
+-- CHECK: target_id = "generic_reconfigurable_neutral_atom_v0"

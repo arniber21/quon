@@ -1,0 +1,26 @@
+-- Round-trip stability for driver-produced quantum.na MLIR (#167).
+-- dump → parse → dump must be byte-stable, twice.
+--
+-- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-mlir %t.mlir --quiet
+-- RUN: %na-roundtrip < %t.mlir > %t.rt.mlir
+-- RUN: %na-roundtrip < %t.rt.mlir > %t.rt2.mlir
+-- RUN: diff %t.mlir %t.rt.mlir
+-- RUN: diff %t.rt.mlir %t.rt2.mlir
+-- RUN: %FileCheck %s < %t.rt.mlir
+
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+        H @0 |> CNOT @(0, 1)
+}
+
+fn bell_na(): Q<(Bit, Bit)> = run {
+        (q0, q1) <- (bell_state()) @ (qreg 2)
+        b0 <- measure q0
+        b1 <- measure q1
+        return (b0, b1)
+}
+
+-- CHECK: "quantum.na.schedule"()
+-- CHECK: "quantum.na.transfer"()
+-- CHECK: "quantum.na.move"()
+-- CHECK: "quantum.na.entangle"()
+-- CHECK: target_id = "generic_reconfigurable_neutral_atom_v0"

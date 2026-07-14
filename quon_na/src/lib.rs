@@ -37,6 +37,8 @@ pub mod entangling_schedule;
 pub mod extract;
 pub mod graph;
 pub mod layout;
+#[cfg(feature = "mlir")]
+pub mod lower;
 pub mod movement;
 pub mod pipeline;
 pub mod placement;
@@ -93,7 +95,11 @@ pub use zoned::{
 };
 
 #[cfg(feature = "mlir")]
+pub use dialect::{ScheduleSpec, dump_schedule_text};
+#[cfg(feature = "mlir")]
 pub use extract::{ExtractError, extract_interaction_graph, extract_interaction_graph_with_gamma};
+#[cfg(feature = "mlir")]
+pub use lower::{ScheduleLowerError, ScheduleLowerParams, lower_layers, lower_schedule};
 #[cfg(feature = "mlir")]
 pub use pipeline::run_from_module;
 pub use pipeline::{
