@@ -52,7 +52,22 @@
         "cargo test --workspace --exclude flux_verify"
       ],
       "ci": [
+        "export PATH=\"$PWD/.venv/bin:$PATH\"",
         "cargo test --workspace --exclude flux_verify"
+      ],
+      "ci-python": [
+        "python3 -m venv .venv",
+        ".venv/bin/python -m pip install --upgrade pip",
+        ".venv/bin/python -m pip install -r python/requirements.txt lit"
+      ],
+      "tooling-build": [
+        "cargo build --release -p quonfmt -p quonlint-cli -p quon_lsp"
+      ],
+      "lsp-vscode-build": [
+        "cargo build --release -p quon_lsp -p quonfmt"
+      ],
+      "coverage": [
+        "./scripts/coverage.sh"
       ],
       "release": [
         "cargo build --release -p quonc -p quonfmt -p quon_lsp -p quonlint-cli"

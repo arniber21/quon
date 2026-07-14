@@ -19,7 +19,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  MLIR_SYS_220_PREFIX: /usr/lib/llvm-22
 
 jobs:
   tree-sitter:
@@ -48,15 +47,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM 22, MLIR, libz3, xvfb
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget gnupg lsb-release software-properties-common libz3-dev xvfb
-          wget -q https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 22
-          sudo apt-get install -y libmlir-22-dev mlir-22-tools llvm-22-dev llvm-22-tools libpolly-22-dev
-          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+      - name: Install Devbox toolchain
+        uses: jetify-com/devbox-install-action@v0.12.0
+        with:
+          enable-cache: true
+
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -65,7 +62,7 @@ jobs:
           shared-key: vscode-extension
 
       - name: Build quon_lsp and quonfmt
-        run: cargo build --release -p quon_lsp -p quonfmt
+        run: devbox run lsp-vscode-build
 
       - uses: actions/setup-node@v4
         with:
