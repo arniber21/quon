@@ -69,7 +69,7 @@ jobs:
         run: |
           # Fail loudly if Devbox cache is somehow disabled for this job —
           # cold LLVM is multi-GB and release builds already take a long time.
-          if [[ "${{ env.DEVBOX_CACHE_HIT:-}}" == "false" ]]; then
+          if [[ "${DEVBOX_CACHE_HIT:-}" == "false" ]]; then
             echo "release: Devbox Nix cache miss (expected on first tag; continuing)"
           fi
           # cmake is required to build static libz3.a (scripts/build-static-z3.sh).
