@@ -209,7 +209,9 @@ pub enum MovementPlanError {
         lhs: AtomId,
         rhs: AtomId,
     },
-    #[error("entangling geometry violation (R1–R3) at cycle {cycle}: {detail}")]
+    #[error(
+        "entangling geometry violation (R1–R3) at cycle {cycle}: {detail}; the flat AOD planner checks all occupied atoms, idle ones included (B11, fail-closed) — a placement grid denser than the target's Rydberg limits cannot entangle legally; use the zoned backend (--na-backend zoned) for such targets"
+    )]
     EntanglingGeometry { cycle: u32, detail: String },
     #[error("multi-qubit entangle (k={k}) unsupported by flat movement planner at cycle {cycle}")]
     UnsupportedEntangleArity { cycle: u32, k: usize },
