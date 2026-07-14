@@ -58,3 +58,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
 lto = true
+
+# Build scripts default to opt-level 0, and cc-rs forwards that as -O0 to the
+# C++ shims of tblgen/mlir-sys. Nix's gcc injects -D_FORTIFY_SOURCE, and glibc
+# emits "#warning _FORTIFY_SOURCE requires compiling with optimization" at -O0,
+# which tblgen's -Werror turns fatal. -O1 satisfies fortify on every profile.
+[profile.dev.build-override]
+opt-level = 1
+
+[profile.release.build-override]
+opt-level = 1
