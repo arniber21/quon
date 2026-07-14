@@ -954,12 +954,12 @@ All passes are implemented in Rust and registered with the MLIR pass manager as 
 ### 7.1 Pass Pipeline
 
 ```
-quantum.circ passes:
+quantum.circ passes (fixpoint order — ADR-0013 / #96):
   1. gate-cancellation
   2. rotation-merging
-  3. compiler-uncomputation
-  4. zx-simplification
-  5. clifford-t-optimization
+  3. clifford-t-optimization
+  4. compiler-uncomputation
+  5. zx-simplification
 
 quantum.dynamic passes:
   6. measurement-deferral
@@ -971,10 +971,9 @@ quantum.physical passes (after physical lowering):
   10. depth-optimal-scheduling
 ```
 
-Passes 1–4 run to fixpoint before lowering to `quantum.dynamic` today. Pass 5 is reserved (see note). Passes 8–10 run in strict order.
+Passes 1–2 and 4–5 run to fixpoint today. Pass 3 is reserved (see note) and will join that fixpoint when #96 ships. Passes 8–10 run in strict order.
 
-> **Implementation note (#214 / #96):** Pass 5 (`clifford-t-optimization`) is specified above but **not shipped and not invoked**. A prior shallow alias that only re-ran gate cancellation (double-running cancellation each fixpoint round) was removed in #214. Real Clifford+T (phase polynomials + Aaronson–Gottesman tableaux) remains #96. Do not reintroduce a pass named `clifford_t_opt` that merely forwards to `gate_cancellation`.
-
+> **Implementation note (#214 / #96 / ADR-0013):** Pass 3 (`clifford-t-optimization`) is specified above but **not shipped and not invoked**. A prior shallow alias that only re-ran gate cancellation was removed in #214. Real Clifford+T remains #96: Reed–Muller / phase-polynomial T-count reduction plus Aaronson–Gottesman canonical Clifford resynthesis (see §7.2). Do not reintroduce a pass named `clifford_t_opt` that merely forwards to `gate_cancellation`. When shipped, fixpoint order is cancel → merge → **clifford_t_opt** → uncompute → ZX so optimizer-inserted open `borrow`s can be closed by uncomputation in the same round.
 ### 7.2 `quantum.circ` Passes
 
 #### Gate Cancellation
@@ -1003,7 +1002,7 @@ Merged rotations where `θ_total mod 2π = 0` are eliminated entirely. Depth att
 
 #### Compiler-Assisted Uncomputation
 
-Scans for `quantum.circ.borrow` blocks where the region body does not contain the adjoint of its initial sub-circuit. If the entire body is a reversible circuit (all ops have inverses registered in the gate table), appends `adjoint(body)` before the block terminator. Applied before ZX simplification so inserted adjoints are eligible for further simplification.
+Scans for `quantum.circ.borrow` blocks where the region body does not contain the adjoint of its initial sub-circuit. If the entire body is a reversible circuit (all ops have inverses registered in the gate table), appends `adjoint(body)` before the block terminator. Runs **after** Clifford+T optimization (ADR-0013) so open reversible borrows inserted for Hadamard gadgetization can be closed in the same fixpoint round, and **before** ZX simplification so inserted adjoints are eligible for further simplification.
 
 #### ZX-Calculus Simplification
 
@@ -1029,11 +1028,19 @@ After fixpoint, the ZX-graph is converted back to a gate circuit using the Euler
 
 #### Clifford+T Optimization
 
-Branches on the `clifford` attribute of the top-level circuit region:
+Fault-tolerant T-count / Clifford simplification pass (ADR-0013, #96). Melior-free algorithms live in the `clifford_t` crate; the MLIR pass extracts gate lists, rebuilds `quantum.circ.func` bodies, and may insert `quantum.circ.borrow` ops for gadget ancillas.
 
-**Clifford branch:** Builds a stabilizer tableau representation of the Clifford circuit. Propagates Pauli operators through the circuit symbolically. Identifies sequences that compose to identity and removes them. Uses the Aaronson-Gottesman tableau simulation algorithm.
+**Clifford branch** (`clifford=true`, and maximal Clifford layers of Universal funcs): Aaronson–Gottesman stabilizer tableau simulation with **canonical Clifford resynthesis**. Kernel uses CHP generators `{CNOT, H, S}`; emit expands to registry Clifford names. Replaces the layer/body rather than only erasing adjacent identity windows.
 
-**Universal branch:** Minimizes T-count using a greedy phase polynomial representation. Identifies T and T† gates that can be combined or cancelled via the phase polynomial `(-1)^(f(x))` representation. References the Todd algorithm structure. Each T-gate reduction saves one non-Clifford gate — important for fault-tolerant cost.
+**Universal branch** (`clifford=false`): Primary objective is **T-count** (depth and non-T gate count may increase; `depth` is recomputed). Pipeline shape:
+
+1. Normalize exact `Rz(k·π/4)` into discrete Clifford+T; if the phase-polynomial middle still contains non-commensurate phases, decline the func (leave unchanged).
+2. Eliminate internal Hadamards via gadgetization (ancillas as `borrow` only; bodies may be left open for uncomputation).
+3. Rewrite to `Clifford_in · (CNOT+T) · Clifford_out`; canonize Clifford blocks as above.
+4. Optimize the CNOT+T middle with Amy–Mosca **Reed–Muller / phase-polynomial** methods — exact on small CI instances, best-effort RM-decoder heuristics in general (not a claim of global optimality for arbitrary width).
+5. All-or-nothing per Universal func: any stage failure leaves the body unchanged. If the result is T-free, re-infer and may set `clifford=true`.
+
+Interaction with ZX after faithful multi-qubit extraction (#75) is a known revisit; #96 does not special-case ZX.
 
 ### 7.3 `quantum.dynamic` Passes
 
@@ -1307,7 +1314,7 @@ quon/
 │       │   ├── rotation_merging.rs
 │       │   ├── compiler_uncomputation.rs
 │       │   ├── zx_simplification.rs  # Calls into zx crate directly (no FFI)
-│       │   ├── clifford_t_opt.rs     # Reserved for #96 (not present; see #214)
+│       │   ├── clifford_t_opt.rs     # Reserved for #96 — MLIR glue only (see ADR-0013)
 │       │   ├── measurement_deferral.rs
 │       │   ├── classical_region_fusion.rs
 │       │   ├── sabre_routing.rs
@@ -1315,6 +1322,9 @@ quon/
 │       │   └── depth_scheduling.rs
 │       └── emit/
 │           └── openqasm3.rs          # IR → OpenQASM 3.0 (walks via C API)
+│
+├── clifford_t/                       # Library crate — Melior-free FT Clifford+T kernel (#96 / ADR-0013)
+│   └── src/                          # tableau, phase_poly / RM, Hadamard gadgets, synthesis modules
 │
 ├── backend/                          # Library crate — target descriptors
 │   ├── Cargo.toml
@@ -1660,11 +1670,12 @@ fn ising_time_series(n: Nat, j: Float, h: Float, dt: Float, steps: Int, n_trott:
 - Lattner et al., "MLIR: Scaling Compiler Infrastructure for Domain Specific Computation" (CGO 2021)
 - Li et al., "Tackling the Qubit Mapping Problem for NISQ-Era Quantum Devices" (ASPLOS 2019) — SABRE routing algorithm
 - van de Wetering, "ZX-calculus for the working quantum computer scientist" (2020) — ZX rewriting rules and completeness
-- Amy et al., "Polynomial-Time T-Depth Optimization of Clifford+T Circuits Via Matroid Partitioning" (IEEE TC 2014) — T-count minimization
+- Amy et al., "Polynomial-Time T-Depth Optimization of Clifford+T Circuits Via Matroid Partitioning" (IEEE TC 2014) — phase polynomials / T-depth lineage
+- Amy & Mosca, "T-Count Optimization and Reed–Muller Codes" (IEEE TIT 2019) — Universal-branch T-count kernel for #96 / ADR-0013
 - Ross & Selinger, "Optimal ancilla-free Clifford+T approximation of z-rotations" (2016)
 - Rios & Selinger, "A categorical model for a quantum circuit description language" — Proto-Quipper foundations
 - Gottesman, "The Heisenberg Representation of Quantum Computers" (1998) — Stabilizer tableau / Clifford simulation
-- Aaronson & Gottesman, "Improved simulation of stabilizer circuits" (PRA 2004) — Tableau algorithm
+- Aaronson & Gottesman, "Improved simulation of stabilizer circuits" (PRA 2004) — Tableau algorithm / CHP (Clifford-branch canon for #96)
 - Cowtan et al., "On the Qubit Routing Problem" (TQC 2019) — Routing survey
 - Khaneja & Glaser, "Cartan decomposition of SU(2^n)" (2001) — KAK two-qubit decomposition
 - Zhang et al., "Geometric theory of nonlocal two-qubit operations" (PRA 2003) — Cartan decomposition for quantum gates
