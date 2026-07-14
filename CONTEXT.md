@@ -69,6 +69,9 @@ _Avoid_: gate table, STD_GATES, native-gate map
 
 ### Optimization
 
+**T-count**: The number of non-Clifford `T` / `T†` gates in a circuit (after normalizing exact `Rz(k·π/4)` into discrete Clifford+T when applicable). The primary cost metric for fault-tolerant Clifford+T optimization; distinct from total gate count and from `DepthExpr`.
+_Avoid_: T-gate count, non-Clifford count, magic-state count
+
 **ZX-graph**: An auxiliary graph representation of a `quantum.circ` circuit used for non-local algebraic simplification. Nodes are Z- or X-spiders with phase angles; edges are wires or Hadamard boxes. Built on `petgraph::StableGraph`.
 _Avoid_: ZX-diagram, spider graph
 
