@@ -157,6 +157,19 @@ RUSTFLAGS_EXTRA=(
 case "$OS_KERNEL" in
   Darwin)
     RUSTFLAGS_EXTRA+=("-Clink-arg=-Wl,-search_paths_first")
+    # LLVM's --system-libs pulls in -lz/-lxml2/-liconv. Inside devbox, nix's
+    # NIX_LDFLAGS resolves those to /nix/store dylibs, which fails the link
+    # audit (users don't have a nix store). Search the HOST SDK's stub dir
+    # first so they bind to /usr/lib install names instead. Nix's apple-sdk
+    # strips these stubs and sets SDKROOT/DEVELOPER_DIR, so query the host
+    # xcrun with both cleared.
+    host_sdk="$(env -u SDKROOT -u DEVELOPER_DIR /usr/bin/xcrun --show-sdk-path 2>/dev/null || true)"
+    if [[ -n "$host_sdk" && -f "$host_sdk/usr/lib/libz.tbd" ]]; then
+      echo "release: resolving system libs against host SDK $host_sdk"
+      RUSTFLAGS_EXTRA+=("-Lnative=$host_sdk/usr/lib")
+    else
+      echo "release: warning: host macOS SDK stubs not found; nix dylibs may fail the link audit" >&2
+    fi
     ;;
 esac
 
@@ -243,7 +256,6 @@ Install (example):
     ${ARCHIVE_NAME}/quon_lsp ${ARCHIVE_NAME}/quonlint /usr/local/bin/
 
 Or use a distribution channel (no LLVM/Z3 required):
-  brew install arniber21/quon/quon          # after tap publish
   sudo apt install ./quon_*.deb             # Linux Release asset
   curl -fsSL https://raw.githubusercontent.com/arniber21/quon/main/scripts/install.sh | bash
 

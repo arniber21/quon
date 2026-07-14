@@ -41,6 +41,11 @@ audit_linux() {
   if echo "$deps" | grep -Eiq 'libMLIR([^[:alnum:]_-]|$)|libMLIR-C|libz3'; then
     fail "$bin links shared MLIR and/or z3 (see ldd above)"
   fi
+  # Binaries built inside devbox can silently link /nix/store .so paths
+  # (zlib, libxml2, ...) that won't exist on user machines.
+  if echo "$deps" | grep -q '/nix/store/'; then
+    fail "$bin links Nix store libraries (see ldd above)"
+  fi
 }
 
 audit_darwin() {
