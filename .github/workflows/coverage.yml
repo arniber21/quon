@@ -32,6 +32,8 @@ jobs:
         run: cargo install cargo-llvm-cov --locked
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: nix-${{ hashFiles('devbox.lock') }}
 
       - name: Coverage summary
         run: devbox run coverage

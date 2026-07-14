@@ -119,10 +119,14 @@ fi
 
 echo "tooling-check: mode=$MODE files=${#CORPUS_FILES[@]}"
 
-if [[ ! -x "$ROOT/target/release/quonfmt" || ! -x "$ROOT/target/release/quonlint" ]]; then
-  cargo build "${RELEASE[@]}" "${BUILD_PKGS[@]}"
-else
+# Reuse binaries only if they still run: a CI-cache-restored binary can
+# reference nix store libraries that no longer exist on this machine.
+if [[ -x "$ROOT/target/release/quonfmt" && -x "$ROOT/target/release/quonlint" ]] \
+  && "$ROOT/target/release/quonfmt" --version >/dev/null 2>&1 \
+  && "$ROOT/target/release/quonlint" --version >/dev/null 2>&1; then
   echo "tooling-check: reusing existing release binaries"
+else
+  cargo build "${RELEASE[@]}" "${BUILD_PKGS[@]}"
 fi
 
 QUONFMT="$ROOT/target/release/quonfmt"

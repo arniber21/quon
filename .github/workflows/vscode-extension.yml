@@ -60,6 +60,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: vscode-extension
+          prefix-key: nix-${{ hashFiles('devbox.lock') }}
 
       - name: Build quon_lsp and quonfmt
         run: devbox run lsp-vscode-build
