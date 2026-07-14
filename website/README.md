@@ -1,6 +1,6 @@
-# quon docs
+# Quon docs
 
-Docs site for quon, built with [Starlight](https://starlight.astro.build/).
+Docs site for Quon, built with [Starlight](https://starlight.astro.build/).
 
 ```
 pnpm install
