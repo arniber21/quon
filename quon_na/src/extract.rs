@@ -10,6 +10,12 @@
 //! `quantum.circ.func`s are a fallback for standalone circ-only fixtures — never
 //! merged with a non-empty top-level extract (avoids double-counting inlined
 //! callees). Logical qubit ids are densified to `0..n` after extraction.
+//!
+//! Wire-tracker roots for qubits allocated inside a block are raw SSA value
+//! addresses, so ids are densified in **first-appearance order** during the
+//! walk (block arguments first, then gate operands in program order) — never
+//! by sorting the raw roots, which would make qubit numbering depend on
+//! allocator layout and vary run to run.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -60,6 +66,7 @@ pub fn extract_interaction_graph_with_gamma<'c>(
     let mut segments = Vec::new();
     let mut next_id = 0u32;
     let mut used_qubits = BTreeSet::new();
+    let mut numbering = RootNumbering::default();
 
     // Top-level executed program (post-monadic-lowering), same as metrics.
     // After inlining, leftover `quantum.circ.func` callees are dead code — do
@@ -71,6 +78,7 @@ pub fn extract_interaction_graph_with_gamma<'c>(
         &mut segments,
         &mut next_id,
         &mut used_qubits,
+        &mut numbering,
     );
 
     // Named `quantum.circ.func`s only when the top-level body contributed no
@@ -78,6 +86,7 @@ pub fn extract_interaction_graph_with_gamma<'c>(
     // modules (same fallback idea as depth_scheduling / sabre_routing).
     if interactions.is_empty() {
         used_qubits.clear();
+        numbering = RootNumbering::default();
         let mut op = body.first_operation();
         while let Some(current) = op {
             op = current.next_in_block();
@@ -96,6 +105,7 @@ pub fn extract_interaction_graph_with_gamma<'c>(
                 &mut segments,
                 &mut next_id,
                 &mut used_qubits,
+                &mut numbering,
             );
         }
     }
@@ -134,24 +144,48 @@ fn densify_logical_qubits(
     (dense_vertices, interactions)
 }
 
+/// Densifies wire-tracker roots (raw SSA addresses or block-arg indices) to
+/// stable `0..n` ids in first-appearance order.
+#[derive(Default)]
+struct RootNumbering {
+    dense: HashMap<usize, u32>,
+    next: u32,
+}
+
+impl RootNumbering {
+    fn id(&mut self, root: usize) -> LogicalQubitId {
+        let next = &mut self.next;
+        let id = *self.dense.entry(root).or_insert_with(|| {
+            let id = *next;
+            *next += 1;
+            id
+        });
+        LogicalQubitId(id)
+    }
+}
+
 fn extract_block<'c, 'a>(
     block: melior::ir::BlockRef<'c, 'a>,
     interactions: &mut Vec<Interaction>,
     segments: &mut Vec<InteractionSegment>,
     next_id: &mut u32,
     used_qubits: &mut BTreeSet<LogicalQubitId>,
+    numbering: &mut RootNumbering,
 ) {
+    // Block-argument qubits are wire-tracker roots at their argument index
+    // (see `WireTracker::seed_block_args`); number them first, in order.
     for index in 0..block.argument_count() {
         if let Ok(argument) = block.argument(index) {
             let value = Value::from(argument);
             if quantum_circ::is_qubit_type(value.r#type()) {
-                used_qubits.insert(LogicalQubitId(index as u32));
+                used_qubits.insert(numbering.id(index));
             }
         }
     }
 
     let mut visitor = ExtractVisitor {
         segments: vec![Vec::new()],
+        numbering,
     };
     dynamic_walk::walk_block(block, &mut visitor);
 
@@ -193,11 +227,12 @@ struct RawGate {
     gate_name: String,
 }
 
-struct ExtractVisitor {
+struct ExtractVisitor<'n> {
     segments: Vec<Vec<RawGate>>,
+    numbering: &'n mut RootNumbering,
 }
 
-impl<'c, 'a> DynamicVisitor<'c, 'a> for ExtractVisitor {
+impl<'c, 'a> DynamicVisitor<'c, 'a> for ExtractVisitor<'_> {
     fn gate(&mut self, op: OperationRef<'c, 'a>, qubit_roots: &[usize]) {
         if qubit_roots.len() < 2 {
             return;
@@ -205,7 +240,7 @@ impl<'c, 'a> DynamicVisitor<'c, 'a> for ExtractVisitor {
         let gate_name = read_string_attr(&op, quantum_circ::attr::GATE_NAME).unwrap_or_default();
         let qubits = qubit_roots
             .iter()
-            .map(|root| LogicalQubitId(*root as u32))
+            .map(|root| self.numbering.id(*root))
             .collect();
         if let Some(segment) = self.segments.last_mut() {
             segment.push(RawGate { qubits, gate_name });
