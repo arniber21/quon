@@ -7,7 +7,10 @@ export default defineConfig({
 	site: 'https://quon.arnabg.me',
 	integrations: [
 		starlight({
-			title: 'quon',
+			title: 'Quon',
+			social: [
+				{ icon: 'github', label: 'GitHub', href: 'https://github.com/arniber21/quon' },
+			],
 			sidebar: [
 				{
 					label: 'Getting Started',
