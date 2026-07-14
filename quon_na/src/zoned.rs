@@ -20,7 +20,7 @@
 //! - [`PlacerMode::RoutingAware`] — search minimizing Eq. (1) routing cost
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -87,9 +87,29 @@ pub struct ZonedArchitecture {
     pub acceleration_m_s2: f64,
     pub trap_transfer_us: u64,
     pub require_readout_zone: bool,
+    /// Rydberg interaction range (µm) for simultaneous-gate legality.
+    /// `0.0` disables the constraint (hand-built test architectures).
+    #[serde(default)]
+    pub rydberg_range_um: f64,
+    /// Isolation spacing (µm) required between non-partner atoms of
+    /// simultaneous gates. `0.0` disables the constraint.
+    #[serde(default)]
+    pub min_rydberg_spacing_um: f64,
+    /// Minimum separation (µm) between distinct AOD rows / columns at a
+    /// grouped move's destination. `0.0` disables the constraint.
+    #[serde(default)]
+    pub aod_min_separation_um: f64,
 }
 
 impl ZonedArchitecture {
+    /// Minimum legal distance between atoms of two *different* simultaneous
+    /// entangling pairs: closer than the Rydberg range is compulsory
+    /// entanglement, closer than the isolation spacing is crosstalk (dialect
+    /// R2/R3). `0.0` when the architecture carries no interaction limits.
+    pub fn pair_conflict_um(&self) -> f64 {
+        self.rydberg_range_um.max(self.min_rydberg_spacing_um)
+    }
+
     pub fn zone_capacity(&self, kind: ZoneKind) -> u32 {
         self.zones
             .iter()
@@ -162,6 +182,10 @@ pub enum ZonedScheduleError {
     OccupancyExceeded(u32, u32, u32),
     #[error("not enough entanglement-zone pairs for {0} simultaneous gates")]
     InsufficientPairs(usize),
+    #[error(
+        "no legal entanglement pair for gate ({0:?}, {1:?}): every pair is occupied by a parked atom or spacing-conflicted"
+    )]
+    NoLegalPair(AtomId, AtomId),
     #[error("empty schedule: no entangling layers to place")]
     EmptySchedule,
     #[error("schedule layer conflict: {0}")]
@@ -367,14 +391,27 @@ pub fn schedule_zoned(
     req.layout = Some(layout.clone());
 
     let mut atom_pos: BTreeMap<AtomId, Position> = BTreeMap::new();
+    let mut site_occupant: BTreeMap<SiteId, AtomId> = BTreeMap::new();
     for binding in &layout.initial_bindings {
         let site = match binding.trap {
             TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
         };
         if let Some(s) = layout.sites.iter().find(|s| s.id == site) {
             atom_pos.insert(binding.atom, s.position);
+            site_occupant.insert(site, binding.atom);
         }
     }
+
+    let pair_sites: Vec<(SiteId, SiteId)> = entangle_pairs
+        .iter()
+        .map(|&(left, right)| {
+            (
+                nearest_site_id(&layout, left),
+                nearest_site_id(&layout, right),
+            )
+        })
+        .collect();
+    let conflict_um = arch.pair_conflict_um();
 
     let mut out_layers = Vec::new();
     let mut next_cycle = 0u32;
@@ -382,8 +419,9 @@ pub fn schedule_zoned(
     let mut rearrangement_steps = 0u64;
     let mut trap_transfers = 0u64;
 
-    for layer in &req.layers {
-        let gates = entangling_pairs_in_layer(layer);
+    let mut worklist: VecDeque<ScheduleLayer> = req.layers.iter().cloned().collect();
+    while let Some(layer) = worklist.pop_front() {
+        let gates = entangling_gate_actions(&layer);
         if gates.is_empty() {
             let mut passthrough = layer.clone();
             passthrough.cycle = next_cycle;
@@ -395,132 +433,147 @@ pub fn schedule_zoned(
             return Err(ZonedScheduleError::InsufficientPairs(gates.len()));
         }
 
-        let assignment = match mode {
-            PlacerMode::RoutingAgnostic => assign_agnostic(&gates, &atom_pos, &entangle_pairs),
-            PlacerMode::RoutingAware => {
-                assign_aware(&gates, &atom_pos, &entangle_pairs, arch.acceleration_m_s2)
-            }
+        let inputs = AssignInputs {
+            atom_pos: &atom_pos,
+            pairs: &entangle_pairs,
+            pair_sites: &pair_sites,
+            site_occupant: &site_occupant,
+            conflict_um,
         };
+        let gate_atoms: Vec<(AtomId, AtomId)> = gates.iter().map(|g| g.atoms).collect();
+        let assignment = match mode {
+            PlacerMode::RoutingAgnostic => assign_greedy_legal(&gate_atoms, &inputs),
+            PlacerMode::RoutingAware => assign_aware_legal(&gate_atoms, &inputs),
+        };
+        if assignment.placed.is_empty() {
+            let (a, b) = gate_atoms[*assignment.deferred.first().unwrap_or(&0)];
+            return Err(ZonedScheduleError::NoLegalPair(a, b));
+        }
+        if !assignment.deferred.is_empty() {
+            // Deferred gates (no occupancy- and spacing-legal pair this
+            // stage) run in their own later stage — pushed to the worklist
+            // front so they still precede every later original layer.
+            let deferred_actions: Vec<NeutralAtomAction> = assignment
+                .deferred
+                .iter()
+                .map(|&gate_index| gates[gate_index].action.clone())
+                .collect();
+            worklist.push_front(ScheduleLayer {
+                cycle: 0, // renumbered when emitted
+                actions: deferred_actions,
+            });
+        }
 
         // Reuse (Sec. III-A): skip atoms already at their assigned pair site.
-        let mut moves = Vec::new();
-        let mut transfers = Vec::new();
-        let mut d_max = 0.0_f64;
-        for (gate_idx, &(a, b)) in gates.iter().enumerate() {
-            let (pa, pb) = assignment[gate_idx];
+        let mut planned_moves = Vec::new();
+        for &(gate_index, (pa, pb)) in &assignment.placed {
+            let (a, b) = gate_atoms[gate_index];
             for (atom, target) in [(a, pa), (b, pb)] {
                 let cur = atom_pos.get(&atom).copied().unwrap_or(target);
                 let dist = euclidean_um(cur, target);
                 if dist < 1e-9 {
                     continue; // reuse: already in place
                 }
-                d_max = d_max.max(dist);
                 let from_site = nearest_site_id(&layout, cur);
                 let to_site = nearest_site_id(&layout, target);
-                moves.push(AtomMove {
+                planned_moves.push(PlannedMove {
                     atom,
-                    from: from_site,
-                    to: to_site,
-                });
-                transfers.push(TrapTransfer {
-                    atom,
-                    direction: TransferDirection::SlmToAod,
-                    site: from_site,
-                    aod: AodTrapRef {
-                        aod_id: 0,
-                        row: 0,
-                        col: 0,
-                    },
-                    duration_us: arch.trap_transfer_us,
-                });
-                transfers.push(TrapTransfer {
-                    atom,
-                    direction: TransferDirection::AodToSlm,
-                    site: to_site,
-                    aod: AodTrapRef {
-                        aod_id: 0,
-                        row: 0,
-                        col: 0,
-                    },
-                    duration_us: arch.trap_transfer_us,
+                    from_site,
+                    to_site,
+                    from: cur,
+                    to: target,
+                    distance_um: dist,
                 });
                 atom_pos.insert(atom, target);
+                if site_occupant.get(&from_site) == Some(&atom) {
+                    site_occupant.remove(&from_site);
+                }
+                site_occupant.insert(to_site, atom);
             }
         }
 
-        let group_cost = sqrt_d_max(d_max);
-        total_routing_cost += group_cost;
-        if !moves.is_empty() {
+        // AOD row/column coupling makes some move sets unrealizable as one
+        // grab (e.g. storage- and zone-sourced atoms converging on the same
+        // row). Partition into compatible groups — the greedily grouped
+        // compatible movements [RAP] Eq. (1) sums over — and emit each as
+        // its own load → move → store stage.
+        for group in partition_aod_compatible(&planned_moves, arch.aod_min_separation_um) {
+            let d_max = group.iter().fold(0.0_f64, |d, m| d.max(m.distance_um));
+            total_routing_cost += sqrt_d_max(d_max);
             rearrangement_steps += 1;
             let duration_us = movement_duration_us(d_max, arch.acceleration_m_s2);
-            // Transfer layer
-            // Emit load then move then store as separate cycles.
-            let load: Vec<_> = transfers
-                .iter()
-                .filter(|t| t.direction == TransferDirection::SlmToAod)
-                .cloned()
-                .map(NeutralAtomAction::Transfer)
-                .collect();
-            let store: Vec<_> = transfers
-                .iter()
-                .filter(|t| t.direction == TransferDirection::AodToSlm)
-                .cloned()
-                .map(NeutralAtomAction::Transfer)
-                .collect();
-            trap_transfers += (load.len() + store.len()) as u64;
+            trap_transfers += 2 * group.len() as u64;
 
-            if !load.is_empty() {
-                out_layers.push(ScheduleLayer {
-                    cycle: next_cycle,
-                    actions: load,
-                });
-                next_cycle = next_cycle.saturating_add(1);
-            }
-            out_layers.push(ScheduleLayer {
-                cycle: next_cycle,
-                actions: vec![NeutralAtomAction::Move(MovementGroup {
+            let load: Vec<_> = group
+                .iter()
+                .map(|m| {
+                    NeutralAtomAction::Transfer(TrapTransfer {
+                        atom: m.atom,
+                        direction: TransferDirection::SlmToAod,
+                        site: m.from_site,
+                        aod: AodTrapRef {
+                            aod_id: 0,
+                            row: 0,
+                            col: 0,
+                        },
+                        duration_us: arch.trap_transfer_us,
+                    })
+                })
+                .collect();
+            let moves: Vec<_> = group
+                .iter()
+                .map(|m| AtomMove {
+                    atom: m.atom,
+                    from: m.from_site,
+                    to: m.to_site,
+                })
+                .collect();
+            let store: Vec<_> = group
+                .iter()
+                .map(|m| {
+                    NeutralAtomAction::Transfer(TrapTransfer {
+                        atom: m.atom,
+                        direction: TransferDirection::AodToSlm,
+                        site: m.to_site,
+                        aod: AodTrapRef {
+                            aod_id: 0,
+                            row: 0,
+                            col: 0,
+                        },
+                        duration_us: arch.trap_transfer_us,
+                    })
+                })
+                .collect();
+
+            push_validated_layer(&mut out_layers, &mut next_cycle, load)?;
+            push_validated_layer(
+                &mut out_layers,
+                &mut next_cycle,
+                vec![NeutralAtomAction::Move(MovementGroup {
                     moves,
                     duration_us,
                 })],
-            });
-            next_cycle = next_cycle.saturating_add(1);
-            if !store.is_empty() {
-                out_layers.push(ScheduleLayer {
-                    cycle: next_cycle,
-                    actions: store,
-                });
-                next_cycle = next_cycle.saturating_add(1);
-            }
+            )?;
+            push_validated_layer(&mut out_layers, &mut next_cycle, store)?;
         }
 
-        // Entangle layer (atoms now in entanglement zone).
-        let mut entangle_actions = Vec::new();
-        for &(a, b) in &gates {
-            entangle_actions.push(NeutralAtomAction::Entangle2 {
-                atoms: [a, b],
+        // Entangle layer (atoms now in entanglement zone). Gates are emitted
+        // as pairwise Entangle2 (same rewrite as before deferral existed).
+        let mut entangle_actions: Vec<NeutralAtomAction> = assignment
+            .placed
+            .iter()
+            .map(|&(gate_index, _)| NeutralAtomAction::Entangle2 {
+                atoms: [gate_atoms[gate_index].0, gate_atoms[gate_index].1],
                 duration_us: 1,
-            });
-        }
+            })
+            .collect();
         // Also pass through non-entangle actions from the original layer.
         for action in &layer.actions {
             if !matches!(
                 action,
                 NeutralAtomAction::Entangle2 { .. } | NeutralAtomAction::EntangleN { .. }
             ) {
-                if let NeutralAtomAction::Measure {
-                    atom,
-                    basis,
-                    duration_us,
-                } = action
-                {
-                    entangle_actions.push(NeutralAtomAction::Measure {
-                        atom: *atom,
-                        basis: *basis,
-                        duration_us: *duration_us,
-                    });
-                } else {
-                    entangle_actions.push(action.clone());
-                }
+                entangle_actions.push(action.clone());
             }
         }
         let entangle_layer = ScheduleLayer {
@@ -529,6 +582,9 @@ pub fn schedule_zoned(
         };
         entangle_layer
             .validate_conflicts()
+            .map_err(|e| ZonedScheduleError::Conflict(e.to_string()))?;
+        entangle_layer
+            .validate_occupancy()
             .map_err(|e| ZonedScheduleError::Conflict(e.to_string()))?;
         out_layers.push(entangle_layer);
         next_cycle = next_cycle.saturating_add(1);
@@ -587,18 +643,99 @@ fn layout_with_atoms_at(
     layout
 }
 
-fn entangling_pairs_in_layer(layer: &ScheduleLayer) -> Vec<(AtomId, AtomId)> {
+/// One entangling action of an input layer plus the pair the placer assigns.
+struct LayerGate {
+    /// Original action, kept verbatim for deferral to a later stage.
+    action: NeutralAtomAction,
+    atoms: (AtomId, AtomId),
+}
+
+fn entangling_gate_actions(layer: &ScheduleLayer) -> Vec<LayerGate> {
     let mut out = Vec::new();
     for action in &layer.actions {
         match action {
-            NeutralAtomAction::Entangle2 { atoms, .. } => out.push((atoms[0], atoms[1])),
+            NeutralAtomAction::Entangle2 { atoms, .. } => out.push(LayerGate {
+                action: action.clone(),
+                atoms: (atoms[0], atoms[1]),
+            }),
             NeutralAtomAction::EntangleN { atoms, .. } if atoms.len() >= 2 => {
-                out.push((atoms[0], atoms[1]));
+                out.push(LayerGate {
+                    action: action.clone(),
+                    atoms: (atoms[0], atoms[1]),
+                });
             }
             _ => {}
         }
     }
     out
+}
+
+/// One atom displacement the placer decided on, with stage coordinates.
+struct PlannedMove {
+    atom: AtomId,
+    from_site: SiteId,
+    to_site: SiteId,
+    from: Position,
+    to: Position,
+    distance_um: f64,
+}
+
+/// Partition planned moves into AOD-coupled-motion-compatible groups
+/// (first-fit, in placement order — deterministic).
+///
+/// Under the dense source-coordinate overlay (B4 / `quon_na::lower`), two
+/// moves can share one AOD grab iff, per axis: equal source coordinates imply
+/// equal destination coordinates (row/column coupling), distinct source
+/// coordinates keep their strict order at the destination (order
+/// preservation), and distinct rows/columns end at least `min_sep_um` apart.
+fn partition_aod_compatible(moves: &[PlannedMove], min_sep_um: f64) -> Vec<Vec<&PlannedMove>> {
+    let mut groups: Vec<Vec<&PlannedMove>> = Vec::new();
+    for planned in moves {
+        let slot = groups.iter_mut().find(|group| {
+            group
+                .iter()
+                .all(|member| moves_aod_compatible(member, planned, min_sep_um))
+        });
+        match slot {
+            Some(group) => group.push(planned),
+            None => groups.push(vec![planned]),
+        }
+    }
+    groups
+}
+
+fn moves_aod_compatible(a: &PlannedMove, b: &PlannedMove, min_sep_um: f64) -> bool {
+    axis_aod_compatible(a.from.y_um, a.to.y_um, b.from.y_um, b.to.y_um, min_sep_um)
+        && axis_aod_compatible(a.from.x_um, a.to.x_um, b.from.x_um, b.to.x_um, min_sep_um)
+}
+
+fn axis_aod_compatible(from_a: f64, to_a: f64, from_b: f64, to_b: f64, min_sep_um: f64) -> bool {
+    match from_a.total_cmp(&from_b) {
+        // Same AOD row/column: coupled motion forces one displacement.
+        Ordering::Equal => to_a.total_cmp(&to_b) == Ordering::Equal,
+        // Distinct rows/columns: preserve order, keep destination separation.
+        order => to_a.total_cmp(&to_b) == order && (to_a - to_b).abs() >= min_sep_um,
+    }
+}
+
+/// Emit one movement-stage layer at the next cycle after software validation
+/// (occupancy: no same-cycle duplicate atom/site claims). Planner bugs fail
+/// loudly here rather than surfacing at MLIR emit.
+fn push_validated_layer(
+    out_layers: &mut Vec<ScheduleLayer>,
+    next_cycle: &mut u32,
+    actions: Vec<NeutralAtomAction>,
+) -> Result<(), ZonedScheduleError> {
+    let layer = ScheduleLayer {
+        cycle: *next_cycle,
+        actions,
+    };
+    layer
+        .validate_occupancy()
+        .map_err(|e| ZonedScheduleError::Conflict(e.to_string()))?;
+    out_layers.push(layer);
+    *next_cycle = next_cycle.saturating_add(1);
+    Ok(())
 }
 
 type EntanglePair = (Position, Position);
@@ -703,27 +840,86 @@ fn nearest_site_id_in(sites: &[AtomSite], pos: Position) -> SiteId {
         .unwrap_or(SiteId(0))
 }
 
-/// Routing-agnostic: assign gates to nearest free entanglement pairs by
-/// travel distance (ZAC-style).
-fn assign_agnostic(
-    gates: &[(AtomId, AtomId)],
-    atom_pos: &BTreeMap<AtomId, Position>,
-    pairs: &[(Position, Position)],
-) -> Vec<(Position, Position)> {
-    let mut used = BTreeSet::new();
-    let mut out = Vec::with_capacity(gates.len());
-    for &(a, b) in gates {
-        let pa = atom_pos.get(&a).copied().unwrap_or(Position {
-            x_um: 0.0,
-            y_um: 0.0,
-        });
-        let pb = atom_pos.get(&b).copied().unwrap_or(Position {
-            x_um: 0.0,
-            y_um: 0.0,
-        });
-        let mut best = None;
-        for (i, &(left, right)) in pairs.iter().enumerate() {
-            if used.contains(&i) {
+/// Everything a layer's pair assignment needs besides the gates themselves.
+struct AssignInputs<'a> {
+    atom_pos: &'a BTreeMap<AtomId, Position>,
+    pairs: &'a [(Position, Position)],
+    pair_sites: &'a [(SiteId, SiteId)],
+    /// Site occupancy at the **start** of the layer (parked atoms included).
+    site_occupant: &'a BTreeMap<SiteId, AtomId>,
+    /// Minimum legal distance between atoms of different simultaneous pairs
+    /// ([`ZonedArchitecture::pair_conflict_um`]); `0.0` disables the check.
+    conflict_um: f64,
+}
+
+/// Result of a layer's pair assignment: gates placed this stage (with their
+/// oriented pair positions) and gates deferred to a follow-up stage.
+struct GateAssignment {
+    placed: Vec<(usize, (Position, Position))>,
+    deferred: Vec<usize>,
+}
+
+fn atom_position_or_origin(atom_pos: &BTreeMap<AtomId, Position>, atom: AtomId) -> Position {
+    atom_pos.get(&atom).copied().unwrap_or(Position {
+        x_um: 0.0,
+        y_um: 0.0,
+    })
+}
+
+/// True when two simultaneous pairs would put non-partner atoms within
+/// `conflict_um` of each other (compulsory entanglement / R3 crosstalk).
+fn pairs_conflict(lhs: (Position, Position), rhs: (Position, Position), conflict_um: f64) -> bool {
+    if conflict_um <= 0.0 {
+        return false;
+    }
+    [lhs.0, lhs.1].iter().any(|a| {
+        [rhs.0, rhs.1]
+            .iter()
+            .any(|b| euclidean_um(*a, *b) <= conflict_um)
+    })
+}
+
+/// A pair is occupancy-legal for gate `(a, b)` iff each of its sites is free
+/// or already holds one of the gate's own atoms (reuse). Parked atoms from
+/// earlier layers block the pair — assigning it anyway is how two atoms end
+/// up claiming one site (the qft_small / qaoa_graph double-occupancy bug).
+fn pair_occupancy_ok(
+    sites: (SiteId, SiteId),
+    gate: (AtomId, AtomId),
+    site_occupant: &BTreeMap<SiteId, AtomId>,
+) -> bool {
+    [sites.0, sites.1].iter().all(|site| {
+        site_occupant
+            .get(site)
+            .is_none_or(|&occupant| occupant == gate.0 || occupant == gate.1)
+    })
+}
+
+fn pair_legal(
+    index: usize,
+    gate: (AtomId, AtomId),
+    chosen: &BTreeSet<usize>,
+    inputs: &AssignInputs<'_>,
+) -> bool {
+    pair_occupancy_ok(inputs.pair_sites[index], gate, inputs.site_occupant)
+        && !chosen
+            .iter()
+            .any(|&j| pairs_conflict(inputs.pairs[index], inputs.pairs[j], inputs.conflict_um))
+}
+
+/// Routing-agnostic: assign gates to the nearest **legal** free pair by
+/// travel distance (ZAC-style). Gates with no occupancy- and spacing-legal
+/// pair are deferred to a follow-up stage.
+fn assign_greedy_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) -> GateAssignment {
+    let mut used: BTreeSet<usize> = BTreeSet::new();
+    let mut placed = Vec::with_capacity(gates.len());
+    let mut deferred = Vec::new();
+    for (gate_index, &(a, b)) in gates.iter().enumerate() {
+        let pa = atom_position_or_origin(inputs.atom_pos, a);
+        let pb = atom_position_or_origin(inputs.atom_pos, b);
+        let mut best: Option<(f64, usize, (Position, Position))> = None;
+        for (i, &(left, right)) in inputs.pairs.iter().enumerate() {
+            if used.contains(&i) || !pair_legal(i, (a, b), &used, inputs) {
                 continue;
             }
             let cost_fwd = euclidean_um(pa, left) + euclidean_um(pb, right);
@@ -739,11 +935,15 @@ fn assign_agnostic(
                 _ => {}
             }
         }
-        let (_, idx, orient) = best.expect("enough pairs");
-        used.insert(idx);
-        out.push(orient);
+        match best {
+            Some((_, idx, orient)) => {
+                used.insert(idx);
+                placed.push((gate_index, orient));
+            }
+            None => deferred.push(gate_index),
+        }
     }
-    out
+    GateAssignment { placed, deferred }
 }
 
 #[derive(Clone)]
@@ -789,14 +989,16 @@ impl Ord for AwareNode {
     }
 }
 
+/// Expansion budget for the routing-aware search before falling back to the
+/// greedy assignment (which always terminates and supports deferral).
+const AWARE_NODE_BUDGET: usize = 100_000;
+
 /// Routing-aware best-first search ([RAP] Sec. IV-B style): extend by one gate,
-/// charge Eq. (1) √(d_max) of the moves implied so far.
-fn assign_aware(
-    gates: &[(AtomId, AtomId)],
-    atom_pos: &BTreeMap<AtomId, Position>,
-    pairs: &[(Position, Position)],
-    _acceleration: f64,
-) -> Vec<(Position, Position)> {
+/// charge Eq. (1) √(d_max) of the moves implied so far. Extensions are limited
+/// to occupancy- and spacing-legal pairs; when no legal full assignment exists
+/// (or the node budget is exhausted) it falls back to
+/// [`assign_greedy_legal`], which defers unplaceable gates.
+fn assign_aware_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) -> GateAssignment {
     let mut heap = BinaryHeap::new();
     heap.push(AwareNode {
         neg_cost: OrderedFloat(0.0),
@@ -804,22 +1006,24 @@ fn assign_aware(
         used_pairs: BTreeSet::new(),
     });
 
+    let mut expansions = 0usize;
     while let Some(node) = heap.pop() {
         let g = node.assigned.len();
         if g == gates.len() {
-            return node.assigned;
+            return GateAssignment {
+                placed: node.assigned.into_iter().enumerate().collect(),
+                deferred: Vec::new(),
+            };
+        }
+        expansions += 1;
+        if expansions > AWARE_NODE_BUDGET {
+            break;
         }
         let (a, b) = gates[g];
-        let pa = atom_pos.get(&a).copied().unwrap_or(Position {
-            x_um: 0.0,
-            y_um: 0.0,
-        });
-        let pb = atom_pos.get(&b).copied().unwrap_or(Position {
-            x_um: 0.0,
-            y_um: 0.0,
-        });
-        for (i, &(left, right)) in pairs.iter().enumerate() {
-            if node.used_pairs.contains(&i) {
+        let pa = atom_position_or_origin(inputs.atom_pos, a);
+        let pb = atom_position_or_origin(inputs.atom_pos, b);
+        for (i, &(left, right)) in inputs.pairs.iter().enumerate() {
+            if node.used_pairs.contains(&i) || !pair_legal(i, (a, b), &node.used_pairs, inputs) {
                 continue;
             }
             for orient in [(left, right), (right, left)] {
@@ -841,8 +1045,9 @@ fn assign_aware(
             }
         }
     }
-    // Fallback (should not happen if pairs suffice).
-    assign_agnostic(gates, atom_pos, pairs)
+    // No legal assignment of every gate this stage (or budget exhausted):
+    // place what greedy can and defer the rest.
+    assign_greedy_legal(gates, inputs)
 }
 
 /// Tiny reference architecture for unit tests (not the full 73×101 geometry).
@@ -880,6 +1085,9 @@ pub fn toy_zoned_architecture() -> ZonedArchitecture {
         acceleration_m_s2: 2750.0,
         trap_transfer_us: 15,
         require_readout_zone: false,
+        rydberg_range_um: 7.5,
+        min_rydberg_spacing_um: 18.75,
+        aod_min_separation_um: 2.0,
     }
 }
 
@@ -920,6 +1128,148 @@ mod tests {
             DEFAULT_GAMMA,
         )
         .expect("graph")
+    }
+
+    /// Chain graph: gate i couples qubits (i, i+1); shared atoms force one
+    /// Misra–Gries layer per gate.
+    fn chain_graph(n_gates: u32) -> InteractionGraph {
+        let n = n_gates + 1;
+        let vertices: Vec<_> = (0..n).map(LogicalQubitId).collect();
+        let mut interactions = Vec::new();
+        let mut ids = Vec::new();
+        for i in 0..n_gates {
+            let id = InteractionId(i);
+            ids.push(id);
+            interactions.push(Interaction {
+                id,
+                qubits: vec![LogicalQubitId(i), LogicalQubitId(i + 1)],
+                gate_name: "CZ".into(),
+                dag_layer: i,
+                on_critical_path: false,
+            });
+        }
+        InteractionGraph::from_interactions(
+            vertices,
+            interactions,
+            vec![InteractionSegment {
+                kind: SegmentKind::DependencyDag,
+                interactions: ids,
+            }],
+            DEFAULT_GAMMA,
+        )
+        .expect("graph")
+    }
+
+    /// Replay a zoned schedule's moves against the layout, asserting no site
+    /// is ever occupied by two atoms and no layer double-claims a site.
+    fn assert_occupancy_sound(result: &ZonedScheduleResult) {
+        let layout = result.request.layout.as_ref().expect("layout");
+        // Reconstruct the initial occupancy by undoing moves from the final
+        // bindings (planners rewrite initial_bindings to final occupancy).
+        let mut occupancy: BTreeMap<AtomId, SiteId> = layout
+            .initial_bindings
+            .iter()
+            .map(|b| {
+                let site = match b.trap {
+                    TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
+                };
+                (b.atom, site)
+            })
+            .collect();
+        for layer in result.request.layers.iter().rev() {
+            layer.validate_occupancy().expect("layer occupancy");
+            for action in &layer.actions {
+                if let NeutralAtomAction::Move(group) = action {
+                    for m in &group.moves {
+                        occupancy.insert(m.atom, m.from);
+                    }
+                }
+            }
+        }
+        // Forward replay: destinations must be empty when moved into.
+        let mut site_holder: BTreeMap<SiteId, AtomId> =
+            occupancy.iter().map(|(&a, &s)| (s, a)).collect();
+        assert_eq!(
+            site_holder.len(),
+            occupancy.len(),
+            "initial double occupancy"
+        );
+        for layer in &result.request.layers {
+            for action in &layer.actions {
+                if let NeutralAtomAction::Move(group) = action {
+                    for m in &group.moves {
+                        assert_eq!(
+                            site_holder.remove(&m.from),
+                            Some(m.atom),
+                            "cycle {}: atom {:?} moved from a site it did not hold",
+                            layer.cycle,
+                            m.atom
+                        );
+                        assert!(
+                            !site_holder.contains_key(&m.to),
+                            "cycle {}: atom {:?} moved onto occupied site {:?}",
+                            layer.cycle,
+                            m.atom,
+                            m.to
+                        );
+                        site_holder.insert(m.to, m.atom);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Per entangle layer, per gate: the entangling atoms' positions,
+    /// replayed from the schedule's moves.
+    #[allow(clippy::type_complexity)]
+    fn entangle_layer_positions(result: &ZonedScheduleResult) -> Vec<Vec<Vec<(AtomId, Position)>>> {
+        let layout = result.request.layout.as_ref().expect("layout");
+        let site_pos: BTreeMap<SiteId, Position> =
+            layout.sites.iter().map(|s| (s.id, s.position)).collect();
+        let mut occupancy: BTreeMap<AtomId, SiteId> = layout
+            .initial_bindings
+            .iter()
+            .map(|b| {
+                let site = match b.trap {
+                    TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
+                };
+                (b.atom, site)
+            })
+            .collect();
+        let mut per_layer_after: Vec<BTreeMap<AtomId, SiteId>> =
+            vec![BTreeMap::new(); result.request.layers.len()];
+        for (index, layer) in result.request.layers.iter().enumerate().rev() {
+            per_layer_after[index] = occupancy.clone();
+            for action in &layer.actions {
+                if let NeutralAtomAction::Move(group) = action {
+                    for m in &group.moves {
+                        occupancy.insert(m.atom, m.from);
+                    }
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        for (index, layer) in result.request.layers.iter().enumerate() {
+            let mut gates: Vec<Vec<(AtomId, Position)>> = Vec::new();
+            for action in &layer.actions {
+                let acting: &[AtomId] = match action {
+                    NeutralAtomAction::Entangle2 { atoms, .. } => atoms,
+                    NeutralAtomAction::EntangleN { atoms, .. } => atoms,
+                    _ => continue,
+                };
+                gates.push(
+                    acting
+                        .iter()
+                        .map(|&atom| (atom, site_pos[&per_layer_after[index][&atom]]))
+                        .collect(),
+                );
+            }
+            if !gates.is_empty() {
+                out.push(gates);
+            }
+        }
+        out
     }
 
     #[test]
@@ -976,6 +1326,161 @@ mod tests {
             aware.routing_cost,
             agnostic.routing_cost
         );
+    }
+
+    #[test]
+    fn sequential_gates_never_share_a_parked_pair() {
+        // Regression (qft_small / qaoa_graph): gate (1, 3) parks its atoms at
+        // a pair; the follow-up gate (2, 3) used to be assigned the same pair
+        // (per-layer `used` reset), leaving atoms 1 and 2 claiming one site.
+        let vertices: Vec<_> = (0..4).map(LogicalQubitId).collect();
+        let interactions = vec![
+            Interaction {
+                id: InteractionId(0),
+                qubits: vec![LogicalQubitId(1), LogicalQubitId(3)],
+                gate_name: "CZ".into(),
+                dag_layer: 0,
+                on_critical_path: false,
+            },
+            Interaction {
+                id: InteractionId(1),
+                qubits: vec![LogicalQubitId(2), LogicalQubitId(3)],
+                gate_name: "CZ".into(),
+                dag_layer: 1,
+                on_critical_path: false,
+            },
+        ];
+        let graph = InteractionGraph::from_interactions(
+            vertices,
+            interactions,
+            vec![InteractionSegment {
+                kind: SegmentKind::DependencyDag,
+                interactions: vec![InteractionId(0), InteractionId(1)],
+            }],
+            DEFAULT_GAMMA,
+        )
+        .expect("graph");
+        let req = schedule_from_graph(graph).expect("stub");
+        let scheduled = schedule_entangling_layers(req, 340).expect("layers");
+        let result = schedule_zoned(
+            scheduled.request,
+            &toy_zoned_architecture(),
+            PlacerMode::RoutingAgnostic,
+        )
+        .expect("zoned");
+        assert_occupancy_sound(&result);
+    }
+
+    #[test]
+    fn long_chains_stay_occupancy_sound() {
+        // Deeper reuse pattern across many layers.
+        let graph = chain_graph(6);
+        let req = schedule_from_graph(graph).expect("stub");
+        let scheduled = schedule_entangling_layers(req, 340).expect("layers");
+        for mode in [PlacerMode::RoutingAgnostic, PlacerMode::RoutingAware] {
+            let result = schedule_zoned(scheduled.request.clone(), &toy_zoned_architecture(), mode)
+                .expect("zoned");
+            assert_occupancy_sound(&result);
+        }
+    }
+
+    #[test]
+    fn simultaneous_gates_respect_min_rydberg_spacing() {
+        // Two disjoint gates in one layer: assigned pairs must keep every
+        // non-partner atom pair farther apart than the isolation spacing.
+        let graph = matching_graph(2);
+        let req = schedule_from_graph(graph).expect("stub");
+        let scheduled = schedule_entangling_layers(req, 340).expect("layers");
+        let arch = toy_zoned_architecture();
+        let conflict_um = arch.pair_conflict_um();
+        assert!(conflict_um > 0.0, "toy arch must carry interaction limits");
+        for mode in [PlacerMode::RoutingAgnostic, PlacerMode::RoutingAware] {
+            let result = schedule_zoned(scheduled.request.clone(), &arch, mode).expect("zoned");
+            assert_occupancy_sound(&result);
+            for layer_gates in entangle_layer_positions(&result) {
+                for i in 0..layer_gates.len() {
+                    for other in layer_gates.iter().skip(i + 1) {
+                        for &(a, pa) in &layer_gates[i] {
+                            for &(b, pb) in other {
+                                let d = euclidean_um(pa, pb);
+                                assert!(
+                                    d > conflict_um,
+                                    "atoms {a:?}/{b:?} of simultaneous gates are {d} um apart"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spacing_defers_gates_when_no_legal_pair_coexists() {
+        // Entanglement zone with two adjacent (conflicting) pairs only: the
+        // two simultaneous gates cannot coexist, so one is deferred to its
+        // own later Rydberg layer instead of firing illegally.
+        let mut arch = toy_zoned_architecture();
+        arch.zones[1].rows = 1;
+        arch.zones[1].cols = 2;
+        let graph = matching_graph(2);
+        let req = schedule_from_graph(graph).expect("stub");
+        let scheduled = schedule_entangling_layers(req, 340).expect("layers");
+        let result =
+            schedule_zoned(scheduled.request, &arch, PlacerMode::RoutingAgnostic).expect("zoned");
+        assert_occupancy_sound(&result);
+        let entangle_layers = entangle_layer_positions(&result);
+        assert_eq!(
+            entangle_layers.len(),
+            2,
+            "conflicting gates must split into two Rydberg layers"
+        );
+        assert!(entangle_layers.iter().all(|gates| gates.len() == 1));
+    }
+
+    #[test]
+    fn mixed_source_moves_split_into_aod_compatible_groups() {
+        // Gate (0, 1) parks atoms in the zone; gate (1, 2) then moves atom 1
+        // (zone-sourced) and atom 2 (storage-sourced) to a fresh pair. Both
+        // end on the same row, so one coupled AOD grab is unrealizable — the
+        // transition must emit two movement stages.
+        let graph = chain_graph(2);
+        let req = schedule_from_graph(graph).expect("stub");
+        let scheduled = schedule_entangling_layers(req, 340).expect("layers");
+        let result = schedule_zoned(
+            scheduled.request,
+            &toy_zoned_architecture(),
+            PlacerMode::RoutingAgnostic,
+        )
+        .expect("zoned");
+        assert_occupancy_sound(&result);
+        let move_layers = result
+            .request
+            .layers
+            .iter()
+            .filter(|l| {
+                l.actions
+                    .iter()
+                    .any(|a| matches!(a, NeutralAtomAction::Move(_)))
+            })
+            .count();
+        assert_eq!(
+            move_layers, 3,
+            "first stage is one group, second transition splits into two"
+        );
+        assert_eq!(result.rearrangement_steps, 3);
+    }
+
+    #[test]
+    fn axis_aod_compatibility_rules() {
+        // Same source coordinate: identical destination required.
+        assert!(axis_aod_compatible(0.0, 50.0, 0.0, 50.0, 2.0));
+        assert!(!axis_aod_compatible(0.0, 50.0, 0.0, 60.0, 2.0));
+        // Distinct sources: order preserved and destination separation kept.
+        assert!(axis_aod_compatible(0.0, 50.0, 4.0, 54.0, 2.0));
+        assert!(!axis_aod_compatible(0.0, 50.0, 4.0, 50.0, 2.0)); // converge
+        assert!(!axis_aod_compatible(0.0, 54.0, 4.0, 50.0, 2.0)); // cross
+        assert!(!axis_aod_compatible(0.0, 50.0, 4.0, 51.0, 2.0)); // too close
     }
 
     #[test]

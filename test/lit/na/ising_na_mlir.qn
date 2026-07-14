@@ -35,10 +35,15 @@ fn ising_na(): Q<List<Bit>> = run {
 -- CHECK-SAME: pairs =
 -- CHECK: cycle = 3 : i64
 --
--- Later stages keep interleaving movement and Rydberg layers.
+-- The next transition mixes zone- and storage-sourced atoms, which cannot
+-- share one AOD grab (row coupling): it splits into two movement stages
+-- before its Rydberg layer.
 -- CHECK: "quantum.na.move"()
+-- CHECK: cycle = 6 : i64
+-- CHECK: "quantum.na.move"()
+-- CHECK: cycle = 9 : i64
 -- CHECK: "quantum.na.entangle"()
--- CHECK: cycle = 8 : i64
+-- CHECK: cycle = 11 : i64
 -- CHECK: "quantum.na.entangle"()
 --
 -- Schedule-level legality attributes come from the target descriptor.

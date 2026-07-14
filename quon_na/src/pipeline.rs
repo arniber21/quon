@@ -116,6 +116,9 @@ pub fn zoned_architecture(na: &NeutralAtomTarget) -> ZonedArchitecture {
         acceleration_m_s2: na.movement.speed_model.acceleration_m_s2,
         trap_transfer_us: na.movement.trap_transfer_us.round() as u64,
         require_readout_zone: false,
+        rydberg_range_um: na.interaction.rydberg_range_um,
+        min_rydberg_spacing_um: na.interaction.min_rydberg_spacing_um,
+        aod_min_separation_um: na.movement.min_row_col_separation_um,
     }
 }
 
