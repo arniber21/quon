@@ -11,7 +11,9 @@
 //! positions are reconstructed by replaying `Move` actions backwards from the
 //! final bindings. Trap transfers are in-place (the atom stays at its site)
 //! and do not affect occupancy; a forward pass over transfers recovers the
-//! AOD trap metadata each grouped move needs.
+//! AOD trap metadata each grouped move needs, and transfers in turn take the
+//! associated move's final (possibly overlaid) trap ref so the emitted IR is
+//! self-consistent.
 //!
 //! The lowering is total on planner-produced schedules: every failure mode is
 //! a typed [`ScheduleLowerError`], never a panic.
@@ -112,24 +114,22 @@ pub fn lower_layers(
 ) -> Result<ScheduleSpec, ScheduleLowerError> {
     let site_pos = site_positions(layout)?;
     let occupancy_after = replay_occupancy(layers, layout)?;
-    let mut aod_bindings: BTreeMap<AtomId, AodTrapRef> = BTreeMap::new();
+    let move_specs = lower_move_groups(layers, &site_pos)?;
+    let transfer_refs = transfer_refs_from_moves(layers, &move_specs);
 
     let mut layer_specs = Vec::with_capacity(layers.len());
-    for (index, layer) in layers.iter().enumerate() {
+    for (layer_index, layer) in layers.iter().enumerate() {
         let mut actions = Vec::with_capacity(layer.actions.len());
-        for action in &layer.actions {
+        for (action_index, action) in layer.actions.iter().enumerate() {
             actions.push(lower_action(
                 action,
                 layer.cycle,
                 &site_pos,
-                &occupancy_after[index],
-                &aod_bindings,
+                &occupancy_after[layer_index],
+                move_specs.get(&(layer_index, action_index)),
+                transfer_refs.get(&(layer_index, action_index)),
             )?);
         }
-        // Transfers take effect for later layers: an atom cannot both
-        // transfer and move in the same layer (occupancy validation), so
-        // in-layer ordering is immaterial.
-        apply_transfers(layer, &mut aod_bindings);
         layer_specs.push(LayerSpec {
             cycle: layer.cycle,
             actions,
@@ -145,22 +145,33 @@ pub fn lower_layers(
     })
 }
 
-fn lower_action(
-    action: &NeutralAtomAction,
-    cycle: u32,
+/// Build the final (overlaid) [`MoveSpec`]s for every `Move` action, keyed by
+/// `(layer index, action index)`.
+///
+/// A forward pass over trap transfers recovers each moved atom's AOD trap
+/// (transfers take effect for later layers: an atom cannot both transfer and
+/// move in the same layer, per occupancy validation), then degenerate
+/// placeholder refs are replaced per group by
+/// [`overlay_degenerate_aod_indices`].
+fn lower_move_groups(
+    layers: &[ScheduleLayer],
     site_pos: &BTreeMap<SiteId, Position>,
-    occupancy: &BTreeMap<AtomId, SiteId>,
-    aod_bindings: &BTreeMap<AtomId, AodTrapRef>,
-) -> Result<ActionSpec, ScheduleLowerError> {
-    match action {
-        NeutralAtomAction::Move(group) => {
+) -> Result<BTreeMap<(usize, usize), Vec<MoveSpec>>, ScheduleLowerError> {
+    let mut aod_bindings: BTreeMap<AtomId, AodTrapRef> = BTreeMap::new();
+    let mut move_specs = BTreeMap::new();
+
+    for (layer_index, layer) in layers.iter().enumerate() {
+        for (action_index, action) in layer.actions.iter().enumerate() {
+            let NeutralAtomAction::Move(group) = action else {
+                continue;
+            };
             let mut moves = Vec::with_capacity(group.moves.len());
             for atom_move in &group.moves {
-                let from = position(site_pos, cycle, atom_move.from)?;
-                let to = position(site_pos, cycle, atom_move.to)?;
+                let from = position(site_pos, layer.cycle, atom_move.from)?;
+                let to = position(site_pos, layer.cycle, atom_move.to)?;
                 let aod = aod_bindings.get(&atom_move.atom).ok_or(
                     ScheduleLowerError::MissingAodBinding {
-                        cycle,
+                        cycle: layer.cycle,
                         atom: atom_move.atom.0,
                     },
                 )?;
@@ -178,12 +189,108 @@ fn lower_action(
                 });
             }
             overlay_degenerate_aod_indices(&mut moves);
+            move_specs.insert((layer_index, action_index), moves);
+        }
+        apply_transfers(layer, &mut aod_bindings);
+    }
+    Ok(move_specs)
+}
+
+/// Compute the AOD trap ref each `Transfer` action must carry so the emitted
+/// IR is self-consistent with its move ops, keyed by
+/// `(layer index, action index)`.
+///
+/// [`overlay_degenerate_aod_indices`] may rewrite a grouped move's placeholder
+/// refs, so the surrounding transfers must follow: a `slm_to_aod` load takes
+/// the ref of the atom's **next** move, an `aod_to_slm` store the ref of its
+/// **previous** move (that is the trap the atom actually occupied). Transfers
+/// with no associated move keep the planner's ref.
+fn transfer_refs_from_moves(
+    layers: &[ScheduleLayer],
+    move_specs: &BTreeMap<(usize, usize), Vec<MoveSpec>>,
+) -> BTreeMap<(usize, usize), AodTrapRef> {
+    let mut transfer_refs = BTreeMap::new();
+
+    // Backward pass: loads take the ref of the atom's next move.
+    let mut next_move_ref: BTreeMap<u32, AodTrapRef> = BTreeMap::new();
+    for (layer_index, layer) in layers.iter().enumerate().rev() {
+        for (action_index, action) in layer.actions.iter().enumerate().rev() {
+            match action {
+                NeutralAtomAction::Move(_) => {
+                    if let Some(moves) = move_specs.get(&(layer_index, action_index)) {
+                        for spec in moves {
+                            next_move_ref.insert(spec.atom, move_spec_ref(spec));
+                        }
+                    }
+                }
+                NeutralAtomAction::Transfer(transfer)
+                    if transfer.direction == TransferDirection::SlmToAod =>
+                {
+                    if let Some(aod) = next_move_ref.get(&transfer.atom.0) {
+                        transfer_refs.insert((layer_index, action_index), aod.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Forward pass: stores take the ref of the atom's previous move.
+    let mut prev_move_ref: BTreeMap<u32, AodTrapRef> = BTreeMap::new();
+    for (layer_index, layer) in layers.iter().enumerate() {
+        for (action_index, action) in layer.actions.iter().enumerate() {
+            match action {
+                NeutralAtomAction::Move(_) => {
+                    if let Some(moves) = move_specs.get(&(layer_index, action_index)) {
+                        for spec in moves {
+                            prev_move_ref.insert(spec.atom, move_spec_ref(spec));
+                        }
+                    }
+                }
+                NeutralAtomAction::Transfer(transfer)
+                    if transfer.direction == TransferDirection::AodToSlm =>
+                {
+                    if let Some(aod) = prev_move_ref.get(&transfer.atom.0) {
+                        transfer_refs.insert((layer_index, action_index), aod.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    transfer_refs
+}
+
+fn move_spec_ref(spec: &MoveSpec) -> AodTrapRef {
+    AodTrapRef {
+        aod_id: spec.aod_id,
+        row: spec.row,
+        col: spec.col,
+    }
+}
+
+fn lower_action(
+    action: &NeutralAtomAction,
+    cycle: u32,
+    site_pos: &BTreeMap<SiteId, Position>,
+    occupancy: &BTreeMap<AtomId, SiteId>,
+    move_specs: Option<&Vec<MoveSpec>>,
+    transfer_ref: Option<&AodTrapRef>,
+) -> Result<ActionSpec, ScheduleLowerError> {
+    match action {
+        NeutralAtomAction::Move(group) => {
+            // Precomputed by `lower_move_groups`; a Move action always has an
+            // entry, but fall back to an empty group rather than panic.
+            let moves = move_specs.cloned().unwrap_or_default();
             Ok(ActionSpec::Move {
                 moves,
                 duration_us: group.duration_us,
             })
         }
-        NeutralAtomAction::Transfer(transfer) => Ok(ActionSpec::Transfer(lower_transfer(transfer))),
+        NeutralAtomAction::Transfer(transfer) => {
+            Ok(ActionSpec::Transfer(lower_transfer(transfer, transfer_ref)))
+        }
         NeutralAtomAction::Entangle2 { atoms, duration_us } => {
             let lhs = positioned_atom(site_pos, occupancy, cycle, atoms[0])?;
             let rhs = positioned_atom(site_pos, occupancy, cycle, atoms[1])?;
@@ -230,13 +337,18 @@ fn lower_action(
 
 /// The single allowed mapping between the planner and dialect
 /// `TransferDirection` enums (ADR-0011).
-fn lower_transfer(transfer: &TrapTransfer) -> TransferSpec {
+///
+/// `aod_override` carries the associated move's final (possibly overlaid)
+/// trap ref from [`transfer_refs_from_moves`]; without one the planner's ref
+/// is kept.
+fn lower_transfer(transfer: &TrapTransfer, aod_override: Option<&AodTrapRef>) -> TransferSpec {
+    let aod = aod_override.unwrap_or(&transfer.aod);
     TransferSpec {
         atom: transfer.atom.0,
         site: transfer.site.0,
-        aod_id: transfer.aod.aod_id,
-        row: transfer.aod.row,
-        col: transfer.aod.col,
+        aod_id: aod.aod_id,
+        row: aod.row,
+        col: aod.col,
         direction: match transfer.direction {
             TransferDirection::SlmToAod => SpecTransferDirection::SlmToAod,
             TransferDirection::AodToSlm => SpecTransferDirection::AodToSlm,
@@ -542,6 +654,13 @@ mod tests {
         };
         assert_eq!(load_spec.direction, SpecTransferDirection::SlmToAod);
         assert_eq!(load_spec.site, 0);
+        // Placeholder transfer refs follow the move's dense overlay so the
+        // emitted IR never claims two atoms in one AOD trap.
+        let ActionSpec::Transfer(load_spec_1) = &spec.layers[0].actions[1] else {
+            panic!("expected transfer, got {:?}", spec.layers[0].actions[1]);
+        };
+        assert_eq!((load_spec.row, load_spec.col), (0, 0));
+        assert_eq!((load_spec_1.row, load_spec_1.col), (0, 1));
 
         // The grouped move carries source/destination stage coordinates and a
         // dense AOD overlay (degenerate zoned refs recomputed: same row, two
@@ -562,11 +681,13 @@ mod tests {
         assert_eq!((moves[0].row, moves[0].col), (0, 0));
         assert_eq!((moves[1].row, moves[1].col), (0, 1));
 
-        // Store transfers map to the dialect direction enum.
+        // Store transfers map to the dialect direction enum and carry the
+        // trap ref the atom occupied during the preceding move.
         let ActionSpec::Transfer(store_spec) = &spec.layers[2].actions[1] else {
             panic!("expected transfer, got {:?}", spec.layers[2].actions[1]);
         };
         assert_eq!(store_spec.direction, SpecTransferDirection::AodToSlm);
+        assert_eq!((store_spec.row, store_spec.col), (0, 1));
 
         // Entangle positions are the post-move pair sites.
         let ActionSpec::Entangle { pairs, duration_us } = &spec.layers[3].actions[0] else {
@@ -933,6 +1054,98 @@ mod tests {
         };
         assert_eq!((moves[0].row, moves[0].col), (3, 4));
         assert_eq!((moves[1].row, moves[1].col), (3, 5));
+        // Unique refs are already consistent, so transfers keep them too.
+        for (index, expected) in [(0usize, (3u32, 4u32)), (1, (3, 5))] {
+            let ActionSpec::Transfer(load_spec) = &spec.layers[0].actions[index] else {
+                panic!("expected transfer, got {:?}", spec.layers[0].actions[index]);
+            };
+            assert_eq!((load_spec.row, load_spec.col), expected);
+        }
+    }
+
+    #[test]
+    fn transfer_without_associated_move_keeps_planner_ref() {
+        // A lone load with no subsequent move: nothing to reconcile against,
+        // so the planner ref survives verbatim.
+        let layers = vec![ScheduleLayer {
+            cycle: 0,
+            actions: vec![load(0, 0)],
+        }];
+        let layout = NeutralAtomLayout {
+            sites: bell_layout().sites,
+            initial_bindings: vec![slm_binding(0, 0)],
+        };
+        let spec = match lower_layers(&layers, &layout, &params()) {
+            Ok(spec) => spec,
+            Err(error) => panic!("lowering failed: {error}"),
+        };
+        let ActionSpec::Transfer(load_spec) = &spec.layers[0].actions[0] else {
+            panic!("expected transfer, got {:?}", spec.layers[0].actions[0]);
+        };
+        assert_eq!((load_spec.aod_id, load_spec.row, load_spec.col), (0, 0, 0));
+    }
+
+    #[test]
+    fn repeated_episodes_get_their_own_transfer_refs() {
+        // Two load→move→store episodes for the same atoms; each episode's
+        // transfers must take that episode's overlay refs, not the other's.
+        let mut layers = bell_layers();
+        layers.truncate(3); // load, move (storage → pair), store
+        // Second episode: move back from the pair to storage. Source x order
+        // is reversed (pair sites are at x = 0.0 / 2.0 like storage 0.0 / 4.0,
+        // so ranks stay 0 / 1 — assert per-episode lookup, not recomputation).
+        layers.push(ScheduleLayer {
+            cycle: 3,
+            actions: vec![load(0, 2), load(1, 3)],
+        });
+        layers.push(ScheduleLayer {
+            cycle: 4,
+            actions: vec![NeutralAtomAction::Move(MovementGroup {
+                moves: vec![
+                    AtomMove {
+                        atom: AtomId(0),
+                        from: SiteId(2),
+                        to: SiteId(0),
+                    },
+                    AtomMove {
+                        atom: AtomId(1),
+                        from: SiteId(3),
+                        to: SiteId(1),
+                    },
+                ],
+                duration_us: 336,
+            })],
+        });
+        layers.push(ScheduleLayer {
+            cycle: 5,
+            actions: vec![store(0, 0), store(1, 1)],
+        });
+        let layout = NeutralAtomLayout {
+            sites: bell_layout().sites,
+            initial_bindings: vec![slm_binding(0, 0), slm_binding(1, 1)],
+        };
+
+        let spec = match lower_layers(&layers, &layout, &params()) {
+            Ok(spec) => spec,
+            Err(error) => panic!("lowering failed: {error}"),
+        };
+        for layer_index in [3, 5] {
+            for (action_index, expected_col) in [(0usize, 0u32), (1, 1)] {
+                let ActionSpec::Transfer(transfer_spec) =
+                    &spec.layers[layer_index].actions[action_index]
+                else {
+                    panic!(
+                        "expected transfer, got {:?}",
+                        spec.layers[layer_index].actions[action_index]
+                    );
+                };
+                assert_eq!(
+                    (transfer_spec.row, transfer_spec.col),
+                    (0, expected_col),
+                    "layer {layer_index} action {action_index}"
+                );
+            }
+        }
     }
 
     #[test]
