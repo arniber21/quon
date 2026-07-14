@@ -32,37 +32,8 @@ jobs:
           # invalidate whenever the devbox environment changes.
           prefix-key: nix-${{ hashFiles('devbox.lock') }}
 
-      - name: Install Python Aer + lit deps
-        run: devbox run ci-python
-
-      - name: cargo fmt
-        run: devbox run -- cargo fmt --all -- --check
-
-      - name: cargo clippy
-        run: devbox run -- cargo clippy --workspace ${{ env.WORKSPACE_EXCLUDE }} --all-targets -- -D warnings
-
-      - name: cargo build --release
-        run: devbox run -- cargo build --release --workspace ${{ env.WORKSPACE_EXCLUDE }}
-
-      - name: cargo build --examples (lit test oracle binaries, issue #28)
-        run: devbox run -- cargo build --examples --workspace ${{ env.WORKSPACE_EXCLUDE }}
-
-      - name: cargo test
-        run: devbox run ci
-
-      - name: Python Aer verification
-        env:
-          QUONC: target/release/quonc
-        run: |
-          devbox run -- .venv/bin/python test/verify/bell.py
-          devbox run -- .venv/bin/python test/verify/teleport.py
-          devbox run -- .venv/bin/python test/verify/bernstein_vazirani.py
-          devbox run -- .venv/bin/python test/verify/routing.py
-          devbox run -- .venv/bin/python test/verify/grover.py
-          devbox run -- .venv/bin/python test/verify/qft.py
-          devbox run -- .venv/bin/python test/verify/ising.py
-          devbox run -- .venv/bin/python test/verify/qaoa.py
-          devbox run -- .venv/bin/python test/verify/shor.py
+      - name: CI rust gates (Justfile)
+        run: devbox run -- just ci-rust
 
   docs:
     name: docs site build (website/)
@@ -70,8 +41,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Assert validation docs match CI reality (issue #203)
-        run: ./scripts/assert-validation-docs.sh
+      - uses: extractions/setup-just@v4
+
+      - name: Assert validation docs match Justfile / CI reality
+        run: just ci-docs-assert
 
       - uses: pnpm/action-setup@v4
         with:
@@ -83,13 +56,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: website/pnpm-lock.yaml
 
-      - name: Install dependencies
-        working-directory: website
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        working-directory: website
-        run: pnpm build
+      - name: Website build (Justfile)
+        run: just ci-website
 
   tooling:
     name: quonfmt · quonlint · LSP smoke
@@ -111,14 +79,5 @@ jobs:
           shared-key: tooling
           prefix-key: nix-${{ hashFiles('devbox.lock') }}
 
-      - name: Build tooling binaries
-        run: devbox run tooling-build
-
-      - name: quonfmt --check (CI corpus)
-        run: devbox run -- ./scripts/tooling-check.sh --ci --fmt-only
-
-      - name: quonlint (CI corpus)
-        run: devbox run -- ./scripts/tooling-check.sh --ci --lint-only
-
-      - name: LSP smoke tests
-        run: devbox run -- cargo test --release -p quon_lsp --test smoke -- --include-ignored
+      - name: CI tooling gates (Justfile)
+        run: devbox run -- just ci-tooling

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Fail if agent validation docs regress to known-stale CI claims (issue #203).
+# Positive anchors track the Justfile as orchestrator source of truth (ADR-0012).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,6 +23,9 @@ fi
 if grep -q 'FileCheck IR tests (not in CI yet)' "$CODE_QUALITY"; then
   fail "code-quality.md still claims lit is not in CI"
 fi
+if grep -q 'tooling-check.sh' "$VALIDATION" "$CODE_QUALITY"; then
+  fail "docs still reference deleted scripts/tooling-check.sh — use just ci-tooling"
+fi
 
 # Paths that moved (DepthExpr's canonical home is quon_core, not mlir_bridge)
 # and must not be cited as if they still exist.
@@ -36,8 +40,11 @@ do
   fi
 done
 
-# Positive anchors that must stay present (adapter of ci.yml reality).
+# Positive anchors that must stay present (adapter of Justfile / workflow reality).
 for needle in \
+  'just test-ci' \
+  'just doctor' \
+  'QUON_REQUIRE_LIT' \
   'quonc/tests/lit.rs' \
   'test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py' \
   'cargo llvm-cov' \
@@ -57,9 +64,12 @@ fi
 if ! grep -qF 'frontend/src/typecheck/mod.rs' "$CODE_QUALITY"; then
   fail "code-quality.md must cite the typecheck module (frontend/src/typecheck/mod.rs)"
 fi
+if ! grep -qF 'just test-ci' "$CODE_QUALITY"; then
+  fail "code-quality.md must mention just test-ci as the pre-PR gate"
+fi
 
 if [[ "$FAILED" -ne 0 ]]; then
-  echo "assert-validation-docs: FAILED — update docs/agents to match .github/workflows/" >&2
+  echo "assert-validation-docs: FAILED — update docs/agents to match Justfile + .github/workflows/" >&2
   exit 1
 fi
 

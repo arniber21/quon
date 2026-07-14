@@ -6,20 +6,25 @@ Full validation commands live in [validation.md](./validation.md). PR workflow i
 
 ## Pre-PR checklist
 
-Run these before opening or updating a PR (same order CI uses):
+Prefer one command that matches the stable CI gates (see [validation.md](./validation.md), ADR-0012):
 
-1. **Format** — `cargo fmt --all -- --check`
-2. **Clippy** — `cargo clippy --workspace --exclude flux_verify --all-targets -- -D warnings`
-3. **Tests** — `cargo test --workspace --exclude flux_verify`
-4. **Taskless** — `npx @taskless/cli@latest check $(git diff --name-only main...HEAD)` (or full scan)
-5. **Tooling** — `./scripts/tooling-check.sh --ci` (or full script without flags)
-6. **Flux (if needed)** — `cargo flux -p flux_verify` when you touch refinement specs or the `flux` feature (see below)
+```bash
+devbox run -- just test-ci
+```
+
+That runs `ci-rust` (fmt, clippy, build, examples, tests with `QUON_REQUIRE_LIT`, Aer verify list), `ci-tooling`, and `ci-docs-assert`. Also run Taskless on your diff, and Flux when needed:
+
+1. **`just test-ci`** — CI-parity rust + tooling + validation-doc assert
+2. **Taskless** — `npx @taskless/cli@latest check $(git diff --name-only main...HEAD)` (or full scan)
+3. **Flux (if needed)** — `cargo flux -p flux_verify` when you touch refinement specs or the `flux` feature (see below)
+
+Day-to-day: `just doctor` then `just test-fast` (lit soft-skips without tools; no Aer).
 
 Optional but valuable before large IR or emitter changes:
 
-- `lit test/lit/ -v` — verbose FileCheck IR output (CI already runs the suite via `quonc/tests/lit.rs` inside `cargo test` when `lit`/`FileCheck` + example oracles are available; see [validation.md](./validation.md))
+- `lit test/lit/ -v` — verbose FileCheck IR output (CI / `just test-ci` require the suite via `QUON_REQUIRE_LIT` in [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs); see [validation.md](./validation.md))
 - `cargo +nightly fuzz run …` in `mlir_bridge/fuzz/` — continuous fuzzing for parsers
-- Python Aer checks — nine `test/verify/*.py` scripts (same list as CI); see [README.md](../../README.md#testing) and [validation.md](./validation.md)
+- Python Aer checks — nine `test/verify/*.py` scripts (same list as `just ci-rust`); see [README.md](../../README.md#testing) and [validation.md](./validation.md)
 
 ## Constant evaluation mindset
 

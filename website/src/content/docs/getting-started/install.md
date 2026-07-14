@@ -92,7 +92,9 @@ cargo build --release
 
 `devbox.json` sets `MLIR_SYS_220_PREFIX` from `llvm-config --prefix` via a local flake (`nix/llvm-mlir`) that joins Nix's separate LLVM and MLIR packages into one Melior-compatible prefix.
 
-Useful scripts: `devbox run build`, `devbox run test`, `devbox run check`, `devbox run setup-python`, `devbox run release`.
+Primary contributor commands (root Justfile, ADR-0012): `just doctor`, `just setup-python`,
+`just test-fast`, `just test-ci` — or `devbox run -- just <recipe>`. Tag releases with
+`devbox run release`.
 
 Release packaging (`devbox run release` / `./scripts/release.sh`) builds self-contained
 archives with static MLIR/LLVM and a release-built static `libz3.a`. Tag builds upload
@@ -111,7 +113,7 @@ rustc --version
 ### Install the Aer bridge
 
 ```bash
-devbox run setup-python
+just setup-python
 source .venv/bin/activate
 python -c "from qiskit_aer import AerSimulator; print(AerSimulator())"
 ```

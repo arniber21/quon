@@ -9,7 +9,7 @@ Full guide: `docs/agents/code-quality.md`. Validation commands: `docs/agents/val
 
 ## Before a PR
 
-Run `cargo fmt --check`, `clippy` (exclude `flux_verify`), `cargo test --workspace --exclude flux_verify`, and `npx @taskless/cli@latest check` on changed files. Run `cargo flux -p flux_verify` when touching refinement specs.
+Prefer `just test-ci` (or `devbox run -- just test-ci`) for CI-parity gates. Also run `npx @taskless/cli@latest check` on changed files. Run `cargo flux -p flux_verify` when touching refinement specs.
 
 ## Defaults
 

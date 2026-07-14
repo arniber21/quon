@@ -2,32 +2,46 @@
 
 Static analysis and refinement-type checks for the Quon workspace.
 
-**Native toolchain:** prefer `devbox shell` / `devbox run check` for a locked LLVM/MLIR 22 + Z3 environment (see root `devbox.json`). Rust stays on rustup. Manual brew/apt LLVM remains an advanced fallback — see [README](../../README.md) and the [install guide](../../website/src/content/docs/getting-started/install.md).
+**Native toolchain:** prefer `devbox shell` for a locked LLVM/MLIR 22 + Z3 environment (see root `devbox.json`). Orchestration lives in the root **Justfile** (ADR-0012): `devbox run -- just doctor`, `just test-fast`, `just test-ci`. Rust stays on rustup. Manual brew/apt LLVM remains an advanced fallback — see [README](../../README.md) and the [install guide](../../website/src/content/docs/getting-started/install.md).
+
+## Developer bootstrap
+
+| Command | Purpose |
+| ------- | ------- |
+| `just doctor` | Readiness matrix (LLVM/`MLIR_SYS_220_PREFIX`, z3, `.venv`+Qiskit, lit, FileCheck, `quonc`). Required rows fail; optional WARN. `just doctor --strict` fails on WARN too. |
+| `just setup-python` | Create `.venv`, install `python/requirements.txt` + `lit` |
+| `just test-fast` | `cargo test --workspace --exclude flux_verify` (lit soft-skips if tools missing; no Aer) |
+| `just test-ci` | Local CI parity: `ci-rust` + `ci-tooling` + `ci-docs-assert` (not the website build) |
+| `just ci-rust` | What the `ci.yml` `rust` job runs (sets `QUON_REQUIRE_LIT`) |
+| `just ci-tooling` | What the `ci.yml` `tooling` job runs |
+| `just tooling-full` | Broader local fmt/lint corpus (not CI) |
+| `just ci-docs-assert` | `./scripts/assert-validation-docs.sh` |
+| `just ci-website` | Starlight `pnpm build` under `website/` |
+
+Inside Devbox: `devbox run -- just <recipe>` (or `just` after `devbox shell`).
 
 ## CI matrix
 
-This table is an adapter of `.github/workflows/` — keep it in sync, and run
-`./scripts/assert-validation-docs.sh` (also on the `ci.yml` docs job) so known-stale
-claims cannot return.
+This table is an adapter of the **Justfile** recipes invoked by `.github/workflows/` — keep it in sync, and run `just ci-docs-assert` (also on the `ci.yml` docs job) so known-stale claims cannot return.
 
 | Workflow | Trigger | What runs |
 | -------- | ------- | --------- |
-| [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `cargo fmt --check`, `clippy`, `build --release` (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` (needs LLVM 22 + MLIR + z3). CI installs `lit`; FileCheck IR suite runs via [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) when `lit`/`FileCheck` and example oracles are on `PATH`. Then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`. |
-| [ci.yml](../../.github/workflows/ci.yml) `docs` | every push and PR | Starlight build under `website/` + `./scripts/assert-validation-docs.sh` |
-| [ci.yml](../../.github/workflows/ci.yml) `tooling` | every push and PR | `quonfmt --check`, `quonlint`, `quon_lsp` smoke tests on CI corpus |
+| [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `just ci-rust`: fmt, clippy, release build (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` with `QUON_REQUIRE_LIT` so [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) hard-fails without lit/FileCheck/oracles, then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`. |
+| [ci.yml](../../.github/workflows/ci.yml) `docs` | every push and PR | `just ci-docs-assert` + `just ci-website` |
+| [ci.yml](../../.github/workflows/ci.yml) `tooling` | every push and PR | `just ci-tooling`: `quonfmt --check`, `quonlint`, `quon_lsp` smoke on CI corpus |
 | [release.yml](../../.github/workflows/release.yml) | tags `v*` (+ manual dry-run) | `devbox run release` — static MLIR/LLVM + release-built static libz3; link audit; upload `quon-{version}-{arch}-{os}.tar.gz` to GitHub Releases |
 | [taskless.yml](../../.github/workflows/taskless.yml) | every PR (diff-scoped); push to `main` (full) | `@taskless/cli check` (Node 22+) |
 | [flux.yml](../../.github/workflows/flux.yml) | PR when `flux_verify/`, `quon_core/`, `backend/`, or lockfile changes; push to `main` (unconditional) | `cargo flux -p flux_verify`, `cargo flux -p quon_core --features flux`, `cargo flux -p backend --features flux` (nightly + z3) |
 | [coverage.yml](../../.github/workflows/coverage.yml) | every PR (non-blocking) | `cargo llvm-cov` summary via `./scripts/coverage.sh` (stable, excludes `flux_verify`; needs LLVM 22 + MLIR) |
 | [vscode-extension.yml](../../.github/workflows/vscode-extension.yml) | path-filtered push/PR | tree-sitter corpus + VS Code extension package checks |
 
-Local `lit test/lit/ -v` remains useful for verbose FileCheck output; CI already covers the suite through `cargo test` when tools are present.
+Local `lit test/lit/ -v` remains useful for verbose FileCheck output. CI and `just test-ci` require the suite via `QUON_REQUIRE_LIT`; bare `cargo test` / `just test-fast` still soft-skip when tools are missing.
 
 **ADR/docs drift:** borrow cleanup semantics vs ADR-0003 are tracked in [#180](https://github.com/arniber21/quon/issues/180) — do not “fix” borrow docs from this validation matrix.
 
 ## Tooling gates (quonfmt · quonlint · LSP)
 
-The `tooling` job in [ci.yml](../../.github/workflows/ci.yml) enforces Quon developer-tooling correctness on a fixed 16-file corpus (`test/tooling/ci-corpus.txt`):
+The `tooling` job in [ci.yml](../../.github/workflows/ci.yml) runs `just ci-tooling` on a fixed 16-file corpus (`test/tooling/ci-corpus.txt`):
 
 - **`quonfmt --check`** — no formatting drift
 - **`quonlint`** — diagnostics at or above `error` fail the job (config: `.quonlint.toml`)
@@ -35,19 +49,13 @@ The `tooling` job in [ci.yml](../../.github/workflows/ci.yml) enforces Quon deve
 
 ```bash
 # Match CI exactly
-./scripts/tooling-check.sh --ci
-
-# Individual gates
-cargo build --release -p quonfmt -p quonlint-cli -p quon_lsp
-quonfmt --check $(grep -v '^#' test/tooling/ci-corpus.txt | grep -v '^$')
-quonlint --config .quonlint.toml --fail-on error $(grep -v '^#' test/tooling/ci-corpus.txt | grep -v '^$')
-cargo test --release -p quon_lsp --test smoke -- --include-ignored
+just ci-tooling
 
 # Broader local sweep (not CI)
-./scripts/tooling-check.sh --full
+just tooling-full
 ```
 
-LSP smoke tests are intentionally skipped by `cargo test --workspace` (they use `#[ignore]`). Only the tooling job runs them via `--include-ignored`.
+LSP smoke tests are intentionally skipped by `cargo test --workspace` (they use `#[ignore]`). Only the tooling job / `just ci-tooling` runs them via `--include-ignored`.
 
 ## Taskless (ast-grep rules)
 
@@ -125,13 +133,13 @@ Flux uses **nightly** and **z3**; it is intentionally excluded from the stable `
 
 Agents should treat validation as a **stack of fast feedback loops**, not a single CI gate at the end:
 
-1. **Every PR** — fmt, clippy, `cargo test --workspace --exclude flux_verify`, Taskless on changed files, tooling gates (see [validation.md](./validation.md#tooling-gates-quonfmt--quonlint--lsp)).
+1. **Every PR** — prefer `just test-ci` (or at least fmt/clippy/`just test-fast`, Taskless on changed files, `just ci-tooling`).
 2. **Language / parser / typechecker work** — add or extend unit tests; keep reference-algorithm fixtures passing (`frontend/tests/reference_algorithms.rs`).
 3. **Algorithms and serializers** — add proptest coverage where an oracle or invariant exists (`backend/tests/props.rs`, `quon_core/tests/depth_props.rs`); consider `cargo fuzz` for byte/text parsers.
 4. **MLIR dialect changes** — unit/integration tests in `mlir_bridge/tests/`; builders must call `verify()` (enforced by Taskless).
 5. **Refinement-heavy Rust** — Flux specs in `flux_verify` when `{v: …}` contracts clarify intent beyond tests.
 
-Slow checks (`lit`, Aer, full fuzz campaigns) are valuable before phase milestones but should not replace the fast layers above for day-to-day development.
+Slow checks (full Aer list, full fuzz campaigns) are valuable before phase milestones but should not replace the fast layers above for day-to-day development. Use `just test-fast` day-to-day; `just test-ci` before opening a PR.
 
 ## LLVM source coverage (`cargo-llvm-cov`)
 

@@ -13,6 +13,7 @@
     "python312": "3.12.13",
     "nodejs_22": "22.23.1",
     "pkg-config": "0.29.2",
+    "just": "latest",
     "libxml2": {
       "version": "latest",
       "outputs": [
@@ -45,43 +46,14 @@
       "unset _z3_prefix _z3_bin _z3_libdir"
     ],
     "scripts": {
-      "build": [
-        "cargo build --workspace --exclude flux_verify"
-      ],
-      "test": [
-        "cargo test --workspace --exclude flux_verify"
-      ],
-      "setup-python": [
-        "python3 -m venv .venv",
-        ".venv/bin/python -m pip install --upgrade pip",
-        ".venv/bin/python -m pip install -r python/requirements.txt",
-        "echo \"Activate with: source .venv/bin/activate\""
-      ],
-      "check": [
-        "cargo fmt --all -- --check",
-        "cargo clippy --workspace --exclude flux_verify --all-targets -- -D warnings",
-        "cargo test --workspace --exclude flux_verify"
-      ],
-      "ci": [
-        "export PATH=\"$PWD/.venv/bin:$PATH\"",
-        "cargo test --workspace --exclude flux_verify"
-      ],
-      "ci-python": [
-        "python3 -m venv .venv",
-        ".venv/bin/python -m pip install --upgrade pip",
-        ".venv/bin/python -m pip install -r python/requirements.txt lit"
-      ],
-      "tooling-build": [
-        "cargo build --release -p quonfmt -p quonlint-cli -p quon_lsp"
-      ],
-      "lsp-vscode-build": [
-        "cargo build --release -p quon_lsp -p quonfmt"
-      ],
       "coverage": [
         "./scripts/coverage.sh"
       ],
       "release": [
         "./scripts/release.sh"
+      ],
+      "lsp-vscode-build": [
+        "cargo build --release -p quon_lsp -p quonfmt"
       ]
     }
   }

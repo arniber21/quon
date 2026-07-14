@@ -3,13 +3,28 @@
 //! oracle binaries `test/lit/lit.cfg.py` substitutes in (`circ_lower`,
 //! `monadic_lower`, `sabre_route`, ...) live under `examples/` in `frontend`
 //! and `mlir_bridge`, and plain `cargo test`/`cargo build` don't build
-//! examples — CI runs `cargo build --examples --workspace` first. Locally,
-//! where that's easy to forget, this test skips (rather than fails) when
-//! `lit`, `FileCheck`, or an oracle binary is missing, so a bare `cargo test`
-//! stays green on a fresh checkout.
+//! examples — CI / `just ci-rust` run `cargo build --examples --workspace`
+//! first. Locally, where that's easy to forget, this test skips (rather than
+//! fails) when `lit`, `FileCheck`, or an oracle binary is missing, so a bare
+//! `cargo test` / `just test-fast` stays green on a fresh checkout.
+//!
+//! Set `QUON_REQUIRE_LIT` (any non-empty value) to turn those soft-skips into
+//! hard failures — `just ci-rust` / `just test-ci` export it so CI-parity
+//! cannot go green without the FileCheck suite.
 
 use std::path::PathBuf;
 use std::process::Command;
+
+fn require_lit() -> bool {
+    std::env::var_os("QUON_REQUIRE_LIT").is_some_and(|v| !v.is_empty())
+}
+
+fn skip_or_fail(msg: &str) {
+    if require_lit() {
+        panic!("{msg}");
+    }
+    eprintln!("skipping lit_suite_passes: {msg}");
+}
 
 const ORACLE_BINARIES: &[&str] = &[
     "circ_roundtrip",
@@ -65,17 +80,17 @@ fn lit_suite_passes() {
     let new_path = std::env::join_paths(&search_dirs).expect("build PATH for lit subprocess");
 
     if !on_path(&new_path, "lit") || !on_path(&new_path, "FileCheck") {
-        eprintln!("skipping lit_suite_passes: `lit` and/or `FileCheck` not on PATH");
+        skip_or_fail("`lit` and/or `FileCheck` not on PATH");
         return;
     }
     let missing_oracle = ORACLE_BINARIES
         .iter()
         .find(|name| !examples_dir.join(exe_name(name)).is_file());
     if let Some(missing) = missing_oracle {
-        eprintln!(
-            "skipping lit_suite_passes: oracle binary `{missing}` not built \
+        skip_or_fail(&format!(
+            "oracle binary `{missing}` not built \
              (run `cargo build --examples --workspace` first)"
-        );
+        ));
         return;
     }
 

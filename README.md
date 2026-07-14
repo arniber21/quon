@@ -26,7 +26,8 @@ Full details: [website install docs](website/src/content/docs/getting-started/in
 | Rust | stable | via **rustup** (outside Devbox); see `rust-toolchain.toml` |
 | Devbox + Nix | latest | recommended contributor toolchain — LLVM/MLIR 22, Z3, Python 3.12, Node 22 |
 | Melior | **0.27.x** | Pinned in the workspace `Cargo.toml`; requires LLVM 22 |
-| Python + Qiskit Aer | 3.10+ | Simulation verification (`test/verify/`); `devbox run setup-python` |
+| Python + Qiskit Aer | 3.10+ | Simulation verification (`test/verify/`); `just setup-python` |
+| just | latest | Devbox package — root Justfile is the contributor/CI orchestrator (ADR-0012) |
 | Flux (optional) | nightly + z3 | Refinement types in `flux_verify`; install via [Flux install script](https://flux-rs.github.io/flux/guide/install.html) |
 
 ### Contributor setup (Devbox)
@@ -39,15 +40,15 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # if needed
 
 devbox shell          # or: direnv allow  (committed .envrc)
 llvm-config --version # expect 22.x
+just doctor           # readiness matrix (LLVM, z3, lit, Python, …)
 cargo build -p mlir_bridge -p quonc
-# optional Aer bridge:
-devbox run setup-python && source .venv/bin/activate
+# optional Aer / lit bridge:
+just setup-python && source .venv/bin/activate
 ```
 
-`devbox.json` / `devbox.lock` pin the native toolchain. A local flake at `nix/llvm-mlir` joins Nix's separate LLVM and MLIR store paths into one Melior-compatible prefix and sets `MLIR_SYS_220_PREFIX` in the shell `init_hook`.
+`devbox.json` / `devbox.lock` pin the native toolchain (including `just`). A local flake at `nix/llvm-mlir` joins Nix's separate LLVM and MLIR store paths into one Melior-compatible prefix and sets `MLIR_SYS_220_PREFIX` in the shell `init_hook`.
 
-Useful scripts: `devbox run build`, `devbox run test`, `devbox run check`.
-Tag releases: `devbox run release` (static MLIR/LLVM + static libz3; see `scripts/release.sh`) — uploads tarballs, `.deb`, and a Homebrew formula asset.
+Primary contributor commands: `just doctor`, `just test-fast`, `just test-ci` (or `devbox run -- just …`). Tag releases: `devbox run release` (static MLIR/LLVM + static libz3; see `scripts/release.sh`) — uploads tarballs, `.deb`, and a Homebrew formula asset.
 
 ### Building from source (manual)
 
@@ -125,14 +126,11 @@ scheduling → OpenQASM 3.0. (`clifford_t_opt` is reserved for [#96](https://git
 | Tree-sitter | Shared grammar for editors: [`tree-sitter-quon/`](tree-sitter-quon/) |
 
 ```bash
-# Format check (CI corpus)
-./target/release/quonfmt --check $(grep -v '^#' test/tooling/ci-corpus.txt)
-
-# Lint
-./target/release/quonlint --config .quonlint.toml --fail-on error $(grep -v '^#' test/tooling/ci-corpus.txt)
-
 # All tooling gates (mirrors CI tooling job)
-./scripts/tooling-check.sh --ci
+just ci-tooling
+
+# Broader local sweep over fixture .qn files
+just tooling-full
 ```
 
 See [docs/agents/validation.md](docs/agents/validation.md) for the full pre-PR checklist.
@@ -140,18 +138,18 @@ See [docs/agents/validation.md](docs/agents/validation.md) for the full pre-PR c
 ## Testing
 
 ```bash
-cargo fmt --all -- --check   # formatting (also enforced in CI)
-cargo clippy --workspace --exclude flux_verify --all-targets -- -D warnings
-cargo build --examples --workspace --exclude flux_verify  # lit's FileCheck oracle binaries
-cargo test --workspace --exclude flux_verify   # unit + integration tests, and the lit suite (see below)
-python test/verify/bell.py   # end-to-end Aer verification against a known reference distribution
+just doctor          # readiness matrix
+just test-fast       # unit + integration (lit soft-skips if tools missing)
+just test-ci         # CI parity: rust + tooling + validation-doc assert
 ```
 
-`cargo test` drives `test/lit/`'s IR-round-trip and emission FileCheck suite too (`quonc/tests/lit.rs`, PRD story 38) — it shells out to `lit`, which needs `lit`/`FileCheck` on `PATH` and the oracle binaries from `cargo build --examples` above; without those it skips with a message instead of failing, so a bare `cargo test` on a fresh checkout stays green. Run `lit test/lit/ -v` directly for verbose per-test output.
+`just test-ci` is the primary pre-PR path. It runs `ci-rust` (fmt, clippy, release build, examples, tests with `QUON_REQUIRE_LIT=1`, nine Aer verify scripts), `ci-tooling`, and `ci-docs-assert`. Actions invokes the same `ci-*` recipes via `devbox run -- just …` (ADR-0012).
+
+Bare `cargo test` / `just test-fast` still soft-skip the FileCheck suite in [`quonc/tests/lit.rs`](quonc/tests/lit.rs) when `lit`/`FileCheck`/oracles are missing. CI and `just test-ci` set `QUON_REQUIRE_LIT` so a missing lit toolchain fails loudly. Run `lit test/lit/ -v` directly for verbose per-test output.
 
 `test/verify/*.py` Aer-verifies all 8 PRD reference algorithms (Bell, teleportation, Bernstein-Vazirani, Grover, QFT, Ising, QAOA, Shor) plus SABRE routing, each against a known theoretical output distribution. Those scripts share `python/quon_aer.py` (compile → Qiskit dialect normalize → Aer → oracle); unit tests for the compat rewrite live in `python/test_quon_aer.py`.
 
-CI (`.github/workflows/ci.yml`) runs the same stable checks, the lit suite, and all `test/verify/` scripts on every push and pull request. `flux_verify` is checked separately via `cargo flux` in `.github/workflows/flux.yml`.
+`flux_verify` is checked separately via `cargo flux` in `.github/workflows/flux.yml`.
 
 ### Taskless validation
 

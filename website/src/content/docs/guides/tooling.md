@@ -137,14 +137,14 @@ The repository keeps a fixed 16-file corpus in
 Run the formatter check, linter threshold, and LSP smoke tests exactly as CI does:
 
 ```sh
-./scripts/tooling-check.sh --ci
+just ci-tooling
 ```
 
 CI passes `.quonlint.toml` explicitly and fails on `error` diagnostics. For a broader
 local sweep over the repository's `.qn` fixtures, run:
 
 ```sh
-./scripts/tooling-check.sh --full
+just tooling-full
 ```
 
 ## Editor integration status
