@@ -455,10 +455,22 @@ fn surface_d3_cx_emits_qec_json_and_sibling_stim() {
 
     let stim = std::fs::read_to_string(&stim_path).expect("read stim");
     assert!(stim.contains("lattice-surgery CX"), "{stim}");
-    assert!(stim.contains("DETECTOR"), "{stim}");
+    assert!(stim.contains("L-shaped"), "{stim}");
     assert!(stim.contains("OBSERVABLE_INCLUDE(0)"), "{stim}");
     assert!(stim.contains("OBSERVABLE_INCLUDE(1)"), "{stim}");
     assert!(stim.contains("CX "), "{stim}");
+    assert!(
+        doc["measurement_schedule"]
+            .as_array()
+            .expect("sched")
+            .iter()
+            .any(|e| e["kind"] == "frame_update"
+                && e["frame_updates"]
+                    .as_array()
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false)),
+        "frame_updates missing from measurement_schedule: {json_text}"
+    );
     assert!(
         !stim.contains("DEPOLARIZE") && !stim.contains("X_ERROR"),
         "structure-only Stim must omit noise:\n{stim}"
@@ -470,8 +482,13 @@ fn surface_d3_cx_emits_qec_json_and_sibling_stim() {
             r#"
 import stim
 c = stim.Circuit.from_file({stim_path:?})
-assert c.num_detectors > 0, c.num_detectors
 assert c.num_observables >= 2, c.num_observables
+dets, obs = c.compile_detector_sampler(seed=0).sample(shots=32, separate_observables=True)
+if dets.size:
+    assert not dets.any(), f"noiseless detector fired: {{dets.sum()}}"
+assert not obs.any(), f"noiseless |00> observables not zero: {{obs.sum()}}"
+obs1 = [l for l in str(c).splitlines() if l.startswith("OBSERVABLE_INCLUDE(1)")]
+assert obs1 and obs1[0].count("rec[") > 3, obs1
 print(f"ok detectors={{c.num_detectors}} observables={{c.num_observables}}")
 "#
         ))

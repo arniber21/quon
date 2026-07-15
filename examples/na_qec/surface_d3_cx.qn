@@ -1,10 +1,12 @@
 -- Surface-code distance-3 logical CX via fixed-layout three-patch lattice
--- surgery (control | ancilla | target). Compiles on the NA/QEC hybrid path
--- (#250 / ADR-0019).
+-- surgery (L-shaped: control|ancilla over target). Compiles on the NA/QEC
+-- hybrid path (#250 / ADR-0019).
 
 fn surface_d3_cx(): Q<Bit> = run {
         a <- surface_code<3>()
         b <- surface_code<3>()
+        a <- memory_round(a)
+        b <- memory_round(b)
         (a, b) <- logical_cx(a, b)
         _ <- measure_logical_z(a)
         measure_logical_z(b)

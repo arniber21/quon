@@ -83,6 +83,10 @@ impl MergeBoundary {
 }
 
 /// Pauli frame byproduct recorded after lattice-surgery measurements.
+///
+/// `x` / `z` name the Pauli to apply on [`Self::logical_id`] when the parity of
+/// [`Self::condition_atoms`] measurement records is odd (−1). They are **not**
+/// unconditional correction flags.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PauliFrameUpdate {
     pub logical_id: LogicalQubitId,
@@ -90,6 +94,8 @@ pub struct PauliFrameUpdate {
     pub z: bool,
     /// Which merge/measure phase produced this byproduct (`rough_merge`, …).
     pub source: &'static str,
+    /// Measurement atoms whose record parity conditions this update (odd → apply).
+    pub condition_atoms: Vec<PhysicalAtomId>,
 }
 
 /// Why this physical round exists in the expanded schedule.
@@ -116,7 +122,11 @@ impl RoundKind {
     pub fn needs_round_barrier(self) -> bool {
         matches!(
             self,
-            Self::MemoryRound | Self::Merge(_) | Self::Split(_) | Self::MeasureAncilla
+            Self::MemoryRound
+                | Self::Merge(_)
+                | Self::Split(_)
+                | Self::MeasureAncilla
+                | Self::FrameUpdate
         )
     }
 
@@ -622,7 +632,9 @@ fn repetition_memory_round(layout: &ExpandedBlock) -> Result<PhysicalRound, Expa
     })
 }
 
-fn surface_memory_round(layout: &ExpandedBlock) -> PhysicalRound {
+/// Full surface stabilizer extraction (Z-then-X). Used for memory rounds and
+/// post-merge split restore rounds (kind overridden by the caller).
+pub(crate) fn surface_memory_round(layout: &ExpandedBlock) -> PhysicalRound {
     // Z-then-X phases: overlapping X/Z CX in one block does not implement
     // simultaneous stabilizer extraction (Stim needs its 4-layer schedule or
     // a serial Z-then-X split). We take the serial split for all odd d.
@@ -1270,26 +1282,33 @@ mod tests {
         assert_eq!(expanded.blocks[0].stabilizers.len(), 24);
     }
 
-    #[test]
-    fn logical_cx_d3_expands_to_merge_split_phases() {
+    fn surface_d3_cx_workload_with_memory() -> QecWorkload {
         let mut b = WorkloadBuilder::new();
         b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
             .expect("c");
         b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
             .expect("t");
+        b.memory_round(LogicalQubitId(0)).expect("mr0");
+        b.memory_round(LogicalQubitId(1)).expect("mr1");
         b.logical_cx(LogicalQubitId(0), LogicalQubitId(1))
             .expect("cx");
         b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
             .expect("mz0");
         b.measure_logical(LogicalQubitId(1), LogicalBasis::Z)
             .expect("mz1");
-        let expanded = expand_workload(&b.finish()).expect("expand");
+        b.finish()
+    }
+
+    #[test]
+    fn logical_cx_d3_expands_to_merge_split_phases() {
+        let expanded = expand_workload(&surface_d3_cx_workload_with_memory()).expect("expand");
 
         assert!(expanded.has_lattice_surgery());
         // control + target + ancilla
         assert_eq!(expanded.blocks.len(), 3);
         // 17 + 17 + 17 data/check + 2*3 seam atoms attached to ancilla
         assert_eq!(expanded.physical_atom_count(), 17 + 17 + 17 + 6);
+        assert!(expanded.memory_round_count() >= 2);
 
         let kinds: Vec<_> = expanded.rounds.iter().map(|r| r.kind).collect();
         assert!(
@@ -1329,14 +1348,46 @@ mod tests {
         assert_eq!(smooth.z_cnot_count, 0);
         assert!(!smooth.local_mid.is_empty());
 
+        // Split rounds re-measure the seam (not Wait-only placeholders).
+        let splits: Vec<_> = expanded
+            .rounds
+            .iter()
+            .filter(|r| matches!(r.kind, RoundKind::Split(_)))
+            .collect();
+        assert_eq!(splits.len(), 2, "expected rough+smooth split, got {}", splits.len());
+        for s in &splits {
+            assert!(
+                !s.entangling.is_empty() && !s.terminal.is_empty(),
+                "split must emit seam re-measurements: {s:?}"
+            );
+        }
+
         let frame = expanded
             .rounds
             .iter()
             .find(|r| r.kind == RoundKind::FrameUpdate)
             .expect("frame");
         assert!(!frame.frame_updates.is_empty());
+        for upd in &frame.frame_updates {
+            assert!(
+                !upd.condition_atoms.is_empty(),
+                "byproduct must be outcome-conditioned: {upd:?}"
+            );
+        }
 
-        // Linear layout: control x < ancilla x < target x
+        let mz_anc = expanded
+            .rounds
+            .iter()
+            .find(|r| r.kind == RoundKind::MeasureAncilla)
+            .expect("ancilla mz");
+        assert_eq!(
+            mz_anc.terminal.len(),
+            3,
+            "ancilla logical Z is top-row (d atoms), not all data"
+        );
+
+        // L-shaped: control left of ancilla (L/R rough seam); target below ancilla
+        // (top/bottom smooth seam).
         let c = &expanded.blocks[0];
         let t = &expanded.blocks[1];
         let a = expanded
@@ -1345,11 +1396,47 @@ mod tests {
             .find(|b| b.logical_id == LogicalQubitId(2))
             .expect("ancilla");
         let c_max_x = c.coords.iter().map(|(x, _)| *x).max().unwrap();
-        let a_min_x = a.coords.iter().map(|(x, _)| *x).min().unwrap();
-        let a_max_x = a.coords.iter().map(|(x, _)| *x).max().unwrap();
+        let a_min_x = a
+            .coords
+            .iter()
+            .take(a.data_atoms.len())
+            .map(|(x, _)| *x)
+            .min()
+            .unwrap();
+        let a_max_y = a
+            .coords
+            .iter()
+            .take(a.data_atoms.len())
+            .map(|(_, y)| *y)
+            .max()
+            .unwrap();
+        let t_min_y = t.coords.iter().map(|(_, y)| *y).min().unwrap();
         let t_min_x = t.coords.iter().map(|(x, _)| *x).min().unwrap();
-        assert!(c_max_x < a_min_x, "control/ancilla overlap");
-        assert!(a_max_x < t_min_x || a_min_x < t_min_x, "ancilla/target order");
+        assert!(c_max_x < a_min_x, "control|ancilla L/R seam: {c_max_x} < {a_min_x}");
+        assert!(a_max_y < t_min_y, "ancilla/target top/bottom seam: {a_max_y} < {t_min_y}");
+        assert!(
+            (t_min_x - a_min_x).abs() <= 2,
+            "target should sit under ancilla (aligned x), got a_min_x={a_min_x} t_min_x={t_min_x}"
+        );
+
+        // Seam checks must carry StabilizerDefs (no orphan check atoms).
+        let seam_checks: Vec<_> = a
+            .check_atoms
+            .iter()
+            .filter(|c| !a.stabilizers.iter().any(|s| s.check == **c))
+            .collect();
+        assert!(
+            seam_checks.is_empty(),
+            "orphan seam checks without StabilizerDef: {seam_checks:?}"
+        );
+        assert!(
+            a.stabilizers.iter().any(|s| s.basis == LogicalBasis::Z && s.data.len() == 2),
+            "missing rough ZZ seam stabilizer"
+        );
+        assert!(
+            a.stabilizers.iter().any(|s| s.basis == LogicalBasis::X && s.data.len() == 2),
+            "missing smooth XX seam stabilizer"
+        );
     }
 
     #[test]

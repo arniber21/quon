@@ -104,7 +104,7 @@ _Avoid_: qec.json alone (as the full artifact), schedule JSON (as the experiment
 **Resource report (analytic)**: The compiler `ResourceReport` from `--emit-resource-report` — schedule metrics, QEC sizing metadata, and analytic physical error-budget contributions (`rate × schedule count`). Separate from the Python/Sinter sampled CSV; the two are never fused into one summary, and neither is a threshold claim (ADR-0020).
 _Avoid_: fused QEC report, threshold estimate (for this artifact), Sinter CSV (as the resource report)
 
-**Lattice-surgery CX**: The v1 lowering of `logical_cx` between two same-distance surface-code blocks — a fixed-layout three-patch merge/split gadget (control, transitional ancilla, target) with recorded Pauli-frame byproducts. Not a general patch router; not a bare physical transversal CX.
+**Lattice-surgery CX**: The v1 lowering of `logical_cx` between two same-distance surface-code blocks — a fixed L-shaped three-patch merge/split gadget (control|ancilla over target) with outcome-conditioned Pauli-frame byproducts. Not a general patch router; not a bare physical transversal CX.
 _Avoid_: transversal CX (for this op), lattice surgery (unqualified as the whole compiler)
 
 ### Neutral-atom backend

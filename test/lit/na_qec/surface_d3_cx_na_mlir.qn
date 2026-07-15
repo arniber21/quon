@@ -1,12 +1,14 @@
 -- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-mlir - --quiet | %FileCheck %s
 --
--- Surface d=3 logical CX → quantum.na (#250 / ADR-0019): three-patch lattice
--- surgery (rough + smooth merge/split), durable Wait barriers, seam entangle /
--- measure, ancilla measure, then logical data measures on control and target.
+-- Surface d=3 logical CX → quantum.na (#250 / ADR-0019): L-shaped three-patch
+-- lattice surgery (rough L/R + smooth top/bottom merge/split), durable Wait
+-- barriers, seam entangle/measure, ancilla measure, then logical data measures.
 
 fn surface_d3_cx(): Q<Bit> = run {
         a <- surface_code<3>()
         b <- surface_code<3>()
+        a <- memory_round(a)
+        b <- memory_round(b)
         (a, b) <- logical_cx(a, b)
         _ <- measure_logical_z(a)
         measure_logical_z(b)

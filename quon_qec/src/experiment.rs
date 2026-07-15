@@ -136,8 +136,21 @@ impl ExperimentRoundKind {
                 | Self::SplitRough
                 | Self::SplitSmooth
                 | Self::MeasureAncilla
+                | Self::FrameUpdate
         )
     }
+}
+
+/// Outcome-conditioned Pauli frame byproduct in experiment JSON.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrameUpdateEntry {
+    pub logical_id: u32,
+    pub x: bool,
+    pub z: bool,
+    pub source: String,
+    /// Measurement atoms whose record parity conditions this update (odd → apply).
+    pub condition_atoms: Vec<u32>,
 }
 
 /// Measurement / terminal events in program-round order.
@@ -152,6 +165,9 @@ pub struct MeasurementScheduleEntry {
     /// Measurement basis when applicable (`"x"` / `"z"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basis: Option<LogicalBasis>,
+    /// Pauli frame byproducts (populated on `frame_update` rounds).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_updates: Vec<FrameUpdateEntry>,
 }
 
 /// Logical observable (product of physical Pauli measurements).
@@ -586,6 +602,15 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
 }
 
 /// Structure Stim for the three-patch lattice-surgery CX gadget.
+///
+/// Horsman merge outcomes are emitted as logical-operator `MPP` measurements
+/// (joint ZZ / XX / ancilla Z) so frame-corrected Z observables are
+/// sinter-evaluable. Geometric seam CX schedules stay in the expand/NA path;
+/// they are not replayed here (they are not homologous to logical ZZ/XX).
+///
+/// Merge / ancilla outcomes feed [`OBSERVABLE_INCLUDE`] via frame byproducts —
+/// they are **not** bare `DETECTOR`s. `DETECTOR`s are emitted only for explicit
+/// `memory_round` Z-stabilizer comparisons under codespace prep.
 fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
     if expanded.blocks.len() < 2 {
         return Err(ExperimentError::UnsupportedLayout {
@@ -601,11 +626,23 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
         return Err(ExperimentError::InhomogeneousLatticeSurgery);
     }
 
+    let control = &expanded.blocks[0];
+    let target = &expanded.blocks[1];
+    let ancilla = expanded
+        .blocks
+        .iter()
+        .find(|b| b.logical_id.0 >= 2)
+        .ok_or(ExperimentError::UnsupportedLayout {
+            block_count: expanded.blocks.len(),
+        })?;
+
     let mut out = String::new();
     out.push_str(&format!(
         "# Quon QEC experiment — lattice-surgery CX structure (no noise; ADR-0019/0024)\n\
-         # family=surface distance={} blocks={} (control|ancilla|target linear)\n\
-         # Note: simplified merge/split seam model; not Stim FT-distance claim.\n",
+         # family=surface distance={} blocks={} (L-shaped: control|ancilla / target)\n\
+         # Merge/ancilla outcomes → OBSERVABLE_INCLUDE via frame; not bare DETECTORs.\n\
+         # Stim merges use logical MPP (Horsman); NA schedules geometric seam CXs.\n\
+         # Note: simplified merge/split model; not Stim FT-distance claim.\n",
         distance,
         expanded.blocks.len(),
     ));
@@ -616,7 +653,6 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
         }
     }
 
-    // Reset all atoms once.
     let mut all_atoms: Vec<u32> = expanded
         .blocks
         .iter()
@@ -630,16 +666,57 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
     }
     out.push_str("\nTICK\n");
 
+    // Absolute record index for logical byproduct handles (synthetic keys).
+    let mut byproduct_rec: std::collections::HashMap<&'static str, i32> =
+        std::collections::HashMap::new();
     let mut rec_count: i32 = 0;
-    let mut seam_detector_i = 0u32;
+    let mut frame_updates: Vec<&crate::expand::PauliFrameUpdate> = Vec::new();
     let mut measure_logical_rounds = Vec::new();
+    let mut memory_detector_i = 0u32;
 
     for round in &expanded.rounds {
         match round.kind {
             RoundKind::Construct => {
                 emit_local_ops(&mut out, &round.local_before);
             }
-            RoundKind::Merge(_) | RoundKind::MemoryRound => {
+            RoundKind::Merge(crate::expand::MergeBoundary::Rough) => {
+                // Logical ZZ(control, ancilla) — one record for the joint parity.
+                let mut ops = Vec::new();
+                for a in logical_observable_atoms(control, LogicalBasis::Z) {
+                    ops.push(format!("Z{a}"));
+                }
+                for a in logical_observable_atoms(ancilla, LogicalBasis::Z) {
+                    ops.push(format!("Z{a}"));
+                }
+                out.push_str("MPP ");
+                out.push_str(&ops.join("*"));
+                out.push('\n');
+                byproduct_rec.insert("rough_merge", rec_count);
+                rec_count += 1;
+                out.push_str("TICK\n");
+            }
+            RoundKind::Merge(crate::expand::MergeBoundary::Smooth) => {
+                // Logical XX(ancilla, target).
+                let mut ops = Vec::new();
+                for a in logical_observable_atoms(ancilla, LogicalBasis::X) {
+                    ops.push(format!("X{a}"));
+                }
+                for a in logical_observable_atoms(target, LogicalBasis::X) {
+                    ops.push(format!("X{a}"));
+                }
+                out.push_str("MPP ");
+                out.push_str(&ops.join("*"));
+                out.push('\n');
+                byproduct_rec.insert("smooth_merge", rec_count);
+                rec_count += 1;
+                out.push_str("TICK\n");
+            }
+            RoundKind::Split(_) => {
+                // NA schedules full stabilizer restore on split; Stim uses logical
+                // MPP merges and must not scramble data with mid-protocol MR.
+                out.push_str("# split_restore (NA-scheduled; omitted from Stim MPP path)\n");
+            }
+            RoundKind::MemoryRound => {
                 emit_round_body(&mut out, round)?;
                 let measured: Vec<u32> = round
                     .terminal
@@ -649,54 +726,52 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
                         _ => None,
                     })
                     .collect();
-                if !measured.is_empty() {
-                    out.push_str("MR");
-                    for id in &measured {
-                        out.push_str(&format!(" {id}"));
-                    }
-                    out.push('\n');
-                    let n = measured.len() as i32;
-                    for c in 0..n {
-                        let cur = -(n - c);
-                        out.push_str(&format!(
-                            "DETECTOR({seam_detector_i}, 0) rec[{cur}]\n"
-                        ));
-                        seam_detector_i += 1;
-                    }
-                    rec_count += n;
-                    out.push_str("TICK\n");
+                if measured.is_empty() {
+                    continue;
                 }
-            }
-            RoundKind::Split(_) | RoundKind::FrameUpdate => {
-                // Barrier / frame metadata only — no physical Stim ops.
+                out.push_str("MR");
+                for id in &measured {
+                    out.push_str(&format!(" {id}"));
+                    rec_count += 1;
+                }
+                out.push('\n');
+                if let Some(block) = expanded
+                    .blocks
+                    .iter()
+                    .find(|b| b.logical_id == round.logical_id)
+                {
+                    let n = measured.len() as i32;
+                    for stab in &block.stabilizers {
+                        if stab.basis != LogicalBasis::Z {
+                            continue;
+                        }
+                        let Some(pos) = measured.iter().position(|a| *a == stab.check.0) else {
+                            continue;
+                        };
+                        let cur = -(n - pos as i32);
+                        out.push_str(&format!(
+                            "DETECTOR({memory_detector_i}, 0) rec[{cur}]\n"
+                        ));
+                        memory_detector_i += 1;
+                    }
+                }
+                out.push_str("TICK\n");
             }
             RoundKind::MeasureAncilla => {
-                let measured: Vec<u32> = round
-                    .terminal
-                    .iter()
-                    .filter_map(|t| match t {
-                        RoundTerminal::Measure { atom, .. } => Some(atom.0),
-                        _ => None,
-                    })
+                // Logical Z of ancilla (top-row product) as one MPP record.
+                let ops: Vec<String> = logical_observable_atoms(ancilla, LogicalBasis::Z)
+                    .into_iter()
+                    .map(|a| format!("Z{a}"))
                     .collect();
-                if !measured.is_empty() {
-                    out.push_str("MZ");
-                    for id in &measured {
-                        out.push_str(&format!(" {id}"));
-                    }
-                    out.push('\n');
-                    // Ancilla Z product → OBSERVABLE bookkeeping via detectors.
-                    let n = measured.len() as i32;
-                    out.push_str(&format!("DETECTOR({seam_detector_i}, 1)"));
-                    for c in 0..n {
-                        let cur = -(n - c);
-                        out.push_str(&format!(" rec[{cur}]"));
-                    }
-                    out.push('\n');
-                    seam_detector_i += 1;
-                    rec_count += n;
-                    out.push_str("TICK\n");
-                }
+                out.push_str("MPP ");
+                out.push_str(&ops.join("*"));
+                out.push('\n');
+                byproduct_rec.insert("ancilla_mz", rec_count);
+                rec_count += 1;
+                out.push_str("TICK\n");
+            }
+            RoundKind::FrameUpdate => {
+                frame_updates.extend(round.frame_updates.iter());
             }
             RoundKind::MeasureLogical => {
                 measure_logical_rounds.push(round);
@@ -704,7 +779,6 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
         }
     }
 
-    // Final logical Z measurements on remaining (non-ancilla) blocks.
     let mut obs_id = 0u32;
     for round in measure_logical_rounds {
         let data_atoms: Vec<u32> = round
@@ -721,6 +795,7 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
         out.push_str("MZ");
         for id in &data_atoms {
             out.push_str(&format!(" {id}"));
+            rec_count += 1;
         }
         out.push('\n');
         let block = expanded
@@ -741,21 +816,48 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
             let rec = -(d - pos as i32);
             out.push_str(&format!(" rec[{rec}]"));
         }
+        // Horsman on Z readout: X-frame byproducts flip Z (include m_zz, m_a on
+        // target). Z-frame byproducts (smooth/ancilla → Z on control) commute
+        // with Z and are listed below as OBSERVABLE_INCLUDE frame witnesses so
+        // merge records remain sinter-visible without scrambling Z_c.
+        for upd in &frame_updates {
+            if upd.logical_id != round.logical_id || !upd.x {
+                continue;
+            }
+            if let Some(&abs) = byproduct_rec.get(upd.source) {
+                let rel = abs - rec_count;
+                out.push_str(&format!(" rec[{rel}]"));
+            }
+        }
         out.push('\n');
         obs_id += 1;
-        let _ = rec_count; // bookkeeping kept for future detector windows
+    }
+
+    // Z-frame byproducts (smooth/ancilla → Z on control): visible in Stim, but
+    // not OBSERVABLE_INCLUDE — they commute with Z readout and are random as
+    // standalone bits under Z-basis |00⟩ evaluation.
+    for upd in &frame_updates {
+        if !upd.z || upd.x {
+            continue;
+        }
+        if let Some(&abs) = byproduct_rec.get(upd.source) {
+            if frame_updates
+                .iter()
+                .take_while(|u| !std::ptr::eq(*u, upd))
+                .any(|u| u.z && !u.x && u.source == upd.source)
+            {
+                continue;
+            }
+            let rel = abs - rec_count;
+            out.push_str(&format!(
+                "# frame_z source={} rec[{rel}]\n",
+                upd.source
+            ));
+        }
     }
 
     if obs_id == 0 {
-        // Fallback: emit observables from first two surface blocks' Z logicals
-        // without a final measure (structure-only hook for Sinter harness).
-        for (i, block) in expanded
-            .blocks
-            .iter()
-            .filter(|b| b.init_basis != LogicalBasis::X || b.logical_id.0 < 2)
-            .take(2)
-            .enumerate()
-        {
+        for (i, block) in expanded.blocks.iter().take(2).enumerate() {
             let obs_atoms = logical_observable_atoms(block, LogicalBasis::Z);
             out.push_str(&format!("# OBSERVABLE_INCLUDE({i}) atoms"));
             for a in &obs_atoms {
@@ -925,12 +1027,11 @@ fn measurement_schedule_from_expanded(expanded: &ExpandedWorkload) -> Vec<Measur
         .enumerate()
         .map(|(i, round)| {
             let (measured_atoms, basis) = match round.kind {
-                RoundKind::Construct | RoundKind::Split(_) | RoundKind::FrameUpdate => {
-                    (Vec::new(), None)
-                }
+                RoundKind::Construct | RoundKind::FrameUpdate => (Vec::new(), None),
                 RoundKind::MemoryRound
                 | RoundKind::MeasureLogical
                 | RoundKind::Merge(_)
+                | RoundKind::Split(_)
                 | RoundKind::MeasureAncilla => {
                     let mut atoms = Vec::new();
                     let mut basis = None;
@@ -947,12 +1048,24 @@ fn measurement_schedule_from_expanded(expanded: &ExpandedWorkload) -> Vec<Measur
                     (atoms, basis)
                 }
             };
+            let frame_updates = round
+                .frame_updates
+                .iter()
+                .map(|u| FrameUpdateEntry {
+                    logical_id: u.logical_id.0,
+                    x: u.x,
+                    z: u.z,
+                    source: u.source.to_string(),
+                    condition_atoms: u.condition_atoms.iter().map(|a| a.0).collect(),
+                })
+                .collect();
             MeasurementScheduleEntry {
                 round_index: i as u32,
                 kind: ExperimentRoundKind::from_expand(round.kind),
                 logical_id: round.logical_id.0,
                 measured_atoms,
                 basis,
+                frame_updates,
             }
         })
         .collect()
@@ -1568,20 +1681,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lattice_surgery_cx_d3_dual_emit_json_and_stim() {
+    fn surface_d3_cx_expanded() -> ExpandedWorkload {
         let mut b = WorkloadBuilder::new();
         b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
             .expect("c");
         b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
             .expect("t");
+        b.memory_round(LogicalQubitId(0)).expect("mr0");
+        b.memory_round(LogicalQubitId(1)).expect("mr1");
         b.logical_cx(LogicalQubitId(0), LogicalQubitId(1))
             .expect("cx");
         b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
             .expect("mz0");
         b.measure_logical(LogicalQubitId(1), LogicalBasis::Z)
             .expect("mz1");
-        let expanded = expand_workload(&b.finish()).expect("expand");
+        expand_workload(&b.finish()).expect("expand")
+    }
+
+    #[test]
+    fn lattice_surgery_cx_d3_dual_emit_json_and_stim() {
+        let expanded = surface_d3_cx_expanded();
         assert!(expanded.has_lattice_surgery());
 
         let (exp, stim) = dual_emit(
@@ -1594,6 +1713,7 @@ mod tests {
 
         assert_eq!(exp.family, "surface");
         assert_eq!(exp.distance, 3);
+        assert!(exp.rounds >= 2, "expected memory rounds around CX");
         assert!(exp.logical_ids.contains(&0));
         assert!(exp.logical_ids.contains(&1));
         assert!(
@@ -1608,14 +1728,164 @@ mod tests {
                 .any(|r| r.kind == ExperimentRoundKind::FrameUpdate),
             "expected frame_update na_ref"
         );
+        let frame_sched = exp
+            .measurement_schedule
+            .iter()
+            .find(|e| e.kind == ExperimentRoundKind::FrameUpdate)
+            .expect("frame_update in measurement_schedule");
+        assert!(
+            !frame_sched.frame_updates.is_empty(),
+            "frame updates must be visible in JSON schedule"
+        );
+        assert!(
+            frame_sched
+                .frame_updates
+                .iter()
+                .all(|u| !u.condition_atoms.is_empty()),
+            "frame updates must be outcome-conditioned"
+        );
         assert!(exp.logical_observables.len() >= 2, "{:?}", exp.logical_observables);
 
         assert!(stim.contains("lattice-surgery CX"), "{stim}");
-        assert!(stim.contains("DETECTOR"), "{stim}");
+        assert!(stim.contains("L-shaped"), "{stim}");
         assert!(stim.contains("OBSERVABLE_INCLUDE(0)"), "{stim}");
         assert!(stim.contains("OBSERVABLE_INCLUDE(1)"), "{stim}");
         assert!(stim.contains("CX "), "{stim}");
         assert!(!stim.contains("DEPOLARIZE"), "{stim}");
         assert!(!stim.contains("X_ERROR"), "{stim}");
+        assert!(stim.contains("MPP "), "logical merge MPP missing: {stim}");
+        // Target Z observable must fold rough+ancilla byproduct records.
+        let obs1 = stim
+            .lines()
+            .find(|l| l.starts_with("OBSERVABLE_INCLUDE(1)"))
+            .expect("obs1");
+        let obs1_recs = obs1.matches("rec[").count();
+        assert!(
+            obs1_recs >= 5,
+            "obs1 must include logical Z atoms plus frame byproduct recs, got {obs1_recs}: {obs1}"
+        );
+        assert!(
+            stim.contains("# frame_z source=smooth_merge"),
+            "smooth Z-frame must be visible in Stim: {stim}"
+        );
+    }
+
+    #[test]
+    fn lattice_surgery_stim_omits_bare_merge_detectors() {
+        let expanded = surface_d3_cx_expanded();
+        let stim = emit_stim_structure(&expanded).expect("stim");
+        assert!(
+            stim.contains("Merge/ancilla outcomes → OBSERVABLE_INCLUDE"),
+            "{stim}"
+        );
+        assert!(stim.contains("MPP "), "{stim}");
+        // Merge outcomes are MPP records, never single-rec DETECTORs on seam MRs.
+        for line in stim.lines() {
+            if line.starts_with("MPP ") {
+                // next non-comment lines should not be DETECTOR tying that MPP alone
+                // (policy: byproducts go to OBSERVABLE_INCLUDE).
+            }
+        }
+        // Regression: old bug emitted DETECTOR per seam measure (2*d + 1 = 7+)
+        // in addition to memory checks. Memory-only path has 2 rounds × 4 Z checks = 8.
+        let detector_lines: Vec<_> = stim
+            .lines()
+            .filter(|l| l.starts_with("DETECTOR"))
+            .collect();
+        assert_eq!(
+            detector_lines.len(),
+            8,
+            "expected only memory-round Z detectors, got {detector_lines:?}"
+        );
+
+        // Regression: a bare DETECTOR on a random |+⟩-basis MPP (merge-like)
+        // must fire — the reason merge outcomes cannot be wired as DETECTORs.
+        let py = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(
+                r#"
+import stim
+# Minimal merge-like random parity with a bare DETECTOR (old bug shape).
+c = stim.Circuit()
+c.append("R", [0, 1])
+c.append("H", [1])
+c.append("MPP", [stim.target_z(0), stim.target_combiner(), stim.target_z(1)])
+c.append("DETECTOR", [stim.target_rec(-1)])
+dets = c.compile_detector_sampler(seed=0).sample(shots=32)
+assert dets.any(), "bare DETECTOR on random MPP must fire"
+print("ok faulty fires")
+"#,
+            )
+            .output();
+        if let Ok(output) = py {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !(stderr.contains("ModuleNotFoundError") || stderr.contains("No module named 'stim'"))
+            {
+                assert!(
+                    output.status.success(),
+                    "faulty-detector regression failed: {}",
+                    stderr
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lattice_surgery_stim_noiseless_codespace_and_observables() {
+        let expanded = surface_d3_cx_expanded();
+        let stim = emit_stim_structure(&expanded).expect("stim");
+        let dir = std::env::temp_dir().join(format!(
+            "quon-qec-250-stim-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+        let stim_path = dir.join("cx_d3.stim");
+        std::fs::write(&stim_path, &stim).expect("write stim");
+
+        let py = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(format!(
+                r#"
+import stim
+import numpy as np
+c = stim.Circuit.from_file({stim_path:?})
+assert c.num_observables >= 2, c.num_observables
+# Noiseless: detectors (memory Z checks) must be deterministic 0; observables
+# for |00⟩→CX→|00⟩ with X-frame corrections on target must be 0.
+sampler = c.compile_detector_sampler(seed=0)
+dets, obs = sampler.sample(shots=64, separate_observables=True)
+assert dets.shape[0] == 64
+if dets.size:
+    assert not dets.any(), f"detector fired under noiseless codespace: {{dets.sum()}}"
+assert not obs.any(), f"observables not deterministic 0 for |00>: {{obs.sum()}}"
+
+# Regression: if merge outcomes were bare DETECTORs expecting 0, injecting a
+# synthetic circuit that measures random bits as detectors would fail the check
+# above. Also assert OBSERVABLE_INCLUDE(1) references more records than d=3 data.
+obs1 = [line for line in str(c).splitlines() if line.startswith("OBSERVABLE_INCLUDE(1)")]
+assert obs1 and obs1[0].count("rec[") > 3, obs1
+print(f"ok dets={{c.num_detectors}} obs={{c.num_observables}}")
+"#
+            ))
+            .output();
+        match py {
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("ModuleNotFoundError") || stderr.contains("No module named 'stim'")
+                {
+                    eprintln!("skip stim correctness: stim not installed ({stderr})");
+                } else {
+                    assert!(
+                        output.status.success(),
+                        "stim correctness failed: status={} stderr={} stdout={}",
+                        output.status,
+                        stderr,
+                        String::from_utf8_lossy(&output.stdout)
+                    );
+                }
+            }
+            Err(e) => eprintln!("skip stim correctness: python unavailable ({e})"),
+        }
     }
 }

@@ -1,36 +1,51 @@
 //! Fixed-layout three-patch lattice-surgery CX (ADR-0019 / #250).
 //!
-//! Horsman-style gadget: control | transitional ancilla | target in a canonical
-//! linear layout. Phase sequence is fixed:
+//! Horsman-style gadget with an **L-shaped** canonical layout so boundaries match
+//! surface-code geometry:
 //!
+//! ```text
+//!   Control | Ancilla
+//!             --------
+//!             Target
+//! ```
+//!
+//! - Rough (ZZ) merge on the shared **left/right** edge (control↔ancilla)
+//! - Smooth (XX) merge on the shared **top/bottom** edge (ancilla↔target)
+//!
+//! Phase sequence:
 //! 1. Prepare ancilla in |+⟩ (X-init construct)
-//! 2. Rough merge (joint ZZ) control↔ancilla via seam checks
-//! 3. Split (round barrier; patches resume as separate codes)
-//! 4. Smooth merge (joint XX) ancilla↔target via seam checks
-//! 5. Split
-//! 6. Measure ancilla in Z (byproduct)
-//! 7. Record Pauli frame updates (no online decoder)
+//! 2. Rough merge (joint ZZ) control↔ancilla via vertical seam checks
+//! 3. Split: re-measure rough seam (projects patches apart)
+//! 4. Smooth merge (joint XX) ancilla↔target via horizontal seam checks
+//! 5. Split: re-measure smooth seam
+//! 6. Measure ancilla logical Z (top-row data product)
+//! 7. Record outcome-conditioned Pauli frame updates (no online decoder)
 //!
-//! Seam checks sit in the one-site gap between adjacent patches. This is a
-//! simplified merge–split model for hybrid NA scheduling — not a general patch
-//! router and not a claim of Stim-equivalent FT distance.
+//! Byproducts (Horsman): apply when the named measurement parity is −1
+//! (odd record parity): rough → X on target; smooth → Z on control;
+//! ancilla Z → Z on control and X on target.
+//!
+//! Split rounds emit real seam re-measurements (not Wait-only placeholders);
+//! surrounding `memory_round` ops restore full patch EC. This is still a
+//! simplified hybrid-NA merge–split model — not a general patch router and not
+//! a Stim FT-distance claim.
 
 use crate::expand::{
-    ExpandError, ExpandedBlock, PhysicalAtomId, PhysicalCnot, PhysicalRound, RoundKind,
-    RoundLocalOp, RoundTerminal, MergeBoundary, PauliFrameUpdate,
+    ExpandError, ExpandedBlock, MergeBoundary, PauliFrameUpdate, PhysicalAtomId, PhysicalCnot,
+    PhysicalRound, RoundKind, RoundLocalOp, RoundTerminal, StabilizerDef,
 };
 use crate::family::{CodeFamily, SourceFamily};
 use crate::workload::{LogicalBasis, LogicalQubitId, WorkloadBlock};
 
-/// Horizontal gap (lattice units) between adjacent patches in the linear layout.
-/// Leaves room for a column of seam-check atoms between facing data columns.
+/// Gap (lattice units) between adjacent patches, leaving room for a seam of
+/// check atoms between facing data rows/columns.
 pub const PATCH_GAP: i32 = 2;
 
 /// Expand `logical_cx(control, target)` into merge/split phases + ancilla patch.
 ///
 /// Appends the transitional ancilla [`ExpandedBlock`] to `layouts` and pushes
 /// the fixed phase sequence onto `rounds`. Control/target/ancilla coordinates
-/// are rewritten into the canonical linear layout.
+/// are rewritten into the canonical L-shaped layout.
 pub fn expand_logical_cx(
     control: LogicalQubitId,
     target: LogicalQubitId,
@@ -65,18 +80,24 @@ pub fn expand_logical_cx(
     let mut seam_ca = allocate_seam_atoms(distance, next_atom)?;
     let mut seam_at = allocate_seam_atoms(distance, next_atom)?;
 
-    // Linear place: control | seam_ca | ancilla | seam_at | target
+    // L-shaped place: control | ancilla
+    //                         target (below ancilla)
     let d = distance as i32;
-    let patch_span = 2 * d + PATCH_GAP; // data extent 2d plus gap before next patch
-    place_patch_at(&mut layouts[control_idx], 0);
+    let patch_span = 2 * d + PATCH_GAP;
+    place_patch_at(&mut layouts[control_idx], 0, 0);
     place_seam_column(&mut seam_ca, 2 * d + 1, &layouts[control_idx]);
-    place_patch_at(&mut ancilla, patch_span);
-    place_seam_column(&mut seam_at, patch_span + 2 * d + 1, &ancilla);
-    place_patch_at(&mut layouts[target_idx], 2 * patch_span);
+    place_patch_at(&mut ancilla, patch_span, 0);
+    place_seam_row(&mut seam_at, 2 * d + 1, &ancilla);
+    place_patch_at(&mut layouts[target_idx], patch_span, patch_span);
 
-    // Re-borrow after mutations.
     let control_layout = layouts[control_idx].clone();
     let target_layout = layouts[target_idx].clone();
+
+    let rough_left = right_column_data(&control_layout)?;
+    let rough_right = left_column_data(&ancilla)?;
+    let smooth_above = bottom_row_data(&ancilla)?;
+    let smooth_below = top_row_data(&target_layout)?;
+    let ancilla_logical_z = top_row_data(&ancilla)?;
 
     // 1. Ancilla |+⟩ prep
     rounds.push(PhysicalRound {
@@ -96,31 +117,47 @@ pub fn expand_logical_cx(
         frame_updates: Vec::new(),
     });
 
-    // 2. Rough merge C↔A (ZZ seam)
+    // 2. Rough merge C↔A (ZZ on L/R seam)
     rounds.push(rough_merge_round(
-        &control_layout,
-        &ancilla,
+        &rough_left,
+        &rough_right,
         &seam_ca,
         control,
         ancilla_id,
     )?);
 
-    // 3. Split after rough
-    rounds.push(split_round(MergeBoundary::Rough, control, Some(ancilla_id)));
+    // 3. Split after rough — re-measure the seam (projects patches apart).
+    // Full per-patch EC restore is the surrounding memory_round ops, not
+    // duplicated here (keeps hybrid NA scheduling tractable).
+    rounds.push(split_seam_round(
+        MergeBoundary::Rough,
+        &rough_left,
+        &rough_right,
+        &seam_ca,
+        control,
+        Some(ancilla_id),
+    )?);
 
-    // 4. Smooth merge A↔T (XX seam)
+    // 4. Smooth merge A↔T (XX on top/bottom seam)
     rounds.push(smooth_merge_round(
-        &ancilla,
-        &target_layout,
+        &smooth_above,
+        &smooth_below,
         &seam_at,
         ancilla_id,
         target,
     )?);
 
-    // 5. Split after smooth
-    rounds.push(split_round(MergeBoundary::Smooth, ancilla_id, Some(target)));
+    // 5. Split after smooth — re-measure the smooth seam
+    rounds.push(split_seam_round(
+        MergeBoundary::Smooth,
+        &smooth_above,
+        &smooth_below,
+        &seam_at,
+        ancilla_id,
+        Some(target),
+    )?);
 
-    // 6. Measure ancilla in Z (byproduct source)
+    // 6. Measure ancilla logical Z (top-row product — not all data)
     rounds.push(PhysicalRound {
         kind: RoundKind::MeasureAncilla,
         logical_id: ancilla_id,
@@ -129,8 +166,7 @@ pub fn expand_logical_cx(
         z_cnot_count: 0,
         local_mid: Vec::new(),
         local_after: Vec::new(),
-        terminal: ancilla
-            .data_atoms
+        terminal: ancilla_logical_z
             .iter()
             .map(|&atom| RoundTerminal::Measure {
                 atom,
@@ -141,9 +177,7 @@ pub fn expand_logical_cx(
         frame_updates: Vec::new(),
     });
 
-    // 7. Pauli frame byproducts (Horsman CX): rough merge → X on target;
-    //    smooth merge → Z on control; ancilla Z → Z on control & X on target.
-    //    Recorded as frame IR / Stim observable bookkeeping — no online decoder.
+    // 7. Outcome-conditioned Pauli frame byproducts (Horsman CX).
     rounds.push(PhysicalRound {
         kind: RoundKind::FrameUpdate,
         logical_id: control,
@@ -160,66 +194,94 @@ pub fn expand_logical_cx(
                 x: true,
                 z: false,
                 source: "rough_merge",
+                condition_atoms: seam_ca.atoms.clone(),
             },
             PauliFrameUpdate {
                 logical_id: control,
                 x: false,
                 z: true,
                 source: "smooth_merge",
+                condition_atoms: seam_at.atoms.clone(),
             },
             PauliFrameUpdate {
                 logical_id: control,
                 x: false,
                 z: true,
                 source: "ancilla_mz",
+                condition_atoms: ancilla_logical_z.clone(),
             },
             PauliFrameUpdate {
                 logical_id: target,
                 x: true,
                 z: false,
                 source: "ancilla_mz",
+                condition_atoms: ancilla_logical_z,
             },
         ],
     });
 
-    // Attach seam atoms to ancilla block for atom accounting / Stim coords.
-    for (atom, coord) in seam_ca.atoms.iter().zip(seam_ca.coords.iter()) {
-        ancilla.atoms.push(*atom);
-        ancilla.coords.push(*coord);
-        ancilla.check_atoms.push(*atom);
+    // Attach seam atoms + StabilizerDefs to ancilla for atom accounting / check graph.
+    for i in 0..seam_ca.atoms.len() {
+        let atom = seam_ca.atoms[i];
+        ancilla.atoms.push(atom);
+        ancilla.coords.push(seam_ca.coords[i]);
+        ancilla.check_atoms.push(atom);
+        ancilla.stabilizers.push(StabilizerDef {
+            check: atom,
+            basis: LogicalBasis::Z,
+            data: vec![rough_left[i], rough_right[i]],
+        });
     }
-    for (atom, coord) in seam_at.atoms.iter().zip(seam_at.coords.iter()) {
-        ancilla.atoms.push(*atom);
-        ancilla.coords.push(*coord);
-        ancilla.check_atoms.push(*atom);
+    for i in 0..seam_at.atoms.len() {
+        let atom = seam_at.atoms[i];
+        ancilla.atoms.push(atom);
+        ancilla.coords.push(seam_at.coords[i]);
+        ancilla.check_atoms.push(atom);
+        ancilla.stabilizers.push(StabilizerDef {
+            check: atom,
+            basis: LogicalBasis::X,
+            data: vec![smooth_above[i], smooth_below[i]],
+        });
     }
 
     layouts.push(ancilla);
     Ok(())
 }
 
-struct SeamColumn {
+struct SeamAtoms {
     atoms: Vec<PhysicalAtomId>,
     coords: Vec<(i32, i32)>,
 }
 
-fn allocate_seam_atoms(distance: u32, next_atom: &mut u32) -> Result<SeamColumn, ExpandError> {
+fn allocate_seam_atoms(distance: u32, next_atom: &mut u32) -> Result<SeamAtoms, ExpandError> {
     let first = *next_atom;
     let last = next_atom
         .checked_add(distance)
         .ok_or(ExpandError::AtomIdOverflow)?;
     *next_atom = last;
-    Ok(SeamColumn {
+    Ok(SeamAtoms {
         atoms: (first..last).map(PhysicalAtomId).collect(),
         coords: vec![(0, 0); distance as usize],
     })
 }
 
-fn place_seam_column(seam: &mut SeamColumn, x: i32, left_patch: &ExpandedBlock) {
+fn place_seam_column(seam: &mut SeamAtoms, x: i32, left_patch: &ExpandedBlock) {
     let d = left_patch.distance as usize;
     for r in 0..d {
-        // Align with data row y = 2*r+1
         seam.coords[r] = (x, 2 * r as i32 + 1);
+    }
+}
+
+fn place_seam_row(seam: &mut SeamAtoms, y: i32, above_patch: &ExpandedBlock) {
+    let d = above_patch.distance as usize;
+    // Surface data are a prefix of `atoms`/`coords`; x = origin + 2c + 1.
+    let origin_x = above_patch
+        .coords
+        .first()
+        .map(|(x, _)| *x - 1)
+        .unwrap_or(0);
+    for c in 0..d {
+        seam.coords[c] = (origin_x + 2 * c as i32 + 1, y);
     }
 }
 
@@ -235,9 +297,6 @@ fn allocate_ancilla_patch(
         init_basis: LogicalBasis::X,
         code_family: CodeFamily::SurfaceCodeLike { distance },
     };
-    // Reuse surface layout via a thin local copy of the geometry rules by
-    // calling through expand's public surface path — implemented inline to
-    // avoid circular module deps: duplicate the call via crate::expand helper.
     crate::expand::expand_surface_layout_for_surgery(&meta, next_atom)
 }
 
@@ -260,9 +319,10 @@ fn find_layout_index(
         .ok_or(ExpandError::UnknownLogicalId(id.0))
 }
 
-fn place_patch_at(block: &mut ExpandedBlock, dx: i32) {
-    for (x, _) in &mut block.coords {
+fn place_patch_at(block: &mut ExpandedBlock, dx: i32, dy: i32) {
+    for (x, y) in &mut block.coords {
         *x += dx;
+        *y += dy;
     }
 }
 
@@ -286,17 +346,36 @@ fn left_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, Expand
     Ok((0..d).map(|r| block.data_atoms[r * d]).collect())
 }
 
-/// Rough merge: measure ZZ on each facing data pair via seam check.
+fn top_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
+    let d = block.distance as usize;
+    if block.data_atoms.len() != d * d {
+        return Err(ExpandError::InvalidPatchData {
+            distance: block.distance,
+        });
+    }
+    Ok(block.data_atoms[..d].to_vec())
+}
+
+fn bottom_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
+    let d = block.distance as usize;
+    if block.data_atoms.len() != d * d {
+        return Err(ExpandError::InvalidPatchData {
+            distance: block.distance,
+        });
+    }
+    Ok(block.data_atoms[(d - 1) * d..d * d].to_vec())
+}
+
+/// Rough merge: measure ZZ on each facing L/R data pair via seam check.
 fn rough_merge_round(
-    left: &ExpandedBlock,
-    right: &ExpandedBlock,
-    seam: &SeamColumn,
+    left_col: &[PhysicalAtomId],
+    right_col: &[PhysicalAtomId],
+    seam: &SeamAtoms,
     primary: LogicalQubitId,
     partner: LogicalQubitId,
 ) -> Result<PhysicalRound, ExpandError> {
-    let left_col = right_column_data(left)?;
-    let right_col = left_column_data(right)?;
     debug_assert_eq!(left_col.len(), seam.atoms.len());
+    debug_assert_eq!(right_col.len(), seam.atoms.len());
     let mut entangling = Vec::with_capacity(2 * seam.atoms.len());
     for i in 0..seam.atoms.len() {
         entangling.push(PhysicalCnot {
@@ -333,30 +412,29 @@ fn rough_merge_round(
     })
 }
 
-/// Smooth merge: measure XX on each facing data pair (H-sandwich on seam).
+/// Smooth merge: measure XX on each facing top/bottom data pair (H-sandwich).
 fn smooth_merge_round(
-    left: &ExpandedBlock,
-    right: &ExpandedBlock,
-    seam: &SeamColumn,
+    above_row: &[PhysicalAtomId],
+    below_row: &[PhysicalAtomId],
+    seam: &SeamAtoms,
     primary: LogicalQubitId,
     partner: LogicalQubitId,
 ) -> Result<PhysicalRound, ExpandError> {
-    let left_col = right_column_data(left)?;
-    let right_col = left_column_data(right)?;
+    debug_assert_eq!(above_row.len(), seam.atoms.len());
+    debug_assert_eq!(below_row.len(), seam.atoms.len());
     let mut local_mid = Vec::with_capacity(seam.atoms.len());
     let mut x_cnots = Vec::with_capacity(2 * seam.atoms.len());
     for i in 0..seam.atoms.len() {
         local_mid.push(RoundLocalOp::H {
             atom: seam.atoms[i],
         });
-        // X-check style: CX(check → data)
         x_cnots.push(PhysicalCnot {
             control: seam.atoms[i],
-            target: left_col[i],
+            target: above_row[i],
         });
         x_cnots.push(PhysicalCnot {
             control: seam.atoms[i],
-            target: right_col[i],
+            target: below_row[i],
         });
     }
     let mut terminal = Vec::with_capacity(2 * seam.atoms.len());
@@ -374,7 +452,7 @@ fn smooth_merge_round(
         logical_id: primary,
         local_before: Vec::new(),
         entangling: x_cnots,
-        z_cnot_count: 0, // all CXs are X-phase (after mid H)
+        z_cnot_count: 0,
         local_mid: local_mid.clone(),
         local_after: local_mid,
         terminal,
@@ -383,21 +461,25 @@ fn smooth_merge_round(
     })
 }
 
-fn split_round(
+/// Split: re-measure the seam to project patches apart (physical ops, not Wait).
+///
+/// Rough seams re-measure ZZ pairs; smooth seams re-measure XX (H-sandwich).
+/// Surrounding `memory_round` ops restore full patch stabilizer structure.
+fn split_seam_round(
     boundary: MergeBoundary,
+    side_a: &[PhysicalAtomId],
+    side_b: &[PhysicalAtomId],
+    seam: &SeamAtoms,
     primary: LogicalQubitId,
     partner: Option<LogicalQubitId>,
-) -> PhysicalRound {
-    PhysicalRound {
-        kind: RoundKind::Split(boundary),
-        logical_id: primary,
-        local_before: Vec::new(),
-        entangling: Vec::new(),
-        z_cnot_count: 0,
-        local_mid: Vec::new(),
-        local_after: Vec::new(),
-        terminal: Vec::new(),
-        partner_logical_id: partner,
-        frame_updates: Vec::new(),
-    }
+) -> Result<PhysicalRound, ExpandError> {
+    let mut round = match boundary {
+        MergeBoundary::Rough => rough_merge_round(side_a, side_b, seam, primary, partner.unwrap_or(primary))?,
+        MergeBoundary::Smooth => {
+            smooth_merge_round(side_a, side_b, seam, primary, partner.unwrap_or(primary))?
+        }
+    };
+    round.kind = RoundKind::Split(boundary);
+    round.partner_logical_id = partner;
+    Ok(round)
 }

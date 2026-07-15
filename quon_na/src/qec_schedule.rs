@@ -983,6 +983,8 @@ mod tests {
             .unwrap();
         b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
             .unwrap();
+        b.memory_round(LogicalQubitId(0)).unwrap();
+        b.memory_round(LogicalQubitId(1)).unwrap();
         b.logical_cx(LogicalQubitId(0), LogicalQubitId(1)).unwrap();
         b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
             .unwrap();
