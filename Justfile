@@ -160,7 +160,8 @@ ci-rust: setup-python
       test/verify/qft.py \
       test/verify/ising.py \
       test/verify/qaoa.py \
-      test/verify/shor.py
+      test/verify/shor.py \
+      samples/workflows/edit_verify_loop/verify_edit_verify_loop.py
     do
       echo "==> $script"
       .venv/bin/python "$script"

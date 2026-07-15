@@ -1,0 +1,19 @@
+-- Failure clinic: linearity, broken (#188). A realistic slip -- "double
+-- check" a measurement by reading the same qubit twice -- rejected by the
+-- no-cloning check before it ever reaches a simulator. See
+-- ./linearity_fixed.qn for the fix and ./README.md for the exact
+-- diagnostic and why it's correct to reject this.
+
+fn bell_pair(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1)
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- bell_pair() @ qreg(2)
+    b0 <- measure(q0)
+    b1 <- measure(q0)
+    -- BUG: `q0` again instead of `q1` -- `q0` was already consumed by the
+    -- first `measure`, and quantum measurement is destructive: there is no
+    -- second read to take.
+    return (b0, b1)
+}

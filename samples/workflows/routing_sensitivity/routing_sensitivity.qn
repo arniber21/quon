@@ -1,0 +1,17 @@
+-- Routing sensitivity (#188): a 4-qubit "hub" circuit -- CNOTs from qubit 0
+-- to qubits 2 and 3, plus one from 1 to 3 -- chosen so its interaction graph
+-- is *not* embeddable in a line without at least one SWAP. Compiled against
+-- the default all-to-all target this needs no routing at all; compiled
+-- against a 4-qubit linear-chain target (edges 0-1, 1-2, 2-3 only) SABRE
+-- must insert a SWAP to bring qubit 3 adjacent to qubit 0. See ./README.md
+-- for the two-config `--metrics`/`--metrics-json` comparison and what the
+-- resulting gate-count/depth diff means.
+
+fn hub_pattern(): Circuit<4, 4, 3, Universal> = circuit {
+    CNOT @(0, 2) |> CNOT @(0, 3) |> CNOT @(1, 3)
+}
+
+fn main(): Q<List<Bit>> = run {
+    q <- hub_pattern() @ qreg(4)
+    measure_all(q)
+}

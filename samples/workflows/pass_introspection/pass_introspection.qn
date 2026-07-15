@@ -1,0 +1,14 @@
+-- Pass introspection (#188): `H |> H` is its own inverse, so the circ
+-- fixpoint stage (gate_cancellation, running to fixpoint) collapses it to
+-- nothing. `--dump-ir` makes that collapse visible directly: the "after
+-- lowering" checkpoint below still shows two `H` ops; "after circ passes"
+-- shows the emptied-out identity. See ./README.md for the full
+-- `--list-passes` / `--dump-ir` walkthrough.
+
+fn double_hadamard(): Circuit<1, 1, 2, Clifford> = circuit { H @0 |> H @0 }
+
+fn main(): Q<List<Bit>> = run {
+    q <- double_hadamard() @ qreg(1)
+    measure_all(q)
+    -- Expected: "0" with probability 1.0 — H |> H is the identity.
+}

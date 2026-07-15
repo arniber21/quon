@@ -51,11 +51,68 @@ entries:
     artifacts: []
     ci: none
 
-  - id: workflows/edit-verify-loop-stub
-    path: samples/workflows/edit_verify_loop.qn
-    tags: [workflows, stub, pack-188]
+  - id: workflows/edit-verify-loop
+    path: samples/workflows/edit_verify_loop/edit_verify_loop.qn
+    tags: [workflows, edit-verify, aer, pack-188]
     difficulty: beginner
     quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: workflows/pass-introspection
+    path: samples/workflows/pass_introspection/pass_introspection.qn
+    tags: [workflows, pass-dump, dump-ir, pack-188]
+    difficulty: intermediate
+    quonc_args: ["--dump-ir"]
+    artifacts: []
+    ci: smoke
+
+  - id: workflows/routing-sensitivity
+    path: samples/workflows/routing_sensitivity/routing_sensitivity.qn
+    tags: [workflows, routing, sabre, metrics, pack-188]
+    difficulty: intermediate
+    quonc_args:
+      ["--target", "backend/tests/fixtures/device_linear_chain.json", "--metrics"]
+    artifacts: []
+    ci: smoke
+
+  - id: workflows/na-path
+    path: examples/na_qec/repetition_d3_memory.qn
+    tags: [workflows, neutral-atom, resource-report, pack-188]
+    difficulty: intermediate
+    quonc_args: ["--target", "targets/neutral_atom/generic_rna_v0.json"]
+    artifacts: []
+    ci: smoke
+
+  - id: workflows/failure-clinic-linearity-broken
+    path: samples/workflows/failure_clinic/linearity_broken.qn
+    tags: [workflows, failure-clinic, linearity, negative-example, pack-188]
+    difficulty: beginner
+    quonc_args: []
+    artifacts: []
+    ci: none
+
+  - id: workflows/failure-clinic-linearity-fixed
+    path: samples/workflows/failure_clinic/linearity_fixed.qn
+    tags: [workflows, failure-clinic, linearity, pack-188]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: workflows/failure-clinic-borrow-broken
+    path: samples/workflows/failure_clinic/borrow_broken.qn
+    tags: [workflows, failure-clinic, borrow, negative-example, pack-188]
+    difficulty: intermediate
+    quonc_args: []
+    artifacts: []
+    ci: none
+
+  - id: workflows/failure-clinic-borrow-fixed
+    path: samples/workflows/failure_clinic/borrow_fixed.qn
+    tags: [workflows, failure-clinic, borrow, pack-188]
+    difficulty: intermediate
+    quonc_args: []
     artifacts: []
     ci: none
 
