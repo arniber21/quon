@@ -78,6 +78,54 @@ fn bell_emits_na_schedule_and_resource_report() {
         stderr.contains("\"entangle2_count\": 1"),
         "expected one Entangle2, got: {stderr}"
     );
+    assert!(
+        stderr.contains("\"error_budget\""),
+        "resource report must include error_budget when target has error_model: {stderr}"
+    );
+}
+
+/// ADR-0017: `--emit-resource-report` on NeutralAtom hard-fails without `error_model`.
+#[test]
+fn emit_resource_report_fails_without_error_model() {
+    let source = workspace_path("../test/na/bell.qn");
+    let mut target: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(na_target()).expect("read target"))
+            .expect("parse target");
+    target
+        .as_object_mut()
+        .expect("object")
+        .remove("error_model");
+    let path = std::env::temp_dir().join(format!(
+        "quon-na-no-error-model-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, target.to_string()).expect("write temp target");
+
+    let output = quonc()
+        .arg(&source)
+        .arg("--target")
+        .arg(&path)
+        .arg("--emit-resource-report")
+        .arg("-")
+        .arg("--quiet")
+        .output()
+        .expect("spawn");
+    let _ = std::fs::remove_file(&path);
+
+    assert!(
+        !output.status.success(),
+        "expected failure without error_model; stdout={}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("missing error_model"),
+        "stderr should be MissingErrorModel diagnostic: {stderr}"
+    );
+    assert!(
+        stderr.contains("--emit-resource-report"),
+        "stderr should name the emit surface: {stderr}"
+    );
 }
 
 #[test]
@@ -129,6 +177,11 @@ fn resource_report_markdown_via_extension() {
     let md = std::fs::read_to_string(&out_path).expect("read md");
     assert!(md.contains("# Neutral-atom resource report"));
     assert!(md.contains("Estimated cycles"));
+    assert!(
+        md.contains("## Physical error budget"),
+        "markdown report must include error budget when target has error_model"
+    );
+    assert!(md.contains("Contribution (rate × count)"));
     let _ = std::fs::remove_file(&out_path);
 }
 

@@ -10,5 +10,7 @@ provenance. Values marked placeholder there are tuning or illustrative values,
 not literature measurements.
 
 `error_model` (ADR-0017) is an optional sibling of `fidelity` used by QEC
-error-budget reporting and `--emit-qec-experiment`. The checked-in example is
-illustrative; rates are never derived as `1 - fidelity`.
+error-budget reporting (`--emit-resource-report`) and `--emit-qec-experiment`.
+The checked-in values are **placeholders** (see architecture_model.md §8.6) and
+are deliberately not `1 - fidelity`. Missing `error_model` is a hard failure
+when emitting a resource report.

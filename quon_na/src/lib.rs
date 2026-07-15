@@ -28,6 +28,11 @@
 //! Schedule compaction (#108) is engineering glue: exclusive-cycle ASAP baseline
 //! plus greedy E0 merge — **not** Enola-optimal true ASAP; see
 //! [`compaction`] and `docs/neutral_atom/architecture_model.md` §4.
+//!
+//! Physical error-budget reporting uses optional target `error_model`
+//! (ADR-0017 / `docs/adr/0017-na-physical-error-model.md`): analytic
+//! `rate × schedule count` contributions on [`ResourceReport`], hard-fail when
+//! `--emit-resource-report` requests a budget and the model is absent.
 
 pub mod compaction;
 #[cfg(feature = "mlir")]

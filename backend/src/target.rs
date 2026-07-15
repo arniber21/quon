@@ -414,15 +414,54 @@ pub struct NeutralAtomFidelity {
 /// Explicit physical error probabilities for QEC (ADR-0017).
 ///
 /// Sibling to [`NeutralAtomFidelity`]; not derived as `1 - fidelity`.
+/// Wire JSON lives in [`crate::descriptor::NeutralAtomErrorModelDescriptor`]
+/// with validated conversion — this domain type has no serde derives.
+///
+/// See also [`NeutralAtomErrorModel::error_model_snapshot`] for the stable
+/// experiment-JSON DTO reused by issue #255.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeutralAtomErrorModel {
+    /// Per Rydberg illumination stage (paired with `rydberg_stages`, not per CZ).
+    pub rydberg: f64,
+    /// Per measurement round (`measurement_rounds`).
+    pub measurement: f64,
+    /// Per reset round (`reset_rounds`).
+    pub reset: f64,
+    /// Per rearrangement step (`rearrangement_steps`).
+    pub movement: f64,
+    /// Per trap transfer (`trap_transfers`).
+    pub transfer: f64,
+    /// Per microsecond of wait / idle (`wait_time_us`).
+    pub idle_per_us: f64,
+}
+
+/// Stable serde DTO of [`NeutralAtomErrorModel`] for experiment JSON snapshots (#255).
+///
+/// Field names match the target wire form. Prefer this over serializing the
+/// domain type directly.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NeutralAtomErrorModel {
+pub struct NeutralAtomErrorModelSnapshot {
     pub rydberg: f64,
     pub measurement: f64,
     pub reset: f64,
     pub movement: f64,
     pub transfer: f64,
     pub idle_per_us: f64,
+}
+
+impl NeutralAtomErrorModel {
+    /// Snapshot physical rates for experiment JSON emit (#255).
+    pub fn error_model_snapshot(&self) -> NeutralAtomErrorModelSnapshot {
+        NeutralAtomErrorModelSnapshot {
+            rydberg: self.rydberg,
+            measurement: self.measurement,
+            reset: self.reset,
+            movement: self.movement,
+            transfer: self.transfer,
+            idle_per_us: self.idle_per_us,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

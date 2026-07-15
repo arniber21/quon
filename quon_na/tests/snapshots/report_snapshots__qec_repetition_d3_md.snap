@@ -33,4 +33,3 @@ expression: md
 - Field names align with TUM RAP Table I / Enola headline metrics.
 - `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
 - Non-QEC reports omit atoms-per-logical and code-family rows.
-- Physical error budget lines (when present) are schedule-count × rate contributions only — not logical error rates or thresholds.
