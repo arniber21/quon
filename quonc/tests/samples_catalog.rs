@@ -149,8 +149,10 @@ fn validate_safe_paths(entries: &[CatalogEntry]) -> Result<(), String> {
 
 /// When `path` lives under `samples/`, its category segment must match the
 /// `id` prefix. Entries whose canonical home lives elsewhere (e.g.
-/// `neutral-atom/*` linking into `examples/na_qec/`, per ADR-0025) are
-/// exempt — the check simply doesn't apply outside `samples/`.
+/// `neutral-atom/*` linking into `test/na/` or `examples/na_qec/`, per
+/// ADR-0025) are exempt — the check simply doesn't apply outside
+/// `samples/`, so this generically covers any current or future linked
+/// canonical home, not just a hardcoded `examples/na_qec/` allowlist.
 fn validate_path_category_alignment(entries: &[CatalogEntry]) -> Result<(), String> {
     for entry in entries {
         let path = Path::new(&entry.path);
@@ -601,5 +603,51 @@ entries:
         let catalog: Catalog = serde_yaml::from_str(yaml).expect("schema-valid YAML should parse");
         validate_path_category_alignment(&catalog.entries)
             .expect("a linked examples/na_qec/ path must not be flagged");
+    }
+
+    /// The `neutral-atom` -> `test/na/` link (issue #192 review: "stop
+    /// forking `test/na/`") must be exempt the same way as the
+    /// `examples/na_qec/` link above — both are canonical homes outside
+    /// `samples/`, not a hardcoded single-directory allowlist.
+    #[test]
+    fn linked_test_na_path_is_exempt_from_alignment_check() {
+        let yaml = r#"
+version: 1
+entries:
+  - id: neutral-atom/example
+    path: test/na/example.qn
+    tags: [neutral-atom]
+    difficulty: intermediate
+    quonc_args: []
+    artifacts: []
+    ci: none
+"#;
+        let catalog: Catalog = serde_yaml::from_str(yaml).expect("schema-valid YAML should parse");
+        validate_path_category_alignment(&catalog.entries)
+            .expect("a linked test/na/ path must not be flagged");
+    }
+
+    /// A path under `samples/<other-category>/` must still fail even when
+    /// it looks superficially similar to a linked canonical home (e.g. it
+    /// isn't enough to *contain* `test/na/` — the check keys off the path's
+    /// literal first component being `samples/`).
+    #[test]
+    fn samples_prefixed_path_is_not_exempt_even_if_it_mentions_test_na() {
+        let yaml = r#"
+version: 1
+entries:
+  - id: neutral-atom/example
+    path: samples/algorithms/test/na/example.qn
+    tags: [neutral-atom]
+    difficulty: intermediate
+    quonc_args: []
+    artifacts: []
+    ci: none
+"#;
+        let catalog: Catalog = serde_yaml::from_str(yaml).expect("schema-valid YAML should parse");
+        let err = validate_path_category_alignment(&catalog.entries).expect_err(
+            "a samples/-prefixed path must still be checked against the id prefix, regardless of later components",
+        );
+        assert!(err.contains("but path"));
     }
 }

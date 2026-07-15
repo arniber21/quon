@@ -13,9 +13,13 @@ We rejected per-pack top-level dirs without a shared layout (drift) and README-o
   prefix is one of the seven taxonomy categories above; it does not require
   `path` to live under the matching `samples/<category>/` directory. This is
   deliberate: `neutral-atom/*` entries may point `path` at
-  `examples/na_qec/*.qn` (the QEC compiler examples' canonical home) instead
-  of duplicating the file under `samples/neutral-atom/`, per the pack's
-  "link, don't fork" rule.
+  `examples/na_qec/*.qn` (the QEC compiler examples' canonical home) or at
+  `test/na/*.qn` (the NA compiler's own smoke fixtures) instead of
+  duplicating the file under `samples/neutral-atom/`, per the pack's "link,
+  don't fork" rule. The alignment check is generic over any `path` whose
+  first component isn't `samples/`, so both link targets — and any future
+  one — are exempt the same way, not via a hardcoded `examples/na_qec/`
+  allowlist.
 - The catalog is parsed with `serde_yaml` (aliased in `quonc/Cargo.toml` to
   the maintained `serde_yaml_ng` fork — upstream `serde_yaml` is
   archived/deprecated, RUSTSEC-2024-0320). This alias keeps the schema and

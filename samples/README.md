@@ -19,7 +19,8 @@ samples/
   visualization/        <- schedule/graph goldens, "what you should see" (#189)
   applications/         <- real-world use-case framing
   research/             <- literate notebooks + .py smoke twins (#190)
-  neutral-atom/         <- NA pedagogy: zoned vs flat, RAP placer (#192)
+  neutral-atom/         <- NA pedagogy: zoned vs flat, routing-agnostic vs
+                            routing-aware zoned placer (#192)
 ```
 
 Each top-level category has its own `README.md` with a `## Status` section
@@ -66,7 +67,7 @@ regenerate rather than forking a copy:
 | Workflows | [#188](https://github.com/arniber21/quon/issues/188) | edit -> verify loops, pass dump, failure clinic |
 | Viz goldens | [#189](https://github.com/arniber21/quon/issues/189) | stress artifacts + "what you should see" |
 | Research notebooks | [#190](https://github.com/arniber21/quon/issues/190) | literate notebooks + `.py` smoke twins |
-| NA pedagogy | [#192](https://github.com/arniber21/quon/issues/192) | walkthroughs, zoned vs flat, RAP placer story |
+| NA pedagogy | [#192](https://github.com/arniber21/quon/issues/192) | walkthroughs, zoned vs flat, routing-agnostic vs routing-aware placer story |
 
 `learning/`, `algorithms/`, and `applications/` have no dedicated pack —
 contribute directly against those categories.
