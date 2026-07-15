@@ -634,6 +634,7 @@ dependencies = [
  "mlir_bridge",
  "proptest",
  "quon_core",
+ "quon_qec",
  "thiserror 1.0.69",
  "z3",
 ]
@@ -1153,6 +1154,7 @@ dependencies = [
  "mlir-sys",
  "proptest",
  "quon_core",
+ "quon_qec",
  "thiserror 1.0.69",
  "zx",
 ]
@@ -1494,6 +1496,17 @@ dependencies = [
  "mlir_bridge",
  "proptest",
  "quon_core",
+ "quon_qec",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "quon_qec"
+version = "0.1.0"
+dependencies = [
+ "flux-rs",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

@@ -18,6 +18,7 @@ use melior::{Context, ContextRef, IrRewriter};
 use thiserror::Error;
 
 use crate::dialect::monadic_staging as staging;
+use crate::dialect::qec_dynamic;
 use crate::dialect::{quantum_circ, quantum_dynamic};
 
 #[derive(Debug, Error)]
@@ -508,6 +509,168 @@ fn lower_run_region<'c, 'a>(
                     )
                     .map_err(|error| LowerError::Build {
                         op: quantum_dynamic::op::IF,
+                        message: error.to_string(),
+                    })?,
+                );
+                for (index, result) in inserted.results().enumerate() {
+                    if let Ok(staging_result) = staging_op.result(index) {
+                        value_map.insert(value_key(&staging_result), Value::from(result));
+                    }
+                }
+            }
+            staging::op::QEC_CONSTRUCT => {
+                let family = read_string_attr(&staging_op, staging::attr::FAMILY).ok_or(
+                    LowerError::Build {
+                        op: qec_dynamic::op::CONSTRUCT,
+                        message: "missing family".into(),
+                    },
+                )?;
+                let distance = read_i64_attr(&staging_op, staging::attr::DISTANCE).ok_or(
+                    LowerError::Build {
+                        op: qec_dynamic::op::CONSTRUCT,
+                        message: "missing distance".into(),
+                    },
+                )?;
+                let basis = read_string_attr(&staging_op, staging::attr::BASIS).ok_or(
+                    LowerError::Build {
+                        op: qec_dynamic::op::CONSTRUCT,
+                        message: "missing basis".into(),
+                    },
+                )?;
+                let logical_id = read_i64_attr(&staging_op, staging::attr::LOGICAL_ID).ok_or(
+                    LowerError::Build {
+                        op: qec_dynamic::op::CONSTRUCT,
+                        message: "missing logical_id".into(),
+                    },
+                )?;
+                let inserted = insert_lowered(
+                    &module_block,
+                    run_op,
+                    &mut insert_after,
+                    qec_dynamic::qec_construct(
+                        context, &family, distance, &basis, logical_id, location,
+                    )
+                    .map_err(|error| LowerError::Build {
+                        op: qec_dynamic::op::CONSTRUCT,
+                        message: error.to_string(),
+                    })?,
+                );
+                if let Ok(staging_result) = staging_op.result(0) {
+                    let result = inserted.result(0).map_err(|_| LowerError::Build {
+                        op: qec_dynamic::op::CONSTRUCT,
+                        message: "missing construct result".into(),
+                    })?;
+                    value_map.insert(value_key(&staging_result), Value::from(result));
+                }
+            }
+            staging::op::QEC_MEMORY_ROUND => {
+                let block_val = map_value(
+                    &value_map,
+                    staging_op.operand(0).map_err(|_| LowerError::Build {
+                        op: qec_dynamic::op::MEMORY_ROUND,
+                        message: "missing block operand".into(),
+                    })?,
+                );
+                let logical_id = read_i64_attr(&staging_op, staging::attr::LOGICAL_ID).ok_or(
+                    LowerError::Build {
+                        op: qec_dynamic::op::MEMORY_ROUND,
+                        message: "missing logical_id".into(),
+                    },
+                )?;
+                let inserted = insert_lowered(
+                    &module_block,
+                    run_op,
+                    &mut insert_after,
+                    qec_dynamic::qec_memory_round(context, block_val, logical_id, location)
+                        .map_err(|error| LowerError::Build {
+                            op: qec_dynamic::op::MEMORY_ROUND,
+                            message: error.to_string(),
+                        })?,
+                );
+                if let Ok(staging_result) = staging_op.result(0) {
+                    let result = inserted.result(0).map_err(|_| LowerError::Build {
+                        op: qec_dynamic::op::MEMORY_ROUND,
+                        message: "missing memory_round result".into(),
+                    })?;
+                    value_map.insert(value_key(&staging_result), Value::from(result));
+                }
+            }
+            staging::op::QEC_MEASURE_LOGICAL => {
+                let block_val = map_value(
+                    &value_map,
+                    staging_op.operand(0).map_err(|_| LowerError::Build {
+                        op: qec_dynamic::op::MEASURE_LOGICAL,
+                        message: "missing block operand".into(),
+                    })?,
+                );
+                let basis = read_string_attr(&staging_op, staging::attr::BASIS).ok_or(
+                    LowerError::Build {
+                        op: qec_dynamic::op::MEASURE_LOGICAL,
+                        message: "missing basis".into(),
+                    },
+                )?;
+                let logical_id = read_i64_attr(&staging_op, staging::attr::LOGICAL_ID).ok_or(
+                    LowerError::Build {
+                        op: qec_dynamic::op::MEASURE_LOGICAL,
+                        message: "missing logical_id".into(),
+                    },
+                )?;
+                let inserted = insert_lowered(
+                    &module_block,
+                    run_op,
+                    &mut insert_after,
+                    qec_dynamic::qec_measure_logical(
+                        context, block_val, &basis, logical_id, location,
+                    )
+                    .map_err(|error| LowerError::Build {
+                        op: qec_dynamic::op::MEASURE_LOGICAL,
+                        message: error.to_string(),
+                    })?,
+                );
+                if let Ok(staging_result) = staging_op.result(0) {
+                    let result = inserted.result(0).map_err(|_| LowerError::Build {
+                        op: qec_dynamic::op::MEASURE_LOGICAL,
+                        message: "missing measure_logical result".into(),
+                    })?;
+                    value_map.insert(value_key(&staging_result), Value::from(result));
+                }
+            }
+            staging::op::QEC_LOGICAL_CX => {
+                let control = map_value(
+                    &value_map,
+                    staging_op.operand(0).map_err(|_| LowerError::Build {
+                        op: qec_dynamic::op::LOGICAL_CX,
+                        message: "missing control operand".into(),
+                    })?,
+                );
+                let target = map_value(
+                    &value_map,
+                    staging_op.operand(1).map_err(|_| LowerError::Build {
+                        op: qec_dynamic::op::LOGICAL_CX,
+                        message: "missing target operand".into(),
+                    })?,
+                );
+                let control_id = read_i64_attr(&staging_op, staging::attr::CONTROL_ID).ok_or(
+                    LowerError::Build {
+                        op: qec_dynamic::op::LOGICAL_CX,
+                        message: "missing control_id".into(),
+                    },
+                )?;
+                let target_id = read_i64_attr(&staging_op, staging::attr::TARGET_ID).ok_or(
+                    LowerError::Build {
+                        op: qec_dynamic::op::LOGICAL_CX,
+                        message: "missing target_id".into(),
+                    },
+                )?;
+                let inserted = insert_lowered(
+                    &module_block,
+                    run_op,
+                    &mut insert_after,
+                    qec_dynamic::qec_logical_cx(
+                        context, control, target, control_id, target_id, location,
+                    )
+                    .map_err(|error| LowerError::Build {
+                        op: qec_dynamic::op::LOGICAL_CX,
                         message: error.to_string(),
                     })?,
                 );

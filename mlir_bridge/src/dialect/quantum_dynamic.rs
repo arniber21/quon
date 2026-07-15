@@ -233,6 +233,7 @@ pub fn verify<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(),
         op::IF => verify_if(operation),
         op::BARRIER => verify_barrier(operation),
         op::YIELD => verify_yield(operation),
+        name if super::qec_dynamic::is_qec_op(name) => super::qec_dynamic::verify(operation),
         _ => Ok(()),
     }
 }

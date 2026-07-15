@@ -11,3 +11,6 @@ pub mod emit;
 pub mod metrics;
 pub mod passes;
 pub mod pipeline;
+pub mod qec_collect;
+
+pub use qec_collect::{CollectError, collect_qec_workload};

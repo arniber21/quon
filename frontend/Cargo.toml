@@ -23,6 +23,7 @@ insta       = { workspace = true }
 melior      = { workspace = true }
 mlir_bridge = { path = "../mlir_bridge" }
 backend     = { path = "../backend" }
+quon_qec    = { path = "../quon_qec" }
 arbitrary   = { workspace = true }
 
 [[example]]

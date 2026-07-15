@@ -12,6 +12,7 @@ members = [
     "quonlint",
     "quonlint-cli",
     "quon_na",
+    "quon_qec",
 ]
 resolver = "2"
 
