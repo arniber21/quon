@@ -95,6 +95,7 @@ GOLDEN_SMOKE_LOGICAL_FAILURES = 4
 
 TESTDATA = Path(__file__).resolve().parent / "testdata"
 PINNED_REP_D3_R2_JSON = TESTDATA / "qec_rep_d3_r2.qec.json"
+PINNED_SURFACE_D3_R2_STIM = TESTDATA / "qec_surface_d3_r2.stim"
 
 
 @unittest.skipUnless(HAS_STIM, "requires stim (python/requirements.txt / ADR-0022)")
@@ -113,6 +114,45 @@ class StimStructureSmokeTests(unittest.TestCase):
         a = circuit.compile_sampler(seed=7).sample(shots=16)
         b = circuit.compile_sampler(seed=7).sample(shots=16)
         self.assertTrue((a == b).all())
+
+    def test_surface_x_extraction_requires_h_sandwich(self) -> None:
+        """Fault-inject: strip X-check H → first-round X MRs become vacuous.
+
+        Under |0⟩^n Z-memory, X-check measurements with a proper H sandwich are
+        random (not used as first-round detectors). Without mid/after H,
+        CX(check→data) leaves checks at |0⟩ so X-check MRs are always 0 —
+        vacuous extraction that must fail the randomness check.
+        """
+        self.assertTrue(PINNED_SURFACE_D3_R2_STIM.is_file(), PINNED_SURFACE_D3_R2_STIM)
+        stim_text = PINNED_SURFACE_D3_R2_STIM.read_text()
+        self.assertIn("H 9 11 14 16", stim_text)
+
+        # Measurement order: MR×8 (r0) + MR×8 (r1) + MZ×9. X-checks at
+        # atoms 9,11,14,16 → indices 0,2,5,7 within each MR block.
+        x_idx = [0, 2, 5, 7]
+
+        good = stim.Circuit(stim_text)
+        good_m = good.compile_sampler(seed=0).sample(shots=128)
+        good_x = good_m[:, x_idx]
+        self.assertTrue(
+            good_x.any() and not good_x.all(),
+            "with H sandwich, first-round X-check MRs must be non-constant",
+        )
+
+        stripped_lines = [
+            line
+            for line in stim_text.splitlines()
+            if not (line.startswith("H ") and "9" in line and "11" in line)
+        ]
+        stripped = "\n".join(stripped_lines) + "\n"
+        self.assertNotIn("H 9 11 14 16", stripped)
+        bad = stim.Circuit(stripped)
+        bad_m = bad.compile_sampler(seed=0).sample(shots=128)
+        bad_x = bad_m[:, x_idx]
+        self.assertFalse(
+            bad_x.any(),
+            "without X-check H, first-round X MRs must be vacuously all-zero",
+        )
 
 
 @unittest.skipUnless(

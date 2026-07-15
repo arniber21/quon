@@ -164,6 +164,110 @@ print(f"ok detectors={{c.num_detectors}} observables={{c.num_observables}}")
 }
 
 #[test]
+fn surface_d3_emits_qec_json_and_sibling_stim() {
+    let source = workspace_path("../examples/na_qec/surface_d3_memory.qn");
+    let dir = std::env::temp_dir().join(format!(
+        "quon-qec-249-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmpdir");
+    let json_path = dir.join("surface_d3.qec.json");
+    let stim_path = dir.join("surface_d3.stim");
+
+    let output = quonc()
+        .arg(&source)
+        .arg("--target")
+        .arg(na_target())
+        .arg("--emit-qec-experiment")
+        .arg(&json_path)
+        .arg("--quiet")
+        .output()
+        .expect("spawn");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(json_path.is_file(), "missing {}", json_path.display());
+    assert!(stim_path.is_file(), "missing sibling {}", stim_path.display());
+
+    let json_text = std::fs::read_to_string(&json_path).expect("read json");
+    let doc: Value =
+        serde_json::from_str(&json_text).unwrap_or_else(|e| panic!("parse JSON: {e}\n{json_text}"));
+
+    assert_eq!(doc["family"], "surface");
+    assert_eq!(doc["code_family"], "surface_code_like");
+    assert_eq!(doc["distance"], 3);
+    assert_eq!(doc["rounds"], 2);
+    assert_eq!(doc["check_graph"]["atoms"].as_array().unwrap().len(), 17);
+    assert_eq!(doc["check_graph"]["check_atoms"].as_array().unwrap().len(), 8);
+    assert_eq!(doc["logical_observables"][0]["atoms"], serde_json::json!([0, 1, 2]));
+
+    let loaded: quon_qec::QecExperiment =
+        serde_json::from_value(doc).expect("strict DTO load");
+    assert_eq!(loaded.family, "surface");
+    assert_eq!(
+        loaded
+            .check_graph
+            .stabilizers
+            .iter()
+            .filter(|s| s.basis == quon_qec::LogicalBasis::X)
+            .count(),
+        4
+    );
+
+    let stim = std::fs::read_to_string(&stim_path).expect("read stim");
+    assert!(stim.contains("family=surface"), "{stim}");
+    assert!(stim.contains("H 9 11 14 16"), "{stim}");
+    assert!(stim.contains("MR 9 10 11 12 13 14 15 16"), "{stim}");
+    assert!(stim.contains("MZ 0 1 2 3 4 5 6 7 8"), "{stim}");
+    assert!(stim.contains("DETECTOR"), "{stim}");
+    assert!(stim.contains("OBSERVABLE_INCLUDE(0)"), "{stim}");
+    assert!(
+        !stim.contains("DEPOLARIZE") && !stim.contains("X_ERROR"),
+        "structure-only Stim must omit noise:\n{stim}"
+    );
+
+    let smoke = python()
+        .arg("-c")
+        .arg(format!(
+            r#"
+import stim
+c = stim.Circuit.from_file({stim_path:?})
+assert c.num_detectors > 0, c.num_detectors
+assert c.num_observables == 1, c.num_observables
+d1, o1 = c.compile_detector_sampler(seed=0).sample(shots=8, separate_observables=True)
+d2, o2 = c.compile_detector_sampler(seed=0).sample(shots=8, separate_observables=True)
+assert (d1 == d2).all() and (o1 == o2).all(), "noiseless detector sample must be deterministic"
+assert not d1.any() and not o1.any(), "Z-memory under |0…0⟩ must yield zero detectors/obs"
+print(f"ok detectors={{c.num_detectors}} observables={{c.num_observables}}")
+"#
+        ))
+        .output();
+    match smoke {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("ModuleNotFoundError") || stderr.contains("No module named 'stim'") {
+                eprintln!("skip stim smoke: stim not installed ({stderr})");
+            } else {
+                panic!(
+                    "stim smoke failed: status={} stderr={} stdout={}",
+                    out.status,
+                    stderr,
+                    String::from_utf8_lossy(&out.stdout)
+                );
+            }
+        }
+        Err(e) => eprintln!("skip stim smoke: python unavailable ({e})"),
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn emit_qec_experiment_fails_without_error_model() {
     let source = workspace_path("../examples/na_qec/repetition_d3_memory.qn");
     let mut target: Value = serde_json::from_str(

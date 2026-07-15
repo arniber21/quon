@@ -36,8 +36,10 @@ without a target `error_model` is a hard compiler failure (never `1 − fidelity
 ### `check_graph`
 
 - `atoms`, `data_atoms`, `check_atoms` — physical atom ids in layout order
-- `stabilizers[]` — `{ logical_id, check_atom, data_atoms }` for each ZZ check
-  (Kelly alternating `D C D C … D` for repetition)
+- `stabilizers[]` — `{ logical_id, check_atom, basis?, data_atoms }`
+  - `basis` is `"x"` / `"z"` (serde enum). **Defaults to `z`** when absent so
+    schema_version 1 #255 repetition consumers keep deserializing; surface
+    always emits an explicit basis.
 
 ### `measurement_schedule[]`
 
@@ -71,9 +73,18 @@ Same type as the neutral-atom target snapshot (`quon_qec::ErrorModelSnapshot` /
 Generated from the same `ExpandedWorkload` — never by re-parsing `quantum.na`.
 Contains:
 
-- `QUBIT_COORDS`, `R`, layered non-overlapping `CX`+`TICK` (expand order), `MR` / `MZ` (or `MX`), `TICK`
-- `DETECTOR` (consecutive syndromes + final data closure; Z measure-logical only)
+- `QUBIT_COORDS`, `R`, optional data `H` for X-init, layered non-overlapping
+  `CX`+`TICK` (expand order with mid/after X-check `H`), `MR` / `MZ` (or `MX`),
+  `TICK`
+- `DETECTOR` (consecutive syndromes + final data closure)
+  - Z-memory: first-round Z-checks only (`rotated_memory_z`-style)
+  - X-memory (surface): first-round X-checks only (`rotated_memory_x`-style)
 - `OBSERVABLE_INCLUDE` (product of data measurements in the measure basis)
+
+**Surface schedule vs Stim FT:** expand uses a **serial Z-then-X** phase split
+for hybrid NA scheduling. That is not Stim's interleaved 4-layer extraction —
+do **not** claim Stim-equivalent fault-tolerant distance from this structure
+alone.
 
 **No** Stim noise channels (`DEPOLARIZE*`, `X_ERROR`, …). The compiler emits
 Stim text without linking Stim C++. Python validates parse / detectors /

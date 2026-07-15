@@ -1,0 +1,9 @@
+-- Surface-code distance-3 memory: two syndrome-extraction rounds then
+-- logical Z measure. Compiles on the NA/QEC hybrid path (#249 / ADR-0016).
+
+fn surface_d3_memory(): Q<Bit> = run {
+        b <- surface_code<3>()
+        b <- memory_round(b)
+        b <- memory_round(b)
+        measure_logical_z(b)
+}

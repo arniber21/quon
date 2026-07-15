@@ -38,6 +38,7 @@ pub mod op {
     pub const MOVE: &str = "quantum.na.move";
     pub const TRANSFER: &str = "quantum.na.transfer";
     pub const ENTANGLE: &str = "quantum.na.entangle";
+    pub const LOCAL_GATE: &str = "quantum.na.local_gate";
     pub const MEASURE: &str = "quantum.na.measure";
     pub const RESET: &str = "quantum.na.reset";
     pub const WAIT: &str = "quantum.na.wait";
@@ -47,12 +48,13 @@ pub mod op {
 
 /// The primary `quantum.na` ops. `transfer` is included because trap transfers
 /// are first-class schedule actions in `quon_na`.
-pub const OPS: [&str; 10] = [
+pub const OPS: [&str; 11] = [
     op::ALLOC_ATOM,
     op::PLACE,
     op::MOVE,
     op::TRANSFER,
     op::ENTANGLE,
+    op::LOCAL_GATE,
     op::MEASURE,
     op::RESET,
     op::WAIT,
@@ -73,6 +75,7 @@ pub mod attr {
     pub const CYCLE: &str = "cycle";
     pub const DURATION_US: &str = "duration_us";
     pub const BASIS: &str = "basis";
+    pub const GATE: &str = "gate";
     pub const DIRECTION: &str = "direction";
     pub const MOVES: &str = "moves";
     pub const PAIRS: &str = "pairs";
@@ -194,6 +197,11 @@ pub enum ActionSpec {
     Transfer(TransferSpec),
     Entangle {
         pairs: Vec<EntanglePairSpec>,
+        duration_us: u64,
+    },
+    LocalGate {
+        atom: u32,
+        gate: String,
         duration_us: u64,
     },
     Measure {
@@ -432,6 +440,7 @@ pub fn verify<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(),
         op::MOVE => verify_move(operation),
         op::TRANSFER => verify_transfer(operation),
         op::ENTANGLE => verify_entangle(operation),
+        op::LOCAL_GATE => verify_local_gate(operation),
         op::MEASURE => verify_measure(operation),
         op::RESET => verify_reset(operation),
         op::WAIT => verify_wait(operation),
@@ -772,6 +781,24 @@ fn verify_measure<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result
     }
 }
 
+fn verify_local_gate<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
+    operation: &O,
+) -> Result<(), VerifyError> {
+    expect_counts(operation, op::LOCAL_GATE, 1, 1)?;
+    expect_operand_type(operation, op::LOCAL_GATE, 0, is_atom_type, ATOM_TYPE)?;
+    expect_result_type(operation, op::LOCAL_GATE, 0, is_atom_type, ATOM_TYPE)?;
+    require_non_negative_i64(operation, op::LOCAL_GATE, attr::ATOM)?;
+    require_non_negative_i64(operation, op::LOCAL_GATE, attr::DURATION_US)?;
+    match require_string(operation, op::LOCAL_GATE, attr::GATE)?.as_str() {
+        "h" | "H" => Ok(()),
+        _ => Err(VerifyError::WrongAttributeType {
+            op: op::LOCAL_GATE,
+            attr: attr::GATE,
+            expected: "\"h\"",
+        }),
+    }
+}
+
 fn verify_reset<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(), VerifyError> {
     expect_counts(operation, op::RESET, 1, 1)?;
     expect_operand_type(operation, op::RESET, 0, is_atom_type, ATOM_TYPE)?;
@@ -962,6 +989,11 @@ fn verify_layer_region(
                     facts.events.push(AtomEvent::Use(pair.rhs.atom));
                 }
                 context.record_entangle(cycle, &pairs)?;
+            }
+            op::LOCAL_GATE => {
+                verify_local_gate(&operation)?;
+                let atom = require_non_negative_i64(&operation, op::LOCAL_GATE, attr::ATOM)? as u32;
+                facts.events.push(AtomEvent::Use(atom));
             }
             op::MEASURE => {
                 verify_measure(&operation)?;
@@ -1605,6 +1637,30 @@ pub fn entangle<'c>(
     )
 }
 
+pub fn local_gate<'c>(
+    context: &'c Context,
+    atom_value: Value<'c, '_>,
+    atom: u32,
+    gate: &str,
+    duration_us: u64,
+    location: Location<'c>,
+) -> Result<Operation<'c>, BuildError> {
+    finish(
+        OperationBuilder::new(op::LOCAL_GATE, location)
+            .add_operands(&[atom_value])
+            .add_results(&[atom_type(context)])
+            .add_attributes(&[
+                named_attr(context, attr::ATOM, i64_attr(context, i64::from(atom))),
+                named_attr(context, attr::GATE, string_attr(context, gate)),
+                named_attr(
+                    context,
+                    attr::DURATION_US,
+                    i64_attr(context, duration_us as i64),
+                ),
+            ]),
+    )
+}
+
 pub fn measure<'c>(
     context: &'c Context,
     atom_value: Value<'c, '_>,
@@ -1768,6 +1824,21 @@ fn append_action<'c, B: BlockLike<'c, 'c>>(
         }
         ActionSpec::Entangle { pairs, duration_us } => {
             block.append_operation(entangle(context, pairs, *duration_us, location)?);
+        }
+        ActionSpec::LocalGate {
+            atom,
+            gate,
+            duration_us,
+        } => {
+            let atom_ref = append_synthetic_atom(context, block, *atom, location)?;
+            block.append_operation(local_gate(
+                context,
+                atom_ref,
+                *atom,
+                gate,
+                *duration_us,
+                location,
+            )?);
         }
         ActionSpec::Measure {
             atom,

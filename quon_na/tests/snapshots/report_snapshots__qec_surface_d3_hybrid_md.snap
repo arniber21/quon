@@ -1,0 +1,49 @@
+---
+source: quon_na/tests/report_snapshots.rs
+expression: md
+---
+# Neutral-atom analytic resource report
+
+## Qubit resources
+| Metric | Value |
+| --- | ---: |
+| Logical qubits | 1 |
+| Physical atoms | 17 |
+| Atoms per logical | 17 |
+| Code family | surface_code_like |
+| Distance | 3 |
+| Memory rounds | 2 |
+
+## Schedule metrics
+| Metric | Value |
+| --- | ---: |
+| Estimated cycles | 165 |
+| Bottleneck | rearrangement |
+| Rydberg stages | 16 |
+| Rearrangement steps | 46 |
+| Rearrangement time (µs) | 6345 |
+| Trap transfers | 162 |
+| Transfer time (µs) | 2430 |
+| Entangle2 count | 48 |
+| EntangleN count | 0 |
+| Measurement rounds | 3 |
+| Reset rounds | 2 |
+| Wait time (µs) | 2 |
+| Total time (µs) | 7752 |
+
+## Physical error budget
+| Category | Contribution (rate × count) |
+| --- | ---: |
+| Rydberg | 0.032 |
+| Measurement | 0.009 |
+| Reset | 0.008 |
+| Movement | 0.023 |
+| Transfer | 0.1134 |
+| Idle | 4e-9 |
+
+## Notes
+- Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).
+- Field names align with TUM RAP Table I / Enola headline metrics.
+- `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
+- Non-QEC reports omit atoms-per-logical and code-family rows.
+- Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.

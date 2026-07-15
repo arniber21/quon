@@ -31,13 +31,14 @@ use crate::pipeline::{
 use crate::placement::place;
 use crate::qec::{CodeBlock, CodeBlockId};
 use crate::report::{attach_qec_error_budget, build_resource_report};
-use crate::schedule::{MeasurementBasis, NeutralAtomAction, ScheduleLayer};
+use crate::schedule::{LocalGateKind, MeasurementBasis, NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
 use crate::zoned::schedule_zoned;
 use backend::NeutralAtomTarget;
 
-/// Default duration (µs) for synthetic measure/reset actions from QEC expansion.
+/// Default duration (µs) for synthetic measure/reset/local actions from QEC expansion.
 const QEC_TERMINAL_DURATION_US: u64 = 1;
+const QEC_LOCAL_GATE_DURATION_US: u64 = 1;
 
 /// Durable round-barrier Wait duration (µs). Survives [`crate::lower::lower_schedule`].
 const QEC_ROUND_BARRIER_WAIT_US: u64 = 1;
@@ -172,7 +173,11 @@ fn schedule_expanded(
     })
 }
 
-/// Place→move (or zoned) *inside* one physical round, then append terminals.
+/// Place→move (or zoned) *inside* one physical round with Z-then-X phases, then
+/// append locals / terminals.
+///
+/// Phase order (ADR-0016 serial split): `local_before` → Z-CXs → `local_mid`
+/// (X-check H) → X-CXs → `local_after` (X-check H) → measure/reset.
 fn schedule_round(
     round: &PhysicalRound,
     all_atoms: &[PhysicalAtomId],
@@ -188,51 +193,131 @@ fn schedule_round(
     ),
     NaPipelineError,
 > {
-    let mut layers = Vec::new();
-    let mut interactions = Vec::new();
-    let mut segment = None;
-
-    if !round.entangling.is_empty() {
-        let (round_interactions, round_segment) =
-            cnots_to_interactions(&round.entangling, next_interaction_id)?;
-        let graph = cnot_graph(all_atoms, &round_interactions, round_segment.clone())?;
-        let req = schedule_from_graph(graph)?;
-        let max_pairs = na.interaction.max_parallel_entangling_pairs;
-        let scheduled = schedule_entangling_layers(req, max_pairs)?;
-        let mut round_req = GraphScheduleRequest {
-            graph: scheduled.request.graph,
-            layers: scheduled.request.layers,
-            layout: shared_layout.clone(),
-        };
-
-        round_req = match opts.backend {
-            NaBackendKind::Zoned => {
-                let arch = zoned_architecture(na);
-                schedule_zoned(round_req, &arch, opts.placer)?.request
-            }
-            NaBackendKind::FlatAod => {
-                if round_req.layout.is_none() {
-                    round_req = place(round_req, opts.placement)?.request;
-                }
-                let params = movement_params(na);
-                plan_aod_movement(round_req, &params)?.request
-            }
-        };
-        if opts.dump_ir {
-            eprintln!(
-                "--- QEC round {:?} after movement ---\nlayers={}",
-                round.kind,
-                round_req.layers.len()
-            );
-        }
-        *shared_layout = round_req.layout.clone();
-        layers = round_req.layers;
-        interactions = round_interactions;
-        segment = Some(round_segment);
+    if round.z_cnot_count > round.entangling.len() {
+        return Err(NaPipelineError::InvalidZCnotCount {
+            z_cnot_count: round.z_cnot_count,
+            entangling_len: round.entangling.len(),
+        });
     }
 
+    let mut layers = Vec::new();
+    let mut interactions = Vec::new();
+    let mut interaction_ids = Vec::new();
+
+    append_local_gate_layers(&mut layers, &round.local_before);
+
+    let (z_cnots, x_cnots) = round.entangling.split_at(round.z_cnot_count);
+
+    if !z_cnots.is_empty() {
+        let (phase_layers, phase_interactions, phase_ids) = schedule_cnot_phase(
+            z_cnots,
+            all_atoms,
+            na,
+            opts,
+            next_interaction_id,
+            shared_layout,
+        )?;
+        layers.extend(phase_layers);
+        interactions.extend(phase_interactions);
+        interaction_ids.extend(phase_ids);
+    }
+
+    append_local_gate_layers(&mut layers, &round.local_mid);
+
+    if !x_cnots.is_empty() {
+        let (phase_layers, phase_interactions, phase_ids) = schedule_cnot_phase(
+            x_cnots,
+            all_atoms,
+            na,
+            opts,
+            next_interaction_id,
+            shared_layout,
+        )?;
+        layers.extend(phase_layers);
+        interactions.extend(phase_interactions);
+        interaction_ids.extend(phase_ids);
+    }
+
+    append_local_gate_layers(&mut layers, &round.local_after);
     append_terminal_layers(&mut layers, &round.terminal);
+
+    let segment = if interaction_ids.is_empty() {
+        None
+    } else {
+        Some(InteractionSegment {
+            kind: SegmentKind::CommutationGroup,
+            interactions: interaction_ids,
+        })
+    };
     Ok((layers, interactions, segment))
+}
+
+fn schedule_cnot_phase(
+    cnots: &[PhysicalCnot],
+    all_atoms: &[PhysicalAtomId],
+    na: &NeutralAtomTarget,
+    opts: NaScheduleOptions,
+    next_interaction_id: &mut u32,
+    shared_layout: &mut Option<NeutralAtomLayout>,
+) -> Result<(Vec<ScheduleLayer>, Vec<Interaction>, Vec<InteractionId>), NaPipelineError> {
+    let (round_interactions, round_ids) = cnots_to_interactions(cnots, next_interaction_id)?;
+    let segment = InteractionSegment {
+        kind: SegmentKind::CommutationGroup,
+        interactions: round_ids.clone(),
+    };
+    let graph = cnot_graph(all_atoms, &round_interactions, segment)?;
+    let req = schedule_from_graph(graph)?;
+    let max_pairs = na.interaction.max_parallel_entangling_pairs;
+    let scheduled = schedule_entangling_layers(req, max_pairs)?;
+    let mut round_req = GraphScheduleRequest {
+        graph: scheduled.request.graph,
+        layers: scheduled.request.layers,
+        layout: shared_layout.clone(),
+    };
+
+    round_req = match opts.backend {
+        NaBackendKind::Zoned => {
+            let arch = zoned_architecture(na);
+            schedule_zoned(round_req, &arch, opts.placer)?.request
+        }
+        NaBackendKind::FlatAod => {
+            if round_req.layout.is_none() {
+                round_req = place(round_req, opts.placement)?.request;
+            }
+            let params = movement_params(na);
+            plan_aod_movement(round_req, &params)?.request
+        }
+    };
+    if opts.dump_ir {
+        eprintln!(
+            "--- QEC CX phase after movement ---\nlayers={}",
+            round_req.layers.len()
+        );
+    }
+    *shared_layout = round_req.layout.clone();
+    Ok((round_req.layers, round_interactions, round_ids))
+}
+
+fn append_local_gate_layers(layers: &mut Vec<ScheduleLayer>, ops: &[quon_qec::RoundLocalOp]) {
+    use quon_qec::RoundLocalOp;
+    let mut hs = Vec::new();
+    for op in ops {
+        match op {
+            RoundLocalOp::H { atom } => hs.push(NeutralAtomAction::LocalGate {
+                atom: AtomId(atom.0),
+                gate: LocalGateKind::H,
+                duration_us: QEC_LOCAL_GATE_DURATION_US,
+            }),
+        }
+    }
+    if hs.is_empty() {
+        return;
+    }
+    let cycle = layers.last().map(|l| l.cycle.saturating_add(1)).unwrap_or(0);
+    layers.push(ScheduleLayer {
+        cycle,
+        actions: hs,
+    });
 }
 
 fn append_terminal_layers(layers: &mut Vec<ScheduleLayer>, terminal: &[RoundTerminal]) {
@@ -299,7 +384,7 @@ fn cnot_graph(
 fn cnots_to_interactions(
     cnots: &[PhysicalCnot],
     next_interaction_id: &mut u32,
-) -> Result<(Vec<Interaction>, InteractionSegment), NaPipelineError> {
+) -> Result<(Vec<Interaction>, Vec<InteractionId>), NaPipelineError> {
     let mut interactions = Vec::with_capacity(cnots.len());
     let mut ids = Vec::with_capacity(cnots.len());
     for cnot in cnots {
@@ -321,11 +406,7 @@ fn cnots_to_interactions(
         });
         ids.push(id);
     }
-    let segment = InteractionSegment {
-        kind: SegmentKind::CommutationGroup,
-        interactions: ids,
-    };
-    Ok((interactions, segment))
+    Ok((interactions, ids))
 }
 
 /// Barrier cuts at durable Wait markers (and Reset→next as a safety net).
@@ -393,6 +474,7 @@ fn all_physical_atoms(expanded: &ExpandedWorkload) -> Vec<PhysicalAtomId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schedule::LocalGateKind;
     use quon_qec::{LogicalBasis, SourceFamily, WorkloadBuilder};
 
     fn load_na() -> NeutralAtomTarget {
@@ -475,6 +557,189 @@ mod tests {
                 .any(|a| matches!(a, NeutralAtomAction::Wait { .. }))
         });
         assert!(has_measure && has_reset && has_entangle && has_wait);
+    }
+
+    fn surface_d3_workload() -> QecWorkload {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.memory_round(LogicalQubitId(0)).unwrap();
+        b.memory_round(LogicalQubitId(0)).unwrap();
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .unwrap();
+        b.finish()
+    }
+
+    #[test]
+    fn surface_d3_memory_round_is_z_then_h_then_x_then_h() {
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            compact: false,
+            dump_ir: false,
+            ..Default::default()
+        };
+        let artifacts =
+            run_from_qec_workload(&surface_d3_workload(), &na, opts).expect("schedule");
+
+        // Within the first memory round (before first Wait): find the phase order.
+        let wait_idx = artifacts
+            .layers
+            .iter()
+            .position(|l| {
+                l.actions
+                    .iter()
+                    .any(|a| matches!(a, NeutralAtomAction::Wait { .. }))
+            })
+            .expect("wait");
+        let first_round = &artifacts.layers[..wait_idx];
+
+        #[derive(Debug, PartialEq)]
+        enum Phase {
+            ZEntangle,
+            MidH,
+            XEntangle,
+            AfterH,
+            Measure,
+        }
+        let mut phases = Vec::new();
+        for layer in first_round {
+            let has_h = layer.actions.iter().any(|a| {
+                matches!(
+                    a,
+                    NeutralAtomAction::LocalGate {
+                        gate: LocalGateKind::H,
+                        ..
+                    }
+                )
+            });
+            let has_e = layer.actions.iter().any(|a| {
+                matches!(
+                    a,
+                    NeutralAtomAction::Entangle2 { .. } | NeutralAtomAction::EntangleN { .. }
+                )
+            });
+            let has_m = layer
+                .actions
+                .iter()
+                .any(|a| matches!(a, NeutralAtomAction::Measure { .. }));
+            if has_h {
+                let h_atoms: Vec<u32> = layer
+                    .actions
+                    .iter()
+                    .filter_map(|a| match a {
+                        NeutralAtomAction::LocalGate {
+                            atom,
+                            gate: LocalGateKind::H,
+                            ..
+                        } => Some(atom.0),
+                        _ => None,
+                    })
+                    .collect();
+                // X-check ancillas are 9,11,14,16 for d=3.
+                assert_eq!(h_atoms, vec![9, 11, 14, 16]);
+                if phases.last() == Some(&Phase::ZEntangle) {
+                    phases.push(Phase::MidH);
+                } else if phases.last() == Some(&Phase::XEntangle) {
+                    phases.push(Phase::AfterH);
+                } else {
+                    phases.push(Phase::MidH);
+                }
+            } else if has_e {
+                if phases.contains(&Phase::MidH) {
+                    phases.push(Phase::XEntangle);
+                } else {
+                    phases.push(Phase::ZEntangle);
+                }
+            } else if has_m {
+                phases.push(Phase::Measure);
+            }
+        }
+        // Deduplicate consecutive identical phase tags from multi-layer Misra–Gries.
+        phases.dedup();
+        assert_eq!(
+            phases,
+            vec![
+                Phase::ZEntangle,
+                Phase::MidH,
+                Phase::XEntangle,
+                Phase::AfterH,
+                Phase::Measure,
+            ],
+            "first memory round must be Z → mid H → X → after H → measure"
+        );
+    }
+
+    #[test]
+    fn surface_code_x_prep_emits_data_hadamards() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::X, LogicalQubitId(0))
+            .unwrap();
+        b.memory_round(LogicalQubitId(0)).unwrap();
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::X)
+            .unwrap();
+        let na = load_na();
+        let artifacts = run_from_qec_workload(
+            &b.finish(),
+            &na,
+            NaScheduleOptions {
+                compact: false,
+                dump_ir: false,
+                ..Default::default()
+            },
+        )
+        .expect("schedule");
+        let data_hs: Vec<u32> = artifacts
+            .layers
+            .iter()
+            .flat_map(|l| l.actions.iter())
+            .filter_map(|a| match a {
+                NeutralAtomAction::LocalGate {
+                    atom,
+                    gate: LocalGateKind::H,
+                    ..
+                } if atom.0 < 9 => Some(atom.0),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            data_hs,
+            (0..9).collect::<Vec<_>>(),
+            "X-init must Hadamard all data atoms before memory rounds"
+        );
+    }
+
+    #[test]
+    fn surface_d3_schedules_with_qec_report_fields() {
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            compact: true,
+            dump_ir: false,
+            ..Default::default()
+        };
+        let artifacts =
+            run_from_qec_workload(&surface_d3_workload(), &na, opts).expect("schedule");
+        let report = &artifacts.resource_report;
+
+        assert_eq!(report.logical_qubits, 1);
+        assert_eq!(report.physical_atoms, 17);
+        assert_eq!(report.atoms_per_logical, Some(17));
+        assert_eq!(report.code_family.as_deref(), Some("surface_code_like"));
+        assert_eq!(report.distance, Some(3));
+        assert_eq!(report.memory_rounds, Some(2));
+        assert_eq!(report.entangle2_count, 48);
+        assert_eq!(report.measurement_rounds, 3);
+        assert_eq!(report.reset_rounds, 2);
+
+        let waits = artifacts
+            .layers
+            .iter()
+            .filter(|l| {
+                l.actions
+                    .iter()
+                    .any(|a| matches!(a, NeutralAtomAction::Wait { .. }))
+            })
+            .count();
+        assert_eq!(waits, 2, "one durable Wait per memory round");
     }
 
     /// Wait/round cuts are causal: compact with cuts vs without must differ for

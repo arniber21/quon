@@ -12,7 +12,7 @@ pub mod workload;
 
 pub use expand::{
     ExpandError, ExpandedBlock, ExpandedWorkload, PhysicalAtomId, PhysicalCnot, PhysicalRound,
-    RoundKind, RoundTerminal, expand_workload,
+    RoundKind, RoundLocalOp, RoundTerminal, StabilizerDef, expand_workload,
 };
 pub use experiment::{
     AtomRole, AtomSiteMapping, CheckGraph, ErrorModelSnapshot, ExperimentError, ExperimentRoundKind,

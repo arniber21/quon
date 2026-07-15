@@ -1,0 +1,31 @@
+-- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-mlir - --quiet | %FileCheck %s
+--
+-- Surface d=3 memory → quantum.na (#249 / ADR-0016): 17 data+check atoms,
+-- serial Z-then-X syndrome (entangle → local_gate H → entangle → local_gate H),
+-- durable Wait round barriers, check measure/reset across two memory rounds,
+-- then logical data measure. Not Stim's interleaved 4-layer FT schedule.
+
+fn surface_d3_memory(): Q<Bit> = run {
+        b <- surface_code<3>()
+        b <- memory_round(b)
+        b <- memory_round(b)
+        measure_logical_z(b)
+}
+
+-- CHECK: "quantum.na.schedule"()
+-- CHECK-DAG: atom = 0
+-- CHECK-DAG: atom = 8
+-- CHECK-DAG: atom = 9
+-- CHECK-DAG: atom = 16
+-- CHECK: "quantum.na.entangle"()
+-- CHECK: "quantum.na.local_gate"{{.*}}gate = "h"
+-- CHECK: "quantum.na.entangle"()
+-- CHECK: "quantum.na.local_gate"{{.*}}gate = "h"
+-- CHECK: "quantum.na.measure"{{.*}}atom = 9
+-- CHECK: "quantum.na.reset"{{.*}}atom = 9
+-- CHECK: "quantum.na.wait"
+-- CHECK: "quantum.na.entangle"()
+-- CHECK: "quantum.na.wait"
+-- CHECK: "quantum.na.measure"{{.*}}atom = 0
+-- CHECK: "quantum.na.measure"{{.*}}atom = 8
+-- CHECK: target_id = "generic_reconfigurable_neutral_atom_v0"
