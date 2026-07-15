@@ -286,6 +286,7 @@ fn decl(u: &mut Unstructured, depth: u32) -> Result<Sp<Decl>> {
         }
         Decl::Fn {
             name: sp_ident(u)?,
+            type_params: Vec::new(),
             params,
             ret: ty(u, 2)?,
             body: expr(u, depth)?,
@@ -294,7 +295,10 @@ fn decl(u: &mut Unstructured, depth: u32) -> Result<Sp<Decl>> {
         let np = u.int_in_range(0..=2)?;
         let mut params = Vec::new();
         for _ in 0..np {
-            params.push(sp_ident(u)?);
+            params.push(TypeParam {
+                name: sp_ident(u)?,
+                kind: None,
+            });
         }
         Decl::TypeAlias {
             name: sp(type_name(u)?),

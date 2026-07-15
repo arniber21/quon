@@ -44,15 +44,19 @@ There is no register indexing that aliases an element. Use `destructure`,
 
 ## The linear context and no-cloning
 
-Quon tracks quantum values in a **linear context**. Every `Qubit`, `QReg`, and
-circuit value in that context must be consumed exactly once. Measurement is one
-way to consume a qubit:
+Quon tracks quantum values in a **linear context**. Every `Qubit`, `QReg`,
+`QecBlock`, and circuit value in that context must be consumed exactly once.
+Measurement is one way to consume a qubit:
 
 ```kotlin
 fn read(q: Qubit): Q<Bit> = run {
     measure(q)
 }
 ```
+
+`QecBlock<F, d>` is the linear resource for an encoded logical qubit under code
+family `F` at distance `d` (for example `QecBlock<Repetition, 3>`). A program
+entrypoint may use QEC builtins or bare `Qubit`/`QReg` ops, not both.
 
 Using `q` again after `measure(q)`, omitting its use, or trying to construct
 `(q, q)` is a type error. Classical values such as `Bit`, `Bool`, and `Int` are

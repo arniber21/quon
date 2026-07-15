@@ -42,12 +42,18 @@ fn visit_decl<'a>(decl: &'a Decl, offset: usize, best: &mut Option<(usize, NodeA
     match decl {
         Decl::Fn {
             name,
+            type_params,
             params,
             ret,
             body,
         } => {
             if offset_in(name.1, offset) {
                 consider(name.1, offset, NodeAt::Name(&name.0, name.1), best);
+            }
+            for p in type_params {
+                if offset_in(p.name.1, offset) {
+                    consider(p.name.1, offset, NodeAt::Name(&p.name.0, p.name.1), best);
+                }
             }
             for (param, ty) in params {
                 if offset_in(param.1, offset) {
@@ -63,8 +69,8 @@ fn visit_decl<'a>(decl: &'a Decl, offset: usize, best: &mut Option<(usize, NodeA
                 consider(name.1, offset, NodeAt::Name(&name.0, name.1), best);
             }
             for p in params {
-                if offset_in(p.1, offset) {
-                    consider(p.1, offset, NodeAt::Name(&p.0, p.1), best);
+                if offset_in(p.name.1, offset) {
+                    consider(p.name.1, offset, NodeAt::Name(&p.name.0, p.name.1), best);
                 }
             }
             visit_type(&ty.0, ty.1, offset, best);
@@ -118,6 +124,9 @@ fn visit_expr<'a>(
         Expr::App(a, b) | Expr::Compose(a, b) | Expr::Par(a, b) => {
             visit_expr(&a.0, a.1, offset, best);
             visit_expr(&b.0, b.1, offset, best);
+        }
+        Expr::TypeApp { callee, .. } => {
+            visit_expr(&callee.0, callee.1, offset, best);
         }
         Expr::GateApp { gate, qubits } => {
             visit_expr(&gate.0, gate.1, offset, best);
@@ -213,6 +222,7 @@ fn visit_type<'a>(
             }
         }
         Type::Matrix(_, _, inner) => visit_type(&inner.0, inner.1, offset, best),
+        Type::QecBlock { family, .. } => visit_type(&family.0, family.1, offset, best),
         Type::Qubit
         | Type::QReg(_)
         | Type::Bit

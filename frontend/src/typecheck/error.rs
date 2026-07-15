@@ -11,6 +11,7 @@ use crate::diagnostics::{
 };
 use crate::lexer::SimpleSpan;
 use crate::types::Ty;
+use quon_core::DepthExpr;
 use std::fmt;
 
 /// A single type error, anchored at the span of the sub-expression that triggered it.
@@ -152,6 +153,40 @@ pub enum TypeError {
     /// self-recursion with an inferred decreasing measure; a cycle through two or more distinct
     /// functions is rejected rather than accepted without a termination witness.
     MutualRecursion { name: String, span: SimpleSpan },
+    /// A type argument has the wrong kind (e.g. a Nat where `CodeFamily` is required).
+    KindMismatch {
+        expected: &'static str,
+        found: &'static str,
+        span: SimpleSpan,
+    },
+    /// QEC constructor distance violates family rules (repetition `d >= 2`, surface odd `d >= 3`).
+    InvalidQecDistance {
+        family: &'static str,
+        distance: u64,
+        span: SimpleSpan,
+    },
+    /// An entrypoint mixes `QecBlock` with bare `Qubit`/`QReg` (ADR-0014).
+    MixedQecEntrypoint { span: SimpleSpan },
+    /// `CodeFamily` tag is not in the closed v1 set and is not an in-scope type parameter.
+    UnknownCodeFamily { name: String, span: SimpleSpan },
+    /// `logical_cx` requires both arguments to be surface-code blocks.
+    LogicalCxRequiresSurface {
+        family: crate::types::CodeFamilyTy,
+        span: SimpleSpan,
+    },
+    /// `logical_cx` requires equal distances on both surface blocks.
+    LogicalCxDistanceMismatch {
+        expected: DepthExpr,
+        found: DepthExpr,
+        span: SimpleSpan,
+    },
+    /// QEC constructor used without a distance type argument (`repetition_code<d>()`).
+    QecCtorRequiresDistance {
+        name: &'static str,
+        span: SimpleSpan,
+    },
+    /// QEC constructor distance is not a literal `Nat` (deferred specialization unsupported).
+    NonLiteralQecDistance { span: SimpleSpan },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -191,6 +226,14 @@ impl TypeError {
             | TypeError::NonDependentArg { span, .. }
             | TypeError::IllFoundedRecursion { span, .. }
             | TypeError::MutualRecursion { span, .. }
+            | TypeError::KindMismatch { span, .. }
+            | TypeError::InvalidQecDistance { span, .. }
+            | TypeError::MixedQecEntrypoint { span }
+            | TypeError::UnknownCodeFamily { span, .. }
+            | TypeError::LogicalCxRequiresSurface { span, .. }
+            | TypeError::LogicalCxDistanceMismatch { span, .. }
+            | TypeError::QecCtorRequiresDistance { span, .. }
+            | TypeError::NonLiteralQecDistance { span }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -225,6 +268,14 @@ impl TypeError {
             TypeError::NonDependentArg { .. } => DiagnosticCode::DEPENDENT_NON_DEPENDENT,
             TypeError::IllFoundedRecursion { .. } => DiagnosticCode::RECURSION_ILL_FOUNDED,
             TypeError::MutualRecursion { .. } => DiagnosticCode::RECURSION_MUTUAL,
+            TypeError::KindMismatch { .. } => DiagnosticCode::TYPE_KIND_MISMATCH,
+            TypeError::InvalidQecDistance { .. } => DiagnosticCode::QEC_INVALID_DISTANCE,
+            TypeError::MixedQecEntrypoint { .. } => DiagnosticCode::QEC_MIXED_ENTRYPOINT,
+            TypeError::UnknownCodeFamily { .. } => DiagnosticCode::QEC_UNKNOWN_FAMILY,
+            TypeError::LogicalCxRequiresSurface { .. } => DiagnosticCode::QEC_LOGICAL_CX_FAMILY,
+            TypeError::LogicalCxDistanceMismatch { .. } => DiagnosticCode::QEC_LOGICAL_CX_DISTANCE,
+            TypeError::QecCtorRequiresDistance { .. } => DiagnosticCode::QEC_CTOR_REQUIRES_DISTANCE,
+            TypeError::NonLiteralQecDistance { .. } => DiagnosticCode::QEC_NON_LITERAL_DISTANCE,
             TypeError::Unsupported { .. } => DiagnosticCode::UNSUPPORTED_QUANTUM,
         }
     }
@@ -393,6 +444,53 @@ impl fmt::Display for TypeError {
                 f,
                 "`{name}` is part of a mutually-recursive cycle; only direct self-recursion with a \
                  decreasing measure is supported"
+            ),
+            TypeError::KindMismatch {
+                expected, found, ..
+            } => write!(
+                f,
+                "kind mismatch: expected `{expected}`, found `{found}`"
+            ),
+            TypeError::InvalidQecDistance {
+                family, distance, ..
+            } => match *family {
+                "repetition" => write!(
+                    f,
+                    "invalid distance {distance} for repetition code; requires d ≥ 2"
+                ),
+                "surface" => write!(
+                    f,
+                    "invalid distance {distance} for surface code; requires odd d ≥ 3"
+                ),
+                _ => write!(f, "invalid distance {distance} for {family} code"),
+            },
+            TypeError::MixedQecEntrypoint { .. } => write!(
+                f,
+                "entrypoint mixes QecBlock with bare Qubit/QReg; use one encoding style per program"
+            ),
+            TypeError::UnknownCodeFamily { name, .. } => write!(
+                f,
+                "unknown code family `{name}`; v1 supports `Repetition`, `Surface`, \
+                 or an in-scope `F: CodeFamily` parameter"
+            ),
+            TypeError::LogicalCxRequiresSurface { family, .. } => write!(
+                f,
+                "`logical_cx` requires surface-code blocks at equal distance; \
+                 found family `{family}`"
+            ),
+            TypeError::LogicalCxDistanceMismatch {
+                expected, found, ..
+            } => write!(
+                f,
+                "`logical_cx` requires equal distances; expected `{expected}`, found `{found}`"
+            ),
+            TypeError::QecCtorRequiresDistance { name, .. } => write!(
+                f,
+                "`{name}` requires a distance type argument, e.g. `{name}<3>()`"
+            ),
+            TypeError::NonLiteralQecDistance { .. } => write!(
+                f,
+                "QEC constructor distance must be a literal Nat (e.g. `repetition_code<3>()`)"
             ),
             TypeError::Unsupported { construct, .. } => write!(
                 f,

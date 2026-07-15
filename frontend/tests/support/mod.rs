@@ -32,12 +32,19 @@ fn strip_decl(d: &mut Decl) {
     match d {
         Decl::Fn {
             name,
+            type_params,
             params,
             ret,
             body,
             ..
         } => {
             strip_sp_name(name);
+            for p in type_params.iter_mut() {
+                strip_sp_name(&mut p.name);
+                if let Some(k) = &mut p.kind {
+                    k.1 = z();
+                }
+            }
             for (n, t) in params.iter_mut() {
                 strip_sp_name(n);
                 go!(t, strip_ty);
@@ -48,7 +55,10 @@ fn strip_decl(d: &mut Decl) {
         Decl::TypeAlias { name, params, ty } => {
             strip_sp_name(name);
             for p in params.iter_mut() {
-                strip_sp_name(p);
+                strip_sp_name(&mut p.name);
+                if let Some(k) = &mut p.kind {
+                    k.1 = z();
+                }
             }
             go!(ty, strip_ty);
         }
@@ -90,6 +100,10 @@ fn strip_ty(t: &mut Type) {
             go!(n, strip_nat);
             go!(m, strip_nat);
             go!(d, strip_nat);
+        }
+        Type::QecBlock { family, distance } => {
+            go!(family, strip_ty);
+            go!(distance, strip_nat);
         }
         Type::Fn(a, b) | Type::Linear(a, b) => {
             go!(a, strip_ty);
@@ -135,6 +149,12 @@ fn strip_expr(e: &mut Expr) {
         Expr::App(f, x) => {
             go!(f, strip_expr);
             go!(x, strip_expr);
+        }
+        Expr::TypeApp { callee, args } => {
+            go!(callee, strip_expr);
+            for a in args.iter_mut() {
+                go!(a, strip_nat);
+            }
         }
         Expr::BinOp { lhs, rhs, .. } => {
             go!(lhs, strip_expr);

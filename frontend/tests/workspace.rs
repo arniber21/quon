@@ -7,6 +7,13 @@ fn linear_resources_are_classified_correctly() {
     assert!(Ty::Qubit.is_linear_resource());
     assert!(Ty::QReg(DepthExpr::Nat(4)).is_linear_resource());
     assert!(
+        Ty::QecBlock {
+            family: frontend::types::CodeFamilyTy::Repetition,
+            distance: DepthExpr::Nat(3),
+        }
+        .is_linear_resource()
+    );
+    assert!(
         Ty::Circuit {
             n: DepthExpr::Nat(1),
             m: DepthExpr::Nat(1),

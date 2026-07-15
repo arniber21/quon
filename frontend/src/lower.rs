@@ -123,6 +123,7 @@ impl<'c> LoweringCtx<'c> {
                 params,
                 ret,
                 body,
+                ..
             } = &decl.0
                 && let Ok(ret_ty @ Ty::Circuit { .. }) = self.checker.resolve_type(ret)
             {
@@ -165,6 +166,7 @@ impl<'c> LoweringCtx<'c> {
                 params,
                 ret,
                 body,
+                ..
             } = &decl.0
             {
                 self.lower_circuit_fn(&name.0, params, ret, body)?;
@@ -180,6 +182,7 @@ impl<'c> LoweringCtx<'c> {
                 params,
                 ret,
                 body,
+                ..
             } = &decl.0
             {
                 self.lower_run_fn(&name.0, params, ret, body)?;

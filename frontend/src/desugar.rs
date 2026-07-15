@@ -71,11 +71,13 @@ fn desugar_decl(decl: Sp<Decl>, errors: &mut Vec<Diagnostic>) -> Sp<Decl> {
     let d = match d {
         Decl::Fn {
             name,
+            type_params,
             params,
             ret,
             body,
         } => Decl::Fn {
             name,
+            type_params,
             params,
             ret,
             body: desugar_expr_acc(body, errors),
@@ -100,6 +102,10 @@ fn desugar_expr_acc(expr: Sp<Expr>, errors: &mut Vec<Diagnostic>) -> Sp<Expr> {
             body: rec(*body, errors),
         },
         Expr::App(a, b) => Expr::App(rec(*a, errors), rec(*b, errors)),
+        Expr::TypeApp { callee, args } => Expr::TypeApp {
+            callee: rec(*callee, errors),
+            args,
+        },
         Expr::BinOp { op, lhs, rhs } => Expr::BinOp {
             op,
             lhs: rec(*lhs, errors),

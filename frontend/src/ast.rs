@@ -11,18 +11,45 @@ pub type Name = String;
 
 // ── Top-level ────────────────────────────────────────────────────────────────
 
+/// Kind of a type-level parameter (`F: CodeFamily`, `d: Nat`). Bare params default to [`Kind::Nat`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Nat,
+    CodeFamily,
+}
+
+/// A kinded type parameter on `fn` / `type`, e.g. `F: CodeFamily` or bare `n` (kind `Nat`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: Sp<Name>,
+    /// `None` means kind [`Kind::Nat`] (Nat-only sugar: `type Oracle<n> = ...`).
+    pub kind: Option<Sp<Kind>>,
+}
+
+impl TypeParam {
+    pub fn kind_or_nat(&self) -> Kind {
+        self.kind
+            .as_ref()
+            .map(|(k, _)| k.clone())
+            .unwrap_or(Kind::Nat)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decl {
     Fn {
         name: Sp<Name>,
+        /// Kinded type parameters, e.g. `<F: CodeFamily, d: Nat>`. Empty when absent.
+        type_params: Vec<TypeParam>,
         params: Vec<(Sp<Name>, Sp<Type>)>,
         ret: Sp<Type>,
         body: Sp<Expr>,
     },
     TypeAlias {
         name: Sp<Name>,
-        /// Type-level parameters, e.g. `n` in `type Oracle<n> = ...`. Empty for plain aliases.
-        params: Vec<Sp<Name>>,
+        /// Type-level parameters, e.g. `n` in `type Oracle<n> = ...` or
+        /// `F: CodeFamily` in `type Encoded<F: CodeFamily, d: Nat> = ...`.
+        params: Vec<TypeParam>,
         ty: Sp<Type>,
     },
 }
@@ -55,10 +82,17 @@ pub enum Type {
     },
     Q(Box<Sp<Type>>),
     Matrix(Sp<NatExpr>, Sp<NatExpr>, Box<Sp<Type>>),
+    /// A logical qubit encoded under code family `F` at distance `d` (ADR-0014).
+    QecBlock {
+        family: Box<Sp<Type>>,
+        distance: Sp<NatExpr>,
+    },
     /// Bare type variable (no arguments), e.g. a free `n` used as a type.
     Var(Name),
     /// Reference to a (possibly parameterized) type alias, e.g. `Oracle<n>`, `BVOracle<n+1>`,
     /// or `Bell` (with no args). Resolved against the alias table by the type checker.
+    /// Args are `Nat` expressions; a `CodeFamily` parameter at an alias use site is written as
+    /// a bare name (`Repetition`, `Surface`, or a rigid `F`) and reinterpreted by kind.
     Named {
         name: Name,
         args: Vec<Sp<NatExpr>>,
@@ -151,6 +185,11 @@ pub enum Expr {
         body: Box<Sp<Expr>>,
     },
     App(Box<Sp<Expr>>, Box<Sp<Expr>>),
+    /// Explicit type-level application, e.g. `repetition_code<3>` before `()`.
+    TypeApp {
+        callee: Box<Sp<Expr>>,
+        args: Vec<Sp<NatExpr>>,
+    },
 
     // Arithmetic
     BinOp {

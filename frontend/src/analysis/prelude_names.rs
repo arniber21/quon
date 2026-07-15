@@ -81,6 +81,13 @@ pub fn quantum_builtins() -> &'static [&'static str] {
         "on_high",
         "on_low",
         "swap_reverse",
+        "repetition_code",
+        "surface_code",
+        "surface_code_x",
+        "memory_round",
+        "measure_logical_z",
+        "measure_logical_x",
+        "logical_cx",
     ]
 }
 

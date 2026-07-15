@@ -35,10 +35,10 @@ mod tests;
 
 pub use error::TypeError;
 
-use crate::ast::{BinOp, CliffordClass, Decl, Expr, LitPat, Name, NatExpr, Pat, Stmt, Type};
+use crate::ast::{BinOp, CliffordClass, Decl, Expr, Kind, LitPat, Name, NatExpr, Pat, Stmt, Type};
 use crate::lexer::{SimpleSpan, Sp};
 use crate::refinement::{Assumption, DepthError, RefinementCtx};
-use crate::types::Ty;
+use crate::types::{CodeFamilyTy, Ty};
 use builtins::Scheme;
 use linear::Delta;
 use std::collections::{BTreeSet, HashMap};
@@ -52,10 +52,10 @@ use quon_core::DepthExpr;
 /// The unrestricted context Γ: names in scope mapped to their (monomorphic) types.
 type Env = HashMap<Name, Ty>;
 
-/// A resolved type alias: its formal `Nat` parameters and its right-hand side.
+/// A resolved type alias: its kinded parameters and its right-hand side.
 #[derive(Clone)]
 struct AliasDef {
-    params: Vec<Name>,
+    params: Vec<(Name, Kind)>,
     body: Sp<Type>,
 }
 
@@ -84,6 +84,15 @@ struct FnSig {
     ret: Ty,
 }
 
+/// Kinded polymorphism signature for user functions with `<F: CodeFamily, d: Nat>` (ADR-0014).
+#[derive(Clone)]
+struct KindedFnSig {
+    type_params: Vec<(Name, Kind)>,
+    /// Resolved parameter types (with rigid `F` / `d`).
+    param_tys: Vec<Ty>,
+    ret: Ty,
+}
+
 /// The classical-fragment type checker. Holds the global signature environment, the
 /// alias table, and the metavariable substitution shared across one checking run.
 pub struct TypeChecker {
@@ -92,6 +101,10 @@ pub struct TypeChecker {
     /// Value-dependency signatures for top-level functions (issue #57): which parameters are
     /// `Nat` and the return type their call-site arguments specialize. Keyed by function name.
     fn_sigs: HashMap<Name, FnSig>,
+    /// Kinded type-parameter signatures (`<F: CodeFamily, d: Nat>`) for call-site specialization.
+    kinded_fn_sigs: HashMap<Name, KindedFnSig>,
+    /// In-scope kinded type parameters (`F: CodeFamily`, `d: Nat`) while resolving types.
+    kind_env: HashMap<Name, Kind>,
     /// Type aliases declared with `type`.
     aliases: HashMap<Name, AliasDef>,
     /// Metavariable substitution for this run.
@@ -144,6 +157,8 @@ impl TypeChecker {
         Self {
             globals: Env::new(),
             fn_sigs: HashMap::new(),
+            kinded_fn_sigs: HashMap::new(),
+            kind_env: HashMap::new(),
             aliases: HashMap::new(),
             table: Table::new(),
             numeric: Vec::new(),
@@ -303,26 +318,49 @@ impl TypeChecker {
                 self.aliases.insert(
                     name.0.clone(),
                     AliasDef {
-                        params: params.iter().map(|p| p.0.clone()).collect(),
+                        params: params
+                            .iter()
+                            .map(|p| (p.name.0.clone(), p.kind_or_nat()))
+                            .collect(),
                         body: ty.clone(),
                     },
                 );
             }
         }
 
+        // Pass 1.5: kind-check alias bodies under their params (same as fn signatures).
+        for (decl, _) in decls {
+            if let Decl::TypeAlias { params, ty, .. } = decl {
+                self.push_kind_params(params);
+                if let Err(e) = self.resolve_type(ty) {
+                    errors.push(e);
+                }
+                self.pop_kind_params(params);
+            }
+        }
+
         // Pass 2: function signatures into Γ (so calls resolve regardless of order).
         for (decl, _) in decls {
             if let Decl::Fn {
-                name, params, ret, ..
+                name,
+                type_params,
+                params,
+                ret,
+                ..
             } = decl
             {
+                self.push_kind_params(type_params);
                 match self.fn_type(params, ret) {
                     Ok(ty) => {
                         self.globals.insert(name.0.clone(), ty);
                         self.record_fn_sig(name, params, ret);
+                        if let Err(e) = self.record_kinded_fn_sig(name, type_params, params, ret) {
+                            errors.push(e);
+                        }
                     }
                     Err(e) => errors.push(e),
                 }
+                self.pop_kind_params(type_params);
             }
         }
 
@@ -335,15 +373,23 @@ impl TypeChecker {
         for (decl, _) in decls {
             if let Decl::Fn {
                 name,
+                type_params,
                 params,
                 ret,
                 body,
+                ..
             } = decl
-                && let Err(e) = self.check_fn_body(name, params, ret, body)
             {
-                errors.push(e);
+                self.push_kind_params(type_params);
+                if let Err(e) = self.check_fn_body(name, params, ret, body) {
+                    errors.push(e);
+                }
+                self.pop_kind_params(type_params);
             }
         }
+
+        // Pass 4: mixed QEC + bare-qubit entrypoint (ADR-0014).
+        self.check_mixed_qec_entrypoint(decls, &mut errors);
 
         if errors.is_empty() {
             Ok(())
@@ -365,7 +411,10 @@ impl TypeChecker {
                 self.aliases.insert(
                     name.0.clone(),
                     AliasDef {
-                        params: params.iter().map(|p| p.0.clone()).collect(),
+                        params: params
+                            .iter()
+                            .map(|p| (p.name.0.clone(), p.kind_or_nat()))
+                            .collect(),
                         body: ty.clone(),
                     },
                 );
@@ -639,6 +688,8 @@ impl TypeChecker {
                 self.synth_destructure(env, delta, x, span)
             }
 
+            Expr::TypeApp { callee, args } => self.synth_type_app(env, delta, callee, args, span),
+
             Expr::App(f, x) => self.synth_app(env, delta, f, x, span),
 
             // ── Circuit fragment (issue #11) ────────────────────────────────────
@@ -744,6 +795,17 @@ impl TypeChecker {
             return result;
         }
         if let Some(scheme) = builtins::lookup(name) {
+            // QEC ops special-cased in `synth_app` are not first-class; reject let-binding them
+            // with a clear diagnostic rather than a later opaque mismatch on the lying scheme.
+            if matches!(
+                name,
+                "memory_round" | "measure_logical_z" | "measure_logical_x" | "logical_cx"
+            ) {
+                return Err(TypeError::Unsupported {
+                    construct: "let-bound QEC builtin",
+                    span,
+                });
+            }
             let ty = self.instantiate(&scheme);
             self.record_resolution(span, ResolvedTarget::Builtin(name.to_string()));
             self.record_annotation(span, &ty);
@@ -990,16 +1052,47 @@ impl TypeChecker {
         span: SimpleSpan,
     ) -> Result<Ty, TypeError> {
         let (head, args) = flatten_app(f, x);
+
+        // QEC constructors: `repetition_code<3>()` / `surface_code<3>()` / `surface_code_x<3>()`.
+        if let Expr::TypeApp { callee, args: targs } = &head.0
+            && let Expr::Var(name) = &callee.0
+            && matches!(
+                name.as_str(),
+                "repetition_code" | "surface_code" | "surface_code_x"
+            )
+        {
+            let ctor_ty = self.synth_qec_ctor_type(name, targs, callee.1)?;
+            // Expect a nullary call (`()` → Unit argument).
+            if args.len() != 1 {
+                return Err(TypeError::ArityMismatch {
+                    expected: 1,
+                    found: args.len(),
+                    span,
+                });
+            }
+            self.check(env, delta, args[0], &Ty::Unit)?;
+            let (_, cod) = self.as_function(&ctor_ty, span)?;
+            return Ok(cod);
+        }
+
         if let Expr::Var(name) = &head.0 {
             match (name.as_str(), args.len()) {
+                ("repetition_code" | "surface_code" | "surface_code_x", _) => {
+                    return Err(TypeError::QecCtorRequiresDistance {
+                        name: match name.as_str() {
+                            "surface_code" => "surface_code",
+                            "surface_code_x" => "surface_code_x",
+                            _ => "repetition_code",
+                        },
+                        span: head.1,
+                    });
+                }
                 ("identity", 1) => return self.synth_identity(env, delta, args[0]),
                 ("repeat", 2) => return self.synth_repeat(env, delta, args[0], args[1]),
                 ("on_high" | "on_low", 2) => {
                     return self.synth_on_sub(env, delta, args[0], args[1]);
                 }
                 ("swap_reverse", 1) => return self.synth_swap_reverse(env, delta, args[0]),
-                // `a `tensored` b` (SPEC §5): concatenate two registers into `QReg<n+m>`.
-                // Surfaced as a curried call by the parser (`tensored(a)(b)`).
                 ("tensored", 2) => return self.synth_tensored(env, delta, args[0], args[1]),
                 ("split", 2) => return self.synth_split(env, delta, args[0], args[1]),
                 ("measure_all", 1) => return self.synth_measure_all(env, delta, args[0]),
@@ -1007,10 +1100,15 @@ impl TypeChecker {
                 ("sequence_q", 1) => return self.synth_sequence_q(env, delta, args[0]),
                 ("index", 2) => return self.synth_index(env, delta, args[0], args[1]),
                 ("fold", 3) => return self.synth_fold(env, delta, args[0], args[1], args[2], span),
-                // A single-qubit rotation applied to its angle (issue #12): the Clifford
-                // classification is specialised from a static multiple of π/2.
                 (rot, 1) if circuit::is_specialisable_rotation(rot) => {
                     return self.synth_rotation(env, delta, args[0]);
+                }
+                ("memory_round", 1) => return self.synth_memory_round(env, delta, args[0], span),
+                ("measure_logical_z" | "measure_logical_x", 1) => {
+                    return self.synth_measure_logical(env, delta, args[0], span);
+                }
+                ("logical_cx", 2) => {
+                    return self.synth_logical_cx(env, delta, args[0], args[1], span);
                 }
                 _ => {}
             }
@@ -1023,6 +1121,14 @@ impl TypeChecker {
         {
             let size = self.expr_to_depth(env, delta, args[0])?;
             return Ok(Ty::Q(Box::new(Ty::QReg(size))));
+        }
+        // Kinded user functions: specialize `F`/`d` from QecBlock arguments.
+        if let Expr::Var(name) = &head.0
+            && let Some(ksig) = self.kinded_fn_sigs.get(name).cloned()
+            && args.len() == ksig.param_tys.len()
+            && !ksig.type_params.is_empty()
+        {
+            return self.synth_kinded_app(env, delta, f, x, &ksig, &args, span);
         }
         // Value-dependent application (issue #57): a *fully-applied* call to a top-level function
         // with at least one `Nat` value parameter specializes that parameter to the call-site
@@ -1866,6 +1972,10 @@ impl TypeChecker {
                 Box::new(Self::subst_depth_in_ty(a, sigma)),
                 Box::new(Self::subst_depth_in_ty(b, sigma)),
             ),
+            Ty::QecBlock { family, distance } => Ty::QecBlock {
+                family: family.clone(),
+                distance: distance.subst(sigma),
+            },
             Ty::Qubit
             | Ty::Bit
             | Ty::Bool
@@ -2676,6 +2786,10 @@ impl TypeChecker {
                 d: self.nat_to_depth(d)?,
                 c: c.clone(),
             },
+            Type::QecBlock { family, distance } => Ty::QecBlock {
+                family: self.resolve_code_family(family)?,
+                distance: self.nat_to_depth(distance)?,
+            },
             Type::Var(name) => self.resolve_named(name, &[], span, visiting)?,
             Type::Named { name, args } => self.resolve_named(name, args, span, visiting)?,
         })
@@ -2726,14 +2840,68 @@ impl TypeChecker {
         let subst: HashMap<&str, &NatExpr> = def
             .params
             .iter()
-            .map(|p| p.as_str())
+            .map(|(p, _)| p.as_str())
             .zip(args.iter().map(|a| &a.0))
             .collect();
+        // Validate kinded args before expanding (tags or rigid vars only).
+        for ((_, kind), arg) in def.params.iter().zip(args.iter()) {
+            match kind {
+                Kind::CodeFamily => {
+                    self.nat_as_code_family(&arg.0, arg.1)?;
+                }
+                Kind::Nat => {
+                    self.ensure_nat_kind(&arg.0, arg.1)?;
+                }
+            }
+        }
         let expanded = subst_nat_in_type(&def.body, &subst);
         visiting.push(name.to_string());
         let resolved = self.resolve_type_at(&expanded, visiting);
         visiting.pop();
         resolved
+    }
+
+    /// Resolve a code-family type expression (`Repetition`, `Surface`, or in-scope `F: CodeFamily`).
+    fn resolve_code_family(&self, ty: &Sp<Type>) -> Result<CodeFamilyTy, TypeError> {
+        match &ty.0 {
+            Type::Var(name) => self.code_family_of_name(name, ty.1),
+            _ => Err(TypeError::KindMismatch {
+                expected: "CodeFamily",
+                found: "non-family type",
+                span: ty.1,
+            }),
+        }
+    }
+
+    /// Interpret a Nat-expr alias argument as a code family (tags are bare names).
+    fn nat_as_code_family(&self, n: &NatExpr, span: SimpleSpan) -> Result<CodeFamilyTy, TypeError> {
+        match n {
+            NatExpr::Var(name) => self.code_family_of_name(name, span),
+            _ => Err(TypeError::KindMismatch {
+                expected: "CodeFamily",
+                found: "Nat expression",
+                span,
+            }),
+        }
+    }
+
+    fn code_family_of_name(&self, name: &str, span: SimpleSpan) -> Result<CodeFamilyTy, TypeError> {
+        match name {
+            "Repetition" => Ok(CodeFamilyTy::Repetition),
+            "Surface" => Ok(CodeFamilyTy::Surface),
+            other => match self.kind_env.get(other) {
+                Some(Kind::CodeFamily) => Ok(CodeFamilyTy::Var(other.to_string())),
+                Some(Kind::Nat) => Err(TypeError::KindMismatch {
+                    expected: "CodeFamily",
+                    found: "Nat",
+                    span,
+                }),
+                None => Err(TypeError::UnknownCodeFamily {
+                    name: other.to_string(),
+                    span,
+                }),
+            },
+        }
     }
 
     /// Evaluate a `Nat` expression to a concrete `u64`, when it is closed and literal.
@@ -2747,11 +2915,609 @@ impl TypeChecker {
 
     /// Convert a surface depth annotation to a [`DepthExpr`]. Best-effort for the classical
     /// fragment: literals/vars/`+`/`*` map directly; richer forms defer to issue #13.
+    /// Rejects `CodeFamily` tags and `F: CodeFamily` params in Nat position.
     fn nat_to_depth(&self, n: &Sp<NatExpr>) -> Result<DepthExpr, TypeError> {
+        self.ensure_nat_kind(&n.0, n.1)?;
         nat_to_depth(&n.0).ok_or(TypeError::Unsupported {
             construct: "depth expression",
             span: n.1,
         })
+    }
+
+    /// Walk a Nat expression and ensure every variable has kind `Nat` (not `CodeFamily`).
+    fn ensure_nat_kind(&self, n: &NatExpr, span: SimpleSpan) -> Result<(), TypeError> {
+        match n {
+            NatExpr::Lit(_) | NatExpr::Hole => Ok(()),
+            NatExpr::Var(name) => self.require_nat_kind(name, span),
+            NatExpr::Add(a, b)
+            | NatExpr::Sub(a, b)
+            | NatExpr::Mul(a, b)
+            | NatExpr::Div(a, b)
+            | NatExpr::Exp(a, b) => {
+                self.ensure_nat_kind(&a.0, a.1)?;
+                self.ensure_nat_kind(&b.0, b.1)
+            }
+        }
+    }
+
+    fn require_nat_kind(&self, name: &str, span: SimpleSpan) -> Result<(), TypeError> {
+        match name {
+            "Repetition" | "Surface" => Err(TypeError::KindMismatch {
+                expected: "Nat",
+                found: "CodeFamily",
+                span,
+            }),
+            other => match self.kind_env.get(other) {
+                Some(Kind::CodeFamily) => Err(TypeError::KindMismatch {
+                    expected: "Nat",
+                    found: "CodeFamily",
+                    span,
+                }),
+                Some(Kind::Nat) | None => Ok(()),
+            },
+        }
+    }
+
+    // ── QEC helpers (issue #247) ───────────────────────────────────────────────
+
+    fn push_kind_params(&mut self, type_params: &[crate::ast::TypeParam]) {
+        for p in type_params {
+            self.kind_env.insert(p.name.0.clone(), p.kind_or_nat());
+        }
+    }
+
+    fn pop_kind_params(&mut self, type_params: &[crate::ast::TypeParam]) {
+        for p in type_params {
+            self.kind_env.remove(&p.name.0);
+        }
+    }
+
+    fn record_kinded_fn_sig(
+        &mut self,
+        name: &Sp<Name>,
+        type_params: &[crate::ast::TypeParam],
+        params: &[(Sp<Name>, Sp<Type>)],
+        ret: &Sp<Type>,
+    ) -> Result<(), TypeError> {
+        if type_params.is_empty() {
+            return Ok(());
+        }
+        let tps: Vec<(Name, Kind)> = type_params
+            .iter()
+            .map(|p| (p.name.0.clone(), p.kind_or_nat()))
+            .collect();
+        let param_tys = params
+            .iter()
+            .map(|(_, t)| self.resolve_type(t))
+            .collect::<Result<Vec<_>, _>>()?;
+        let ret_ty = self.resolve_type(ret)?;
+        self.kinded_fn_sigs.insert(
+            name.0.clone(),
+            KindedFnSig {
+                type_params: tps,
+                param_tys,
+                ret: ret_ty,
+            },
+        );
+        Ok(())
+    }
+
+    fn synth_type_app(
+        &mut self,
+        _env: &Env,
+        _delta: &mut Delta,
+        callee: &Sp<Expr>,
+        args: &[Sp<NatExpr>],
+        span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        let Expr::Var(name) = &callee.0 else {
+            return Err(TypeError::Unsupported {
+                construct: "type application on non-variable",
+                span,
+            });
+        };
+        match name.as_str() {
+            "repetition_code" | "surface_code" | "surface_code_x" => {
+                self.synth_qec_ctor_type(name, args, span)
+            }
+            _ => Err(TypeError::Unsupported {
+                construct: "type application",
+                span,
+            }),
+        }
+    }
+
+    fn synth_qec_ctor_type(
+        &self,
+        name: &str,
+        targs: &[Sp<NatExpr>],
+        span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        if targs.len() != 1 {
+            return Err(TypeError::ArityMismatch {
+                expected: 1,
+                found: targs.len(),
+                span,
+            });
+        }
+        let distance = self.nat_to_depth(&targs[0])?;
+        let Some(d) = distance.as_const() else {
+            return Err(TypeError::NonLiteralQecDistance { span: targs[0].1 });
+        };
+        let (family, family_name) = match name {
+            "repetition_code" => (CodeFamilyTy::Repetition, "repetition"),
+            "surface_code" | "surface_code_x" => (CodeFamilyTy::Surface, "surface"),
+            _ => unreachable!("caller filters ctor names"),
+        };
+        validate_qec_distance(family_name, d, targs[0].1)?;
+        Ok(Ty::func(
+            Ty::Unit,
+            Ty::Q(Box::new(Ty::QecBlock {
+                family,
+                distance: DepthExpr::Nat(d),
+            })),
+        ))
+    }
+
+    fn synth_memory_round(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        arg: &Sp<Expr>,
+        span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        let ty = self.synth(env, delta, arg)?;
+        match self.table.resolve(&ty) {
+            Ty::QecBlock { family, distance } => Ok(Ty::Q(Box::new(Ty::QecBlock {
+                family,
+                distance,
+            }))),
+            other => Err(TypeError::Mismatch {
+                expected: Ty::QecBlock {
+                    family: CodeFamilyTy::Var("F".into()),
+                    distance: DepthExpr::Var("d".into()),
+                },
+                found: other,
+                span,
+            }),
+        }
+    }
+
+    fn synth_measure_logical(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        arg: &Sp<Expr>,
+        span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        let ty = self.synth(env, delta, arg)?;
+        match self.table.resolve(&ty) {
+            Ty::QecBlock { .. } => Ok(Ty::Q(Box::new(Ty::Bit))),
+            other => Err(TypeError::Mismatch {
+                expected: Ty::QecBlock {
+                    family: CodeFamilyTy::Var("F".into()),
+                    distance: DepthExpr::Var("d".into()),
+                },
+                found: other,
+                span,
+            }),
+        }
+    }
+
+    fn synth_logical_cx(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        a: &Sp<Expr>,
+        b: &Sp<Expr>,
+        span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        let ta = self.synth(env, delta, a)?;
+        let tb = self.synth(env, delta, b)?;
+        let (fa, da) = match self.table.resolve(&ta) {
+            Ty::QecBlock { family, distance } => (family, distance),
+            other => {
+                return Err(TypeError::Mismatch {
+                    expected: Ty::QecBlock {
+                        family: CodeFamilyTy::Surface,
+                        distance: DepthExpr::Var("d".into()),
+                    },
+                    found: other,
+                    span: a.1,
+                });
+            }
+        };
+        let (fb, db) = match self.table.resolve(&tb) {
+            Ty::QecBlock { family, distance } => (family, distance),
+            other => {
+                return Err(TypeError::Mismatch {
+                    expected: Ty::QecBlock {
+                        family: CodeFamilyTy::Surface,
+                        distance: DepthExpr::Var("d".into()),
+                    },
+                    found: other,
+                    span: b.1,
+                });
+            }
+        };
+        if fa != CodeFamilyTy::Surface || fb != CodeFamilyTy::Surface {
+            let bad = if fa != CodeFamilyTy::Surface {
+                fa
+            } else {
+                fb
+            };
+            return Err(TypeError::LogicalCxRequiresSurface { family: bad, span });
+        }
+        if !da.equiv(&db) {
+            return Err(TypeError::LogicalCxDistanceMismatch {
+                expected: da,
+                found: db,
+                span,
+            });
+        }
+        let block = Ty::QecBlock {
+            family: CodeFamilyTy::Surface,
+            distance: da,
+        };
+        Ok(Ty::Q(Box::new(Ty::Tuple(vec![block.clone(), block]))))
+    }
+
+    fn synth_kinded_app(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        f: &Sp<Expr>,
+        x: &Sp<Expr>,
+        ksig: &KindedFnSig,
+        args: &[&Sp<Expr>],
+        _span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        let mut fam_subst: HashMap<String, CodeFamilyTy> = HashMap::new();
+        let mut depth_subst: HashMap<String, DepthExpr> = HashMap::new();
+        // Check arguments left-to-right, collecting F/d bindings from QecBlock params.
+        for (expected, arg) in ksig.param_tys.iter().zip(args.iter()) {
+            let got = self.synth(env, delta, arg)?;
+            collect_kinded_bindings(
+                expected,
+                &self.table.resolve(&got),
+                &mut fam_subst,
+                &mut depth_subst,
+                arg.1,
+            )?;
+            let specialized = subst_kinded_ty(expected, &fam_subst, &depth_subst);
+            self.table.unify(&specialized, &got, arg.1)?;
+        }
+        // Consume via ordinary application on the (possibly multi-arg) spine for linearity of
+        // remaining structure — arguments already synthesized above; re-check would double-consume
+        // linear resources. Specialize the declared return type instead.
+        let _ = (f, x); // call spine already flattened into `args`
+        Ok(subst_kinded_ty(&ksig.ret, &fam_subst, &depth_subst))
+    }
+
+    fn check_mixed_qec_entrypoint(&self, decls: &[Sp<Decl>], errors: &mut Vec<TypeError>) {
+        use std::collections::HashSet;
+        let fn_names: HashSet<&str> = decls
+            .iter()
+            .filter_map(|(d, _)| match d {
+                Decl::Fn { name, .. } => Some(name.0.as_str()),
+                _ => None,
+            })
+            .collect();
+        let bodies: HashMap<&str, &Sp<Expr>> = decls
+            .iter()
+            .filter_map(|(d, _)| match d {
+                Decl::Fn { name, body, .. } => Some((name.0.as_str(), body)),
+                _ => None,
+            })
+            .collect();
+        for (decl, _) in decls {
+            let Decl::Fn {
+                name,
+                params,
+                ret,
+                body,
+                ..
+            } = decl
+            else {
+                continue;
+            };
+            // Entrypoint heuristic: `main`, or any nullary `Q<_>` function (common in fixtures).
+            let is_main = name.0 == "main";
+            let ret_is_q = matches!(ret.0, Type::Q(_));
+            if !is_main && !(ret_is_q && params.is_empty()) {
+                continue;
+            }
+            let mut has_qec = false;
+            let mut has_bare = false;
+            scan_qec_usage(body, &mut has_qec, &mut has_bare);
+            scan_type_qec(&ret.0, &mut has_qec, &mut has_bare);
+            for (_, t) in params {
+                scan_type_qec(&t.0, &mut has_qec, &mut has_bare);
+            }
+            // Follow same-module callees (transitive) and consult resolved types.
+            let mut stack: Vec<String> = {
+                let mut direct = HashSet::new();
+                collect_called_fns(body, &fn_names, &mut direct);
+                direct.into_iter().collect()
+            };
+            let mut seen = HashSet::new();
+            while let Some(callee) = stack.pop() {
+                if !seen.insert(callee.clone()) {
+                    continue;
+                }
+                if let Some(ty) = self.globals.get(&callee) {
+                    if ty.mentions_qec_block() {
+                        has_qec = true;
+                    }
+                    if ty.mentions_bare_qubit() {
+                        has_bare = true;
+                    }
+                }
+                if let Some(callee_body) = bodies.get(callee.as_str()) {
+                    scan_qec_usage(callee_body, &mut has_qec, &mut has_bare);
+                    let mut nested = HashSet::new();
+                    collect_called_fns(callee_body, &fn_names, &mut nested);
+                    for n in nested {
+                        if !seen.contains(&n) {
+                            stack.push(n);
+                        }
+                    }
+                }
+            }
+            if has_qec && has_bare {
+                errors.push(TypeError::MixedQecEntrypoint { span: name.1 });
+            }
+        }
+    }
+}
+
+fn validate_qec_distance(
+    family: &'static str,
+    distance: u64,
+    span: SimpleSpan,
+) -> Result<(), TypeError> {
+    let ok = match family {
+        "repetition" => distance >= 2,
+        "surface" => distance >= 3 && distance % 2 == 1,
+        _ => true,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(TypeError::InvalidQecDistance {
+            family,
+            distance,
+            span,
+        })
+    }
+}
+
+fn collect_kinded_bindings(
+    expected: &Ty,
+    got: &Ty,
+    fam: &mut HashMap<String, CodeFamilyTy>,
+    depth: &mut HashMap<String, DepthExpr>,
+    span: SimpleSpan,
+) -> Result<(), TypeError> {
+    match (expected, got) {
+        (
+            Ty::QecBlock {
+                family: ef,
+                distance: ed,
+            },
+            Ty::QecBlock {
+                family: gf,
+                distance: gd,
+            },
+        ) => {
+            if let CodeFamilyTy::Var(f) = ef {
+                bind_family(fam, f, gf, span)?;
+            }
+            if let DepthExpr::Var(d) = ed {
+                bind_depth(depth, d, gd, span)?;
+            }
+            Ok(())
+        }
+        (Ty::Q(a), Ty::Q(b)) | (Ty::List(a), Ty::List(b)) => {
+            collect_kinded_bindings(a, b, fam, depth, span)
+        }
+        (Ty::Fn(a1, b1), Ty::Fn(a2, b2)) | (Ty::Linear(a1, b1), Ty::Linear(a2, b2)) => {
+            collect_kinded_bindings(a1, a2, fam, depth, span)?;
+            collect_kinded_bindings(b1, b2, fam, depth, span)
+        }
+        (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => {
+            for (x, y) in xs.iter().zip(ys) {
+                collect_kinded_bindings(x, y, fam, depth, span)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn bind_family(
+    fam: &mut HashMap<String, CodeFamilyTy>,
+    name: &str,
+    value: &CodeFamilyTy,
+    span: SimpleSpan,
+) -> Result<(), TypeError> {
+    match fam.get(name) {
+        Some(prev) if prev != value => Err(TypeError::Mismatch {
+            expected: Ty::QecBlock {
+                family: prev.clone(),
+                distance: DepthExpr::Var("d".into()),
+            },
+            found: Ty::QecBlock {
+                family: value.clone(),
+                distance: DepthExpr::Var("d".into()),
+            },
+            span,
+        }),
+        Some(_) => Ok(()),
+        None => {
+            fam.insert(name.to_string(), value.clone());
+            Ok(())
+        }
+    }
+}
+
+fn bind_depth(
+    depth: &mut HashMap<String, DepthExpr>,
+    name: &str,
+    value: &DepthExpr,
+    span: SimpleSpan,
+) -> Result<(), TypeError> {
+    match depth.get(name) {
+        Some(prev) if !prev.equiv(value) => Err(TypeError::Mismatch {
+            expected: Ty::QecBlock {
+                family: CodeFamilyTy::Var("F".into()),
+                distance: prev.clone(),
+            },
+            found: Ty::QecBlock {
+                family: CodeFamilyTy::Var("F".into()),
+                distance: value.clone(),
+            },
+            span,
+        }),
+        Some(_) => Ok(()),
+        None => {
+            depth.insert(name.to_string(), value.clone());
+            Ok(())
+        }
+    }
+}
+
+fn subst_kinded_ty(
+    ty: &Ty,
+    fam: &HashMap<String, CodeFamilyTy>,
+    depth: &HashMap<String, DepthExpr>,
+) -> Ty {
+    match ty {
+        Ty::QecBlock { family, distance } => {
+            let family = match family {
+                CodeFamilyTy::Var(v) => fam.get(v).cloned().unwrap_or_else(|| family.clone()),
+                other => other.clone(),
+            };
+            let distance = distance.subst(depth);
+            Ty::QecBlock { family, distance }
+        }
+        Ty::Q(t) => Ty::Q(Box::new(subst_kinded_ty(t, fam, depth))),
+        Ty::List(t) => Ty::List(Box::new(subst_kinded_ty(t, fam, depth))),
+        Ty::Fn(a, b) => Ty::Fn(
+            Box::new(subst_kinded_ty(a, fam, depth)),
+            Box::new(subst_kinded_ty(b, fam, depth)),
+        ),
+        Ty::Linear(a, b) => Ty::Linear(
+            Box::new(subst_kinded_ty(a, fam, depth)),
+            Box::new(subst_kinded_ty(b, fam, depth)),
+        ),
+        Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| subst_kinded_ty(t, fam, depth)).collect()),
+        Ty::QReg(n) => Ty::QReg(n.subst(depth)),
+        Ty::Circuit { n, m, d, c } => Ty::Circuit {
+            n: n.subst(depth),
+            m: m.subst(depth),
+            d: d.subst(depth),
+            c: c.clone(),
+        },
+        Ty::Matrix(r, c, t) => Ty::Matrix(
+            r.subst(depth),
+            c.subst(depth),
+            Box::new(subst_kinded_ty(t, fam, depth)),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn scan_qec_usage(expr: &Sp<Expr>, has_qec: &mut bool, has_bare: &mut bool) {
+    match &expr.0 {
+        Expr::Var(n) => match n.as_str() {
+            "repetition_code"
+            | "surface_code"
+            | "surface_code_x"
+            | "memory_round"
+            | "measure_logical_z"
+            | "measure_logical_x"
+            | "logical_cx" => *has_qec = true,
+            "qreg" | "qubit" | "init_one" | "init_plus" | "measure" | "measure_x" | "measure_y"
+            | "measure_all" | "destructure" | "split" | "reset" | "discard" => *has_bare = true,
+            _ => {}
+        },
+        Expr::TypeApp { callee, .. } => scan_qec_usage(callee, has_qec, has_bare),
+        Expr::App(a, b)
+        | Expr::Compose(a, b)
+        | Expr::Par(a, b)
+        | Expr::GateApp { gate: a, qubits: b } => {
+            scan_qec_usage(a, has_qec, has_bare);
+            scan_qec_usage(b, has_qec, has_bare);
+        }
+        Expr::BinOp { lhs, rhs, .. } => {
+            scan_qec_usage(lhs, has_qec, has_bare);
+            scan_qec_usage(rhs, has_qec, has_bare);
+        }
+        Expr::Neg(a)
+        | Expr::Adjoint(a)
+        | Expr::Controlled(a)
+        | Expr::Return(a)
+        | Expr::Ascribe(a, _)
+        | Expr::Lam { body: a, .. } => scan_qec_usage(a, has_qec, has_bare),
+        Expr::Let { rhs, body, .. } | Expr::Bind { rhs, body, .. } | Expr::For { iter: rhs, body, .. } => {
+            scan_qec_usage(rhs, has_qec, has_bare);
+            scan_qec_usage(body, has_qec, has_bare);
+        }
+        Expr::If { cond, then, else_ } => {
+            scan_qec_usage(cond, has_qec, has_bare);
+            scan_qec_usage(then, has_qec, has_bare);
+            scan_qec_usage(else_, has_qec, has_bare);
+        }
+        Expr::Match { scrutinee, arms } => {
+            scan_qec_usage(scrutinee, has_qec, has_bare);
+            for (_, arm) in arms {
+                scan_qec_usage(arm, has_qec, has_bare);
+            }
+        }
+        Expr::Tuple(es) | Expr::List(es) => {
+            for e in es {
+                scan_qec_usage(e, has_qec, has_bare);
+            }
+        }
+        Expr::CircuitBlock(ss) | Expr::RunBlock(ss) => {
+            for s in ss {
+                match &s.0 {
+                    Stmt::Bind { rhs, .. } | Stmt::Let { rhs, .. } | Stmt::Expr(rhs) => {
+                        scan_qec_usage(rhs, has_qec, has_bare);
+                    }
+                }
+            }
+        }
+        Expr::Borrow { body, .. } => {
+            for s in body {
+                match &s.0 {
+                    Stmt::Bind { rhs, .. } | Stmt::Let { rhs, .. } | Stmt::Expr(rhs) => {
+                        scan_qec_usage(rhs, has_qec, has_bare);
+                    }
+                }
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit => {}
+    }
+}
+
+fn scan_type_qec(ty: &Type, has_qec: &mut bool, has_bare: &mut bool) {
+    match ty {
+        Type::QecBlock { .. } => *has_qec = true,
+        Type::Qubit | Type::QReg(_) => *has_bare = true,
+        Type::Q(t) | Type::List(t) => scan_type_qec(&t.0, has_qec, has_bare),
+        Type::Fn(a, b) | Type::Linear(a, b) => {
+            scan_type_qec(&a.0, has_qec, has_bare);
+            scan_type_qec(&b.0, has_qec, has_bare);
+        }
+        Type::Tuple(ts) => {
+            for t in ts {
+                scan_type_qec(&t.0, has_qec, has_bare);
+            }
+        }
+        Type::Matrix(_, _, t) => scan_type_qec(&t.0, has_qec, has_bare),
+        _ => {}
     }
 }
 
@@ -2801,6 +3567,7 @@ fn collect_called_fns(
                 collect_called_fns(a, fns, out);
             }
         }
+        Expr::TypeApp { callee, .. } => collect_called_fns(callee, fns, out),
         Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(_) => {}
         Expr::Lam { body, .. } => collect_called_fns(body, fns, out),
         Expr::BinOp { lhs, rhs, .. } => {
@@ -2921,6 +3688,7 @@ fn collect_var_hit(expr: &Sp<Expr>, borrowed: &BTreeSet<String>, found: &mut Opt
             collect_var_hit(a, borrowed, found);
             collect_var_hit(b, borrowed, found);
         }
+        Expr::TypeApp { callee, .. } => collect_var_hit(callee, borrowed, found),
         Expr::BinOp { lhs, rhs, .. } => {
             collect_var_hit(lhs, borrowed, found);
             collect_var_hit(rhs, borrowed, found);
@@ -3060,6 +3828,10 @@ fn subst_nat_in_type(ty: &Sp<Type>, subst: &HashMap<&str, &NatExpr>) -> Sp<Type>
             m: subst_nat(m, subst),
             d: subst_nat(d, subst),
             c: c.clone(),
+        },
+        Type::QecBlock { family, distance } => Type::QecBlock {
+            family: Box::new(subst_nat_in_type(family, subst)),
+            distance: subst_nat(distance, subst),
         },
         Type::Named { name, args } => Type::Named {
             name: name.clone(),

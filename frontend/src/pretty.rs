@@ -24,34 +24,49 @@ fn decl_str(d: &Decl) -> String {
     match d {
         Decl::Fn {
             name,
+            type_params,
             params,
             ret,
             body,
         } => {
+            let tps = type_params_str(type_params);
             let ps = params
                 .iter()
                 .map(|(n, t)| format!("{}: {}", n.0, ty_str(&t.0)))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("fn {}({ps}): {} = {}", name.0, ty_str(&ret.0), e_str(body))
+            format!(
+                "fn {}{tps}({ps}): {} = {}",
+                name.0,
+                ty_str(&ret.0),
+                e_str(body)
+            )
         }
         Decl::TypeAlias { name, params, ty } => {
             let head = if params.is_empty() {
                 name.0.clone()
             } else {
-                format!(
-                    "{}<{}>",
-                    name.0,
-                    params
-                        .iter()
-                        .map(|p| p.0.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
+                format!("{}{}", name.0, type_params_str(params))
             };
             format!("type {head} = {}", ty_str(&ty.0))
         }
     }
+}
+
+fn type_params_str(params: &[TypeParam]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let inner = params
+        .iter()
+        .map(|p| match &p.kind {
+            None => p.name.0.clone(),
+            Some((Kind::Nat, _)) => format!("{}: Nat", p.name.0),
+            Some((Kind::CodeFamily, _)) => format!("{}: CodeFamily", p.name.0),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("<{inner}>")
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -83,6 +98,9 @@ fn ty_str(t: &Type) -> String {
             nat_str(&d.0),
             class_str(c)
         ),
+        Type::QecBlock { family, distance } => {
+            format!("QecBlock<{}, {}>", ty_str(&family.0), nat_str(&distance.0))
+        },
         Type::Fn(a, b) => format!("({}) -> ({})", ty_str(&a.0), ty_str(&b.0)),
         Type::Linear(a, b) => format!("({}) -o ({})", ty_str(&a.0), ty_str(&b.0)),
         Type::Tuple(ts) => {
@@ -234,6 +252,14 @@ fn e_str(e: &Sp<Expr>) -> String {
         Expr::Var(n) => n.clone(),
 
         Expr::App(f, x) => format!("{}({})", atom(f), e_str(x)),
+        Expr::TypeApp { callee, args } => {
+            let a = args
+                .iter()
+                .map(|n| nat_str(&n.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}<{a}>", atom(callee))
+        }
         Expr::BinOp { op, lhs, rhs } => {
             format!("{} {} {}", atom(lhs), binop_str(*op), atom(rhs))
         }
