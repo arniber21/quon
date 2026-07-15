@@ -164,10 +164,66 @@ entries:
       ]
     ci: smoke
 
-  - id: research/qec-notebook-stub
-    path: samples/research/qec_notebook_stub.md
-    tags: [research, stub, literate-notebook, pack-190]
+  - id: research/compiler-experiment-log
+    path: samples/research/compiler_experiment_log.ipynb
+    tags: [research, literate-notebook, compiler, sabre, metrics, pack-190]
     difficulty: intermediate
+    quonc_args: []
+    artifacts: []
+    ci: none
+
+  - id: research/algorithm-correctness-narrative
+    path: samples/research/algorithm_correctness_narrative.ipynb
+    tags:
+      [
+        research,
+        literate-notebook,
+        bernstein-vazirani,
+        grover,
+        aer-verify,
+        pack-190,
+      ]
+    difficulty: intermediate
+    quonc_args: []
+    artifacts: []
+    ci: none
+
+  - id: research/bernstein-vazirani-oracle
+    path: test/verify/bernstein_vazirani.qn
+    tags: [research, bernstein-vazirani, oracle, linked-not-forked, pack-190]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: research/grover-n4-marked-11
+    path: test/verify/grover.qn
+    tags: [research, grover, amplitude-amplification, linked-not-forked, pack-190]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: research/na-resource-study
+    path: samples/research/na_resource_study.ipynb
+    tags:
+      [
+        research,
+        literate-notebook,
+        neutral-atom,
+        resource-report,
+        na-placer,
+        pack-190,
+      ]
+    difficulty: intermediate
+    quonc_args: []
+    artifacts: []
+    ci: none
+
+  - id: research/repro-appendix-template
+    path: samples/research/repro_appendix_template.md
+    tags: [research, template, reproducibility, pack-190]
+    difficulty: beginner
     quonc_args: []
     artifacts: []
     ci: none
