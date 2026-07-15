@@ -50,8 +50,19 @@
   required fields, or an invalid `ci`/`difficulty` value fail the build).
 - Every `id` is unique.
 - Every entry's `path` exists.
-- Every top-level category has at least one entry.
+- Every top-level category has at least one entry, and every `id` prefix
+  is one of the seven taxonomy categories (unknown prefixes fail the build).
 - `samples/README.md` and every category `README.md` carry their required
   sections (see the test for the exact list).
-- Every `ci: smoke` entry actually compiles with the release `quonc`
-  binary.
+- Every `ci: smoke` entry actually compiles with the debug `quonc` binary
+  that `cargo test` builds for this crate (`CARGO_BIN_EXE_quonc`) — not the
+  release binary `just ci-rust` produces. It's the same real typecheck +
+  lowering pipeline, just a different build profile.
+
+### `id` vs `path`
+
+The catalog's `id` prefix — not the file's `path` — determines a sample's
+category. This lets a category link to a canonical artifact that lives
+elsewhere: e.g. `neutral-atom/repetition-d3-memory` has `id` prefix
+`neutral-atom/` but `path: examples/na_qec/repetition_d3_memory.qn`, per the
+"link, don't fork" rule above.

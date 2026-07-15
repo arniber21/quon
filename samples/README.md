@@ -52,7 +52,8 @@ required-README-section checks live in
   your sample in CI. Claim numerical correctness (e.g. "Aer confirms...")
   only if you also add an Aer check, following the pattern in
   [`test/verify/`](../test/verify/).
-- Run locally with `just ci-samples` (also part of `just test-ci`); see
+- Runs as part of `just ci-rust`'s workspace test suite (no separate CI
+  step); run it standalone with `just ci-samples`. See
   [`docs/agents/validation.md`](../docs/agents/validation.md).
 
 ## Pack ownership

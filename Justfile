@@ -129,9 +129,12 @@ setup-python:
 test-fast:
     cargo test --workspace {{WORKSPACE_EXCLUDE}}
 
-# Local CI parity: rust + tooling + validation-doc assert + samples catalog
-# (not website build).
-test-ci: ci-rust ci-tooling ci-docs-assert ci-samples
+# Local CI parity: rust + tooling + validation-doc assert (not website
+# build). `ci-rust`'s `cargo test --workspace` already exercises
+# `quonc/tests/samples_catalog.rs` (it's an ordinary workspace test crate);
+# `ci-samples` below is a separate, redundant-with-CI convenience recipe for
+# iterating on the catalog lint alone.
+test-ci: ci-rust ci-tooling ci-docs-assert
 
 # ---------------------------------------------------------------------------
 # CI job recipes (Actions calls these via `devbox run -- just …`)
@@ -209,11 +212,14 @@ tooling-full: _tooling-build
 ci-docs-assert:
     ./scripts/assert-validation-docs.sh
 
-# Sample corpus catalog lint: schema, path existence, category coverage,
-# required README sections, and a real `quonc` typecheck for every
-# `ci: smoke` entry in samples/catalog.yaml (ADR-0025 / #185). Builds its
-# own debug `quonc` via `cargo test`'s CARGO_BIN_EXE_quonc — independent of
-# the release build `ci-rust` produces.
+# Local convenience: re-run just the sample corpus catalog lint (schema,
+# path existence, category coverage, required README sections, and a real
+# `quonc` typecheck for every `ci: smoke` entry in samples/catalog.yaml;
+# ADR-0025 / #185) without the rest of `ci-rust`'s workspace test run.
+# NOT part of `test-ci` or `ci.yml` — `ci-rust`'s `cargo test --workspace`
+# already runs `quonc/tests/samples_catalog.rs` as an ordinary workspace
+# test crate, so wiring this recipe into CI too would just double-pay for
+# the same assertions.
 ci-samples:
     cargo test -p quonc --test samples_catalog
 

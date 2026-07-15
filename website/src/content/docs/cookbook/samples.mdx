@@ -39,6 +39,7 @@ for the taxonomy and pack-ownership table, or browse the catalog directly:
 ## CI
 
 Every entry's `path` is checked to exist, the schema is validated, and every
-`ci: smoke` entry is compiled with the real `quonc` binary — see
-[`quonc/tests/samples_catalog.rs`](https://github.com/arniber21/quon/blob/main/quonc/tests/samples_catalog.rs)
-(`just ci-samples`, part of `just test-ci`).
+`ci: smoke` entry is compiled with the debug `quonc` binary — see
+[`quonc/tests/samples_catalog.rs`](https://github.com/arniber21/quon/blob/main/quonc/tests/samples_catalog.rs),
+run as part of `just ci-rust`'s workspace test suite (or standalone via
+`just ci-samples`).

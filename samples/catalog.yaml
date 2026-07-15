@@ -3,7 +3,12 @@
 # One row per sample under `samples/`. A contribution is not complete until
 # it has a row here — see `samples/CONTRIBUTING.md`. Schema, path-existence,
 # category-coverage, and README-section checks live in
-# `quonc/tests/samples_catalog.rs` (`just ci-samples`).
+# `quonc/tests/samples_catalog.rs`, run via `cargo test --workspace` (or
+# standalone with `just ci-samples`).
+#
+# `id`, not `path`, determines a sample's category: the id prefix must be
+# one of the seven taxonomy categories, but path may point elsewhere for a
+# linked canonical artifact (e.g. `neutral-atom/...` -> `examples/na_qec/`).
 #
 # Fields (all required):
 #   id           <category>/<slug> — category must be one of the seven
