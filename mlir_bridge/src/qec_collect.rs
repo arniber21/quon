@@ -496,4 +496,62 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn rejects_use_after_measure_memory_round() {
+        with_ctx(|context| {
+            let location = Location::unknown(context);
+            let module = melior::ir::Module::new(location);
+            let body = module.body();
+
+            let c = body.append_operation(
+                qec_dynamic::qec_construct(context, "repetition", 3, "z", 0, location)
+                    .expect("construct"),
+            );
+            let block = Value::from(c.result(0).expect("r0"));
+            body.append_operation(
+                qec_dynamic::qec_measure_logical(context, block, "z", 0, location).expect("measure"),
+            );
+            // Reuse the pre-measure SSA value (builder-level use-after-measure).
+            body.append_operation(
+                qec_dynamic::qec_memory_round(context, block, 0, location).expect("round"),
+            );
+
+            let err = collect_qec_workload(&module).expect_err("use-after-measure");
+            assert!(matches!(
+                err,
+                CollectError::Workload(WorkloadError::UseAfterMeasure(0))
+            ));
+        });
+    }
+
+    #[test]
+    fn rejects_use_after_measure_logical_cx() {
+        with_ctx(|context| {
+            let location = Location::unknown(context);
+            let module = melior::ir::Module::new(location);
+            let body = module.body();
+
+            let a = body.append_operation(
+                qec_dynamic::qec_construct(context, "surface", 3, "z", 0, location).expect("a"),
+            );
+            let b = body.append_operation(
+                qec_dynamic::qec_construct(context, "surface", 3, "z", 1, location).expect("b"),
+            );
+            let a_v = Value::from(a.result(0).expect("a0"));
+            let b_v = Value::from(b.result(0).expect("b0"));
+            body.append_operation(
+                qec_dynamic::qec_measure_logical(context, a_v, "z", 0, location).expect("mz"),
+            );
+            body.append_operation(
+                qec_dynamic::qec_logical_cx(context, a_v, b_v, 0, 1, location).expect("cx"),
+            );
+
+            let err = collect_qec_workload(&module).expect_err("use-after-measure");
+            assert!(matches!(
+                err,
+                CollectError::Workload(WorkloadError::UseAfterMeasure(0))
+            ));
+        });
+    }
 }

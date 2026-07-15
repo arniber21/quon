@@ -59,8 +59,8 @@ fn i64_type(context: &Context) -> Type<'_> {
     IntegerType::new(context, 64).into()
 }
 
-fn bit_type(context: &Context) -> Type<'_> {
-    Type::parse(context, BIT_TYPE).unwrap_or_else(|| Type::none(context))
+fn bit_type(context: &Context) -> Result<Type<'_>, BuildError> {
+    Type::parse(context, BIT_TYPE).ok_or(BuildError::TypeParse(BIT_TYPE))
 }
 
 /// Builds a `quantum.circ.run` op with a populated region.
@@ -118,7 +118,7 @@ pub fn measure<'c>(
 ) -> Operation<'c> {
     OperationBuilder::new(op::MEASURE, location)
         .add_operands(&[qubit])
-        .add_results(&[bit_type(context)])
+        .add_results(&[bit_type(context).expect("!quantum.bit parses")])
         .build()
         .expect("staging measure op builds")
 }
@@ -252,9 +252,10 @@ pub fn qec_measure_logical<'c>(
     logical_id: i64,
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
+    let bit_ty = bit_type(context)?;
     Ok(OperationBuilder::new(op::QEC_MEASURE_LOGICAL, location)
         .add_operands(&[block])
-        .add_results(&[bit_type(context)])
+        .add_results(&[bit_ty])
         .add_attributes(&[
             (
                 Identifier::new(context, attr::BASIS),
