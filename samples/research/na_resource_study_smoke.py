@@ -22,8 +22,9 @@ Not a `test/na/` correctness oracle: schedule *legality* for both fixtures is
 already gated by `--verify-na` in `just ci-rust`'s corpus sweep and by
 `neutral-atom/*`'s `ci: smoke` catalog rows. This script instead answers the
 notebook's question — "does routing-awareness change the *analytic resource
-report*, and by how much?" — so it is deliberately not wired into that same
-CI loop (see `samples/research/README.md`).
+report*, and by how much?" — and is wired into `just ci-rust`'s python
+verify loop as its own regression gate on this notebook's headline numbers
+(see `samples/research/README.md`).
 
 Run:
     QUONC=target/release/quonc python samples/research/na_resource_study_smoke.py
@@ -48,6 +49,21 @@ BELL_GOLDEN = GOLDEN_DIR / "bell_zoned.resource_report.json"
 QAOA_GOLDEN = GOLDEN_DIR / "qaoa_graph_zoned.resource_report.json"
 
 PLACERS = ("routing-agnostic", "routing-aware")
+
+# Exact headline numbers the notebook's "Resource table" quotes for the
+# `routing-aware` `qaoa_graph.qn` cell (37/9/24) — no #189 golden covers
+# `routing-aware` (only `routing-agnostic` was checked in), so this is the
+# one cell that needs its own pinned expectation rather than a golden
+# cross-check. This is analytic/deterministic `--emit-resource-report`
+# output, not a sampled statistic, so an exact match is the right bar; if a
+# placer-heuristic change legitimately moves these numbers, update both this
+# dict and na_resource_study.ipynb's "Resource table" together.
+QAOA_GRAPH_ROUTING_AWARE_EXPECTED = {
+    "estimated_cycles": 37,
+    "rearrangement_steps": 9,
+    "trap_transfers": 24,
+    "bottleneck": "rearrangement",
+}
 
 # Fields that must stay comparable across placer modes for these fixtures
 # (all analytic, ADR-0020 `evidence_kind: analytic`).
@@ -165,9 +181,7 @@ def main() -> int:
     # Headline claim: for this dense, already-low-degree qaoa_graph.qn
     # (Delta~=3), routing-awareness does NOT reduce estimated_cycles — it
     # costs at least as many cycles as routing-agnostic. This is the
-    # counterintuitive result the notebook narrates; assert the direction,
-    # not brittle exact values, so a future placer-heuristic tweak doesn't
-    # spuriously break this smoke twin.
+    # counterintuitive result the notebook narrates.
     qaoa_aware = reports[("qaoa_graph.qn", "routing-aware")]
     if qaoa_aware["estimated_cycles"] < qaoa_agnostic["estimated_cycles"]:
         print(
@@ -177,11 +191,26 @@ def main() -> int:
             "this claim no longer holds"
         )
         return 1
+
+    # Exact-number check: the notebook's "Resource table" quotes 37/9/24 for
+    # this cell specifically (not just "routing-aware costs more, direction
+    # unspecified") — no #189 golden exists for `routing-aware`, so pin it
+    # here instead of leaving it as an unchecked prose claim.
+    for field, expected in QAOA_GRAPH_ROUTING_AWARE_EXPECTED.items():
+        if qaoa_aware[field] != expected:
+            print(
+                f"FAIL: qaoa_graph.qn routing-aware {field} = {qaoa_aware[field]!r}, "
+                f"but the notebook's Resource table claims {expected!r} — update "
+                "both na_resource_study.ipynb and this script's "
+                "QAOA_GRAPH_ROUTING_AWARE_EXPECTED"
+            )
+            return 1
+
     print(
         "PASS: qaoa_graph.qn's routing-aware placer costs "
         f"{qaoa_aware['estimated_cycles']} cycles vs routing-agnostic's "
         f"{qaoa_agnostic['estimated_cycles']} — routing-awareness doesn't pay off "
-        "on this low-degree graph"
+        "on this low-degree graph, matching the notebook's Resource table exactly"
     )
     return 0
 

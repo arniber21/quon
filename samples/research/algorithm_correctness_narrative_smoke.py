@@ -13,8 +13,9 @@ correctness oracle: `test/verify/bernstein_vazirani.py` and
 `test/verify/grover.py` already gate compiler correctness for these fixtures
 in `just ci-rust`. This script instead answers the notebook's question —
 "does the *theoretical* probability I derived on paper match what Aer
-actually samples?" — and is intentionally not wired into that same CI loop
-(see `samples/research/README.md`'s narrative-vs-verifier split).
+actually samples?" — and is wired into that same CI loop's Aer/python
+verify list, running alongside (not instead of) those two correctness
+oracles (see `samples/research/README.md`'s narrative-vs-verifier split).
 
 Run:
     python samples/research/algorithm_correctness_narrative_smoke.py
@@ -53,7 +54,13 @@ import math
 
 GROVER_THEORETICAL_P = math.sin((2 * 1 + 1) * math.asin(1 / math.sqrt(4))) ** 2
 
-MIN_FIDELITY = 0.9  # sampling noise tolerance at SHOTS=4096, not a threshold claim
+# N=4, M=1, r=1 is Grover's *exact* special case (see the derivation above):
+# a noiseless Aer simulation has no distribution to approximate, so the
+# notebook's literal claim — "all 4096 sampled shots land on |11>", fidelity
+# `1.0000` — is checked exactly below (both via this near-1.0 floor and the
+# explicit shot-count equality check in `main`), not just above a
+# sampling-noise-tolerant threshold.
+MIN_FIDELITY = 0.999
 
 
 def main() -> int:
@@ -112,10 +119,28 @@ def main() -> int:
         f"min_fidelity {MIN_FIDELITY})"
     )
 
-    if not bv_ok or not grover_result:
+    # Exact-number check: the notebook claims *every* one of the 4096 shots
+    # lands on the marked state (not just "most of them, within tolerance").
+    # Assert that literally, rather than trusting the fidelity floor alone
+    # to stand in for it.
+    grover_exact = grover_result.counts == {GROVER_MARKED: SHOTS}
+    if not grover_exact:
+        print(
+            f"FAIL: expected every shot on {GROVER_MARKED!r} "
+            f"({{{GROVER_MARKED!r}: {SHOTS}}}), got {grover_result.counts} — "
+            "update algorithm_correctness_narrative.ipynb's Grover claim if "
+            "this is no longer exact"
+        )
+        return 1
+
+    if not bv_ok or not grover_result or not grover_exact:
         print("\nFAIL: sampled distribution did not match the theoretical narrative")
         return 1
-    print("\nPASS: both sampled distributions match their theoretical prediction")
+    print(
+        "\nPASS: both sampled distributions match their theoretical prediction "
+        "exactly (BV: 4096/4096 recover the secret; Grover: 4096/4096 land on "
+        "the marked state)"
+    )
     return 0
 
 

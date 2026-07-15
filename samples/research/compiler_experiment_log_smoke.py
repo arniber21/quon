@@ -11,8 +11,10 @@ the "targets/opts -> depth & 2Q counts" seed idea (#190).
 Not a `test/verify/` correctness oracle (this circuit's compiled semantics
 are already gated by `test/verify/qaoa.py` in `just ci-rust`); this script
 answers a different question — "how much does target topology / SABRE
-tuning move the headline metrics?" — and is deliberately not wired into
-that same CI loop (see `samples/research/README.md`).
+tuning move the headline metrics?" — and is wired into `just ci-rust`'s
+python verify loop alongside `test/verify/qaoa.py`, not as a duplicate
+correctness check but as its own regression gate on this notebook's
+headline numbers (see `samples/research/README.md`).
 
 Run:
     QUONC=target/release/quonc python samples/research/compiler_experiment_log_smoke.py
@@ -38,12 +40,39 @@ class Cell:
     label: str
     target: Path | None
     sabre_lookahead: int | None  # None = quonc default (20)
+    # Exact `depth`/`gate_count` quoted in the notebook's log table (and log
+    # cells) for this configuration — deterministic compiler output, not a
+    # sampled statistic, so these are asserted exactly rather than just
+    # directionally. If a compiler change legitimately moves these numbers,
+    # update both this tuple and `compiler_experiment_log.ipynb`'s log table
+    # together; a silent drift here would make the notebook's "Log table"
+    # section a false source of truth.
+    expected_depth: int
+    expected_gate_count: int
 
 
 CELLS: tuple[Cell, ...] = (
-    Cell("unconstrained (no --target)", target=None, sabre_lookahead=None),
-    Cell("fake_manila_v2, --sabre-lookahead 1", target=IBM_TARGET, sabre_lookahead=1),
-    Cell("fake_manila_v2, default lookahead (20)", target=IBM_TARGET, sabre_lookahead=None),
+    Cell(
+        "unconstrained (no --target)",
+        target=None,
+        sabre_lookahead=None,
+        expected_depth=11,
+        expected_gate_count=15,
+    ),
+    Cell(
+        "fake_manila_v2, --sabre-lookahead 1",
+        target=IBM_TARGET,
+        sabre_lookahead=1,
+        expected_depth=26,
+        expected_gate_count=48,
+    ),
+    Cell(
+        "fake_manila_v2, default lookahead (20)",
+        target=IBM_TARGET,
+        sabre_lookahead=None,
+        expected_depth=23,
+        expected_gate_count=45,
+    ),
 )
 
 
@@ -96,17 +125,38 @@ def main() -> int:
             f"gate_count={metrics['gate_count']:>4d}"
         )
 
+    # Exact-number check: every cell's live `depth`/`gate_count` must match
+    # the notebook's "Log table" cell-for-cell — this is what makes the
+    # notebook's quoted numbers a checked claim, not prose that could drift
+    # silently out of sync with the compiler.
+    for cell, metrics in rows:
+        if (
+            metrics["depth"] != cell.expected_depth
+            or metrics["gate_count"] != cell.expected_gate_count
+        ):
+            print(
+                f"FAIL: {cell.label!r} produced depth={metrics['depth']} "
+                f"gate_count={metrics['gate_count']}, but the notebook's log "
+                f"table claims depth={cell.expected_depth} "
+                f"gate_count={cell.expected_gate_count} — update both "
+                "compiler_experiment_log.ipynb and this script's CELLS tuple"
+            )
+            return 1
+    print("PASS: every cell matches the notebook's log table exactly")
+
     unconstrained = rows[0][1]
     lookahead_1 = rows[1][1]
     lookahead_default = rows[2][1]
 
-    # Headline claim 1: routing onto a constrained line topology strictly
-    # costs depth/gates relative to the unconstrained (no-target) bound —
+    # Headline claim 1 (Experiment 1's prose, notebook cell 5: "depth more
+    # than doubles (11 -> 23) ... once the line topology forces routing"):
+    # unconstrained vs. the *default*-lookahead manila cell, not the
+    # lookahead=1 cell (that pairing is Experiment 2's claim below) —
     # topology constraints are real, not a rounding artifact.
-    if not (unconstrained["depth"] < lookahead_1["depth"]):
+    if not (unconstrained["depth"] < lookahead_default["depth"]):
         print(
             "FAIL: expected unconstrained depth "
-            f"({unconstrained['depth']}) < routed depth ({lookahead_1['depth']})"
+            f"({unconstrained['depth']}) < routed depth ({lookahead_default['depth']})"
         )
         return 1
 

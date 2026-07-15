@@ -27,8 +27,9 @@ run those commands themselves and get the numbers quoted in the prose.
   [`python/requirements.txt`](../../python/requirements.txt)
   (`pip install -r python/requirements.txt`)
 - **Smoke twin:** `python samples/research/<slug>_smoke.py` regenerates every
-  headline number in this notebook and asserts on them; treat its exit code,
-  not this prose, as the source of truth.
+  headline number this notebook quotes and asserts on it exactly (wired into
+  `just ci-rust`'s python verify loop, so a drift fails CI); treat its exit
+  code, not this prose, as the source of truth for those numbers.
 - **Linked canonical sources:** `<paths under test/ or examples/na_qec/ this
   notebook narrates, with the catalog `id`s that register them>`
 ```

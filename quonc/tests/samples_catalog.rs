@@ -256,6 +256,52 @@ fn entry_paths_and_artifacts_are_safe_relative_paths() {
     validate_safe_paths(&catalog.entries).unwrap_or_else(|e| panic!("{e}"));
 }
 
+/// True if `path` ends in `.ipynb` (case-sensitive, matches the extension
+/// every notebook in `samples/research/` actually uses).
+fn is_notebook_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e == "ipynb")
+}
+
+/// `quonc` cannot typecheck a notebook (see `samples/research/README.md`),
+/// but nbformat notebooks are still just JSON on disk — a checked-in
+/// notebook that isn't even parseable JSON (e.g. from a bad hand-edit or a
+/// merge conflict left in place) would silently sit in the catalog as a
+/// `ci: none` entry forever. This is a light structural check, not a
+/// substitute for real execution: it does not validate the nbformat schema
+/// (`nbformat`/`nbformat_minor`, cell shapes, etc.), only that the file
+/// parses as JSON at all.
+fn validate_notebook_paths_are_json(entries: &[CatalogEntry], root: &Path) -> Result<(), String> {
+    for entry in entries {
+        if !is_notebook_path(&entry.path) {
+            continue;
+        }
+        let resolved = root.join(&entry.path);
+        let raw = std::fs::read_to_string(&resolved).map_err(|e| {
+            format!(
+                "catalog entry `{}` points at an unreadable notebook {}: {e}",
+                entry.id, entry.path
+            )
+        })?;
+        serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| {
+            format!(
+                "catalog entry `{}`'s notebook {} is not valid JSON: {e}",
+                entry.id, entry.path
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn catalog_notebook_entries_are_valid_json() {
+    let catalog = load_catalog();
+    let root = workspace_root();
+    validate_notebook_paths_are_json(&catalog.entries, &root).unwrap_or_else(|e| panic!("{e}"));
+}
+
 #[test]
 fn entry_artifacts_exist_when_declared() {
     let catalog = load_catalog();
@@ -625,6 +671,43 @@ entries:
         let catalog: Catalog = serde_yaml::from_str(yaml).expect("schema-valid YAML should parse");
         validate_path_category_alignment(&catalog.entries)
             .expect("a linked test/na/ path must not be flagged");
+    }
+
+    /// A checked-in notebook that isn't valid JSON must fail the light
+    /// nbformat structural check, not silently pass as an opaque `ci: none`
+    /// artifact forever.
+    #[test]
+    fn malformed_notebook_json_fails_notebook_json_check() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let notebook_path = dir.path().join("broken.ipynb");
+        std::fs::write(&notebook_path, "{ this is not valid json").expect("write fixture");
+
+        let yaml = r#"
+version: 1
+entries:
+  - id: research/example
+    path: broken.ipynb
+    tags: [research]
+    difficulty: beginner
+    quonc_args: []
+    artifacts: []
+    ci: none
+"#;
+        let catalog: Catalog = serde_yaml::from_str(yaml).expect("schema-valid YAML should parse");
+        let err = validate_notebook_paths_are_json(&catalog.entries, dir.path())
+            .expect_err("malformed JSON notebook must fail the structural check");
+        assert!(err.contains("not valid JSON"));
+    }
+
+    /// A non-`.ipynb` entry is out of scope for the notebook JSON check —
+    /// the check keys off the path extension and doesn't even need to read
+    /// the file, so a root with no such file on disk must still pass.
+    #[test]
+    fn non_notebook_path_is_exempt_from_notebook_json_check() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let catalog: Catalog = serde_yaml::from_str(VALID_CATALOG).expect("fixture should parse");
+        validate_notebook_paths_are_json(&catalog.entries, dir.path())
+            .expect("a non-.ipynb entry must not be checked as JSON");
     }
 
     /// A path under `samples/<other-category>/` must still fail even when

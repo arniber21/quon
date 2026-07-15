@@ -17,8 +17,10 @@ a shared repro-appendix template.
   be what it is, and its paired `.py` smoke twin regenerates that number
   against a real `quonc` build (and, where numerical, Qiskit Aer) to confirm
   the derivation. Smoke twins are standalone, runnable scripts
-  (`python samples/research/<slug>_smoke.py`) — not wired into
-  `just ci-rust`'s `test/verify/*.py` loop.
+  (`python samples/research/<slug>_smoke.py`) — and are also wired into
+  `just ci-rust`'s python verify loop (alongside `test/verify/*.py`), so
+  every headline number a notebook quotes is asserted on in CI, not just
+  regenerable by hand.
 - **Verifier** (`test/verify/`, `test/na/`): compiler correctness oracles
   that already gate these same circuits' compiled semantics in CI
   (`just ci-rust`). This pack imports/links those files — see each
