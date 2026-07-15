@@ -12,7 +12,8 @@ Static analysis and refinement-type checks for the Quon workspace.
 | `just setup-python` | Create `.venv`, install `python/requirements.txt` + `lit` |
 | `just test-fast` | `cargo test --workspace --exclude flux_verify` (lit soft-skips if tools missing; no Aer) |
 | `just test-ci` | Local CI parity: `ci-rust` + `ci-tooling` + `ci-docs-assert` (not the website build) |
-| `just ci-rust` | What the `ci.yml` `rust` job runs (sets `QUON_REQUIRE_LIT`) |
+| `just ci-rust` | What the `ci.yml` `rust` job runs (sets `QUON_REQUIRE_LIT`); its `cargo test --workspace` step already includes the sample corpus catalog lint (`quonc/tests/samples_catalog.rs`, ADR-0025 / #185) as an ordinary workspace test crate |
+| `just ci-samples` | Local-only convenience: re-run just the sample corpus catalog lint (schema, paths, category coverage, README sections, `ci: smoke` typecheck) in isolation. **Not** part of `test-ci` or `ci.yml` — it would double-pay for what `ci-rust` already covers |
 | `just ci-tooling` | What the `ci.yml` `tooling` job runs |
 | `just tooling-full` | Broader local fmt/lint corpus (not CI) |
 | `just qec-benchmarks-smoke` | #254 local convenience: one-cell ablation + nested Sinter (`--mode smoke`). CI smoke is the unittest in `just ci-rust`. |
@@ -29,7 +30,7 @@ This table is an adapter of the **Justfile** recipes invoked by `.github/workflo
 
 | Workflow | Trigger | What runs |
 | -------- | ------- | --------- |
-| [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `just ci-rust`: fmt, clippy, release build (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` with `QUON_REQUIRE_LIT` so [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) hard-fails without lit/FileCheck/oracles, then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`, then QEC Python smokes (`test_qec_stim_smoke`, `test_quon_qec_sinter`, `test_quon_qec_benchmarks` / #254). |
+| [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `just ci-rust`: fmt, clippy, release build (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` with `QUON_REQUIRE_LIT` so [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) hard-fails without lit/FileCheck/oracles, and [`quonc/tests/samples_catalog.rs`](../../quonc/tests/samples_catalog.rs) lints `samples/catalog.yaml` and typechecks every `ci: smoke` entry with the debug `quonc` this same `cargo test` builds (ADR-0025 / #185); then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`, then QEC Python smokes (`test_qec_stim_smoke`, `test_quon_qec_sinter`, `test_quon_qec_benchmarks` / #254). |
 | [ci.yml](../../.github/workflows/ci.yml) `docs` | every push and PR | `just ci-docs-assert` + `just ci-website` |
 | [ci.yml](../../.github/workflows/ci.yml) `tooling` | every push and PR | `just ci-tooling`: `quonfmt --check`, `quonlint`, `quon_lsp` smoke on CI corpus |
 | [release.yml](../../.github/workflows/release.yml) | tags `v*` (+ manual dry-run) | `devbox run release` — static MLIR/LLVM + release-built static libz3; link audit; upload `quon-{version}-{arch}-{os}.tar.gz` to GitHub Releases |

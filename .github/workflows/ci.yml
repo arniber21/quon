@@ -32,6 +32,11 @@ jobs:
           # invalidate whenever the devbox environment changes.
           prefix-key: nix-${{ hashFiles('devbox.lock') }}
 
+      # `just ci-rust`'s `cargo test --workspace` already runs
+      # `quonc/tests/samples_catalog.rs` (ADR-0025 / #185) as an ordinary
+      # workspace test crate — no separate `just ci-samples` step needed
+      # here; that recipe is a local-only convenience for iterating on the
+      # catalog lint in isolation (see Justfile).
       - name: CI rust gates (Justfile)
         run: devbox run -- just ci-rust
 

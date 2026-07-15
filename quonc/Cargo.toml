@@ -32,4 +32,8 @@ anstyle     = "1"
 tempfile = "3"
 serde = { workspace = true }
 serde_json = { workspace = true }
+# serde_yaml is deprecated/archived upstream (RUSTSEC-2024-0320); serde_yaml_ng
+# is the actively-maintained, API-compatible fork — aliased so call sites keep
+# using `serde_yaml::...` unchanged. See ADR-0025.
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
 quon_qec = { path = "../quon_qec" }

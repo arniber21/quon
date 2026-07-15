@@ -1,0 +1,19 @@
+-- GHZ state: `samples/learning/hello_bell.qn`'s two-qubit entanglement
+-- generalized to n qubits. A single Hadamard on qubit 0 followed by a CNOT
+-- chain (0->1, 1->2, ..., n-2->n-1) entangles every qubit with the first,
+-- so measuring all of them yields all-0s or all-1s -- never a mixed
+-- outcome -- with equal probability.
+
+fn hadamard_first(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn cnot_chain(n: Nat): Circuit<n, n, n - 1, Clifford> = circuit {
+    for i in range(n - 1) { CNOT @(i, i + 1) }
+}
+
+fn ghz(n: Nat): Circuit<n, n, n, Clifford> = hadamard_first(n) |> cnot_chain(n)
+
+fn main(): Q<List<Bit>> = run {
+    q <- ghz(3) @ qreg(3)
+    measure_all(q)
+    -- Expected: only "000" and "111", each roughly half the time.
+}

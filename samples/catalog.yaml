@@ -1,0 +1,85 @@
+# Sample corpus catalog (ADR-0025, issue #185).
+#
+# One row per sample under `samples/`. A contribution is not complete until
+# it has a row here — see `samples/CONTRIBUTING.md`. Schema, path-existence,
+# category-coverage, and README-section checks live in
+# `quonc/tests/samples_catalog.rs`, run via `cargo test --workspace` (or
+# standalone with `just ci-samples`).
+#
+# `id`, not `path`, determines a sample's category: the id prefix must be
+# one of the seven taxonomy categories, but path may point elsewhere for a
+# linked canonical artifact (e.g. `neutral-atom/...` -> `examples/na_qec/`).
+#
+# Fields (all required):
+#   id           <category>/<slug> — category must be one of the seven
+#                top-level directories under samples/.
+#   path         Repo-root-relative path to the primary artifact (usually a
+#                `.qn` program; `research/` entries may point at a literate
+#                `.md`/notebook instead — see that pack's README).
+#   tags         Free-form labels for future search/filter UI.
+#   difficulty   beginner | intermediate | advanced
+#   quonc_args   Extra CLI flags a reader should pass to `quonc` to compile
+#                this sample (before the source path); [] for defaults.
+#   artifacts    Paths to checked-in generated artifacts this sample owns
+#                (goldens, reports, images); [] if it produces none yet.
+#   ci           smoke | none — smoke entries are compiled with the real
+#                `quonc` binary in CI (typecheck + lowering); none is the
+#                default for narrative-only or not-yet-fleshed-out seeds.
+version: 1
+entries:
+  - id: learning/hello-bell
+    path: samples/learning/hello_bell.qn
+    tags: [learning, beginner, bell-state, entanglement]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: algorithms/ghz-state
+    path: samples/algorithms/ghz_state.qn
+    tags: [algorithms, entanglement, ghz, beginner]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/quantum-coin-flip
+    path: samples/applications/quantum_coin_flip.qn
+    tags: [applications, randomness, superposition]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: none
+
+  - id: workflows/edit-verify-loop-stub
+    path: samples/workflows/edit_verify_loop.qn
+    tags: [workflows, stub, pack-188]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: none
+
+  - id: visualization/schedule-preview-stub
+    path: samples/visualization/schedule_preview.qn
+    tags: [visualization, stub, pack-189]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: none
+
+  - id: research/qec-notebook-stub
+    path: samples/research/qec_notebook_stub.md
+    tags: [research, stub, literate-notebook, pack-190]
+    difficulty: intermediate
+    quonc_args: []
+    artifacts: []
+    ci: none
+
+  - id: neutral-atom/repetition-d3-memory
+    path: examples/na_qec/repetition_d3_memory.qn
+    tags: [neutral-atom, qec, memory, pack-192]
+    difficulty: intermediate
+    quonc_args:
+      ["--target", "targets/neutral_atom/generic_rna_v0.json", "--verify-na"]
+    artifacts: []
+    ci: none
