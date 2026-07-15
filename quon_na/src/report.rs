@@ -113,6 +113,24 @@ pub struct ResourceReport {
     #[serde(default)]
     pub bottleneck: BottleneckKind,
 
+    /// Zoned NA backend only (issue #111 review finding): number of
+    /// per-layer [`PlacerMode::RoutingAware`](crate::zoned::PlacerMode)
+    /// gate-assignment calls whose best-first search found a full legal
+    /// assignment within budget (the true joint-optimal for that layer).
+    /// `None` for non-zoned compiles; `Some(0)` under
+    /// `PlacerMode::RoutingAgnostic` (the concept doesn't apply there).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aware_search_completed_layers: Option<u64>,
+    /// Companion to `aware_search_completed_layers`: number of layers where
+    /// the aware search instead exhausted its budget or search space and
+    /// silently fell back to the routing-agnostic greedy assignment. A
+    /// nonzero value here on a `routing-aware` compile means any
+    /// aware == agnostic schedule match is **not** evidence of "no routing
+    /// contention" — it may just be the fallback reproducing the greedy
+    /// schedule. See `docs/neutral_atom/rap_table_i_methodology.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aware_search_fell_back_layers: Option<u64>,
+
     /// Analytic physical error-budget contributions (rate × schedule counts).
     /// Never logical error rates or thresholds (ADR-0017 / ADR-0020).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,6 +161,8 @@ impl Default for ResourceReport {
             memory_rounds: None,
             estimated_cycles: 0,
             bottleneck: BottleneckKind::None,
+            aware_search_completed_layers: None,
+            aware_search_fell_back_layers: None,
             error_budget: None,
         }
     }
@@ -185,10 +205,7 @@ impl ErrorBudgetContributions {
     /// `rate × count` only — uses report schedule aggregates, never fidelities.
     ///
     /// See struct-level docs for the exact multiplier for each field.
-    pub fn from_schedule_and_model(
-        report: &ResourceReport,
-        model: &NeutralAtomErrorModel,
-    ) -> Self {
+    pub fn from_schedule_and_model(report: &ResourceReport, model: &NeutralAtomErrorModel) -> Self {
         Self {
             rydberg: clean_contribution(model.rydberg * report.rydberg_stages as f64),
             measurement: clean_contribution(model.measurement * report.measurement_rounds as f64),
@@ -217,7 +234,6 @@ pub enum ReportError {
     #[error(transparent)]
     Qec(#[from] QecError),
 }
-
 
 /// Simultaneous actions make a layer's elapsed time the maximum action duration.
 #[cfg_attr(
@@ -408,7 +424,23 @@ impl ResourceReport {
 
     /// Overlay analytic physical error-budget contributions (rate × counts).
     pub fn with_error_budget(mut self, model: &NeutralAtomErrorModel) -> Self {
-        self.error_budget = Some(ErrorBudgetContributions::from_schedule_and_model(&self, model));
+        self.error_budget = Some(ErrorBudgetContributions::from_schedule_and_model(
+            &self, model,
+        ));
+        self
+    }
+
+    /// Overlay zoned-backend routing-aware search diagnostics (issue #111
+    /// review finding). `completed_layers` / `fell_back_layers` come from
+    /// [`crate::zoned::ZonedScheduleResult`]; see that type's field docs for
+    /// exactly what each counts.
+    pub fn with_aware_search_status(
+        mut self,
+        completed_layers: u64,
+        fell_back_layers: u64,
+    ) -> Self {
+        self.aware_search_completed_layers = Some(completed_layers);
+        self.aware_search_fell_back_layers = Some(fell_back_layers);
         self
     }
 }
@@ -577,6 +609,15 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
     out.push_str(&format!("| Reset rounds | {} |\n", report.reset_rounds));
     out.push_str(&format!("| Wait time (µs) | {} |\n", report.wait_time_us));
     out.push_str(&format!("| Total time (µs) | {} |\n", report.total_time_us));
+    if let Some(completed) = report.aware_search_completed_layers {
+        let fell_back = report.aware_search_fell_back_layers.unwrap_or(0);
+        out.push_str(&format!(
+            "| Routing-aware search completed layers | {completed} |\n"
+        ));
+        out.push_str(&format!(
+            "| Routing-aware search fell back to greedy (layers) | {fell_back} |\n"
+        ));
+    }
     out.push('\n');
 
     if let Some(budget) = &report.error_budget {
@@ -619,6 +660,14 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
         "- `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).\n",
     );
     out.push_str("- Non-QEC reports omit atoms-per-logical and code-family rows.\n");
+    if report.aware_search_fell_back_layers.is_some_and(|n| n > 0) {
+        out.push_str(
+            "- Routing-aware search fell back to the greedy assignment on at least one layer \
+             (budget exhaustion or no legal full assignment) — a byte-identical or \
+             near-identical routing-aware/agnostic schedule here is not evidence of \
+             \"no routing contention\"; see `docs/neutral_atom/rap_table_i_methodology.md`.\n",
+        );
+    }
     if report.error_budget.is_some() {
         out.push_str(
             "- Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.\n",
@@ -1079,7 +1128,10 @@ mod tests {
         assert_eq!(report.bottleneck, BottleneckKind::None);
         assert_eq!(report.atoms_per_logical, None);
         assert_eq!(report.evidence_kind, RESOURCE_REPORT_EVIDENCE_KIND);
-        assert_eq!(report.evidence_disclaimer, RESOURCE_REPORT_EVIDENCE_DISCLAIMER);
+        assert_eq!(
+            report.evidence_disclaimer,
+            RESOURCE_REPORT_EVIDENCE_DISCLAIMER
+        );
     }
 
     #[test]
@@ -1133,7 +1185,8 @@ mod tests {
 
     #[test]
     fn error_budget_is_rate_times_schedule_counts() {
-        let report = ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
+        let report =
+            ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
         let budget = match report.error_budget {
             Some(b) => b,
             None => panic!("budget attached"),
@@ -1149,7 +1202,8 @@ mod tests {
 
     #[test]
     fn error_budget_json_round_trip_fields() {
-        let report = ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
+        let report =
+            ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
         let value = match serde_json::to_value(&report) {
             Ok(v) => v,
             Err(e) => panic!("serialize: {e}"),
@@ -1212,7 +1266,8 @@ mod tests {
 
     #[test]
     fn markdown_includes_error_budget_when_set() {
-        let report = ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
+        let report =
+            ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
         let md = resource_report_to_markdown(&report);
         assert!(md.contains("## Physical error budget"));
         assert!(md.contains("| Category | Contribution (rate × count) |"));
@@ -1227,7 +1282,8 @@ mod tests {
 
     #[test]
     fn resource_report_json_excludes_sampled_sinter_fields() {
-        let report = ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
+        let report =
+            ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
         let json = match resource_report_to_json(&report) {
             Ok(s) => s,
             Err(e) => panic!("serialize: {e}"),
@@ -1297,6 +1353,48 @@ mod tests {
         let md = resource_report_to_markdown(&ResourceReport::from_layers(&[]));
         assert!(!md.contains("## Physical error budget"));
         assert!(!md.contains("Physical error budget lines"));
+    }
+
+    #[test]
+    fn aware_search_status_defaults_to_unset() {
+        let report = ResourceReport::from_layers(&toy_layers());
+        assert_eq!(report.aware_search_completed_layers, None);
+        assert_eq!(report.aware_search_fell_back_layers, None);
+        let md = resource_report_to_markdown(&report);
+        assert!(!md.contains("Routing-aware search"));
+    }
+
+    #[test]
+    fn aware_search_status_overlay_round_trips_through_json() {
+        let report = ResourceReport::from_layers(&toy_layers()).with_aware_search_status(3, 1);
+        assert_eq!(report.aware_search_completed_layers, Some(3));
+        assert_eq!(report.aware_search_fell_back_layers, Some(1));
+
+        let value = match serde_json::to_value(&report) {
+            Ok(v) => v,
+            Err(e) => panic!("serialize: {e}"),
+        };
+        assert_eq!(value["aware_search_completed_layers"], json!(3));
+        assert_eq!(value["aware_search_fell_back_layers"], json!(1));
+        let back: ResourceReport = match serde_json::from_value(value) {
+            Ok(r) => r,
+            Err(e) => panic!("deserialize: {e}"),
+        };
+        assert_eq!(back, report);
+    }
+
+    #[test]
+    fn markdown_flags_aware_fallback_when_nonzero() {
+        let fell_back = ResourceReport::from_layers(&toy_layers()).with_aware_search_status(0, 4);
+        let md = resource_report_to_markdown(&fell_back);
+        assert!(md.contains("| Routing-aware search completed layers | 0 |"));
+        assert!(md.contains("| Routing-aware search fell back to greedy (layers) | 4 |"));
+        assert!(md.contains("not evidence of"));
+
+        let completed = ResourceReport::from_layers(&toy_layers()).with_aware_search_status(4, 0);
+        let md_ok = resource_report_to_markdown(&completed);
+        assert!(md_ok.contains("| Routing-aware search fell back to greedy (layers) | 0 |"));
+        assert!(!md_ok.contains("not evidence of"));
     }
 
     #[test]

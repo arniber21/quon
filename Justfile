@@ -143,6 +143,7 @@ test-ci: ci-rust ci-tooling ci-docs-assert
 # fmt · clippy · build · examples · tests (QUON_REQUIRE_LIT) · Aer verify list
 ci-rust: setup-python
     #!/usr/bin/env bash
+    set -euo pipefail
     cargo fmt --all -- --check
     cargo clippy --workspace {{WORKSPACE_EXCLUDE}} --all-targets -- -D warnings
     cargo build --release --workspace {{WORKSPACE_EXCLUDE}}
@@ -150,6 +151,8 @@ ci-rust: setup-python
     export PATH="$PWD/.venv/bin:$PATH"
     export QUON_REQUIRE_LIT=1
     cargo test --workspace {{WORKSPACE_EXCLUDE}}
+    echo "==> RAP Table I dump (#111, --release --include-ignored)"
+    cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture
     export QUONC=target/release/quonc
     for script in \
       test/verify/bell.py \
