@@ -1,0 +1,23 @@
+-- Hello, entanglement: the smallest complete Quon program.
+--
+-- `H` puts qubit 0 into an equal superposition; `CNOT` then correlates
+-- qubit 1 with it, so the pair collapses to "00" or "11" on measurement --
+-- never "01" or "10". This is the same story as the compiler's own
+-- `test/verify/bell.qn` end-to-end fixture, rewritten here with a learner's
+-- narration; see that file (and its Aer verifier `test/verify/bell.py`) for
+-- the numerical claim this pattern is checked against in CI.
+--
+-- Try it yourself:
+--   quonc samples/learning/hello_bell.qn --emit-qasm
+
+fn bell_pair(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1)
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- bell_pair() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+    -- Expected: "00" and "11" only, each roughly half the time.
+}

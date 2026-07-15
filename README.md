@@ -198,11 +198,13 @@ just test-ci
 
 `just test-ci` is the local CI-parity path: formatting, clippy, release build,
 example binaries for lit/FileCheck, Rust tests, Python Aer verifiers, tooling
-checks, and validation-doc assertions.
+checks, validation-doc assertions, and the sample corpus catalog lint.
 
 Reference verification scripts live in `test/verify/` and cover Bell,
 teleportation, Bernstein-Vazirani, Grover, QFT, Ising, QAOA, Shor's quantum
-kernel, and routing on constrained fixed targets.
+kernel, and routing on constrained fixed targets. Narrative demos beyond
+those CI fixtures live in `samples/`, indexed by `samples/catalog.yaml`
+(ADR-0025); see `samples/README.md`.
 
 ## Workspace
 
@@ -225,6 +227,7 @@ kernel, and routing on constrained fixed targets.
 - [SPEC.md](SPEC.md) - language and compiler specification.
 - [CONTEXT.md](CONTEXT.md) - domain glossary and project vocabulary.
 - [docs/adr/](docs/adr/) - architectural decisions.
+- [samples/README.md](samples/README.md) - sample corpus taxonomy, catalog, and contribution guide.
 - [docs/neutral_atom/architecture_model.md](docs/neutral_atom/architecture_model.md) - neutral-atom model and citations.
 - [docs/plans/m5-closeout-audit.md](docs/plans/m5-closeout-audit.md) - M5 close-out audit and implementation evidence.
 - [website/](website/) - Starlight docs site.

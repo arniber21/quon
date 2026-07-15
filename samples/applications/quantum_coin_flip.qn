@@ -1,0 +1,13 @@
+-- Quantum coin flip: a genuine (not pseudo-random) source of randomness. A
+-- single Hadamard puts the qubit into an equal superposition, so `measure`
+-- returns 0 or 1 with true quantum-mechanical randomness rather than a
+-- deterministic seed -- useful anywhere an application wants an unbiased
+-- random bit (lottery draws, cryptographic nonces, Monte Carlo seeding).
+
+fn coin(): Circuit<1, 1, 1, Clifford> = circuit { H @0 }
+
+fn main(): Q<Bit> = run {
+    q <- coin() @ qreg(1)
+    measure(q)
+    -- Expected: 0 or 1, each roughly half the time.
+}

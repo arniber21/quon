@@ -1,0 +1,306 @@
+# Sample corpus catalog (ADR-0025, issue #185).
+#
+# One row per sample under `samples/`. A contribution is not complete until
+# it has a row here — see `samples/CONTRIBUTING.md`. Schema, path-existence,
+# category-coverage, and README-section checks live in
+# `quonc/tests/samples_catalog.rs`, run via `cargo test --workspace` (or
+# standalone with `just ci-samples`).
+#
+# `id`, not `path`, determines a sample's category: the id prefix must be
+# one of the seven taxonomy categories, but path may point elsewhere for a
+# linked canonical artifact (e.g. `neutral-atom/...` -> `test/na/` or
+# `examples/na_qec/`, per the "link, don't fork" rule in that category's
+# README).
+#
+# Fields (all required):
+#   id           <category>/<slug> — category must be one of the seven
+#                top-level directories under samples/.
+#   path         Repo-root-relative path to the primary artifact (usually a
+#                `.qn` program; `research/` entries may point at a literate
+#                `.md`/notebook instead — see that pack's README).
+#   tags         Free-form labels for future search/filter UI.
+#   difficulty   beginner | intermediate | advanced
+#   quonc_args   Extra CLI flags a reader should pass to `quonc` to compile
+#                this sample (before the source path); [] for defaults.
+#   artifacts    Paths to checked-in generated artifacts this sample owns
+#                (goldens, reports, images); [] if it produces none yet.
+#   ci           smoke | none — smoke entries are compiled with the real
+#                `quonc` binary in CI (typecheck + lowering); none is the
+#                default for narrative-only or not-yet-fleshed-out seeds.
+version: 1
+entries:
+  - id: learning/hello-bell
+    path: samples/learning/hello_bell.qn
+    tags: [learning, beginner, bell-state, entanglement]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: algorithms/ghz-state
+    path: samples/algorithms/ghz_state.qn
+    tags: [algorithms, entanglement, ghz, beginner]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/quantum-coin-flip
+    path: samples/applications/quantum_coin_flip.qn
+    tags: [applications, randomness, superposition]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: none
+
+  - id: workflows/edit-verify-loop-stub
+    path: samples/workflows/edit_verify_loop.qn
+    tags: [workflows, stub, pack-188]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: none
+
+  - id: visualization/dense-swap-mismatch
+    path: test/verify/qaoa.qn
+    tags: [visualization, mapping, swap, qaoa, mapper-viz, pack-189]
+    difficulty: intermediate
+    quonc_args:
+      ["--target", "targets/ibm/fake_manila_v2.json", "--emit-qasm"]
+    artifacts:
+      [
+        samples/visualization/goldens/dense_swap_mismatch/qaoa_manila.qasm,
+        samples/visualization/goldens/dense_swap_mismatch/metrics.json,
+      ]
+    ci: smoke
+
+  - id: visualization/teleport-dynamic
+    path: test/verify/teleport.qn
+    tags: [visualization, teleportation, dynamic, deferral, circuit-viz, pack-189]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts:
+      [
+        samples/visualization/goldens/teleport_dynamic/teleport.qasm,
+        samples/visualization/goldens/teleport_dynamic/metrics.json,
+      ]
+    ci: smoke
+
+  - id: visualization/qft-depth
+    path: test/verify/qft.qn
+    tags: [visualization, qft, optimizer, depth, circuit-viz, pack-189]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm", "--dump-ir"]
+    artifacts:
+      [
+        samples/visualization/goldens/qft_depth/before_optimization.mlir,
+        samples/visualization/goldens/qft_depth/after_optimization.mlir,
+        samples/visualization/goldens/qft_depth/metrics.json,
+      ]
+    ci: smoke
+
+  - id: visualization/na-interaction-graph
+    path: test/na/qaoa_graph.qn
+    tags: [visualization, neutral-atom, qaoa, interaction-graph, topology-viz, pack-189]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--emit-na-graph",
+        "-",
+      ]
+    artifacts: [samples/visualization/goldens/na_interaction_graph/qaoa_graph.dot]
+    ci: smoke
+
+  - id: visualization/na-schedule-metrics-bell
+    path: test/na/bell.qn
+    tags: [visualization, neutral-atom, schedule, resource-report, pack-189]
+    difficulty: beginner
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+        "--emit-resource-report",
+        "-",
+      ]
+    artifacts:
+      [samples/visualization/goldens/na_schedule_metrics/bell_zoned.resource_report.json]
+    ci: smoke
+
+  - id: visualization/na-schedule-metrics-qaoa-graph
+    path: test/na/qaoa_graph.qn
+    tags: [visualization, neutral-atom, schedule, resource-report, pack-189]
+    difficulty: beginner
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+        "--emit-resource-report",
+        "-",
+      ]
+    artifacts:
+      [samples/visualization/goldens/na_schedule_metrics/qaoa_graph_zoned.resource_report.json]
+    ci: smoke
+
+  - id: visualization/noise-aware-target-overlay
+    path: test/verify/ising.qn
+    tags: [visualization, noise, target-overlay, topology-viz, pack-189]
+    difficulty: intermediate
+    quonc_args:
+      ["--target", "targets/ibm/fake_manila_v2.json", "--emit-qasm"]
+    artifacts:
+      [
+        samples/visualization/goldens/noise_target_overlay/ising_manila.qasm,
+        samples/visualization/goldens/noise_target_overlay/metrics.json,
+      ]
+    ci: smoke
+
+  - id: research/compiler-experiment-log
+    path: samples/research/compiler_experiment_log.ipynb
+    tags: [research, literate-notebook, compiler, sabre, metrics, pack-190]
+    difficulty: intermediate
+    quonc_args: []
+    artifacts: []
+    ci: none
+
+  - id: research/algorithm-correctness-narrative
+    path: samples/research/algorithm_correctness_narrative.ipynb
+    tags:
+      [
+        research,
+        literate-notebook,
+        bernstein-vazirani,
+        grover,
+        aer-verify,
+        pack-190,
+      ]
+    difficulty: intermediate
+    quonc_args: []
+    artifacts: []
+    ci: none
+
+  - id: research/bernstein-vazirani-oracle
+    path: test/verify/bernstein_vazirani.qn
+    tags: [research, bernstein-vazirani, oracle, linked-not-forked, pack-190]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: research/grover-n4-marked-11
+    path: test/verify/grover.qn
+    tags: [research, grover, amplitude-amplification, linked-not-forked, pack-190]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: research/na-resource-study
+    path: samples/research/na_resource_study.ipynb
+    tags:
+      [
+        research,
+        literate-notebook,
+        neutral-atom,
+        resource-report,
+        na-placer,
+        pack-190,
+      ]
+    difficulty: intermediate
+    quonc_args: []
+    artifacts: []
+    ci: none
+
+  - id: research/repro-appendix-template
+    path: samples/research/repro_appendix_template.md
+    tags: [research, template, reproducibility, pack-190]
+    difficulty: beginner
+    quonc_args: []
+    artifacts: []
+    ci: none
+
+  - id: neutral-atom/bell-pair
+    path: test/na/bell.qn
+    tags: [neutral-atom, beginner, bell-state, na-backend, pack-192]
+    difficulty: beginner
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/qaoa-maxcut
+    path: test/na/qaoa_graph.qn
+    tags: [neutral-atom, qaoa, na-placer, routing-agnostic, pack-192]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/qft-small
+    path: test/na/qft_small.qn
+    tags: [neutral-atom, qft, na-backend, footnote-flat, pack-192]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/ising-trotter
+    path: test/na/ising.qn
+    tags: [neutral-atom, ising, na-placer, locality, pack-192]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/repetition-d3-memory
+    path: examples/na_qec/repetition_d3_memory.qn
+    tags:
+      [
+        neutral-atom,
+        qec,
+        memory,
+        dynamic-circuit,
+        mid-circuit-measurement,
+        pack-192,
+      ]
+    difficulty: intermediate
+    quonc_args:
+      ["--target", "targets/neutral_atom/generic_rna_v0.json", "--verify-na"]
+    artifacts: []
+    ci: smoke
