@@ -17,28 +17,28 @@ expression: md
 ## Schedule metrics
 | Metric | Value |
 | --- | ---: |
-| Estimated cycles | 123 |
+| Estimated cycles | 165 |
 | Bottleneck | rearrangement |
-| Rydberg stages | 8 |
-| Rearrangement steps | 36 |
-| Rearrangement time (µs) | 5268 |
-| Trap transfers | 176 |
-| Transfer time (µs) | 2640 |
+| Rydberg stages | 16 |
+| Rearrangement steps | 46 |
+| Rearrangement time (µs) | 6345 |
+| Trap transfers | 162 |
+| Transfer time (µs) | 2430 |
 | Entangle2 count | 48 |
 | EntangleN count | 0 |
 | Measurement rounds | 3 |
 | Reset rounds | 2 |
 | Wait time (µs) | 2 |
-| Total time (µs) | 6363 |
+| Total time (µs) | 7752 |
 
 ## Physical error budget
 | Category | Contribution (rate × count) |
 | --- | ---: |
-| Rydberg | 0.016 |
+| Rydberg | 0.032 |
 | Measurement | 0.009 |
 | Reset | 0.008 |
-| Movement | 0.018 |
-| Transfer | 0.1232 |
+| Movement | 0.023 |
+| Transfer | 0.1134 |
 | Idle | 4e-9 |
 
 ## Notes

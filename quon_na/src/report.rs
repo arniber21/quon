@@ -322,6 +322,9 @@ impl ResourceReport {
                         layer_has_rydberg = true;
                         report.entangle_n_count += 1;
                     }
+                    NeutralAtomAction::LocalGate { .. } => {
+                        // Locals contribute wall-clock via max layer duration only.
+                    }
                     NeutralAtomAction::Measure { .. } => {
                         layer_has_measurement = true;
                     }

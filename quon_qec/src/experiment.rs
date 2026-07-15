@@ -55,6 +55,10 @@ impl AtomRole {
 }
 
 /// One stabilizer check in the expanded layout.
+///
+/// `basis` defaults to `z` on deserialize so schema_version 1 consumers from
+/// #255 (repetition-only JSON without `basis`) keep loading. Surface emits
+/// explicit `"x"` / `"z"`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StabilizerCheck {
@@ -62,6 +66,7 @@ pub struct StabilizerCheck {
     /// Check ancilla atom id.
     pub check_atom: u32,
     /// Pauli type of this stabilizer (`x` / `z`).
+    #[serde(default)]
     pub basis: LogicalBasis,
     /// Data atoms in the stabilizer support.
     pub data_atoms: Vec<u32>,
@@ -209,10 +214,23 @@ pub enum ExperimentError {
     )]
     BarrierCycleMismatch { got: usize, expected: usize },
     #[error(
-        "Stim structure emit requires Z measure-logical basis for memory detectors; \
-         got `{basis}`"
+        "Stim structure emit requires matching measure-logical basis for memory detectors; \
+         repetition only supports Z (got `{basis}`)"
     )]
     UnsupportedMeasureBasis { basis: &'static str },
+    #[error(
+        "z_cnot_count ({z_cnot_count}) exceeds entangling.len() ({entangling_len}); \
+         refusing silent clamp"
+    )]
+    InvalidZCnotCount {
+        z_cnot_count: usize,
+        entangling_len: usize,
+    },
+    #[error(
+        "surface X-plaquette CNOTs present but local_mid Hadamards missing; \
+         refusing vacuous X-check extraction"
+    )]
+    MissingXCheckHadamards,
     #[error("measure-logical round is missing a uniform measurement basis")]
     MissingMeasureBasis,
     #[error("measure-logical terminals disagree on measurement basis")]
@@ -331,11 +349,11 @@ pub fn attach_barrier_cycles(
 
 /// Emit a structure-only Stim circuit for a single-block memory experiment.
 ///
-/// Repetition: Kelly alternating chain with CNOT(data→check).
-/// Surface: rotated-code H sandwich on X-checks + CX pattern from expand.
-///
-/// Measure-logical basis must be Z (detectors / observable closure assume Z
-/// data measurements for Z-memory).
+/// Repetition: Kelly alternating chain with CNOT(data→check); Z measure only.
+/// Surface: serial Z-then-X expand schedule (not Stim's interleaved 4-layer —
+/// do not claim Stim-equivalent FT distance). Supports Z-memory
+/// (`rotated_memory_z`-style detectors) and X-memory
+/// (`rotated_memory_x`-style: data H prep, first-round X detectors, MX close).
 pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
     if expanded.blocks.len() != 1 {
         return Err(ExperimentError::UnsupportedLayout {
@@ -358,7 +376,7 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         .iter()
         .find(|r| r.kind == RoundKind::MeasureLogical);
     let measure_basis = measure_logical_basis(measure_logical)?;
-    if measure_basis != LogicalBasis::Z {
+    if block.family == SourceFamily::Repetition && measure_basis != LogicalBasis::Z {
         return Err(ExperimentError::UnsupportedMeasureBasis {
             basis: measure_basis.as_str(),
         });
@@ -367,22 +385,40 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     let mut out = String::new();
     out.push_str(&format!(
         "# Quon QEC experiment — structure only (no noise; ADR-0024)\n\
-         # family={} distance={} memory_rounds={}\n",
+         # family={} distance={} memory_rounds={} measure_basis={}\n\
+         # Note: surface uses serial Z-then-X expand (not Stim 4-layer FT schedule).\n",
         block.family.as_str(),
         block.distance,
-        memory_rounds.len()
+        memory_rounds.len(),
+        measure_basis.as_str(),
     ));
 
     for (atom, &(x, y)) in block.atoms.iter().zip(block.coords.iter()) {
         out.push_str(&format!("QUBIT_COORDS({x}, {y}) {}\n", atom.0));
     }
 
-    // Prepare |0…0⟩
+    // Prepare |0…0⟩ then optional data H for X-init / X-memory (|+⟩^n).
     out.push('R');
     for atom in &block.atoms {
         out.push_str(&format!(" {}", atom.0));
     }
     out.push_str("\nTICK\n");
+
+    let construct = expanded
+        .rounds
+        .iter()
+        .find(|r| r.kind == RoundKind::Construct);
+    if let Some(c) = construct {
+        emit_local_ops(&mut out, &c.local_before);
+    } else if block.init_basis == LogicalBasis::X {
+        // Fallback if construct round missing locals but metadata says X.
+        let prep: Vec<_> = block
+            .data_atoms
+            .iter()
+            .map(|&atom| crate::expand::RoundLocalOp::H { atom })
+            .collect();
+        emit_local_ops(&mut out, &prep);
+    }
 
     let z_check_indices: Vec<usize> = block
         .stabilizers
@@ -391,11 +427,33 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         .filter(|(_, s)| s.basis == LogicalBasis::Z)
         .map(|(i, _)| i)
         .collect();
+    let x_check_indices: Vec<usize> = block
+        .stabilizers
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.basis == LogicalBasis::X)
+        .map(|(i, _)| i)
+        .collect();
+
+    // First-round deterministic checks: Z under |0⟩, X under |+⟩ (Stim style).
+    let first_round_detectors: Vec<usize> = match measure_basis {
+        LogicalBasis::Z => z_check_indices.clone(),
+        LogicalBasis::X => x_check_indices.clone(),
+    };
 
     for (round_i, round) in memory_rounds.iter().enumerate() {
+        if round.z_cnot_count > round.entangling.len() {
+            return Err(ExperimentError::InvalidZCnotCount {
+                z_cnot_count: round.z_cnot_count,
+                entangling_len: round.entangling.len(),
+            });
+        }
         emit_local_ops(&mut out, &round.local_before);
-        let z_count = round.z_cnot_count.min(round.entangling.len());
+        let z_count = round.z_cnot_count;
         let (z_cnots, x_cnots) = round.entangling.split_at(z_count);
+        if !x_cnots.is_empty() && round.local_mid.is_empty() {
+            return Err(ExperimentError::MissingXCheckHadamards);
+        }
         for layer in layer_nonoverlapping_cnots(z_cnots) {
             out.push_str("CX");
             for cnot in layer {
@@ -421,10 +479,8 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         }
         out.push('\n');
 
-        // First round: only Z-check detectors (X-checks are random under |0⟩^n).
-        // Later rounds: all checks vs prior round (Stim rotated_memory_z style).
         let detector_indices: Vec<usize> = if round_i == 0 {
-            z_check_indices.clone()
+            first_round_detectors.clone()
         } else {
             (0..n_checks).collect()
         };
@@ -464,11 +520,15 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     }
     out.push('\n');
 
-    // Close Z detectors: last Z-check syndrome vs product of support data Zs.
+    // Close detectors in the measure basis against final data measurements.
+    let closing_indices: Vec<usize> = match measure_basis {
+        LogicalBasis::Z => z_check_indices,
+        LogicalBasis::X => x_check_indices,
+    };
     let d = data_atoms.len() as i32;
     if !memory_rounds.is_empty() && n_checks > 0 {
         let final_round = memory_rounds.len();
-        for &c in &z_check_indices {
+        for &c in &closing_indices {
             let stab = &block.stabilizers[c];
             let check_rec = -(d + n_checks as i32 - c as i32);
             let mut parts = format!("DETECTOR({c}, {final_round}) rec[{check_rec}]");
@@ -485,7 +545,6 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         }
     }
 
-    // Logical observable support: repetition = all data; surface Z = top row.
     out.push_str("OBSERVABLE_INCLUDE(0)");
     let obs_atoms = logical_observable_atoms(block, measure_basis);
     for atom in &obs_atoms {
@@ -1104,6 +1163,87 @@ mod tests {
                 "noise op {op} must not appear:\n{stim}"
             );
         }
+    }
+
+    #[test]
+    fn surface_x_memory_stim_rotated_memory_x_style() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::X, LogicalQubitId(0))
+            .expect("construct");
+        b.memory_round(LogicalQubitId(0)).expect("r1");
+        b.memory_round(LogicalQubitId(0)).expect("r2");
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::X)
+            .expect("mx");
+        let expanded = expand_workload(&b.finish()).expect("expand");
+        let stim = emit_stim_structure(&expanded).expect("stim");
+
+        // Data H prep for |+⟩ (atoms 0..8).
+        assert!(stim.contains("H 0 1 2 3 4 5 6 7 8"), "{stim}");
+        assert!(stim.contains("H 9 11 14 16"), "{stim}");
+        assert!(stim.contains("MX 0 1 2 3 4 5 6 7 8"), "{stim}");
+        // First-round detectors only on X checks (indices 0,2,5,7).
+        assert!(stim.contains("DETECTOR(0, 0)"), "{stim}");
+        assert!(!stim.contains("DETECTOR(1, 0)"), "{stim}");
+        // Left-column observable.
+        assert!(stim.contains("OBSERVABLE_INCLUDE(0)"), "{stim}");
+        let exp = build_experiment(
+            &expanded,
+            example_error_model(),
+            "sx.stim",
+            na_refs_from_expanded(&expanded),
+        )
+        .expect("build");
+        assert_eq!(exp.logical_observables[0].atoms, vec![0, 3, 6]);
+        assert_eq!(exp.logical_observables[0].basis, LogicalBasis::X);
+    }
+
+    #[test]
+    fn stim_rejects_x_cnots_without_mid_hadamards() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .expect("construct");
+        b.memory_round(LogicalQubitId(0)).expect("r1");
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .expect("mz");
+        let mut expanded = expand_workload(&b.finish()).expect("expand");
+        for round in &mut expanded.rounds {
+            if round.kind == RoundKind::MemoryRound {
+                round.local_mid.clear();
+                round.local_after.clear();
+            }
+        }
+        let err = emit_stim_structure(&expanded).expect_err("missing H");
+        assert!(
+            matches!(err, ExperimentError::MissingXCheckHadamards),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn stim_rejects_z_cnot_count_overflow() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .expect("construct");
+        b.memory_round(LogicalQubitId(0)).expect("r1");
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .expect("mz");
+        let mut expanded = expand_workload(&b.finish()).expect("expand");
+        for round in &mut expanded.rounds {
+            if round.kind == RoundKind::MemoryRound {
+                round.z_cnot_count = round.entangling.len() + 1;
+            }
+        }
+        let err = emit_stim_structure(&expanded).expect_err("overflow");
+        assert!(matches!(err, ExperimentError::InvalidZCnotCount { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn stabilizer_check_basis_defaults_to_z_for_255_consumers() {
+        let check: StabilizerCheck = serde_json::from_str(
+            r#"{"logical_id":0,"check_atom":1,"data_atoms":[0,2]}"#,
+        )
+        .expect("default basis");
+        assert_eq!(check.basis, LogicalBasis::Z);
     }
 
     #[test]

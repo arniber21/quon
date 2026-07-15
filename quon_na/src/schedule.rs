@@ -6,6 +6,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::layout::{AodTrapRef, AtomId, SiteId};
 
+/// Single-qubit local gate (microwave / Raman); no AOD place/move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalGateKind {
+    H,
+}
+
+impl LocalGateKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::H => "h",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "h" | "H" => Some(Self::H),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum NeutralAtomAction {
@@ -17,6 +39,12 @@ pub enum NeutralAtomAction {
     },
     EntangleN {
         atoms: Vec<AtomId>,
+        duration_us: u64,
+    },
+    /// Local single-qubit gate (e.g. Hadamard for X-check sandwich / |+⟩ prep).
+    LocalGate {
+        atom: AtomId,
+        gate: LocalGateKind,
         duration_us: u64,
     },
     Measure {
@@ -40,6 +68,7 @@ impl NeutralAtomAction {
             NeutralAtomAction::Transfer(transfer) => transfer.duration_us,
             NeutralAtomAction::Entangle2 { duration_us, .. }
             | NeutralAtomAction::EntangleN { duration_us, .. }
+            | NeutralAtomAction::LocalGate { duration_us, .. }
             | NeutralAtomAction::Measure { duration_us, .. }
             | NeutralAtomAction::Reset { duration_us, .. }
             | NeutralAtomAction::Wait { duration_us } => *duration_us,

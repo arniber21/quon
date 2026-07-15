@@ -16,9 +16,14 @@
 //! Rotated surface code with `N = 2d² − 1` (architecture_model §10.1 /
 //! [Bravyi24] §1; [BMD07]). Data on a `d×d` grid; X/Z check ancillas on
 //! plaquettes (smooth top/bottom X boundaries, rough left/right Z). Memory
-//! rounds sandwich X-check Hadamards around CX(check→data), use CX(data→check)
-//! for Z-checks, then measure+reset all checks. Lattice surgery / `logical_cx`
-//! remains out of scope (#250).
+//! rounds use a **serial Z-then-X** phase split (Z CXs → mid H → X CXs →
+//! after H → measure/reset) for hybrid NA scheduling. That is *not* Stim's
+//! interleaved 4-layer schedule — do not claim Stim-equivalent fault-tolerant
+//! distance from this expansion alone. Lattice surgery / `logical_cx` remains
+//! out of scope (#250).
+//!
+//! `surface_code_x` / X-init constructs emit data Hadamards (logical |+⟩ prep)
+//! on the construct round before memory rounds.
 
 use thiserror::Error;
 
@@ -70,13 +75,16 @@ pub enum RoundKind {
 
 /// One schedulable unit: optional locals, entangling CNOTs, terminals.
 ///
-/// `quon_na` runs place/entangle/move on `entangling` alone (locals are
-/// Stim/IR-only), then appends `terminal` layers and a durable round barrier.
+/// `quon_na` schedules Z-then-X phases using [`Self::z_cnot_count`] /
+/// [`Self::local_mid`] / [`Self::local_after`], emitting LocalGate Hadamards
+/// (not silently dropped). Surface rounds: first [`Self::z_cnot_count`] CNOTs
+/// are Z-plaquette extraction; mid Hadamards then remaining X-plaquette CNOTs;
+/// after closes the X sandwich. Repetition leaves
+/// `z_cnot_count == entangling.len()` and mid empty.
 ///
-/// Surface rounds use a Z-then-X phase split: the first [`Self::z_cnot_count`]
-/// CNOTs are Z-plaquette extraction; [`Self::local_mid`] Hadamards then the
-/// remaining X-plaquette CNOTs; [`Self::local_after`] closes the X sandwich.
-/// Repetition leaves `z_cnot_count == entangling.len()` and mid empty.
+/// **FT-distance note:** this serial Z-then-X split is for hybrid NA scheduling
+/// fidelity to expand IR — it is not Stim's interleaved 4-layer extraction and
+/// must not be claimed Stim-equivalent for threshold / distance arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhysicalRound {
     pub kind: RoundKind,
@@ -166,6 +174,14 @@ pub enum ExpandError {
         expected: u32,
         got: usize,
     },
+    #[error(
+        "z_cnot_count ({z_cnot_count}) exceeds entangling.len() ({entangling_len}); \
+         refusing silent clamp"
+    )]
+    InvalidZCnotCount {
+        z_cnot_count: usize,
+        entangling_len: usize,
+    },
 }
 
 /// Expand a validated [`QecWorkload`] into per-round physical CNOT / measure / reset.
@@ -198,11 +214,21 @@ pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, Expan
                         basis: basis.as_str(),
                     });
                 }
-                // Construct allocates; v0 emits no physical gates (|0…0⟩ prep).
+                // Construct allocates. X-init surface emits data Hadamards
+                // (logical |+⟩ prep); Z-init is |0…0⟩ with no locals.
+                let local_before = if *basis == LogicalBasis::X {
+                    layout
+                        .data_atoms
+                        .iter()
+                        .map(|&atom| RoundLocalOp::H { atom })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 rounds.push(PhysicalRound {
                     kind: RoundKind::Construct,
                     logical_id: *logical_id,
-                    local_before: Vec::new(),
+                    local_before,
                     entangling: Vec::new(),
                     z_cnot_count: 0,
                     local_mid: Vec::new(),
@@ -212,10 +238,12 @@ pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, Expan
             }
             WorkloadOp::MemoryRound { logical_id } => {
                 let layout = find_layout(&layouts, *logical_id)?;
-                rounds.push(match layout.family {
+                let round = match layout.family {
                     SourceFamily::Repetition => repetition_memory_round(layout)?,
                     SourceFamily::Surface => surface_memory_round(layout),
-                });
+                };
+                validate_round_z_cnot(&round)?;
+                rounds.push(round);
             }
             WorkloadOp::MeasureLogical { logical_id, basis } => {
                 let layout = find_layout(&layouts, *logical_id)?;
@@ -536,6 +564,16 @@ fn measure_logical_round(layout: &ExpandedBlock, basis: LogicalBasis) -> Physica
         local_after: Vec::new(),
         terminal,
     }
+}
+
+fn validate_round_z_cnot(round: &PhysicalRound) -> Result<(), ExpandError> {
+    if round.z_cnot_count > round.entangling.len() {
+        return Err(ExpandError::InvalidZCnotCount {
+            z_cnot_count: round.z_cnot_count,
+            entangling_len: round.entangling.len(),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -917,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn surface_code_x_construct_allowed() {
+    fn surface_code_x_construct_emits_data_hadamards() {
         let mut b = WorkloadBuilder::new();
         b.construct(SourceFamily::Surface, 3, LogicalBasis::X, LogicalQubitId(0))
             .expect("construct_x");
@@ -926,6 +964,161 @@ mod tests {
         let expanded = expand_workload(&b.finish()).expect("expand");
         assert_eq!(expanded.blocks[0].init_basis, LogicalBasis::X);
         assert_eq!(expanded.physical_atom_count(), 17);
+        let construct = expanded
+            .rounds
+            .iter()
+            .find(|r| r.kind == RoundKind::Construct)
+            .expect("construct");
+        let h_atoms: Vec<_> = construct
+            .local_before
+            .iter()
+            .map(|op| match op {
+                RoundLocalOp::H { atom } => atom.0,
+            })
+            .collect();
+        assert_eq!(h_atoms, (0..9).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn z_cnot_count_over_entangling_is_rejected() {
+        let round = PhysicalRound {
+            kind: RoundKind::MemoryRound,
+            logical_id: LogicalQubitId(0),
+            local_before: Vec::new(),
+            entangling: vec![PhysicalCnot {
+                control: PhysicalAtomId(0),
+                target: PhysicalAtomId(1),
+            }],
+            z_cnot_count: 2,
+            local_mid: Vec::new(),
+            local_after: Vec::new(),
+            terminal: Vec::new(),
+        };
+        let err = validate_round_z_cnot(&round).expect_err("over");
+        assert!(matches!(
+            err,
+            ExpandError::InvalidZCnotCount {
+                z_cnot_count: 2,
+                entangling_len: 1
+            }
+        ));
+    }
+
+    /// Pauli-tableau style stabilizer algebra for odd-distance rotated surface.
+    #[test]
+    fn surface_stabilizers_commute_independent_and_logicals_anticommute_d3_d5() {
+        for d in [3u32, 5] {
+            let mut b = WorkloadBuilder::new();
+            b.construct(SourceFamily::Surface, d, LogicalBasis::Z, LogicalQubitId(0))
+                .expect("construct");
+            let expanded = expand_workload(&b.finish()).expect("expand");
+            let block = &expanded.blocks[0];
+            let n_data = block.data_atoms.len();
+            let data_index: std::collections::HashMap<u32, usize> = block
+                .data_atoms
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (a.0, i))
+                .collect();
+
+            // Each stabilizer → (x_bits, z_bits) over data qubits (CSS).
+            let mut rows: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+            for stab in &block.stabilizers {
+                let mut x = vec![0u8; n_data];
+                let mut z = vec![0u8; n_data];
+                for data in &stab.data {
+                    let i = data_index[&data.0];
+                    match stab.basis {
+                        LogicalBasis::X => x[i] = 1,
+                        LogicalBasis::Z => z[i] = 1,
+                    }
+                }
+                rows.push((x, z));
+            }
+
+            // Pairwise commutation: symplectic product zero.
+            for i in 0..rows.len() {
+                for j in i + 1..rows.len() {
+                    let mut syn = 0u8;
+                    for k in 0..n_data {
+                        syn ^= rows[i].0[k] & rows[j].1[k];
+                        syn ^= rows[i].1[k] & rows[j].0[k];
+                    }
+                    assert_eq!(
+                        syn, 0,
+                        "d={d}: stabilizers {i} and {j} must commute"
+                    );
+                }
+            }
+
+            // GF(2) row independence of the stacked X|Z check matrix.
+            let mut matrix: Vec<Vec<u8>> = rows
+                .iter()
+                .map(|(x, z)| {
+                    let mut row = x.clone();
+                    row.extend(z);
+                    row
+                })
+                .collect();
+            let rank = gf2_rank(&mut matrix);
+            assert_eq!(
+                rank,
+                rows.len(),
+                "d={d}: expected {n} independent stabilizers, rank={rank}",
+                n = rows.len()
+            );
+
+            // Logical X = left column; Logical Z = top row — anticommute (overlap 1).
+            let d_usize = d as usize;
+            let mut lx = vec![0u8; n_data];
+            let mut lz = vec![0u8; n_data];
+            for r in 0..d_usize {
+                lx[r * d_usize] = 1; // left column
+            }
+            for c in 0..d_usize {
+                lz[c] = 1; // top row
+            }
+            let mut syn = 0u8;
+            for k in 0..n_data {
+                syn ^= lx[k] & lz[k];
+            }
+            assert_eq!(syn, 1, "d={d}: LX and LZ must anticommute");
+        }
+    }
+
+    fn gf2_rank(rows: &mut [Vec<u8>]) -> usize {
+        if rows.is_empty() {
+            return 0;
+        }
+        let cols = rows[0].len();
+        let mut rank = 0;
+        let mut row_i = 0;
+        for col in 0..cols {
+            let mut pivot = None;
+            for r in row_i..rows.len() {
+                if rows[r][col] == 1 {
+                    pivot = Some(r);
+                    break;
+                }
+            }
+            let Some(pivot) = pivot else {
+                continue;
+            };
+            rows.swap(row_i, pivot);
+            for r in 0..rows.len() {
+                if r != row_i && rows[r][col] == 1 {
+                    for c in 0..cols {
+                        rows[r][c] ^= rows[row_i][c];
+                    }
+                }
+            }
+            rank += 1;
+            row_i += 1;
+            if row_i >= rows.len() {
+                break;
+            }
+        }
+        rank
     }
 
     #[test]

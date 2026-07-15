@@ -101,6 +101,14 @@ pub enum NaPipelineError {
     Compaction(#[from] CompactionError),
     #[error("interaction id overflow while building QEC hybrid schedule")]
     InteractionIdOverflow,
+    #[error(
+        "QEC round z_cnot_count ({z_cnot_count}) exceeds entangling.len() ({entangling_len}); \
+         refusing silent clamp"
+    )]
+    InvalidZCnotCount {
+        z_cnot_count: usize,
+        entangling_len: usize,
+    },
     #[error("resource report failed: {0}")]
     Report(#[from] crate::report::ReportError),
 }

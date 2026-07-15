@@ -94,8 +94,8 @@ pub use report::{
     resource_report_to_markdown, simultaneous_layer_time,
 };
 pub use schedule::{
-    AtomMove, EntanglingAction, MeasurementBasis, MovementGroup, NeutralAtomAction, ScheduleError,
-    ScheduleLayer, TransferDirection, TrapTransfer,
+    AtomMove, EntanglingAction, LocalGateKind, MeasurementBasis, MovementGroup, NeutralAtomAction,
+    ScheduleError, ScheduleLayer, TransferDirection, TrapTransfer,
 };
 pub use schedule_entry::{GraphScheduleRequest, ScheduleFromGraphError, schedule_from_graph};
 pub use schedule_view::{

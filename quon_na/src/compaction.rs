@@ -568,7 +568,9 @@ fn layer_atoms(layer: &ScheduleLayer) -> BTreeSet<AtomId> {
                     atoms.insert(atom);
                 }
             }
-            NeutralAtomAction::Measure { atom, .. } | NeutralAtomAction::Reset { atom, .. } => {
+            NeutralAtomAction::LocalGate { atom, .. }
+            | NeutralAtomAction::Measure { atom, .. }
+            | NeutralAtomAction::Reset { atom, .. } => {
                 atoms.insert(*atom);
             }
             NeutralAtomAction::Wait { .. } => {}

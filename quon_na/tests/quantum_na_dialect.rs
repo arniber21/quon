@@ -100,7 +100,7 @@ fn registration_is_idempotent_and_panic_free() {
     let context = context();
     qna::register_dialect(&context);
     assert!(context.allow_unregistered_dialects());
-    assert_eq!(qna::OPS.len(), 10);
+    assert_eq!(qna::OPS.len(), 11);
 }
 
 #[test]

@@ -20,11 +20,12 @@ use crate::family::{CodeFamily, SourceFamily};
 pub struct LogicalQubitId(pub u32);
 
 /// Logical Pauli basis for preparation or measurement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
 pub enum LogicalBasis {
     X,
+    #[default]
     Z,
 }
 

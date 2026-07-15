@@ -316,6 +316,15 @@ fn lower_action(
                 arity: atoms.len(),
             })
         }
+        NeutralAtomAction::LocalGate {
+            atom,
+            gate,
+            duration_us,
+        } => Ok(ActionSpec::LocalGate {
+            atom: atom.0,
+            gate: gate.as_str().to_string(),
+            duration_us: *duration_us,
+        }),
         NeutralAtomAction::Measure {
             atom,
             basis,
