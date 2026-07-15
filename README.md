@@ -200,6 +200,17 @@ just test-ci
 example binaries for lit/FileCheck, Rust tests, Python Aer verifiers, tooling
 checks, validation-doc assertions, and the sample corpus catalog lint.
 
+The Python harness tests (Aer bridge, Stim/Sinter, QEC benchmarks, NA
+visualization) can also be run in one shot after `just setup-python`:
+
+```bash
+.venv/bin/python -m pytest python -q
+```
+
+The QEC-benchmark integration tests invoke `quonc`, preferring
+`target/release/quonc` — build it first (`cargo build --release -p quonc`) or
+point `QUONC` at a debug binary.
+
 Reference verification scripts live in `test/verify/` and cover Bell,
 teleportation, Bernstein-Vazirani, Grover, QFT, Ising, QAOA, Shor's quantum
 kernel, and routing on constrained fixed targets. Narrative demos beyond

@@ -1054,7 +1054,10 @@ impl TypeChecker {
         let (head, args) = flatten_app(f, x);
 
         // QEC constructors: `repetition_code<3>()` / `surface_code<3>()` / `surface_code_x<3>()`.
-        if let Expr::TypeApp { callee, args: targs } = &head.0
+        if let Expr::TypeApp {
+            callee,
+            args: targs,
+        } = &head.0
             && let Expr::Var(name) = &callee.0
             && matches!(
                 name.as_str(),
@@ -1128,7 +1131,7 @@ impl TypeChecker {
             && args.len() == ksig.param_tys.len()
             && !ksig.type_params.is_empty()
         {
-            return self.synth_kinded_app(env, delta, f, x, &ksig, &args, span);
+            return self.synth_kinded_app(env, delta, &ksig, &args);
         }
         // Value-dependent application (issue #57): a *fully-applied* call to a top-level function
         // with at least one `Nat` value parameter specializes that parameter to the call-site
@@ -3068,10 +3071,9 @@ impl TypeChecker {
     ) -> Result<Ty, TypeError> {
         let ty = self.synth(env, delta, arg)?;
         match self.table.resolve(&ty) {
-            Ty::QecBlock { family, distance } => Ok(Ty::Q(Box::new(Ty::QecBlock {
-                family,
-                distance,
-            }))),
+            Ty::QecBlock { family, distance } => {
+                Ok(Ty::Q(Box::new(Ty::QecBlock { family, distance })))
+            }
             other => Err(TypeError::Mismatch {
                 expected: Ty::QecBlock {
                     family: CodeFamilyTy::Var("F".into()),
@@ -3141,11 +3143,7 @@ impl TypeChecker {
             }
         };
         if fa != CodeFamilyTy::Surface || fb != CodeFamilyTy::Surface {
-            let bad = if fa != CodeFamilyTy::Surface {
-                fa
-            } else {
-                fb
-            };
+            let bad = if fa != CodeFamilyTy::Surface { fa } else { fb };
             return Err(TypeError::LogicalCxRequiresSurface { family: bad, span });
         }
         if !da.equiv(&db) {
@@ -3166,11 +3164,8 @@ impl TypeChecker {
         &mut self,
         env: &Env,
         delta: &mut Delta,
-        f: &Sp<Expr>,
-        x: &Sp<Expr>,
         ksig: &KindedFnSig,
         args: &[&Sp<Expr>],
-        _span: SimpleSpan,
     ) -> Result<Ty, TypeError> {
         let mut fam_subst: HashMap<String, CodeFamilyTy> = HashMap::new();
         let mut depth_subst: HashMap<String, DepthExpr> = HashMap::new();
@@ -3190,7 +3185,6 @@ impl TypeChecker {
         // Consume via ordinary application on the (possibly multi-arg) spine for linearity of
         // remaining structure — arguments already synthesized above; re-check would double-consume
         // linear resources. Specialize the declared return type instead.
-        let _ = (f, x); // call spine already flattened into `args`
         Ok(subst_kinded_ty(&ksig.ret, &fam_subst, &depth_subst))
     }
 
@@ -3224,7 +3218,8 @@ impl TypeChecker {
             // Entrypoint heuristic: `main`, or any nullary `Q<_>` function (common in fixtures).
             let is_main = name.0 == "main";
             let ret_is_q = matches!(ret.0, Type::Q(_));
-            if !is_main && !(ret_is_q && params.is_empty()) {
+            let is_entrypoint = is_main || (ret_is_q && params.is_empty());
+            if !is_entrypoint {
                 continue;
             }
             let mut has_qec = false;
@@ -3431,13 +3426,8 @@ fn subst_kinded_ty(
 fn scan_qec_usage(expr: &Sp<Expr>, has_qec: &mut bool, has_bare: &mut bool) {
     match &expr.0 {
         Expr::Var(n) => match n.as_str() {
-            "repetition_code"
-            | "surface_code"
-            | "surface_code_x"
-            | "memory_round"
-            | "measure_logical_z"
-            | "measure_logical_x"
-            | "logical_cx" => *has_qec = true,
+            "repetition_code" | "surface_code" | "surface_code_x" | "memory_round"
+            | "measure_logical_z" | "measure_logical_x" | "logical_cx" => *has_qec = true,
             "qreg" | "qubit" | "init_one" | "init_plus" | "measure" | "measure_x" | "measure_y"
             | "measure_all" | "destructure" | "split" | "reset" | "discard" => *has_bare = true,
             _ => {}
@@ -3460,7 +3450,11 @@ fn scan_qec_usage(expr: &Sp<Expr>, has_qec: &mut bool, has_bare: &mut bool) {
         | Expr::Return(a)
         | Expr::Ascribe(a, _)
         | Expr::Lam { body: a, .. } => scan_qec_usage(a, has_qec, has_bare),
-        Expr::Let { rhs, body, .. } | Expr::Bind { rhs, body, .. } | Expr::For { iter: rhs, body, .. } => {
+        Expr::Let { rhs, body, .. }
+        | Expr::Bind { rhs, body, .. }
+        | Expr::For {
+            iter: rhs, body, ..
+        } => {
             scan_qec_usage(rhs, has_qec, has_bare);
             scan_qec_usage(body, has_qec, has_bare);
         }

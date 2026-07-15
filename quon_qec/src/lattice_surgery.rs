@@ -275,11 +275,7 @@ fn place_seam_column(seam: &mut SeamAtoms, x: i32, left_patch: &ExpandedBlock) {
 fn place_seam_row(seam: &mut SeamAtoms, y: i32, above_patch: &ExpandedBlock) {
     let d = above_patch.distance as usize;
     // Surface data are a prefix of `atoms`/`coords`; x = origin + 2c + 1.
-    let origin_x = above_patch
-        .coords
-        .first()
-        .map(|(x, _)| *x - 1)
-        .unwrap_or(0);
+    let origin_x = above_patch.coords.first().map(|(x, _)| *x - 1).unwrap_or(0);
     for c in 0..d {
         seam.coords[c] = (origin_x + 2 * c as i32 + 1, y);
     }
@@ -301,18 +297,11 @@ fn allocate_ancilla_patch(
 }
 
 fn next_ancilla_logical_id(layouts: &[ExpandedBlock]) -> LogicalQubitId {
-    let max = layouts
-        .iter()
-        .map(|b| b.logical_id.0)
-        .max()
-        .unwrap_or(0);
+    let max = layouts.iter().map(|b| b.logical_id.0).max().unwrap_or(0);
     LogicalQubitId(max.saturating_add(1))
 }
 
-fn find_layout_index(
-    layouts: &[ExpandedBlock],
-    id: LogicalQubitId,
-) -> Result<usize, ExpandError> {
+fn find_layout_index(layouts: &[ExpandedBlock], id: LogicalQubitId) -> Result<usize, ExpandError> {
     layouts
         .iter()
         .position(|b| b.logical_id == id)
@@ -474,7 +463,9 @@ fn split_seam_round(
     partner: Option<LogicalQubitId>,
 ) -> Result<PhysicalRound, ExpandError> {
     let mut round = match boundary {
-        MergeBoundary::Rough => rough_merge_round(side_a, side_b, seam, primary, partner.unwrap_or(primary))?,
+        MergeBoundary::Rough => {
+            rough_merge_round(side_a, side_b, seam, primary, partner.unwrap_or(primary))?
+        }
         MergeBoundary::Smooth => {
             smooth_merge_round(side_a, side_b, seam, primary, partner.unwrap_or(primary))?
         }

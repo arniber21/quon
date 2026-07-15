@@ -2,7 +2,7 @@ use frontend::ast::{BinOp, Expr, Stmt, Type};
 use frontend::lexer::Sp;
 
 use crate::doc::Doc;
-use crate::print::{BlockKind, Context, binop_str, pat, render_float, stmt, ty};
+use crate::print::{BlockKind, Context, binop_str, nat, pat, render_float, stmt, ty};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Prec {
@@ -28,6 +28,19 @@ pub fn print_expr(e: &Sp<Expr>, ctx: &mut Context<'_>, min_prec: Prec) -> Doc {
         Expr::Var(n) => Doc::text(n.clone()),
 
         Expr::App(_, _) => print_app(e, ctx),
+
+        // Postfix type application, e.g. `repetition_code<3>` — same tier as a call,
+        // so the callee prints at `Prec::App` and parenthesizes anything looser.
+        Expr::TypeApp { callee, args } => Doc::concat([
+            print_expr(callee, ctx, Prec::App),
+            Doc::text("<"),
+            comma_sep(
+                args.iter()
+                    .map(|n| nat::print_nat(n, ctx, nat::Prec::Top))
+                    .collect(),
+            ),
+            Doc::text(">"),
+        ]),
 
         Expr::BinOp { op, lhs, rhs } => {
             let self_prec = match op {
@@ -433,7 +446,7 @@ fn expr_prec(e: &Expr) -> Prec {
         | Expr::Match { .. }
         | Expr::Adjoint(_)
         | Expr::Controlled(_) => Prec::Atom,
-        Expr::App(_, _) => Prec::App,
+        Expr::App(_, _) | Expr::TypeApp { .. } => Prec::App,
         Expr::GateApp { .. } => Prec::GateApp,
         Expr::Neg(_) => Prec::Neg,
         Expr::BinOp { op: BinOp::Pow, .. } => Prec::Pow,

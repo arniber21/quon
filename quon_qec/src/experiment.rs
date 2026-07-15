@@ -250,10 +250,7 @@ pub enum ExperimentError {
         "QEC experiment emit requires repetition or surface blocks; got family `{family}` \
          distance {distance}"
     )]
-    UnsupportedFamily {
-        family: &'static str,
-        distance: u32,
-    },
+    UnsupportedFamily { family: &'static str, distance: u32 },
     #[error("failed to serialize QEC experiment JSON: {0}")]
     Serialize(String),
     #[error("stabilizer data atom {atom} missing from final logical measurement record")]
@@ -628,13 +625,11 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
 
     let control = &expanded.blocks[0];
     let target = &expanded.blocks[1];
-    let ancilla = expanded
-        .blocks
-        .iter()
-        .find(|b| b.logical_id.0 >= 2)
-        .ok_or(ExperimentError::UnsupportedLayout {
+    let ancilla = expanded.blocks.iter().find(|b| b.logical_id.0 >= 2).ok_or(
+        ExperimentError::UnsupportedLayout {
             block_count: expanded.blocks.len(),
-        })?;
+        },
+    )?;
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -749,9 +744,7 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
                             continue;
                         };
                         let cur = -(n - pos as i32);
-                        out.push_str(&format!(
-                            "DETECTOR({memory_detector_i}, 0) rec[{cur}]\n"
-                        ));
+                        out.push_str(&format!("DETECTOR({memory_detector_i}, 0) rec[{cur}]\n"));
                         memory_detector_i += 1;
                     }
                 }
@@ -849,10 +842,7 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
                 continue;
             }
             let rel = abs - rec_count;
-            out.push_str(&format!(
-                "# frame_z source={} rec[{rel}]\n",
-                upd.source
-            ));
+            out.push_str(&format!("# frame_z source={} rec[{rel}]\n", upd.source));
         }
     }
 
@@ -870,7 +860,10 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
     Ok(out)
 }
 
-fn emit_round_body(out: &mut String, round: &crate::expand::PhysicalRound) -> Result<(), ExperimentError> {
+fn emit_round_body(
+    out: &mut String,
+    round: &crate::expand::PhysicalRound,
+) -> Result<(), ExperimentError> {
     if round.z_cnot_count > round.entangling.len() {
         return Err(ExperimentError::InvalidZCnotCount {
             z_cnot_count: round.z_cnot_count,
@@ -929,9 +922,7 @@ fn logical_observable_atoms(block: &ExpandedBlock, basis: LogicalBasis) -> Vec<u
                 // Top row of the d×d data grid.
                 LogicalBasis::Z => block.data_atoms.iter().take(d).map(|a| a.0).collect(),
                 // Left column.
-                LogicalBasis::X => (0..d)
-                    .map(|r| block.data_atoms[r * d].0)
-                    .collect(),
+                LogicalBasis::X => (0..d).map(|r| block.data_atoms[r * d].0).collect(),
             }
         }
     }
@@ -1020,7 +1011,9 @@ fn check_graph_stabilizers(block: &ExpandedBlock) -> Result<Vec<StabilizerCheck>
         .collect())
 }
 
-fn measurement_schedule_from_expanded(expanded: &ExpandedWorkload) -> Vec<MeasurementScheduleEntry> {
+fn measurement_schedule_from_expanded(
+    expanded: &ExpandedWorkload,
+) -> Vec<MeasurementScheduleEntry> {
     expanded
         .rounds
         .iter()
@@ -1036,11 +1029,7 @@ fn measurement_schedule_from_expanded(expanded: &ExpandedWorkload) -> Vec<Measur
                     let mut atoms = Vec::new();
                     let mut basis = None;
                     for term in &round.terminal {
-                        if let RoundTerminal::Measure {
-                            atom,
-                            basis: b,
-                        } = term
-                        {
+                        if let RoundTerminal::Measure { atom, basis: b } = term {
                             atoms.push(atom.0);
                             basis = Some(*b);
                         }
@@ -1452,10 +1441,7 @@ mod tests {
             std::path::PathBuf::from("/tmp/rep_d3.stim")
         );
         let p2 = std::path::Path::new("exp.json");
-        assert_eq!(
-            sibling_stim_path(p2),
-            std::path::PathBuf::from("exp.stim")
-        );
+        assert_eq!(sibling_stim_path(p2), std::path::PathBuf::from("exp.stim"));
     }
 
     #[test]
@@ -1496,7 +1482,10 @@ mod tests {
         let mut expanded = repetition_d3_two_rounds();
         expanded.blocks[0].stabilizers.clear();
         let err = check_graph_stabilizers(&expanded.blocks[0]).expect_err("missing");
-        assert!(matches!(err, ExperimentError::MissingStabilizers), "{err:?}");
+        assert!(
+            matches!(err, ExperimentError::MissingStabilizers),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -1636,15 +1625,17 @@ mod tests {
             }
         }
         let err = emit_stim_structure(&expanded).expect_err("overflow");
-        assert!(matches!(err, ExperimentError::InvalidZCnotCount { .. }), "{err:?}");
+        assert!(
+            matches!(err, ExperimentError::InvalidZCnotCount { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]
     fn stabilizer_check_basis_defaults_to_z_for_255_consumers() {
-        let check: StabilizerCheck = serde_json::from_str(
-            r#"{"logical_id":0,"check_atom":1,"data_atoms":[0,2]}"#,
-        )
-        .expect("default basis");
+        let check: StabilizerCheck =
+            serde_json::from_str(r#"{"logical_id":0,"check_atom":1,"data_atoms":[0,2]}"#)
+                .expect("default basis");
         assert_eq!(check.basis, LogicalBasis::Z);
     }
 
@@ -1744,7 +1735,11 @@ mod tests {
                 .all(|u| !u.condition_atoms.is_empty()),
             "frame updates must be outcome-conditioned"
         );
-        assert!(exp.logical_observables.len() >= 2, "{:?}", exp.logical_observables);
+        assert!(
+            exp.logical_observables.len() >= 2,
+            "{:?}",
+            exp.logical_observables
+        );
 
         assert!(stim.contains("lattice-surgery CX"), "{stim}");
         assert!(stim.contains("L-shaped"), "{stim}");
@@ -1788,10 +1783,7 @@ mod tests {
         }
         // Regression: old bug emitted DETECTOR per seam measure (2*d + 1 = 7+)
         // in addition to memory checks. Memory-only path has 2 rounds × 4 Z checks = 8.
-        let detector_lines: Vec<_> = stim
-            .lines()
-            .filter(|l| l.starts_with("DETECTOR"))
-            .collect();
+        let detector_lines: Vec<_> = stim.lines().filter(|l| l.starts_with("DETECTOR")).collect();
         assert_eq!(
             detector_lines.len(),
             8,
@@ -1819,7 +1811,8 @@ print("ok faulty fires")
             .output();
         if let Ok(output) = py {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if !(stderr.contains("ModuleNotFoundError") || stderr.contains("No module named 'stim'"))
+            if !(stderr.contains("ModuleNotFoundError")
+                || stderr.contains("No module named 'stim'"))
             {
                 assert!(
                     output.status.success(),
@@ -1834,10 +1827,7 @@ print("ok faulty fires")
     fn lattice_surgery_stim_noiseless_codespace_and_observables() {
         let expanded = surface_d3_cx_expanded();
         let stim = emit_stim_structure(&expanded).expect("stim");
-        let dir = std::env::temp_dir().join(format!(
-            "quon-qec-250-stim-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("quon-qec-250-stim-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("tmpdir");
         let stim_path = dir.join("cx_d3.stim");
@@ -1872,7 +1862,8 @@ print(f"ok dets={{c.num_detectors}} obs={{c.num_observables}}")
         match py {
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                if stderr.contains("ModuleNotFoundError") || stderr.contains("No module named 'stim'")
+                if stderr.contains("ModuleNotFoundError")
+                    || stderr.contains("No module named 'stim'")
                 {
                     eprintln!("skip stim correctness: stim not installed ({stderr})");
                 } else {

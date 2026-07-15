@@ -16,8 +16,7 @@ use quon_na::{
     MeasurementBasis, MovementGroup, NaScheduleOptions, NetRate, NeutralAtomAction,
     RESOURCE_REPORT_EVIDENCE_DISCLAIMER, RESOURCE_REPORT_EVIDENCE_KIND, ResourceReport,
     ScheduleLayer, SiteId, TransferDirection, TrapTransfer, build_resource_report,
-    expand_code_block, resource_report_to_json, resource_report_to_markdown,
-    run_from_qec_workload,
+    expand_code_block, resource_report_to_json, resource_report_to_markdown, run_from_qec_workload,
 };
 use quon_qec::{LogicalBasis, SourceFamily, WorkloadBuilder};
 use serde_json::Value;

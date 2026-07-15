@@ -262,7 +262,8 @@ impl WorkloadBuilder {
             return Err(WorkloadError::AlreadyMeasured(logical_id.0));
         }
         self.live.remove(&logical_id);
-        self.ops.push(WorkloadOp::MeasureLogical { logical_id, basis });
+        self.ops
+            .push(WorkloadOp::MeasureLogical { logical_id, basis });
         Ok(())
     }
 

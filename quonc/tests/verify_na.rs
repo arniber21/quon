@@ -190,10 +190,7 @@ fn standalone_mlir_rejects_duplicate_occupancy() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("occupancy"),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("occupancy"), "stderr: {stderr}");
 }
 
 #[test]

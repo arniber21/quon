@@ -83,9 +83,7 @@ fn bell_emits_na_schedule_and_resource_report() {
     let budget = report
         .get("error_budget")
         .expect("resource report must include error_budget when target has error_model");
-    let stages = report["rydberg_stages"]
-        .as_u64()
-        .expect("rydberg_stages") as f64;
+    let stages = report["rydberg_stages"].as_u64().expect("rydberg_stages") as f64;
     let rydberg = budget["rydberg"].as_f64().expect("error_budget.rydberg");
     // generic_rna_v0.json error_model.rydberg = 0.002
     assert!(

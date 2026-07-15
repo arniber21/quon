@@ -447,10 +447,7 @@ impl fmt::Display for TypeError {
             ),
             TypeError::KindMismatch {
                 expected, found, ..
-            } => write!(
-                f,
-                "kind mismatch: expected `{expected}`, found `{found}`"
-            ),
+            } => write!(f, "kind mismatch: expected `{expected}`, found `{found}`"),
             TypeError::InvalidQecDistance {
                 family, distance, ..
             } => match *family {

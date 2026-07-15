@@ -20,10 +20,8 @@ fn na_target() -> PathBuf {
 #[test]
 fn surface_d3_memory_resource_counts() {
     let source = workspace_path("../examples/na_qec/surface_d3_memory.qn");
-    let report_path = std::env::temp_dir().join(format!(
-        "quon-qec-249-report-{}.json",
-        std::process::id()
-    ));
+    let report_path =
+        std::env::temp_dir().join(format!("quon-qec-249-report-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&report_path);
 
     let output = quonc()
@@ -44,8 +42,8 @@ fn surface_d3_memory_resource_counts() {
 
     let report_text = std::fs::read_to_string(&report_path)
         .unwrap_or_else(|e| panic!("read report {}: {e}", report_path.display()));
-    let report: Value =
-        serde_json::from_str(&report_text).unwrap_or_else(|e| panic!("parse JSON: {e}\n{report_text}"));
+    let report: Value = serde_json::from_str(&report_text)
+        .unwrap_or_else(|e| panic!("parse JSON: {e}\n{report_text}"));
 
     assert_eq!(report["logical_qubits"], 1);
     assert_eq!(report["physical_atoms"], 17);

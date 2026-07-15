@@ -10,6 +10,7 @@ Static analysis and refinement-type checks for the Quon workspace.
 | ------- | ------- |
 | `just doctor` | Readiness matrix (LLVM/`MLIR_SYS_220_PREFIX`, z3, `.venv`+Qiskit, lit, FileCheck, `quonc`). Required rows fail; optional WARN. `just doctor --strict` fails on WARN too. |
 | `just setup-python` | Create `.venv`, install `python/requirements.txt` + `lit` |
+| `.venv/bin/python -m pytest python -q` | Local one-shot run of the Python harness tests (same unittest suites `just ci-rust` runs one-by-one via `python -m unittest`; `pytest` comes from `python/requirements.txt`). The two quonc-integration tests want a fresh `target/release/quonc` (or `QUONC=target/debug/quonc`) |
 | `just test-fast` | `cargo test --workspace --exclude flux_verify` (lit soft-skips if tools missing; no Aer) |
 | `just test-ci` | Local CI parity: `ci-rust` + `ci-tooling` + `ci-docs-assert` (not the website build) |
 | `just ci-rust` | What the `ci.yml` `rust` job runs (sets `QUON_REQUIRE_LIT`); its `cargo test --workspace` step already includes the sample corpus catalog lint (`quonc/tests/samples_catalog.rs`, ADR-0025 / #185) as an ordinary workspace test crate |
@@ -41,7 +42,7 @@ This table is an adapter of the **Justfile** recipes invoked by `.github/workflo
 
 Local `lit test/lit/ -v` remains useful for verbose FileCheck output. CI and `just test-ci` require the suite via `QUON_REQUIRE_LIT`; bare `cargo test` / `just test-fast` still soft-skip when tools are missing.
 
-**ADR/docs drift:** borrow cleanup semantics vs ADR-0003 are tracked in [#180](https://github.com/arniber21/quon/issues/180) — do not “fix” borrow docs from this validation matrix.
+**ADR/docs drift:** borrow cleanup semantics vs ADR-0003 were tracked in [#180](https://github.com/arniber21/quon/issues/180) (now closed) — check that issue's resolution before touching borrow docs from this validation matrix.
 
 ## Tooling gates (quonfmt · quonlint · LSP)
 

@@ -1424,9 +1424,7 @@ fn reference_algorithm_fixtures_type_check() {
 
 #[test]
 fn qec_block_is_linear_resource() {
-    accepts(
-        "fn f(b: QecBlock<Repetition, 3>): QecBlock<Repetition, 3> = b",
-    );
+    accepts("fn f(b: QecBlock<Repetition, 3>): QecBlock<Repetition, 3> = b");
     rejects(
         "fn f(b: QecBlock<Repetition, 3>): (QecBlock<Repetition, 3>, QecBlock<Repetition, 3>) = (b, b)",
     );
@@ -1463,7 +1461,11 @@ fn qec_invalid_distance_rejected() {
   measure_logical_z(b)
 }"
         ),
-        TypeError::InvalidQecDistance { family: "repetition", distance: 1, .. }
+        TypeError::InvalidQecDistance {
+            family: "repetition",
+            distance: 1,
+            ..
+        }
     ));
     assert!(matches!(
         reject_run_err(
@@ -1472,7 +1474,11 @@ fn qec_invalid_distance_rejected() {
   measure_logical_z(b)
 }"
         ),
-        TypeError::InvalidQecDistance { family: "surface", distance: 4, .. }
+        TypeError::InvalidQecDistance {
+            family: "surface",
+            distance: 4,
+            ..
+        }
     ));
     assert!(matches!(
         reject_run_err(
@@ -1481,7 +1487,10 @@ fn qec_invalid_distance_rejected() {
   measure_logical_z(b)
 }"
         ),
-        TypeError::InvalidQecDistance { family: "surface", .. }
+        TypeError::InvalidQecDistance {
+            family: "surface",
+            ..
+        }
     ));
 }
 
@@ -1751,7 +1760,11 @@ fn qec_surface_code_x_invalid_distance() {
                measure_logical_z(b)
              }"
         ),
-        TypeError::InvalidQecDistance { family: "surface", distance: 4, .. }
+        TypeError::InvalidQecDistance {
+            family: "surface",
+            distance: 4,
+            ..
+        }
     ));
 }
 
@@ -1839,4 +1852,3 @@ fn qec_let_bound_special_builtin_rejected_clearly() {
         }
     ));
 }
-

@@ -649,9 +649,7 @@ fn greedy_merge_respects_atom_hazard_cycle_order() {
     let deps = infer_atom_dependencies(&req.layers);
     assert!(
         deps.iter().any(|d| {
-            d.before == 1
-                && d.after == 2
-                && d.kind == ScheduleDependencyKind::AtomHazard
+            d.before == 1 && d.after == 2 && d.kind == ScheduleDependencyKind::AtomHazard
         }),
         "Move(atom2) must AtomHazard-precede Entangle(2,3)"
     );
@@ -692,11 +690,13 @@ fn greedy_merge_respects_atom_hazard_cycle_order() {
         .layers
         .iter()
         .find(|l| {
-            l.actions.iter().any(|a| matches!(
-                a,
-                NeutralAtomAction::Entangle2 { atoms, .. }
-                    if atoms[0] == AtomId(2) || atoms[1] == AtomId(2)
-            ))
+            l.actions.iter().any(|a| {
+                matches!(
+                    a,
+                    NeutralAtomAction::Entangle2 { atoms, .. }
+                        if atoms[0] == AtomId(2) || atoms[1] == AtomId(2)
+                )
+            })
         })
         .expect("e23")
         .cycle;

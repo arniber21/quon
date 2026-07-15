@@ -67,6 +67,13 @@ pub fn print_ty(t: &Sp<Type>, ctx: &mut Context<'_>) -> Doc {
                 Doc::text(")"),
             ])
         }
+        Type::QecBlock { family, distance } => Doc::group(Doc::concat([
+            Doc::text("QecBlock<"),
+            print_ty(family, ctx),
+            Doc::text(", "),
+            nat::print_nat(distance, ctx, nat::Prec::Top),
+            Doc::text(">"),
+        ])),
         Type::Var(n) => Doc::text(n.clone()),
         Type::Named { name, args } => {
             if args.is_empty() {

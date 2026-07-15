@@ -30,11 +30,11 @@ pub fn document_symbols(analysis: &DocumentAnalysis) -> Option<DocumentSymbolRes
                     .iter()
                     .map(|p| {
                         doc_symbol(
-                            p.0.clone(),
+                            p.name.0.clone(),
                             None,
                             SymbolKind::TYPE_PARAMETER,
-                            span_to_range(&analysis.src, p.1),
-                            span_to_range(&analysis.src, p.1),
+                            span_to_range(&analysis.src, p.name.1),
+                            span_to_range(&analysis.src, p.name.1),
                             Vec::new(),
                         )
                     })

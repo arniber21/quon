@@ -402,74 +402,6 @@ pub fn maybe_verify_na_schedule(
     verify_schedule_spec(spec).map_err(|e| format!("quantum.na verification failed: {e}"))
 }
 
-#[cfg(test)]
-mod verify_na_gate_tests {
-    use super::*;
-    use quon_na::dialect::{ActionSpec, LayerSpec, ScheduleSpec};
-
-    fn bad_measure_reuse_spec() -> ScheduleSpec {
-        ScheduleSpec {
-            target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
-            rydberg_range_um: 7.5,
-            min_rydberg_spacing_um: 18.75,
-            aod_min_separation_um: 2.0,
-            layers: vec![
-                LayerSpec {
-                    cycle: 0,
-                    actions: vec![ActionSpec::Measure {
-                        atom: 0,
-                        basis: "z".to_string(),
-                        duration_us: 10,
-                    }],
-                },
-                LayerSpec {
-                    cycle: 1,
-                    actions: vec![ActionSpec::Entangle {
-                        pairs: vec![quon_na::dialect::EntanglePairSpec {
-                            lhs: quon_na::dialect::PositionedAtom {
-                                atom: 0,
-                                x_um: 0.0,
-                                y_um: 0.0,
-                            },
-                            rhs: quon_na::dialect::PositionedAtom {
-                                atom: 1,
-                                x_um: 6.0,
-                                y_um: 0.0,
-                            },
-                        }],
-                        duration_us: 1,
-                    }],
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn qec_backed_gate_runs_verify_without_flag() {
-        let bad = bad_measure_reuse_spec();
-        assert!(
-            maybe_verify_na_schedule(&bad, false, true).is_err(),
-            "QEC-backed must verify even when verify_na=false"
-        );
-        assert!(
-            maybe_verify_na_schedule(&bad, false, false).is_ok(),
-            "physical without flag must skip verify"
-        );
-        assert!(
-            maybe_verify_na_schedule(&bad, true, false).is_err(),
-            "physical with --verify-na must verify"
-        );
-    }
-
-    #[test]
-    fn should_verify_na_matches_adr_0021() {
-        assert!(should_verify_na(false, true));
-        assert!(should_verify_na(true, false));
-        assert!(should_verify_na(true, true));
-        assert!(!should_verify_na(false, false));
-    }
-}
-
 /// Renders frontend diagnostics with a caret at the offending source span.
 pub fn print_diagnostics(
     source_path: &Path,
@@ -593,4 +525,72 @@ pub fn schedule_raw_graph(
     };
     let artifacts = run_from_graph(graph, na, opts, None)?;
     Ok((artifacts.request, artifacts.resource_report))
+}
+
+#[cfg(test)]
+mod verify_na_gate_tests {
+    use super::*;
+    use quon_na::dialect::{ActionSpec, LayerSpec, ScheduleSpec};
+
+    fn bad_measure_reuse_spec() -> ScheduleSpec {
+        ScheduleSpec {
+            target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
+            rydberg_range_um: 7.5,
+            min_rydberg_spacing_um: 18.75,
+            aod_min_separation_um: 2.0,
+            layers: vec![
+                LayerSpec {
+                    cycle: 0,
+                    actions: vec![ActionSpec::Measure {
+                        atom: 0,
+                        basis: "z".to_string(),
+                        duration_us: 10,
+                    }],
+                },
+                LayerSpec {
+                    cycle: 1,
+                    actions: vec![ActionSpec::Entangle {
+                        pairs: vec![quon_na::dialect::EntanglePairSpec {
+                            lhs: quon_na::dialect::PositionedAtom {
+                                atom: 0,
+                                x_um: 0.0,
+                                y_um: 0.0,
+                            },
+                            rhs: quon_na::dialect::PositionedAtom {
+                                atom: 1,
+                                x_um: 6.0,
+                                y_um: 0.0,
+                            },
+                        }],
+                        duration_us: 1,
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn qec_backed_gate_runs_verify_without_flag() {
+        let bad = bad_measure_reuse_spec();
+        assert!(
+            maybe_verify_na_schedule(&bad, false, true).is_err(),
+            "QEC-backed must verify even when verify_na=false"
+        );
+        assert!(
+            maybe_verify_na_schedule(&bad, false, false).is_ok(),
+            "physical without flag must skip verify"
+        );
+        assert!(
+            maybe_verify_na_schedule(&bad, true, false).is_err(),
+            "physical with --verify-na must verify"
+        );
+    }
+
+    #[test]
+    fn should_verify_na_matches_adr_0021() {
+        assert!(should_verify_na(false, true));
+        assert!(should_verify_na(true, false));
+        assert!(should_verify_na(true, true));
+        assert!(!should_verify_na(false, false));
+    }
 }

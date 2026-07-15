@@ -23,9 +23,7 @@ pub enum CollectError {
     Workload(#[from] WorkloadError),
     #[error("invalid QEC op `{op}`: {detail}")]
     InvalidOp { op: String, detail: String },
-    #[error(
-        "`{op}` attribute logical id {attr_id} does not match SSA operand logical id {ssa_id}"
-    )]
+    #[error("`{op}` attribute logical id {attr_id} does not match SSA operand logical id {ssa_id}")]
     LogicalIdMismatch {
         op: String,
         attr_id: u32,
@@ -121,12 +119,13 @@ fn collect_op(
     let name = op_name(&operation);
     match name.as_str() {
         op::CONSTRUCT => {
-            let family_s = qec_dynamic::read_string_attr(&operation, attr::FAMILY).map_err(|e| {
-                CollectError::InvalidOp {
-                    op: name.clone(),
-                    detail: e.to_string(),
-                }
-            })?;
+            let family_s =
+                qec_dynamic::read_string_attr(&operation, attr::FAMILY).map_err(|e| {
+                    CollectError::InvalidOp {
+                        op: name.clone(),
+                        detail: e.to_string(),
+                    }
+                })?;
             let family = SourceFamily::parse(&family_s).ok_or_else(|| CollectError::InvalidOp {
                 op: name.clone(),
                 detail: format!("unknown family `{family_s}`"),
@@ -284,8 +283,8 @@ pub fn collect_qec_workload(module: &Module<'_>) -> Result<QecWorkload, CollectE
 
 #[cfg(test)]
 mod tests {
-    use melior::ir::{Location, Value};
     use melior::Context;
+    use melior::ir::{Location, Value};
 
     use super::*;
     use crate::dialect::{qec_dynamic, quantum_dynamic};
@@ -322,7 +321,8 @@ mod tests {
             );
             let block = Value::from(r2.result(0).expect("r2"));
             body.append_operation(
-                qec_dynamic::qec_measure_logical(context, block, "z", 0, location).expect("measure"),
+                qec_dynamic::qec_measure_logical(context, block, "z", 0, location)
+                    .expect("measure"),
             );
 
             let workload = collect_qec_workload(&module).expect("collect");
@@ -462,8 +462,7 @@ mod tests {
                     .expect("rep"),
             );
             let b = body.append_operation(
-                qec_dynamic::qec_construct(context, "surface", 3, "z", 1, location)
-                    .expect("surf"),
+                qec_dynamic::qec_construct(context, "surface", 3, "z", 1, location).expect("surf"),
             );
             let a_v = Value::from(a.result(0).expect("a0"));
             let b_v = Value::from(b.result(0).expect("b0"));
@@ -510,7 +509,8 @@ mod tests {
             );
             let block = Value::from(c.result(0).expect("r0"));
             body.append_operation(
-                qec_dynamic::qec_measure_logical(context, block, "z", 0, location).expect("measure"),
+                qec_dynamic::qec_measure_logical(context, block, "z", 0, location)
+                    .expect("measure"),
             );
             // Reuse the pre-measure SSA value (builder-level use-after-measure).
             body.append_operation(

@@ -94,6 +94,8 @@ fn walk_expr(expr: &Sp<Expr>, src: &str, out: &mut Vec<FoldingRange>) {
         | Expr::Controlled(inner)
         | Expr::Return(inner)
         | Expr::Ascribe(inner, _) => walk_expr(inner, src, out),
+        // Type-level args are `NatExpr`s — only the callee can contain fold regions.
+        Expr::TypeApp { callee, .. } => walk_expr(callee, src, out),
         Expr::Tuple(es) | Expr::List(es) => {
             for e in es {
                 walk_expr(e, src, out);

@@ -128,14 +128,12 @@ fn expect_operand_qec<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     op: &'static str,
     index: usize,
 ) -> Result<(), VerifyError> {
-    let operand = operation
-        .operand(index)
-        .map_err(|_| VerifyError::Arity {
-            op,
-            role: "operand",
-            expected: (index + 1).to_string(),
-            found: operation.operand_count(),
-        })?;
+    let operand = operation.operand(index).map_err(|_| VerifyError::Arity {
+        op,
+        role: "operand",
+        expected: (index + 1).to_string(),
+        found: operation.operand_count(),
+    })?;
     if !is_qec_block_type(operand.r#type()) {
         return Err(VerifyError::WrongValueType {
             op,
@@ -188,11 +186,12 @@ fn verify_construct<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     expect_counts(operation, op::CONSTRUCT, 0, 1)?;
     expect_result_qec(operation, op::CONSTRUCT, 0)?;
     let family_s = require_string_attr(operation, op::CONSTRUCT, attr::FAMILY)?;
-    let family = quon_qec::SourceFamily::parse(&family_s).ok_or(VerifyError::WrongAttributeType {
-        op: op::CONSTRUCT,
-        attr: attr::FAMILY,
-        expected: "\"repetition\" or \"surface\"",
-    })?;
+    let family =
+        quon_qec::SourceFamily::parse(&family_s).ok_or(VerifyError::WrongAttributeType {
+            op: op::CONSTRUCT,
+            attr: attr::FAMILY,
+            expected: "\"repetition\" or \"surface\"",
+        })?;
     let basis_s = require_string_attr(operation, op::CONSTRUCT, attr::BASIS)?;
     let basis = quon_qec::LogicalBasis::parse(&basis_s).ok_or(VerifyError::WrongAttributeType {
         op: op::CONSTRUCT,

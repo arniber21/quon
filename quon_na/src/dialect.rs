@@ -411,9 +411,7 @@ pub enum VerifyError {
         reset_cycle: u32,
         measure_cycle: u32,
     },
-    #[error(
-        "module: expected a top-level quantum.na.schedule op, found none"
-    )]
+    #[error("module: expected a top-level quantum.na.schedule op, found none")]
     MissingSchedule,
     #[error("failed to parse quantum.na MLIR module")]
     ParseFailed,
@@ -452,7 +450,12 @@ pub fn verify<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(),
 
 /// Verify every top-level `quantum.na.schedule` in a parsed MLIR module.
 pub fn verify_module(module: &Module<'_>) -> Result<(), VerifyError> {
-    let Some(body) = module.as_operation().region(0).ok().and_then(|r| r.first_block()) else {
+    let Some(body) = module
+        .as_operation()
+        .region(0)
+        .ok()
+        .and_then(|r| r.first_block())
+    else {
         return Err(VerifyError::MissingSchedule);
     };
     let mut op = body.first_operation();
@@ -1082,8 +1085,9 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
 
     // Pass 1: per cycle, any Use conflicts with measure/reset of the same atom
     // regardless of op order within that cycle (including across same-cycle layers).
-    let mut cycle_atoms: BTreeMap<u32, (BTreeSet<u32>, BTreeSet<u32>, BTreeSet<u32>)> =
-        BTreeMap::new();
+    // Per-cycle (measured, reset, used) atom sets.
+    type CycleAtomSets = BTreeMap<u32, (BTreeSet<u32>, BTreeSet<u32>, BTreeSet<u32>)>;
+    let mut cycle_atoms: CycleAtomSets = BTreeMap::new();
     for layer in layers {
         let entry = cycle_atoms
             .entry(layer.cycle)
@@ -1103,13 +1107,13 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
         }
     }
     for (cycle, (measured, reset, used)) in &cycle_atoms {
-        for &atom in measured.intersection(used) {
+        if let Some(&atom) = measured.intersection(used).next() {
             return Err(VerifyError::MeasureUseSameCycle {
                 cycle: *cycle,
                 atom,
             });
         }
-        for &atom in reset.intersection(used) {
+        if let Some(&atom) = reset.intersection(used).next() {
             return Err(VerifyError::ResetUseSameCycle {
                 cycle: *cycle,
                 atom,
@@ -1131,9 +1135,8 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
         for event in &layer.events {
             match *event {
                 AtomEvent::Measure(atom) => {
-                    if let Some(AtomPhase::Measured {
-                        cycle: first_cycle,
-                    }) = phase.get(&atom).copied()
+                    if let Some(AtomPhase::Measured { cycle: first_cycle }) =
+                        phase.get(&atom).copied()
                     {
                         return Err(VerifyError::DoubleMeasureWithoutReset {
                             atom,
@@ -1144,9 +1147,7 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
                     // Invariant: with non-decreasing cycles, reset→measure with
                     // measure_cycle < reset_cycle cannot occur. The only live
                     // ResetBeforeMeasure case is same-cycle reset preceding measure.
-                    if let Some(AtomPhase::Reset {
-                        cycle: reset_cycle,
-                    }) = phase.get(&atom).copied()
+                    if let Some(AtomPhase::Reset { cycle: reset_cycle }) = phase.get(&atom).copied()
                         && layer.cycle == reset_cycle
                     {
                         return Err(VerifyError::ResetBeforeMeasure {
@@ -1177,9 +1178,8 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
                         {
                             phase.remove(&atom);
                         }
-                        Some(AtomPhase::Measured { .. })
-                        | Some(AtomPhase::Reset { .. })
-                        | None => {}
+                        Some(AtomPhase::Measured { .. }) | Some(AtomPhase::Reset { .. }) | None => {
+                        }
                     }
                 }
             }

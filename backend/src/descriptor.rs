@@ -411,10 +411,7 @@ fn neutral_atom_from_descriptor(
                 d.fidelity.coherence_time_us,
             )?,
         },
-        error_model: d
-            .error_model
-            .map(error_model_from_descriptor)
-            .transpose()?,
+        error_model: d.error_model.map(error_model_from_descriptor).transpose()?,
         cost_model: NeutralAtomCostModel {
             rydberg_stage_weight: non_negative_f64(
                 "cost_model.rydberg_stage_weight",
