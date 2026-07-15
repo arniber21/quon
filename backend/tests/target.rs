@@ -27,6 +27,20 @@ fn neutral_sample_json() -> String {
     .expect("read neutral atom sample")
 }
 
+fn neutral_sample_value() -> serde_json::Value {
+    serde_json::from_str(&neutral_sample_json()).expect("parse neutral atom sample")
+}
+
+fn with_error_model_mutated(mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) -> String {
+    let mut value = neutral_sample_value();
+    let model = value
+        .get_mut("error_model")
+        .and_then(|v| v.as_object_mut())
+        .expect("error_model object");
+    mutate(model);
+    value.to_string()
+}
+
 // --- generic_openqasm ------------------------------------------------------
 
 #[test]
@@ -412,6 +426,175 @@ fn generic_neutral_atom_target_loads_correctly() {
     assert_eq!(na.movement.aod_rows, 100);
     assert_eq!(na.movement.aod_cols, 100);
     assert_eq!(na.interaction.min_rydberg_spacing_um, 18.75);
+
+    let error_model = na
+        .error_model
+        .as_ref()
+        .expect("generic_rna_v0 includes an example error_model");
+    // Placeholder rates — deliberately not 1 - fidelity.* (ADR-0017).
+    assert_eq!(error_model.rydberg, 0.002);
+    assert_eq!(error_model.measurement, 0.003);
+    assert_eq!(error_model.reset, 0.004);
+    assert_eq!(error_model.movement, 0.0005);
+    assert_eq!(error_model.transfer, 0.0007);
+    assert_eq!(error_model.idle_per_us, 2e-9);
+    assert_eq!(na.fidelity.cz, 0.995);
+    assert!((error_model.rydberg - (1.0 - na.fidelity.cz)).abs() > 1e-9);
+}
+
+#[test]
+fn neutral_atom_error_model_is_optional() {
+    let mut value = neutral_sample_value();
+    value
+        .as_object_mut()
+        .expect("object")
+        .remove("error_model");
+    let target = json::from_str(&value.to_string()).expect("target without error_model should load");
+    let na = target
+        .neutral_atom_target()
+        .expect("expected neutral atom target");
+    assert!(na.error_model.is_none());
+    assert!(
+        matches!(
+            na.require_error_model(),
+            Err(BackendError::MissingErrorModel)
+        ),
+        "QEC paths must hard-fail when error_model is absent"
+    );
+    assert!(
+        na.require_error_model()
+            .unwrap_err()
+            .to_string()
+            .contains("--emit-resource-report")
+    );
+}
+
+#[test]
+fn neutral_atom_error_model_rejects_unknown_fields() {
+    let src = with_error_model_mutated(|m| {
+        m.insert("typo_rate".into(), serde_json::json!(0.1));
+    });
+    let err = json::from_str(&src).unwrap_err();
+    assert!(
+        matches!(err, BackendError::Json(_)),
+        "got {err:?}"
+    );
+    assert!(err.to_string().contains("typo_rate") || err.to_string().contains("unknown field"));
+}
+
+#[test]
+fn neutral_atom_error_model_rejects_incomplete_object() {
+    let src = with_error_model_mutated(|m| {
+        m.remove("reset");
+    });
+    let err = json::from_str(&src).unwrap_err();
+    assert!(
+        matches!(err, BackendError::Json(_)),
+        "got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("reset") || err.to_string().contains("missing field"),
+        "got {err}"
+    );
+}
+
+#[test]
+fn neutral_atom_error_model_rejects_missing_key() {
+    let src = with_error_model_mutated(|m| {
+        m.remove("movement");
+    });
+    let err = json::from_str(&src).unwrap_err();
+    assert!(matches!(err, BackendError::Json(_)), "got {err:?}");
+    assert!(
+        err.to_string().contains("movement") || err.to_string().contains("missing field"),
+        "got {err}"
+    );
+}
+
+#[test]
+fn neutral_atom_error_model_rejects_out_of_range_probability() {
+    let src = with_error_model_mutated(|m| {
+        m.insert("rydberg".into(), serde_json::json!(1.5));
+    });
+    let err = json::from_str(&src).unwrap_err();
+    assert!(
+        matches!(err, BackendError::InvalidTargetConfig(_)),
+        "got {err:?}"
+    );
+    assert!(err.to_string().contains("error_model.rydberg"));
+}
+
+#[test]
+fn neutral_atom_error_model_rejects_negative_probability() {
+    let src = with_error_model_mutated(|m| {
+        m.insert("measurement".into(), serde_json::json!(-0.01));
+    });
+    let err = json::from_str(&src).unwrap_err();
+    assert!(
+        matches!(err, BackendError::InvalidTargetConfig(_)),
+        "got {err:?}"
+    );
+    assert!(err.to_string().contains("error_model.measurement"));
+}
+
+#[test]
+fn neutral_atom_error_model_round_trips_fields() {
+    let target = json::load(&workspace_path(
+        "../targets/neutral_atom/generic_rna_v0.json",
+    ))
+    .expect("load");
+    let na = target.neutral_atom_target().expect("na");
+    let model = na.require_error_model().expect("error_model present");
+    let snap = model.error_model_snapshot();
+    assert_eq!(snap.rydberg, model.rydberg);
+    assert_eq!(snap.measurement, model.measurement);
+    assert_eq!(snap.reset, model.reset);
+    assert_eq!(snap.movement, model.movement);
+    assert_eq!(snap.transfer, model.transfer);
+    assert_eq!(snap.idle_per_us, model.idle_per_us);
+
+    let wire = serde_json::to_value(snap).expect("serialize snapshot");
+    let back: backend::NeutralAtomErrorModelSnapshot =
+        serde_json::from_value(wire).expect("deserialize snapshot");
+    assert_eq!(back, snap);
+
+    let domain = backend::NeutralAtomErrorModel::try_from(snap).expect("snapshot → domain");
+    assert_eq!(&domain, model);
+
+    // Descriptor round-trip preserves error_model rates.
+    let desc = target.to_descriptor();
+    let reloaded = backend::BackendTarget::try_from(desc).expect("descriptor → target");
+    let na2 = reloaded.neutral_atom_target().expect("na");
+    assert_eq!(na2.error_model, na.error_model);
+}
+
+#[test]
+fn neutral_atom_error_model_snapshot_try_from_rejects_oor() {
+    let bad = backend::NeutralAtomErrorModelSnapshot {
+        rydberg: 1.5,
+        measurement: 0.0,
+        reset: 0.0,
+        movement: 0.0,
+        transfer: 0.0,
+        idle_per_us: 0.0,
+    };
+    let err = backend::NeutralAtomErrorModel::try_from(bad).expect_err("oor");
+    assert!(
+        matches!(err, BackendError::InvalidTargetConfig(_)),
+        "got {err:?}"
+    );
+    assert!(err.to_string().contains("error_model.rydberg"));
+}
+
+#[test]
+fn neutral_atom_require_error_model_succeeds_when_present() {
+    let target = json::load(&workspace_path(
+        "../targets/neutral_atom/generic_rna_v0.json",
+    ))
+    .expect("load");
+    let na = target.neutral_atom_target().expect("na");
+    let model = na.require_error_model().expect("error_model present");
+    assert!(model.rydberg > 0.0);
 }
 
 #[test]

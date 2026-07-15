@@ -719,12 +719,18 @@ fn hard_dep_forbids_same_cycle(
     false
 }
 
-/// Post-merge invariant: every Barrier / Measurement / FeedForward edge must
-/// satisfy `cycle(vertex(before)) < cycle(vertex(after))`.
+/// Post-merge invariant: every Barrier / Measurement / FeedForward **and**
+/// AtomHazard edge must satisfy `cycle(vertex(before)) < cycle(vertex(after))`.
 ///
 /// Same-cycle checks alone are insufficient — a side-merge can pull the
 /// successor onto an earlier cycle than the predecessor (e.g. merge an
-/// independent early entangle with a feed-forward correction).
+/// independent early entangle with a feed-forward correction, or merge an
+/// early E0 with a later E0 that still has unmet Move AtomHazards).
+///
+/// AtomHazard edges always connect overlapping atoms, so same-cycle is already
+/// illegal via `validate_conflicts`; the strict `<` check stops greedy from
+/// *reordering* a successor before its Move/Transfer predecessors by merging
+/// it into an earlier unrelated layer (occupancy/geometry bug at lower).
 fn hard_dep_cycle_order_ok(
     layers: &[ScheduleLayer],
     lineage: &[Vec<u32>],
@@ -737,7 +743,7 @@ fn hard_dep_cycle_order_ok(
         }
     }
     for d in deps {
-        if !is_hard_order_dep(d.kind) {
+        if !is_hard_order_dep(d.kind) && d.kind != ScheduleDependencyKind::AtomHazard {
             continue;
         }
         let Some(&u) = pre_to_vertex.get(&d.before) else {
@@ -942,9 +948,10 @@ fn try_merge_pair(
     if hard_dep_forbids_same_cycle(&lineage[i], &lineage[j], deps) {
         return Ok(MergeAttempt::HardFail(CompactionError::DependencyViolation));
     }
-    // Soft AtomHazard between layers: only merge if atoms become conflict-free
-    // (disjoint entangling atoms). any_dep_edge with AtomHazard alone does not
-    // forbid if validate_conflicts passes.
+    // Soft AtomHazard between the *pair*: same-cycle is ok only when atoms are
+    // conflict-free after union (`validate_conflicts`). Cycle *order* for every
+    // AtomHazard edge is still enforced via `hard_dep_cycle_order_ok` after the
+    // simulated merge (blocks pulling a successor before its Move preds).
 
     let class = classify_merge(&layers[i], &layers[j]);
     match class {

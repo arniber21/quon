@@ -5,9 +5,14 @@
 //! (`quon_na`) and experiment emit consume these types; this crate has no
 //! Melior / MLIR dependency.
 
+pub mod expand;
 pub mod family;
 pub mod workload;
 
+pub use expand::{
+    ExpandError, ExpandedBlock, ExpandedWorkload, PhysicalAtomId, PhysicalCnot, PhysicalRound,
+    RoundKind, RoundTerminal, expand_workload,
+};
 pub use family::{
     CodeFamily, NetRate, QecError, SourceFamily, atoms_per_logical, ceil_div, repetition_n,
     surface_n,

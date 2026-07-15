@@ -7,7 +7,7 @@
 //! 1. **Extract** interaction graph from the MLIR module (`mlir` feature)
 //! 2. **`schedule_from_graph`** → **`schedule_entangling_layers`**
 //! 3. **Zoned** (`schedule_zoned`) **or** flat AOD (`place` + `plan_aod_movement`)
-//! 4. **Optional compaction** ([`compact_schedule`], best-effort)
+//! 4. **Optional compaction** ([`compact_schedule`], fail-closed)
 //! 5. **Resource report** ([`build_resource_report`])
 //!
 //! Fixed (OpenQASM) physical passes live in `mlir_bridge::pipeline`.
@@ -16,13 +16,14 @@ use backend::{AodSpeedModelKind, NeutralAtomTarget, ZoneKind as BackendZoneKind}
 use thiserror::Error;
 
 use crate::compaction::{
-    CompactionOptions, LegalityLimits, compact_schedule, infer_atom_dependencies,
+    CompactionError, CompactionOptions, LegalityLimits, compact_schedule,
+    infer_atom_dependencies,
 };
 use crate::entangling_schedule::schedule_entangling_layers;
 use crate::graph::InteractionGraph;
 use crate::movement::{MovementParams, plan_aod_movement};
 use crate::placement::{PlacementStrategy, place};
-use crate::report::{ResourceReport, build_resource_report};
+use crate::report::{ResourceReport, attach_qec_error_budget, build_resource_report};
 use crate::schedule::ScheduleLayer;
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
 use crate::zoned::{PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, schedule_zoned};
@@ -84,6 +85,8 @@ pub enum NaPipelineError {
     #[cfg(feature = "mlir")]
     #[error("interaction-graph extraction failed: {0}")]
     Extract(#[from] ExtractError),
+    #[error("QEC hybrid expansion failed: {0}")]
+    QecExpand(#[from] quon_qec::ExpandError),
     #[error("schedule_from_graph failed: {0}")]
     ScheduleFromGraph(#[from] crate::schedule_entry::ScheduleFromGraphError),
     #[error("entangling-layer scheduling failed: {0}")]
@@ -94,6 +97,10 @@ pub enum NaPipelineError {
     Placement(#[from] crate::placement::PlacementError),
     #[error("AOD movement planning failed: {0}")]
     Movement(#[from] crate::movement::MovementPlanError),
+    #[error("schedule compaction failed: {0}")]
+    Compaction(#[from] CompactionError),
+    #[error("interaction id overflow while building QEC hybrid schedule")]
+    InteractionIdOverflow,
     #[error("resource report failed: {0}")]
     Report(#[from] crate::report::ReportError),
 }
@@ -240,28 +247,33 @@ pub fn run_from_graph(
 
     if opts.compact && !req.layers.is_empty() {
         let deps = infer_atom_dependencies(&req.layers);
-        let compact_opts = compaction_options(na, true);
-        match compact_schedule(req.clone(), &deps, &compact_opts) {
-            Ok(compacted) => {
-                if opts.dump_ir {
-                    eprintln!(
-                        "--- after compaction ---\nlayers={} (was {})",
-                        compacted.request.layers.len(),
-                        req.layers.len()
-                    );
-                }
-                req = compacted.request;
-            }
-            Err(e) => {
-                // Compaction is best-effort: keep the pre-compact schedule.
-                if opts.dump_ir {
-                    eprintln!("--- compaction skipped ({e}) ---");
-                }
-            }
+        // After movement, layout bindings are final occupancy — static R2/R3
+        // against that layout is not meaningful for earlier layers. Order-only
+        // compaction still fail-closes on software/dependency errors.
+        let compact_opts = CompactionOptions {
+            arch: None,
+            legality: None,
+            greedy: true,
+        };
+        let compacted = compact_schedule(req.clone(), &deps, &compact_opts)?;
+        if opts.dump_ir {
+            eprintln!(
+                "--- after compaction ---\nlayers={} (was {})",
+                compacted.request.layers.len(),
+                req.layers.len()
+            );
         }
+        req = compacted.request;
     }
 
     let report = build_resource_report(&req.layers, None, Some(logical_qubits.max(1)))?;
+    // Production path: attach analytic error_budget whenever the target carries
+    // an error_model (ADR-0017). `--emit-resource-report` in quonc additionally
+    // hard-requires the model so missing budgets fail at emit time.
+    let report = match na.error_model.as_ref() {
+        Some(model) => attach_qec_error_budget(report, Some(model))?,
+        None => report,
+    };
 
     Ok(NaScheduleArtifacts {
         layers: req.layers.clone(),

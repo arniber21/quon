@@ -626,6 +626,176 @@ fn zoned_entangle_only_passthrough() {
     assert_eq!(result.compacted_makespan_cycles, 1);
 }
 
+/// Greedy must not pull an entangle earlier than its Move AtomHazard by merging
+/// it with an unrelated earlier E0 layer (occupancy/geometry bug at lower).
+#[test]
+fn greedy_merge_respects_atom_hazard_cycle_order() {
+    let mut req = empty_req(4);
+    req.layers = vec![
+        layer(0, vec![entangle(0, 1)]),
+        layer(
+            1,
+            vec![NeutralAtomAction::Move(MovementGroup {
+                moves: vec![AtomMove {
+                    atom: AtomId(2),
+                    from: SiteId(2),
+                    to: SiteId(3),
+                }],
+                duration_us: 10,
+            })],
+        ),
+        layer(2, vec![entangle(2, 3)]),
+    ];
+    let deps = infer_atom_dependencies(&req.layers);
+    assert!(
+        deps.iter().any(|d| {
+            d.before == 1
+                && d.after == 2
+                && d.kind == ScheduleDependencyKind::AtomHazard
+        }),
+        "Move(atom2) must AtomHazard-precede Entangle(2,3)"
+    );
+    let opts = CompactionOptions {
+        greedy: true,
+        ..Default::default()
+    };
+    let result = compact_schedule(req, &deps, &opts).expect("compact");
+    let e2_cycles: Vec<u32> = result
+        .request
+        .layers
+        .iter()
+        .filter(|l| {
+            l.actions
+                .iter()
+                .any(|a| matches!(a, NeutralAtomAction::Entangle2 { .. }))
+        })
+        .map(|l| l.cycle)
+        .collect();
+    assert_eq!(
+        e2_cycles.len(),
+        2,
+        "E2(0,1) must not merge with E2(2,3) across an intervening Move"
+    );
+    let move_cycle = result
+        .request
+        .layers
+        .iter()
+        .find(|l| {
+            l.actions
+                .iter()
+                .any(|a| matches!(a, NeutralAtomAction::Move(_)))
+        })
+        .expect("move")
+        .cycle;
+    let e23_cycle = result
+        .request
+        .layers
+        .iter()
+        .find(|l| {
+            l.actions.iter().any(|a| matches!(
+                a,
+                NeutralAtomAction::Entangle2 { atoms, .. }
+                    if atoms[0] == AtomId(2) || atoms[1] == AtomId(2)
+            ))
+        })
+        .expect("e23")
+        .cycle;
+    assert!(
+        move_cycle < e23_cycle,
+        "Move cycle {move_cycle} must precede Entangle(2,3) cycle {e23_cycle}"
+    );
+}
+
+/// Within-round atom-disjoint E0 still merges when no Wait/round cut separates them.
+#[test]
+fn within_round_disjoint_e0_merges() {
+    let mut req = empty_req(4);
+    req.layers = vec![
+        layer(0, vec![entangle(0, 1)]),
+        layer(1, vec![entangle(2, 3)]),
+    ];
+    let opts = CompactionOptions {
+        greedy: true,
+        ..Default::default()
+    };
+    let result = compact_schedule(req, &[], &opts).expect("compact");
+    assert!(result.compacted);
+    assert_eq!(result.request.layers.len(), 1);
+    assert_eq!(
+        result.request.layers[0]
+            .actions
+            .iter()
+            .filter(|a| matches!(a, NeutralAtomAction::Entangle2 { .. }))
+            .count(),
+        2
+    );
+}
+
+/// Wait / round Barrier cuts are causal: without them, atom-disjoint E0 across a
+/// Wait merges; with them, it does not. Deleting only the cuts must fail this test.
+#[test]
+fn wait_barrier_cuts_are_causal_for_cross_round_e0() {
+    let mut req = empty_req(4);
+    req.layers = vec![
+        layer(0, vec![entangle(0, 1)]),
+        layer(1, vec![NeutralAtomAction::Wait { duration_us: 1 }]),
+        layer(2, vec![entangle(2, 3)]),
+    ];
+    let atom_deps = infer_atom_dependencies(&req.layers);
+    assert!(
+        atom_deps.is_empty(),
+        "cross-Wait E2s are atom-disjoint → no AtomHazard"
+    );
+    let opts = CompactionOptions {
+        greedy: true,
+        ..Default::default()
+    };
+
+    let without = compact_schedule(req.clone(), &atom_deps, &opts).expect("without cuts");
+    let without_e2_layers = without
+        .request
+        .layers
+        .iter()
+        .filter(|l| {
+            l.actions
+                .iter()
+                .any(|a| matches!(a, NeutralAtomAction::Entangle2 { .. }))
+        })
+        .count();
+    assert_eq!(
+        without_e2_layers, 1,
+        "without Wait Barrier cuts, atom-disjoint E2∥E2 across Wait must merge"
+    );
+
+    let cuts = quon_na::round_barrier_cuts(&req.layers);
+    assert_eq!(cuts, vec![(1, 2)], "Wait → next Entangle cut");
+    let mut with_deps = atom_deps;
+    for &(before, after) in &cuts {
+        with_deps.push(ScheduleDependency {
+            before,
+            after,
+            kind: ScheduleDependencyKind::Barrier,
+        });
+    }
+    let with = compact_schedule(req, &with_deps, &opts).expect("with cuts");
+    let with_e2_same_cycle = with.request.layers.iter().any(|l| {
+        l.actions
+            .iter()
+            .filter(|a| matches!(a, NeutralAtomAction::Entangle2 { .. }))
+            .count()
+            >= 2
+    });
+    assert!(
+        !with_e2_same_cycle,
+        "with Wait Barrier cuts, cross-round E2∥E2 must not share a cycle"
+    );
+    assert_eq!(
+        with.request.layers.len(),
+        3,
+        "Wait cut must preserve three layers (no cross-round E0 merge)"
+    );
+}
+
 #[test]
 fn zone_reject_move_merge_without_simulator() {
     let mut req = empty_req(4);

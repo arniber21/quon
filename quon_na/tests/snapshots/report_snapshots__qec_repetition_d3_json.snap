@@ -18,6 +18,7 @@ expression: json
   "physical_atoms": 5,
   "atoms_per_logical": 5,
   "code_family": "repetition_code_toy",
+  "distance": 3,
   "estimated_cycles": 0,
   "bottleneck": "none"
 }

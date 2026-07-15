@@ -7,12 +7,15 @@
 //! Compaction (#108) may change schedule numbers; refreshing `.snap` files is
 //! intentional then.
 
+use backend::NeutralAtomErrorModel;
 use quon_na::{
     AodTrapRef, AtomId, AtomMove, BottleneckKind, CodeBlockId, CodeFamily, LogicalQubitId,
-    MeasurementBasis, MovementGroup, NetRate, NeutralAtomAction, ResourceReport, ScheduleLayer,
-    SiteId, TransferDirection, TrapTransfer, build_resource_report, expand_code_block,
-    resource_report_to_json, resource_report_to_markdown,
+    MeasurementBasis, MovementGroup, NaScheduleOptions, NetRate, NeutralAtomAction,
+    ResourceReport, ScheduleLayer, SiteId, TransferDirection, TrapTransfer, build_resource_report,
+    expand_code_block, resource_report_to_json, resource_report_to_markdown,
+    run_from_qec_workload,
 };
+use quon_qec::{LogicalBasis, SourceFamily, WorkloadBuilder};
 
 fn atom(id: u32) -> AtomId {
     AtomId(id)
@@ -139,6 +142,46 @@ fn qec_repetition_d3() {
 }
 
 #[test]
+fn qec_repetition_d3_hybrid_schedule_report() {
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../targets/neutral_atom/generic_rna_v0.json"
+    ));
+    let loaded = backend::json::load(path).expect("load target");
+    let na = loaded.neutral_atom_target().expect("na target").clone();
+
+    let mut b = WorkloadBuilder::new();
+    b.construct(
+        SourceFamily::Repetition,
+        3,
+        LogicalBasis::Z,
+        LogicalQubitId(0),
+    )
+    .expect("construct");
+    b.memory_round(LogicalQubitId(0)).expect("r1");
+    b.memory_round(LogicalQubitId(0)).expect("r2");
+    b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+        .expect("mz");
+    let workload = b.finish();
+
+    let artifacts = run_from_qec_workload(
+        &workload,
+        &na,
+        NaScheduleOptions {
+            compact: true,
+            dump_ir: false,
+            ..Default::default()
+        },
+    )
+    .expect("schedule");
+    let report = &artifacts.resource_report;
+    assert_eq!(report.distance, Some(3));
+    assert_eq!(report.memory_rounds, Some(2));
+    assert_eq!(report.code_family.as_deref(), Some("repetition_code_toy"));
+    assert_json_md("qec_repetition_d3_hybrid", report);
+}
+
+#[test]
 fn qec_qldpc_144_12_12_rate() {
     let logicals: Vec<_> = (0..12).map(LogicalQubitId).collect();
     let block = expand_code_block(
@@ -183,6 +226,22 @@ fn non_qec_physical_only() {
     assert!(!md.contains("Code family"));
     assert!(!md.contains("N/A"));
     assert_json_md("non_qec_physical_only", &report);
+}
+
+#[test]
+fn toy_with_error_budget() {
+    let layers = toy_move_entangle_measure_layers();
+    let model = NeutralAtomErrorModel {
+        rydberg: 0.002,
+        measurement: 0.003,
+        reset: 0.004,
+        movement: 0.0005,
+        transfer: 0.0007,
+        idle_per_us: 2e-9,
+    };
+    let report = ResourceReport::from_layers(&layers).with_error_budget(&model);
+    assert!(report.error_budget.is_some());
+    assert_json_md("toy_with_error_budget", &report);
 }
 
 #[test]

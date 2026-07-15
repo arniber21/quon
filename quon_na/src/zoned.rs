@@ -387,7 +387,19 @@ pub fn schedule_zoned(
         return Err(ZonedScheduleError::EmptySchedule);
     }
 
-    let (layout, _storage_sites, entangle_pairs) = build_zoned_layout(&req.graph, arch)?;
+    // Reuse an existing layout when present (QEC hybrid: place→move per round
+    // with continuous atom positions across rounds). Otherwise place fresh.
+    let (layout, _storage_sites, entangle_pairs) = match req.layout.take() {
+        Some(existing) => {
+            let (fresh, storage, pairs) = build_zoned_layout(&req.graph, arch)?;
+            let layout = NeutralAtomLayout {
+                sites: fresh.sites,
+                initial_bindings: existing.initial_bindings,
+            };
+            (layout, storage, pairs)
+        }
+        None => build_zoned_layout(&req.graph, arch)?,
+    };
     req.layout = Some(layout.clone());
 
     let mut atom_pos: BTreeMap<AtomId, Position> = BTreeMap::new();
