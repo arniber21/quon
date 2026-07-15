@@ -271,12 +271,28 @@ pub struct NeutralAtomTarget {
     pub native_gates: Vec<String>,
     pub timing: NeutralAtomTiming,
     pub fidelity: NeutralAtomFidelity,
+    /// Optional physical error probabilities for QEC reporting / experiment emit.
+    /// Absent when QEC error artifacts are requested is a hard failure — never
+    /// derived from [`Self::fidelity`] (ADR-0017).
+    pub error_model: Option<NeutralAtomErrorModel>,
     pub cost_model: NeutralAtomCostModel,
 }
 
 impl NeutralAtomTarget {
     pub fn is_native(&self, gate: &str) -> bool {
         self.native_gates.iter().any(|g| g == gate)
+    }
+
+    /// Return the physical error model, or [`BackendError::MissingErrorModel`].
+    ///
+    /// Call this when QEC error-budget reporting or `--emit-qec-experiment` is
+    /// requested. Do not convert from `fidelity`.
+    pub fn require_error_model(
+        &self,
+    ) -> Result<&NeutralAtomErrorModel, crate::error::BackendError> {
+        self.error_model
+            .as_ref()
+            .ok_or(crate::error::BackendError::MissingErrorModel)
     }
 
     /// Sum of `rows * cols` over zones of `kind`.
@@ -393,6 +409,20 @@ pub struct NeutralAtomFidelity {
     pub single_qubit: f64,
     pub atom_transfer: f64,
     pub coherence_time_us: f64,
+}
+
+/// Explicit physical error probabilities for QEC (ADR-0017).
+///
+/// Sibling to [`NeutralAtomFidelity`]; not derived as `1 - fidelity`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NeutralAtomErrorModel {
+    pub rydberg: f64,
+    pub measurement: f64,
+    pub reset: f64,
+    pub movement: f64,
+    pub transfer: f64,
+    pub idle_per_us: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

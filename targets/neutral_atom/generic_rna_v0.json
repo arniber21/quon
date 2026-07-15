@@ -62,6 +62,14 @@
     "atom_transfer": 0.999,
     "coherence_time_us": 1500000.0
   },
+  "error_model": {
+    "rydberg": 0.005,
+    "measurement": 0.01,
+    "reset": 0.01,
+    "movement": 0.001,
+    "transfer": 0.001,
+    "idle_per_us": 1e-9
+  },
   "cost_model": {
     "rydberg_stage_weight": 1.0,
     "movement_time_weight": 1.0,

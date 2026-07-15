@@ -81,8 +81,9 @@ pub use qec::{
     expand_code_block, repetition_n, surface_n,
 };
 pub use report::{
-    BottleneckKind, ReportError, ResourceReport, build_resource_report, resource_report_to_json,
-    resource_report_to_markdown, simultaneous_layer_time,
+    BottleneckKind, ErrorBudgetContributions, ReportError, ResourceReport,
+    attach_qec_error_budget, build_resource_report, require_target_error_model,
+    resource_report_to_json, resource_report_to_markdown, simultaneous_layer_time,
 };
 pub use schedule::{
     AtomMove, EntanglingAction, MeasurementBasis, MovementGroup, NeutralAtomAction, ScheduleError,

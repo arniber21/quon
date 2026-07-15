@@ -3,6 +3,7 @@
 //! Field names align with TUM RAP Table I / Enola headline metrics. See
 //! `docs/neutral_atom/architecture_model.md` §11.
 
+use backend::NeutralAtomErrorModel;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -46,7 +47,7 @@ impl BottleneckKind {
 }
 
 /// Aggregated resource metrics for a neutral-atom schedule.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceReport {
     pub rydberg_stages: u64,
@@ -80,6 +81,42 @@ pub struct ResourceReport {
     /// Max of rydberg / rearrangement / transfer / measurement scores.
     #[serde(default)]
     pub bottleneck: BottleneckKind,
+
+    /// Analytic physical error-budget contributions (rate × schedule counts).
+    /// Never logical error rates or thresholds (ADR-0017 / ADR-0020).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_budget: Option<ErrorBudgetContributions>,
+}
+
+/// Per-category physical error-budget contributions: `rate × schedule count`.
+///
+/// These are **not** logical failure probabilities or threshold estimates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ErrorBudgetContributions {
+    pub rydberg: f64,
+    pub measurement: f64,
+    pub reset: f64,
+    pub movement: f64,
+    pub transfer: f64,
+    pub idle: f64,
+}
+
+impl ErrorBudgetContributions {
+    /// `rate × count` only — uses report schedule aggregates, never fidelities.
+    pub fn from_schedule_and_model(
+        report: &ResourceReport,
+        model: &NeutralAtomErrorModel,
+    ) -> Self {
+        Self {
+            rydberg: model.rydberg * report.rydberg_stages as f64,
+            measurement: model.measurement * report.measurement_rounds as f64,
+            reset: model.reset * report.reset_rounds as f64,
+            movement: model.movement * report.rearrangement_steps as f64,
+            transfer: model.transfer * report.trap_transfers as f64,
+            idle: model.idle_per_us * report.wait_time_us as f64,
+        }
+    }
 }
 
 /// Failures from building a sized [`ResourceReport`].
@@ -87,6 +124,11 @@ pub struct ResourceReport {
 pub enum ReportError {
     #[error("qec code-block list was empty; pass None for non-QEC sizing")]
     EmptyCodeBlocks,
+    /// QEC error-budget reporting was requested but the target has no `error_model`.
+    #[error(
+        "QEC error budget requires target error_model; set error_model on the neutral-atom target (do not derive from fidelity)"
+    )]
+    MissingErrorModel,
     #[error(transparent)]
     Qec(#[from] QecError),
 }
@@ -275,6 +317,12 @@ impl ResourceReport {
 
         Ok(self)
     }
+
+    /// Overlay analytic physical error-budget contributions (rate × counts).
+    pub fn with_error_budget(mut self, model: &NeutralAtomErrorModel) -> Self {
+        self.error_budget = Some(ErrorBudgetContributions::from_schedule_and_model(&self, model));
+        self
+    }
 }
 
 /// Build a report from layers with optional QEC or physical-atom sizing.
@@ -301,6 +349,33 @@ pub fn build_resource_report(
     }
 
     Ok(report)
+}
+
+/// Attach QEC analytic error-budget contributions when requested.
+///
+/// Hard-fails with [`ReportError::MissingErrorModel`] if `error_model` is
+/// absent — used by resource-report QEC error budget and (future)
+/// `--emit-qec-experiment` (ADR-0017). Never invents defaults or converts
+/// from fidelity.
+pub fn attach_qec_error_budget(
+    report: ResourceReport,
+    error_model: Option<&NeutralAtomErrorModel>,
+) -> Result<ResourceReport, ReportError> {
+    let model = error_model.ok_or(ReportError::MissingErrorModel)?;
+    Ok(report.with_error_budget(model))
+}
+
+/// Resolve a target's error model for QEC error artifacts.
+///
+/// Maps [`backend::BackendError::MissingErrorModel`] into [`ReportError`].
+/// Prefer this (or [`backend::NeutralAtomTarget::require_error_model`]) from
+/// CLI paths that request QEC error reporting or `--emit-qec-experiment`.
+pub fn require_target_error_model(
+    target: &backend::NeutralAtomTarget,
+) -> Result<&NeutralAtomErrorModel, ReportError> {
+    target
+        .require_error_model()
+        .map_err(|_| ReportError::MissingErrorModel)
 }
 
 /// Pretty-printed JSON for a resource report (stable struct field order).
@@ -369,17 +444,34 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
     out.push_str(&format!("| Total time (µs) | {} |\n", report.total_time_us));
     out.push('\n');
 
+    if let Some(budget) = &report.error_budget {
+        out.push_str("## Physical error budget\n");
+        out.push_str("| Category | Contribution |\n");
+        out.push_str("| --- | ---: |\n");
+        out.push_str(&format!("| Rydberg | {} |\n", budget.rydberg));
+        out.push_str(&format!("| Measurement | {} |\n", budget.measurement));
+        out.push_str(&format!("| Reset | {} |\n", budget.reset));
+        out.push_str(&format!("| Movement | {} |\n", budget.movement));
+        out.push_str(&format!("| Transfer | {} |\n", budget.transfer));
+        out.push_str(&format!("| Idle | {} |\n", budget.idle));
+        out.push('\n');
+    }
+
     out.push_str("## Notes\n");
     out.push_str("- Field names align with TUM RAP Table I / Enola headline metrics.\n");
     out.push_str(
         "- `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).\n",
     );
     out.push_str("- Non-QEC reports omit atoms-per-logical and code-family rows.\n");
+    out.push_str(
+        "- Physical error budget lines (when present) are schedule-count × rate contributions only — not logical error rates or thresholds.\n",
+    );
     out
 }
 
 #[cfg(test)]
 mod tests {
+    use backend::NeutralAtomErrorModel;
     use serde_json::json;
 
     use super::*;
@@ -769,6 +861,7 @@ mod tests {
             code_family: None,
             estimated_cycles: 4,
             bottleneck: BottleneckKind::Rydberg,
+            error_budget: None,
         };
 
         let value = match serde_json::to_value(&report) {
@@ -859,5 +952,104 @@ mod tests {
         let md = resource_report_to_markdown(&report);
         assert!(md.contains("| Atoms per logical | 5 |"));
         assert!(md.contains("| Code family | repetition_code_toy |"));
+    }
+
+    fn example_error_model() -> NeutralAtomErrorModel {
+        NeutralAtomErrorModel {
+            rydberg: 0.005,
+            measurement: 0.01,
+            reset: 0.01,
+            movement: 0.001,
+            transfer: 0.001,
+            idle_per_us: 1e-9,
+        }
+    }
+
+    #[test]
+    fn error_budget_is_rate_times_schedule_counts() {
+        let report = ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
+        let budget = match report.error_budget {
+            Some(b) => b,
+            None => panic!("budget attached"),
+        };
+        // toy_layers: 2 rydberg stages, 1 meas round, 1 reset, 1 move, 1 transfer, 4 wait µs
+        assert!((budget.rydberg - 0.01).abs() < 1e-12);
+        assert!((budget.measurement - 0.01).abs() < 1e-12);
+        assert!((budget.reset - 0.01).abs() < 1e-12);
+        assert!((budget.movement - 0.001).abs() < 1e-12);
+        assert!((budget.transfer - 0.001).abs() < 1e-12);
+        assert!((budget.idle - 4e-9).abs() < 1e-18);
+    }
+
+    #[test]
+    fn attach_qec_error_budget_fails_when_model_missing() {
+        let report = ResourceReport::from_layers(&[]);
+        let err = attach_qec_error_budget(report, None);
+        assert_eq!(err, Err(ReportError::MissingErrorModel));
+    }
+
+    #[test]
+    fn attach_qec_error_budget_succeeds_when_model_present() {
+        let report = ResourceReport::from_layers(&toy_layers());
+        let report = match attach_qec_error_budget(report, Some(&example_error_model())) {
+            Ok(r) => r,
+            Err(e) => panic!("attach: {e}"),
+        };
+        assert!(report.error_budget.is_some());
+    }
+
+    #[test]
+    fn require_target_error_model_maps_missing() {
+        let path = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../targets/neutral_atom/generic_rna_v0.json"
+        ));
+        let loaded = match backend::json::load(path) {
+            Ok(t) => t,
+            Err(e) => panic!("load: {e}"),
+        };
+        let mut na = match loaded.neutral_atom_target() {
+            Some(t) => t.clone(),
+            None => panic!("expected neutral atom target"),
+        };
+        assert!(require_target_error_model(&na).is_ok());
+        na.error_model = None;
+        assert_eq!(
+            require_target_error_model(&na),
+            Err(ReportError::MissingErrorModel)
+        );
+    }
+
+    #[test]
+    fn markdown_includes_error_budget_when_set() {
+        let report = ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
+        let md = resource_report_to_markdown(&report);
+        assert!(md.contains("## Physical error budget"));
+        assert!(md.contains("| Rydberg | 0.01 |"));
+        assert!(md.contains("schedule-count × rate"));
+    }
+
+    #[test]
+    fn error_budget_never_uses_one_minus_fidelity() {
+        // Even if fidelity.cz = 0.995, budget uses explicit error_model.rydberg only.
+        let model = NeutralAtomErrorModel {
+            rydberg: 0.1, // deliberately not 1 - 0.995
+            measurement: 0.0,
+            reset: 0.0,
+            movement: 0.0,
+            transfer: 0.0,
+            idle_per_us: 0.0,
+        };
+        let report = ResourceReport {
+            rydberg_stages: 2,
+            ..ResourceReport::default()
+        }
+        .with_error_budget(&model);
+        let budget = match report.error_budget {
+            Some(b) => b,
+            None => panic!("budget"),
+        };
+        assert!((budget.rydberg - 0.2).abs() < 1e-12);
+        assert!((budget.rydberg - 2.0 * (1.0 - 0.995)).abs() > 1e-6);
     }
 }
