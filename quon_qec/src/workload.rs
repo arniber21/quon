@@ -1,8 +1,7 @@
 //! MLIR-free QEC workload IR (ADR-0015).
 //!
 //! Collected from `quantum.dynamic` QEC ops after monadic lowering. Hybrid
-//! schedule expansion into `quantum.na` is issue #248 — this module stops at
-//! the ordered op list plus per-block metadata.
+//! schedule expansion into `quantum.na` lives in [`crate::expand`] (#248).
 
 use std::collections::HashSet;
 

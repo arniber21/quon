@@ -1,0 +1,9 @@
+-- Repetition-code distance-3 memory: two syndrome rounds then logical Z
+-- measure. Compiles on the NA/QEC hybrid path (#248 / ADR-0016).
+
+fn repetition_d3_memory(): Q<Bit> = run {
+        b <- repetition_code<3>()
+        b <- memory_round(b)
+        b <- memory_round(b)
+        measure_logical_z(b)
+}

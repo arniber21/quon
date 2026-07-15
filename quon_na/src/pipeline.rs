@@ -84,6 +84,8 @@ pub enum NaPipelineError {
     #[cfg(feature = "mlir")]
     #[error("interaction-graph extraction failed: {0}")]
     Extract(#[from] ExtractError),
+    #[error("QEC hybrid expansion failed: {0}")]
+    QecExpand(#[from] quon_qec::ExpandError),
     #[error("schedule_from_graph failed: {0}")]
     ScheduleFromGraph(#[from] crate::schedule_entry::ScheduleFromGraphError),
     #[error("entangling-layer scheduling failed: {0}")]

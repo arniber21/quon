@@ -78,6 +78,12 @@ pub struct ResourceReport {
     /// Stable code-family label when a single family is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_family: Option<String>,
+    /// Code distance when a single homogeneous QEC family is set (#248).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<u64>,
+    /// Number of syndrome / memory rounds from the QEC workload (#248).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_rounds: Option<u64>,
 
     /// Number of schedule layers (`layers.len()`).
     #[serde(default)]
@@ -297,6 +303,8 @@ impl ResourceReport {
         self.logical_qubits = n;
         self.atoms_per_logical = None;
         self.code_family = None;
+        self.distance = None;
+        self.memory_rounds = None;
         self
     }
 
@@ -329,10 +337,12 @@ impl ResourceReport {
                 let per = atoms_per_logical(family)?;
                 self.atoms_per_logical = Some(u64::from(per));
                 self.code_family = Some(code_family_label(family).to_string());
+                self.distance = family.distance().map(u64::from);
             }
         } else {
             self.atoms_per_logical = None;
             self.code_family = None;
+            self.distance = None;
         }
 
         Ok(self)
@@ -440,6 +450,12 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
     }
     if let Some(ref family) = report.code_family {
         out.push_str(&format!("| Code family | {family} |\n"));
+    }
+    if let Some(distance) = report.distance {
+        out.push_str(&format!("| Distance | {distance} |\n"));
+    }
+    if let Some(rounds) = report.memory_rounds {
+        out.push_str(&format!("| Memory rounds | {rounds} |\n"));
     }
     out.push('\n');
 
@@ -920,6 +936,8 @@ mod tests {
             physical_atoms: 0,
             atoms_per_logical: None,
             code_family: None,
+            distance: None,
+            memory_rounds: None,
             estimated_cycles: 4,
             bottleneck: BottleneckKind::Rydberg,
             error_budget: None,
@@ -1013,6 +1031,7 @@ mod tests {
         let md = resource_report_to_markdown(&report);
         assert!(md.contains("| Atoms per logical | 5 |"));
         assert!(md.contains("| Code family | repetition_code_toy |"));
+        assert!(md.contains("| Distance | 3 |"));
     }
 
     fn example_error_model() -> NeutralAtomErrorModel {

@@ -11,6 +11,7 @@ expression: md
 | Physical atoms | 5 |
 | Atoms per logical | 5 |
 | Code family | repetition_code_toy |
+| Distance | 3 |
 
 ## Schedule metrics
 | Metric | Value |

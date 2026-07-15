@@ -1,12 +1,9 @@
 //! Front-to-back compile adapter: frontend lower → library pipelines → metrics.
 //!
 //! Pass order and Fixed/NA orchestration live in `mlir_bridge::pipeline` and
-//! `quon_na::pipeline`. This module collects CLI-facing request/report types and
-//! toolchain metadata.
-//!
-//! QEC workload collection (`mlir_bridge::collect_qec_workload`) is available
-//! after monadic lowering for tests (#251). Wiring that IR into the compile
-//! pipeline / NA hybrid schedule expansion is intentionally deferred to #248.
+//! `quon_na::pipeline`. After monadic lowering, QEC-backed programs
+//! (`collect_qec_workload` non-empty) take the hybrid round-expansion path
+//! (ADR-0016 / #248); bare-qubit NA programs keep `run_from_module`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,6 +18,7 @@ use quon_core::{
 use sha2::{Digest, Sha256};
 
 use backend::{BackendTarget, TargetKind};
+use mlir_bridge::collect_qec_workload;
 use mlir_bridge::emit::openqasm3;
 use mlir_bridge::metrics;
 use mlir_bridge::passes::{
@@ -34,7 +32,7 @@ use quon_na::{
     GraphScheduleRequest, InteractionGraph, NaBackendKind, NaScheduleOptions, NaScheduleView,
     NaScheduleViewMeta, NeutralAtomLayout, PlacementStrategy, PlacerMode, ResourceReport,
     ScheduleLayer, ScheduleLowerParams, ScheduleSpec, ScheduleViewZone, dump_schedule_text,
-    lower_schedule, run_from_graph, run_from_module,
+    lower_schedule, run_from_graph, run_from_module, run_from_qec_workload,
 };
 
 /// Inputs for one compile invocation.
@@ -216,7 +214,23 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 placement: request.na_placement,
                 dump_ir: request.dump_ir,
             };
-            let artifacts = run_from_module(&module, na, opts).map_err(|e| e.to_string())?;
+            // ADR-0016 / #248: QEC-backed entrypoints expand via workload IR;
+            // bare-qubit NA programs keep the interaction-graph extract path.
+            let workload =
+                collect_qec_workload(&module).map_err(|e| format!("QEC workload collect: {e}"))?;
+            let artifacts = if !workload.blocks.is_empty() {
+                if request.dump_ir {
+                    eprintln!(
+                        "--- QEC workload ---\nblocks={} ops={} memory_rounds={}",
+                        workload.blocks.len(),
+                        workload.ops.len(),
+                        workload.memory_round_count()
+                    );
+                }
+                run_from_qec_workload(&workload, na, opts).map_err(|e| e.to_string())?
+            } else {
+                run_from_module(&module, na, opts).map_err(|e| e.to_string())?
+            };
             // ADR-0011: quantum.na is the canonical schedule IR. A planner
             // schedule that cannot lower to it is a compile failure, not a
             // degraded artifact.
