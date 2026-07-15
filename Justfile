@@ -139,6 +139,7 @@ test-ci: ci-rust ci-tooling ci-docs-assert
 # fmt · clippy · build · examples · tests (QUON_REQUIRE_LIT) · Aer verify list
 ci-rust: setup-python
     #!/usr/bin/env bash
+    set -euo pipefail
     cargo fmt --all -- --check
     cargo clippy --workspace {{WORKSPACE_EXCLUDE}} --all-targets -- -D warnings
     cargo build --release --workspace {{WORKSPACE_EXCLUDE}}

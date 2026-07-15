@@ -164,6 +164,23 @@ pub struct ZonedScheduleResult {
     pub routing_cost: f64,
     pub rearrangement_steps: u64,
     pub trap_transfers: u64,
+    /// Number of per-layer gate-assignment calls where [`assign_aware_legal`]
+    /// found a full legal assignment within [`AWARE_NODE_BUDGET`] (uniform-cost
+    /// search, so this is the true joint-optimal for that layer). Always `0`
+    /// under [`PlacerMode::RoutingAgnostic`] (the concept doesn't apply).
+    pub aware_search_completed_layers: u64,
+    /// Per-layer calls where the aware search exhausted the expansion budget
+    /// before finding a full assignment and fell back to
+    /// [`assign_greedy_legal`] (issue #111 review finding: this makes a
+    /// budget-exhaustion fallback — which can silently reproduce the greedy
+    /// schedule byte-for-byte — visible instead of indistinguishable from "no
+    /// routing contention"). Always `0` under [`PlacerMode::RoutingAgnostic`].
+    pub aware_search_budget_exceeded_layers: u64,
+    /// Per-layer calls where the aware search exhausted its entire search
+    /// space (no legal full assignment exists, e.g. spacing/occupancy
+    /// conflicts) and fell back to [`assign_greedy_legal`]. Always `0` under
+    /// [`PlacerMode::RoutingAgnostic`].
+    pub aware_search_no_legal_assignment_layers: u64,
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -430,6 +447,9 @@ pub fn schedule_zoned(
     let mut total_routing_cost = 0.0;
     let mut rearrangement_steps = 0u64;
     let mut trap_transfers = 0u64;
+    let mut aware_search_completed_layers = 0u64;
+    let mut aware_search_budget_exceeded_layers = 0u64;
+    let mut aware_search_no_legal_assignment_layers = 0u64;
 
     let mut worklist: VecDeque<ScheduleLayer> = req.layers.iter().cloned().collect();
     while let Some(layer) = worklist.pop_front() {
@@ -457,6 +477,12 @@ pub fn schedule_zoned(
             PlacerMode::RoutingAgnostic => assign_greedy_legal(&gate_atoms, &inputs),
             PlacerMode::RoutingAware => assign_aware_legal(&gate_atoms, &inputs),
         };
+        match assignment.outcome {
+            AwareSearchOutcome::NotApplicable => {}
+            AwareSearchOutcome::Completed => aware_search_completed_layers += 1,
+            AwareSearchOutcome::BudgetExceeded => aware_search_budget_exceeded_layers += 1,
+            AwareSearchOutcome::NoLegalAssignment => aware_search_no_legal_assignment_layers += 1,
+        }
         if assignment.placed.is_empty() {
             let (a, b) = gate_atoms[*assignment.deferred.first().unwrap_or(&0)];
             return Err(ZonedScheduleError::NoLegalPair(a, b));
@@ -630,6 +656,9 @@ pub fn schedule_zoned(
         routing_cost: total_routing_cost,
         rearrangement_steps,
         trap_transfers,
+        aware_search_completed_layers,
+        aware_search_budget_exceeded_layers,
+        aware_search_no_legal_assignment_layers,
     })
 }
 
@@ -864,11 +893,40 @@ struct AssignInputs<'a> {
     conflict_um: f64,
 }
 
+/// Whether [`assign_aware_legal`]'s best-first search found the true
+/// joint-optimal assignment for a layer, or gave up and fell back to
+/// [`assign_greedy_legal`] (issue #111 review finding: a silent fallback here
+/// is indistinguishable from "no routing contention" unless it is surfaced).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AwareSearchOutcome {
+    /// [`assign_greedy_legal`] was called directly (routing-agnostic mode);
+    /// the aware-search-completion concept doesn't apply.
+    NotApplicable,
+    /// The search popped a full-assignment goal node within
+    /// [`AWARE_NODE_BUDGET`] expansions. Uniform-cost search (h = 0) pops
+    /// nodes in nondecreasing cost order, so this is the true joint-optimal
+    /// assignment for the layer, not an approximation.
+    Completed,
+    /// The search exhausted [`AWARE_NODE_BUDGET`] expansions before popping a
+    /// full-assignment goal node and fell back to [`assign_greedy_legal`].
+    BudgetExceeded,
+    /// The search exhausted its entire reachable space (heap emptied) with
+    /// no full legal assignment reachable at all (e.g. spacing/occupancy
+    /// conflicts) and fell back to [`assign_greedy_legal`].
+    NoLegalAssignment,
+}
+
 /// Result of a layer's pair assignment: gates placed this stage (with their
 /// oriented pair positions) and gates deferred to a follow-up stage.
 struct GateAssignment {
     placed: Vec<(usize, (Position, Position))>,
     deferred: Vec<usize>,
+    /// See [`AwareSearchOutcome`]. [`assign_greedy_legal`] always reports
+    /// [`AwareSearchOutcome::NotApplicable`] unless it was called as a
+    /// fallback from [`assign_aware_legal`], in which case the caller
+    /// overwrites this with the specific fallback reason.
+    outcome: AwareSearchOutcome,
 }
 
 fn atom_position_or_origin(atom_pos: &BTreeMap<AtomId, Position>, atom: AtomId) -> Position {
@@ -955,7 +1013,11 @@ fn assign_greedy_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) ->
             None => deferred.push(gate_index),
         }
     }
-    GateAssignment { placed, deferred }
+    GateAssignment {
+        placed,
+        deferred,
+        outcome: AwareSearchOutcome::NotApplicable,
+    }
 }
 
 #[derive(Clone)]
@@ -1025,11 +1087,14 @@ fn assign_aware_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) -> 
             return GateAssignment {
                 placed: node.assigned.into_iter().enumerate().collect(),
                 deferred: Vec::new(),
+                outcome: AwareSearchOutcome::Completed,
             };
         }
         expansions += 1;
         if expansions > AWARE_NODE_BUDGET {
-            break;
+            let mut fallback = assign_greedy_legal(gates, inputs);
+            fallback.outcome = AwareSearchOutcome::BudgetExceeded;
+            return fallback;
         }
         let (a, b) = gates[g];
         let pa = atom_position_or_origin(inputs.atom_pos, a);
@@ -1057,9 +1122,11 @@ fn assign_aware_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) -> 
             }
         }
     }
-    // No legal assignment of every gate this stage (or budget exhausted):
-    // place what greedy can and defer the rest.
-    assign_greedy_legal(gates, inputs)
+    // Heap exhausted: no legal assignment of every gate exists this stage.
+    // Place what greedy can and defer the rest.
+    let mut fallback = assign_greedy_legal(gates, inputs);
+    fallback.outcome = AwareSearchOutcome::NoLegalAssignment;
+    fallback
 }
 
 /// Tiny reference architecture for unit tests (not the full 73×101 geometry).
@@ -1337,6 +1404,130 @@ mod tests {
             "aware {} vs agnostic {}",
             aware.routing_cost,
             agnostic.routing_cost
+        );
+    }
+
+    /// Total Eq. (1) cost `Σ_G √(d_max(G))` a [`GateAssignment`] would incur,
+    /// recomputed independently of [`assign_aware_legal`]'s own bookkeeping so
+    /// this doubles as a check that its `placed` orientations are the ones it
+    /// claims.
+    fn assignment_cost(
+        assignment: &GateAssignment,
+        gates: &[(AtomId, AtomId)],
+        atom_pos: &BTreeMap<AtomId, Position>,
+    ) -> f64 {
+        assignment
+            .placed
+            .iter()
+            .map(|&(gate_index, (target_a, target_b))| {
+                let (a, b) = gates[gate_index];
+                let pa = atom_position_or_origin(atom_pos, a);
+                let pb = atom_position_or_origin(atom_pos, b);
+                sqrt_d_max(euclidean_um(pa, target_a).max(euclidean_um(pb, target_b)))
+            })
+            .sum()
+    }
+
+    /// Issue #111 review finding: a routing-aware layer that silently falls
+    /// back to [`assign_greedy_legal`] (budget exhaustion or no legal full
+    /// assignment) is indistinguishable, by cost alone, from "no routing
+    /// contention" — unless the outcome is instrumented. This is a small,
+    /// genuinely contended two-gate/two-pair layout (no target/circuit
+    /// pinning, no A* budget pressure) where greedy's per-gate myopic choice
+    /// is provably wrong: gate A only mildly prefers pair0 over pair1, but
+    /// gate B is disastrous at pair1 and excellent at pair0. Greedy assigns
+    /// gate A (processed first) its slightly-preferred pair0, stranding gate
+    /// B at pair1; the joint-optimal swaps them. The aware search must
+    /// (a) report [`AwareSearchOutcome::Completed`] (not a fallback) and
+    /// (b) find the strictly cheaper swap, proving the search mechanism
+    /// itself — not just budget luck — is what produces an aware/greedy gap.
+    #[test]
+    fn aware_search_completes_and_beats_greedy_on_contended_pairs() {
+        let gate_a = (AtomId(0), AtomId(1));
+        let gate_b = (AtomId(2), AtomId(3));
+        let gates = [gate_a, gate_b];
+
+        let mut atom_pos = BTreeMap::new();
+        // Gate A sits near the midpoint between the two pairs: pair0 is only
+        // marginally closer than pair1.
+        atom_pos.insert(
+            AtomId(0),
+            Position {
+                x_um: 499.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(1),
+            Position {
+                x_um: 500.0,
+                y_um: 0.0,
+            },
+        );
+        // Gate B sits essentially on top of pair0 and 1000 um from pair1.
+        atom_pos.insert(
+            AtomId(2),
+            Position {
+                x_um: 0.4,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(3),
+            Position {
+                x_um: 0.6,
+                y_um: 0.0,
+            },
+        );
+
+        let pair0 = (
+            Position {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            Position {
+                x_um: 1.0,
+                y_um: 0.0,
+            },
+        );
+        let pair1 = (
+            Position {
+                x_um: 1000.0,
+                y_um: 0.0,
+            },
+            Position {
+                x_um: 1001.0,
+                y_um: 0.0,
+            },
+        );
+        let pairs = vec![pair0, pair1];
+        let pair_sites = vec![(SiteId(100), SiteId(101)), (SiteId(102), SiteId(103))];
+        let site_occupant = BTreeMap::new();
+        let inputs = AssignInputs {
+            atom_pos: &atom_pos,
+            pairs: &pairs,
+            pair_sites: &pair_sites,
+            site_occupant: &site_occupant,
+            conflict_um: 0.0,
+        };
+
+        let greedy = assign_greedy_legal(&gates, &inputs);
+        assert_eq!(greedy.outcome, AwareSearchOutcome::NotApplicable);
+        assert!(greedy.deferred.is_empty());
+
+        let aware = assign_aware_legal(&gates, &inputs);
+        assert_eq!(
+            aware.outcome,
+            AwareSearchOutcome::Completed,
+            "search space is tiny (2 gates x 2 pairs); it must complete, not fall back"
+        );
+        assert!(aware.deferred.is_empty());
+
+        let greedy_cost = assignment_cost(&greedy, &gates, &atom_pos);
+        let aware_cost = assignment_cost(&aware, &gates, &atom_pos);
+        assert!(
+            aware_cost < greedy_cost * 0.5,
+            "aware ({aware_cost}) must substantially beat greedy's myopic pick ({greedy_cost})"
         );
     }
 

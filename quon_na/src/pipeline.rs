@@ -16,8 +16,7 @@ use backend::{AodSpeedModelKind, NeutralAtomTarget, ZoneKind as BackendZoneKind}
 use thiserror::Error;
 
 use crate::compaction::{
-    CompactionError, CompactionOptions, LegalityLimits, compact_schedule,
-    infer_atom_dependencies,
+    CompactionError, CompactionOptions, LegalityLimits, compact_schedule, infer_atom_dependencies,
 };
 use crate::entangling_schedule::schedule_entangling_layers;
 use crate::graph::InteractionGraph;
@@ -224,17 +223,32 @@ pub fn run_from_graph(
     let scheduled = schedule_entangling_layers(req, max_pairs)?;
     let mut req = scheduled.request;
 
+    // Only set for the zoned backend; overlaid onto the resource report
+    // below (issue #111 review finding — makes a routing-aware search's
+    // silent fallback to the greedy assignment visible instead of
+    // indistinguishable from "no routing contention").
+    let mut aware_search_status: Option<(u64, u64)> = None;
+
     req = match opts.backend {
         NaBackendKind::Zoned => {
             let arch = zoned_architecture(na);
             let zoned = schedule_zoned(req, &arch, opts.placer)?;
+            aware_search_status = Some((
+                zoned.aware_search_completed_layers,
+                zoned.aware_search_budget_exceeded_layers
+                    + zoned.aware_search_no_legal_assignment_layers,
+            ));
             if opts.dump_ir {
                 eprintln!(
-                    "--- after zoned schedule ---\nlayers={} routing_cost={:.4} rearrangements={} transfers={}",
+                    "--- after zoned schedule ---\nlayers={} routing_cost={:.4} rearrangements={} transfers={} \
+                     aware_search_completed={} aware_search_fell_back={}",
                     zoned.request.layers.len(),
                     zoned.routing_cost,
                     zoned.rearrangement_steps,
-                    zoned.trap_transfers
+                    zoned.trap_transfers,
+                    zoned.aware_search_completed_layers,
+                    zoned.aware_search_budget_exceeded_layers
+                        + zoned.aware_search_no_legal_assignment_layers,
                 );
             }
             zoned.request
@@ -275,6 +289,10 @@ pub fn run_from_graph(
     }
 
     let report = build_resource_report(&req.layers, None, Some(logical_qubits.max(1)))?;
+    let report = match aware_search_status {
+        Some((completed, fell_back)) => report.with_aware_search_status(completed, fell_back),
+        None => report,
+    };
     // Production path: attach analytic error_budget whenever the target carries
     // an error_model (ADR-0017). `--emit-resource-report` in quonc additionally
     // hard-requires the model so missing budgets fail at emit time.

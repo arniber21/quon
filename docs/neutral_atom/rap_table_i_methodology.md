@@ -18,7 +18,7 @@ below.
 | **2 (human then enforce)** | Human sign-off, then agent | Review whether the Phase 1 numbers are a *mechanism-legitimate* reproduction (not just numerically close by accident). Only then flip on hard tolerance asserts (`QUON_RAP_TABLE_I_ENFORCE=1`, below). |
 
 Phase 1 deliberately does not hard-assert against the published numbers. See
-[Phase 1 finding](#phase-1-finding-aware--agnostic-on-this-targetcircuit-pair)
+[Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)
 for why that caution was warranted.
 
 ## Anchor row
@@ -40,27 +40,60 @@ group) is **optional / local only, not CI** — see
 | [RAP] Table I column | `quon_na` field | Where it comes from |
 | --- | --- | --- |
 | Rearrangement steps | `ResourceReport.rearrangement_steps` | Count of AOD-compatible movement groups emitted by [`schedule_zoned`](../../quon_na/src/zoned.rs) |
-| Rearrangement time | `ResourceReport.rearrangement_time_us` | Sum of √-law durations ([`movement_duration_us`](../../quon_na/src/zoned.rs)) per movement group |
+| Rearrangement time | `ResourceReport.rearrangement_time_us` | Sum of √-law **move-only** durations ([`movement_duration_us`](../../quon_na/src/zoned.rs)) per movement group — see [Timing model](#timing-model) for why this is deliberately *not* `rearrangement_time_us + transfer_time_us` |
 | Two-qubit gate count (82) | `ResourceReport.entangle2_count` | Count of `Entangle2` schedule actions — one per circuit-level 2Q gate, placer-independent |
 | Entangling layers (4) | `ResourceReport.rydberg_stages` | Count of distinct schedule layers containing an entangling action |
+| *(not in the paper; #111 review instrumentation)* | `ResourceReport.aware_search_completed_layers` / `aware_search_fell_back_layers` | Per-layer count of whether [`assign_aware_legal`](../../quon_na/src/zoned.rs)'s best-first search found a full assignment within budget, or exhausted it and fell back to [`assign_greedy_legal`](../../quon_na/src/zoned.rs) — see [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair) |
 
 `entangle2_count` and (for this specific fixture/target pairing — see next
 section) `rydberg_stages` are **placer-independent pre-flight checks**: they
 must hold before either placer's `rearrangement_steps`/`_time_us` are
 compared to the paper. A wrong circuit (wrong gate count or wrong layer
 structure) invalidates the whole comparison before it starts, so the
-pre-flight test fails first and separately from the metric dump.
+pre-flight test fails first and separately from the metric dump. The dump
+test additionally hard-asserts both of these on **both** placers (not just
+routing-agnostic), since a routing-aware-only circuit regression would
+otherwise slip past the (agnostic-only, deliberately fast) pre-flight test.
 
 ## Timing model
 
-`t = √(d / a) + 15 µs` per trap transfer (one load + one store per moved
-atom), with `a = 2750 m/s²` — [RAP] Sec. VI-B's move-time law, already the
-one `quon_na` implements
-([`zoned::movement_duration_us`](../../quon_na/src/zoned.rs);
-architecture_model.md §5 "Movement timing"). This is the paper's √-law, **not**
-the newer jerk-limited timing model used by some QMAP evaluation scripts
-(literature_notes.md's [RAP] caveats) — do not swap the model to "match" QMAP
-tooling; that would stop reproducing *this* paper's Table I.
+[RAP] Sec. VI-B's rearrangement-time metric is `t = √(d/a) + 15 µs per
+transfer`, with `a = 2750 m/s²` (literature_notes.md's [RAP] section). This is
+the paper's √-law, **not** the newer jerk-limited timing model used by some
+QMAP evaluation scripts (literature_notes.md's [RAP] caveats) — do not swap
+the model to "match" QMAP tooling; that would stop reproducing *this* paper's
+Table I.
+
+**How this maps onto the two separate `ResourceReport` fields (#111 review
+finding — an earlier draft of this doc conflated them):**
+
+- `rearrangement_time_us` is **move-only**: the √-law duration
+  ([`movement_duration_us`](../../quon_na/src/zoned.rs)) of each AOD-coupled
+  movement group, summed across groups. It does **not** include any transfer
+  overhead.
+- `transfer_time_us` is a **separate aggregate**: `quon_na` emits one
+  `Transfer` schedule action per atom per load and per store (so a
+  two-atom movement group contributes 4 transfer actions), each with duration
+  `arch.trap_transfer_us` (15 µs on this target). `ResourceReport::from_layers`
+  *sums* those action durations — it is a rate×count-style aggregate (used
+  for the physical error-budget, `movement × trap_transfers`), not a
+  per-group wall-clock quantity. A `k`-atom group's transfer overhead is
+  therefore counted here as `2k × 15 µs`, not the `2 × 15 µs` that a single
+  simultaneous AOD load/store grab would cost in wall-clock time.
+
+**Phase 1 decision (documented, not silently chosen): the paper comparison
+uses `rearrangement_time_us` (move-only) only.** `rearrangement_time_us +
+transfer_time_us` is *not* used as the comparison quantity, because
+`transfer_time_us`'s per-atom-instance accounting (previous bullet) would
+inflate the transfer contribution above what the paper's per-group `+15 µs
+per transfer` term implies whenever a movement group has more than one atom
+— that would make the comparison *less* honest, not more, despite looking
+more "complete." The dump test's printed table reflects this: it labels the
+compared column `time_us(move)` and prints `transfer_us` alongside only for
+transparency, never folded into the paper comparison. Closing this gap
+properly (a per-group wall-clock transfer field) is left to a follow-up;
+Phase 1 does not hack around it by picking whichever quantity numerically
+looks closer to the paper.
 
 ## Pre-flight fixture: `test/na/ising_n42.qn`
 
@@ -109,16 +142,37 @@ anchor's numbers. See
 - `ising_n42_dumps_both_placer_rearrangement_metrics` — `#[ignore]`d (see
   [Runtime](#runtime--ci-wiring) below). Runs `schedule_zoned` via `quonc`
   under both `--na-placer routing-agnostic` and `--na-placer routing-aware`,
-  prints a comparison table (steps, time, ×-agnostic-over-aware ratio) to
+  prints a comparison table (steps, move-only time, transfer time,
+  ×-agnostic-over-aware ratio, aware search completed/fell-back status) to
   stdout, and:
-  - **Default (`QUON_RAP_TABLE_I_ENFORCE` unset or not `1`):** dump-only.
-    Re-asserts the placer-independent pre-flight counts (belt-and-suspenders)
-    and otherwise never fails on a numeric mismatch against the published
-    row. Prints a `WARNING` banner (not a failure) if aware is not at least
-    as good as agnostic, since [RAP]'s whole point is a meaningful aware
-    improvement.
+  - **Hard, regardless of `QUON_RAP_TABLE_I_ENFORCE`** (structural — under
+    `just ci-rust`'s `set -euo pipefail` these are what actually gate CI, per
+    the #111 review): `entangle2_count == 82` and `rydberg_stages == 4` on
+    **both** placers (not just agnostic — closing the gap the fast
+    agnostic-only pre-flight test above deliberately leaves open), and the
+    routing-aware search's `aware_search_completed_layers` /
+    `aware_search_fell_back_layers` diagnostic fields are present and
+    internally consistent (agnostic reports `(0, 0)`; aware reports at least
+    one outcome). Prints a `FALLBACK` banner (not a failure — Phase 1 stays
+    soft on the *numeric* mismatch, see below) whenever
+    `aware_search_fell_back_layers > 0`.
+  - **Soft (`QUON_RAP_TABLE_I_ENFORCE` unset or not `1`):** never fails on a
+    numeric mismatch against the published row. Prints a `WARNING` banner
+    (not a failure) if aware is not at least as good as agnostic, since
+    [RAP]'s whole point is a meaningful aware improvement.
   - **`QUON_RAP_TABLE_I_ENFORCE=1` (Phase 2, after human sign-off):** hard
     tolerance asserts — see [Tolerances](#tolerances-for-phase-2-enforcement).
+
+`quon_na/src/zoned.rs`'s `mod tests` additionally has
+`aware_search_completes_and_beats_greedy_on_contended_pairs` — a small
+(2-gate, 2-pair, hand-constructed positions), fixture-independent unit test
+proving the aware search mechanism itself (not this specific 42-qubit
+circuit) can both **complete** (`AwareSearchOutcome::Completed`, not a
+fallback) and find a strictly better joint assignment than the greedy
+placer on a genuinely contended layout. This is the evidence backing the
+[Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)'s
+claim that the `ising_n42` gap is plausibly budget/scaling, not "nothing to
+find."
 
 ### Runtime / CI wiring
 
@@ -126,13 +180,19 @@ Routing-aware placement is a best-first search
 ([`assign_aware_legal`](../../quon_na/src/zoned.rs), budget
 `AWARE_NODE_BUDGET = 100_000` expansions/layer) over this target's 340
 entanglement-zone pairs. Measured on this fixture: routing-agnostic ≈ 1 s,
-routing-aware ≈ 90 s in a `--release` build (debug is substantially slower).
-That is too slow for the default `cargo test --workspace` gate (which runs in
-debug mode), so the dump test is `#[ignore]`d and wired into `just ci-rust` as
-a dedicated `--release --include-ignored` step — the same pattern
+routing-aware ≈ 90–125 s in a `--release` build (debug is substantially
+slower) — the search burns its full budget on every one of the circuit's
+4 layers without finding a full assignment (see the
+[Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)),
+so this is worst-case-budget time, not early-termination time. That is too
+slow for the default `cargo test --workspace` gate (which runs in debug
+mode), so the dump test is `#[ignore]`d and wired into `just ci-rust` as a
+dedicated `--release --include-ignored` step — the same pattern
 `quon_lsp/tests/smoke.rs` uses for the tooling job. This still satisfies "n=42
 in CI" (locked decision): it runs every `just ci-rust` / CI `rust` job, just
 in release mode via an explicit step instead of the default debug test sweep.
+`ci-rust`'s recipe carries `set -euo pipefail` so a failure in this step (or
+any earlier one) actually fails the job instead of being swallowed.
 
 ```bash
 # What CI runs (see justfile's `ci-rust` recipe)
@@ -142,29 +202,56 @@ cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocaptur
 cargo test -p quonc --test rap_table_i preflight
 ```
 
-## Phase 1 finding: aware == agnostic on this target/circuit pair
+## Phase 1 finding: routing-aware falls back to greedy on this target/circuit pair
 
-Measured on `rap_table_i.json` (default row-major initial placement):
+**Corrected finding (#111 review; an earlier draft of this doc claimed "no
+routing contention" — that claim was wrong and has been retracted).** Measured
+on `rap_table_i.json` (default row-major initial placement), including the
+new `aware_search_completed_layers` / `aware_search_fell_back_layers`
+instrumentation:
 
-| Placer | Rearrangement steps | Rearrangement time (µs) | Rydberg stages | Entangle2 count |
-| --- | --- | --- | --- | --- |
-| Routing-agnostic | 23 | 3049 | 4 | 82 |
-| Routing-aware | 23 | 3049 | 4 | 82 |
+| Placer | Rearrangement steps | Rearrangement time_us (move-only) | Rydberg stages | Entangle2 count | Aware search |
+| --- | --- | --- | --- | --- | --- |
+| Routing-agnostic | 23 | 3049 | 4 | 82 | n/a |
+| Routing-aware | 23 | 3049 | 4 | 82 | **0 of 4 layers completed; 4 of 4 fell back to greedy** |
 
-Both placers produce **identical** schedules here — no aware improvement,
-let alone [RAP]'s reported 22 → 9 (−59%). This is a legitimate Phase 1
-finding, not a bug to silently "fix" by tuning numbers: with `rap_table_i`'s
-generous entanglement-zone capacity (340 pairs for at most 21 simultaneous
-gates) and a simple nearest-neighbor chain, the distance-minimizing greedy
-assignment already finds a schedule the routing-aware search cannot improve
-on — there is no routing *contention* for "aware" to be aware of. Reproducing
-the paper's reported delta faithfully likely requires either a tighter
-entanglement-zone geometry (closer to what forces genuine placement/routing
-trade-offs) or a different qubit-to-storage-site initial mapping, or both.
+Both placers produce **identical** schedules — but *not* because there is "no
+routing contention." The routing-aware `assign_aware_legal` search
+([`quon_na/src/zoned.rs`](../../quon_na/src/zoned.rs)) exhausted its
+`AWARE_NODE_BUDGET` (100,000 expansions/layer) on **all four** of this
+circuit's entangling layers and fell back to `assign_greedy_legal` every
+single time, per the instrumentation added in the #111 review fix — so
+routing-aware's output on this fixture is, byte-for-byte, greedy's output.
+That is the actual mechanism, and it is unsurprising in retrospect: the
+search is uniform-cost (`h = 0`, [RAP] Sec. IV-B's inadmissible heuristic is
+not implemented — see the [Tests](#tests) / follow-up notes), each of this
+circuit's four layers has 20–21 simultaneous gates, and this target's
+entanglement zone offers 340 candidate pairs — the reachable state space per
+layer is astronomically larger than 100,000 uniform-cost expansions, so the
+search **never gets close to finishing** before the budget cap fires.
+
+This means the earlier "no routing contention, greedy already optimal"
+framing was an unverified guess dressed up as a finding: with the search
+never completing, there was no way to know whether an *exhaustive* aware
+search would have beaten greedy here — only that the *budget-limited* search
+didn't. [`aware_search_completes_and_beats_greedy_on_contended_pairs`](../../quon_na/src/zoned.rs)
+(a new, tiny, non-fixture-dependent unit test added in the #111 review fix)
+demonstrates the search mechanism itself *can* find a strictly better joint
+assignment than greedy when it completes — so the gap on `ising_n42` is
+plausibly a **budget/scaling** problem on this fixture, not a "there was
+nothing to find" problem, though Phase 1 stops short of proving that for this
+specific 21-gate/340-pair layer (that would require either a real heuristic
+so the search terminates in reasonable time, or raising the budget and
+re-measuring, both left to Phase 2 / a follow-up).
+
 **This is exactly the kind of judgment call Phase 2 human sign-off exists
-for** — before enabling `QUON_RAP_TABLE_I_ENFORCE=1`, a human must decide
-whether closing this gap (and how) still counts as reproducing [RAP]'s
-*mechanism*, or whether the target/placement setup needs to change first.
+for** — before enabling `QUON_RAP_TABLE_I_ENFORCE=1`, a human must decide how
+to close this gap: a real A* heuristic (Eqs. (3)–(5), not yet implemented),
+a larger budget, a tighter entanglement-zone geometry, or some combination —
+and whether the result still counts as reproducing [RAP]'s *mechanism*.
+Phase 1's contract is only to make the fallback **visible** (the dump test
+now hard-asserts the diagnostic fields are present and prints a `FALLBACK`
+banner whenever `aware_search_fell_back_layers > 0`), not to fix it.
 
 ## Tolerances (for Phase 2 enforcement)
 

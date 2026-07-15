@@ -98,6 +98,19 @@ fn u64_field(report: &Value, field: &str) -> u64 {
         .unwrap_or_else(|| panic!("resource report missing u64 field `{field}`: {report}"))
 }
 
+/// `aware_search_completed_layers` / `aware_search_fell_back_layers` (#111
+/// review finding) are only emitted for the zoned NA backend and are always
+/// present there (`Some(0)` under routing-agnostic) — treat a missing field
+/// as a structural regression, not an absent-optional-field no-op.
+fn required_u64_field(report: &Value, field: &str) -> u64 {
+    report.get(field).and_then(Value::as_u64).unwrap_or_else(|| {
+        panic!(
+            "resource report missing required u64 field `{field}` (zoned NA backend must always \
+             emit routing-aware search diagnostics — see docs/neutral_atom/rap_table_i_methodology.md): {report}"
+        )
+    })
+}
+
 /// Fails first, before any placer comparison, if `ising_n42.qn` or the
 /// pinned target regress. Uses the (fast) default routing-agnostic placer:
 /// for this fixture/target pairing there is no placement-induced deferral
@@ -105,6 +118,11 @@ fn u64_field(report: &Value, field: &str) -> u64 {
 /// methodology doc), so `rydberg_stages` here is the same placer-independent
 /// circuit property either mode would report, and `entangle2_count` is
 /// placer-independent by construction (one Entangle2 action per gate).
+/// Deliberately does **not** also run routing-aware (too slow for the
+/// default gate, see `Runtime` in the methodology doc); the slower ignored
+/// dump test below hard-asserts both placers see the same 82/4 structure
+/// directly, so that check is not skipped, only deferred to the release-mode
+/// job (finding #5 of the #111 review).
 #[test]
 fn ising_n42_preflight_gate_and_layer_counts() {
     let report = resource_report("routing-agnostic");
@@ -126,6 +144,13 @@ fn ising_n42_preflight_gate_and_layer_counts() {
 /// Dump/soft regression test: records both placers' rearrangement metrics
 /// and compares them to the published row without failing CI on mismatch,
 /// unless `QUON_RAP_TABLE_I_ENFORCE=1` (Phase 2).
+///
+/// Structural checks (circuit/layer counts on both placers, and the
+/// routing-aware search's completed-vs-fell-back diagnostic being present
+/// and printed) are **hard** asserts regardless of `QUON_RAP_TABLE_I_ENFORCE`
+/// — under `just ci-rust`'s `set -euo pipefail`, this is what actually gates
+/// CI. Only the numeric closeness-to-the-published-row comparisons stay soft
+/// (println + WARNING, no assert) until Phase 2 sign-off.
 #[test]
 #[ignore = "routing-aware A* is ~90s in --release, far slower in debug; \
             run via `just ci-rust` (--release --include-ignored) or \
@@ -134,43 +159,104 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
     let agnostic = resource_report("routing-agnostic");
     let aware = resource_report("routing-aware");
 
-    // Belt-and-suspenders: both modes must still see the same circuit.
+    // Hard, structural: both placers must see the identical 82-gate/4-layer
+    // circuit (#111 review finding #5) — a wrong circuit invalidates the
+    // whole comparison before it starts, for *either* placer, not just
+    // agnostic (which is all the fast preflight test above can check).
     for (label, report) in [("routing-agnostic", &agnostic), ("routing-aware", &aware)] {
         assert_eq!(
             u64_field(report, "entangle2_count"),
             EXPECTED_ENTANGLE2_COUNT,
             "{label}: pre-flight gate count regressed"
         );
+        assert_eq!(
+            u64_field(report, "rydberg_stages"),
+            EXPECTED_RYDBERG_STAGES,
+            "{label}: pre-flight layer count regressed"
+        );
     }
 
     let agnostic_steps = u64_field(&agnostic, "rearrangement_steps");
     let aware_steps = u64_field(&aware, "rearrangement_steps");
+    // Move-only √-law time (see docs/neutral_atom/rap_table_i_methodology.md
+    // "Timing model"): this is what Phase 1 compares to the published
+    // "Rearrangement time" column. `transfer_time_us` (load+store trap
+    // transfers) is a separate per-atom-instance aggregate, printed for
+    // transparency but deliberately *not* folded into the comparison.
     let agnostic_time_us = u64_field(&agnostic, "rearrangement_time_us");
     let aware_time_us = u64_field(&aware, "rearrangement_time_us");
+    let agnostic_transfer_us = u64_field(&agnostic, "transfer_time_us");
+    let aware_transfer_us = u64_field(&aware, "transfer_time_us");
+
+    // Hard, structural: the routing-aware search's completed-vs-fell-back
+    // status must be present (#111 review finding #1/#6) — this is the
+    // instrumentation that replaces the retracted "no routing contention"
+    // claim. Not soft: a missing field here means the diagnostic silently
+    // regressed out of the resource report, which is exactly the kind of
+    // silent mischaracterization the review flagged.
+    let aware_completed = required_u64_field(&aware, "aware_search_completed_layers");
+    let aware_fell_back = required_u64_field(&aware, "aware_search_fell_back_layers");
+    let agnostic_completed = required_u64_field(&agnostic, "aware_search_completed_layers");
+    let agnostic_fell_back = required_u64_field(&agnostic, "aware_search_fell_back_layers");
+    assert_eq!(
+        (agnostic_completed, agnostic_fell_back),
+        (0, 0),
+        "routing-agnostic never runs the aware search; both counters must be 0"
+    );
+    assert!(
+        aware_completed + aware_fell_back >= 1,
+        "routing-aware must report at least one layer-assignment outcome (completed or \
+         fell back); got 0 of both — aware_search_status wiring regressed"
+    );
+
+    let steps_ratio = agnostic_steps as f64 / aware_steps.max(1) as f64;
+    let time_ratio = agnostic_time_us as f64 / aware_time_us.max(1) as f64;
 
     println!("--- RAP Table I (#111) — ising n=42 ---");
     println!(
-        "{:<18} {:>18} {:>18} {:>10}",
-        "placer", "steps (paper)", "time_us (paper)", "vs paper"
+        "{:<18} {:>10} {:>10} {:>14} {:>14} {:>18} {:>18}",
+        "placer", "steps", "(paper)", "time_us(move)", "(paper)", "transfer_us", "aware search"
     );
     println!(
-        "{:<18} {:>10} ({:>4}) {:>12} ({:>4}) {:>10}",
+        "{:<18} {:>10} {:>10} {:>14} {:>14} {:>18} {:>18}",
         "routing-agnostic",
         agnostic_steps,
         PUBLISHED_AGNOSTIC_STEPS,
         agnostic_time_us,
         PUBLISHED_AGNOSTIC_TIME_US,
-        format!("{:+}", agnostic_steps as i64 - PUBLISHED_AGNOSTIC_STEPS as i64)
+        agnostic_transfer_us,
+        "n/a"
     );
     println!(
-        "{:<18} {:>10} ({:>4}) {:>12} ({:>4}) {:>10}",
+        "{:<18} {:>10} {:>10} {:>14} {:>14} {:>18} {:>18}",
         "routing-aware",
         aware_steps,
         PUBLISHED_AWARE_STEPS,
         aware_time_us,
         PUBLISHED_AWARE_TIME_US,
-        format!("{:+}", aware_steps as i64 - PUBLISHED_AWARE_STEPS as i64)
+        aware_transfer_us,
+        format!("{aware_completed} ok / {aware_fell_back} fell back")
     );
+    println!(
+        "×-agnostic-over-aware ratio: steps={steps_ratio:.2} time={time_ratio:.2} \
+         (published: steps={:.2} time={:.2})",
+        PUBLISHED_AGNOSTIC_STEPS as f64 / PUBLISHED_AWARE_STEPS as f64,
+        PUBLISHED_AGNOSTIC_TIME_US as f64 / PUBLISHED_AWARE_TIME_US as f64,
+    );
+
+    if aware_fell_back > 0 {
+        eprintln!(
+            "FALLBACK: routing-aware fell back from its best-first search to the \
+             routing-agnostic greedy assignment on {aware_fell_back} of \
+             {} layer-assignment call(s) ({aware_completed} completed the search). On this \
+             fixture/target pair the per-layer search space (up to 21 gates × 340 candidate \
+             entanglement-zone pairs, uniform-cost h=0) vastly exceeds AWARE_NODE_BUDGET, so \
+             this is the *expected*, now-measured mechanism — not evidence that \
+             routing-aware and routing-agnostic agree because there is 'no routing \
+             contention'. See docs/neutral_atom/rap_table_i_methodology.md 'Phase 1 finding'.",
+            aware_completed + aware_fell_back,
+        );
+    }
     if aware_steps >= agnostic_steps {
         eprintln!(
             "WARNING: routing-aware ({aware_steps} steps) is not better than \
@@ -200,7 +286,11 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
         "routing-aware steps {aware_steps} outside ±{STEP_TOLERANCE} of published \
          {PUBLISHED_AWARE_STEPS}"
     );
-    assert_time_within_tolerance(agnostic_time_us, PUBLISHED_AGNOSTIC_TIME_US, "routing-agnostic");
+    assert_time_within_tolerance(
+        agnostic_time_us,
+        PUBLISHED_AGNOSTIC_TIME_US,
+        "routing-agnostic",
+    );
     assert_time_within_tolerance(aware_time_us, PUBLISHED_AWARE_TIME_US, "routing-aware");
     assert!(
         (aware_steps as f64) <= (agnostic_steps as f64) * AWARE_IMPROVEMENT_FLOOR_FRAC,
