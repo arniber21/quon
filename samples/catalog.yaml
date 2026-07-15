@@ -75,6 +75,81 @@ entries:
     artifacts: []
     ci: none
 
+  - id: neutral-atom/bell-pair
+    path: samples/neutral-atom/bell_pair.qn
+    tags: [neutral-atom, beginner, bell-state, na-backend, pack-192]
+    difficulty: beginner
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/qaoa-maxcut
+    path: samples/neutral-atom/qaoa_maxcut.qn
+    tags: [neutral-atom, qaoa, na-placer, routing-aware, pack-192]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/qft-small
+    path: samples/neutral-atom/qft_small.qn
+    tags: [neutral-atom, qft, na-backend, footnote-flat, pack-192]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/ising-trotter
+    path: samples/neutral-atom/ising_trotter.qn
+    tags: [neutral-atom, ising, na-placer, locality, pack-192]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/syndrome-round-dynamic
+    path: samples/neutral-atom/syndrome_round.qn
+    tags: [neutral-atom, dynamic-circuit, mid-circuit-measurement, pack-192]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts: []
+    ci: smoke
+
   - id: neutral-atom/repetition-d3-memory
     path: examples/na_qec/repetition_d3_memory.qn
     tags: [neutral-atom, qec, memory, pack-192]
@@ -82,4 +157,4 @@ entries:
     quonc_args:
       ["--target", "targets/neutral_atom/generic_rna_v0.json", "--verify-na"]
     artifacts: []
-    ci: none
+    ci: smoke

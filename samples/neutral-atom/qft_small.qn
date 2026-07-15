@@ -1,0 +1,40 @@
+-- Neutral-atom small QFT: long-range controlled-rotation fan-in, and the
+-- flat-backend footnote story (#192) — why zoned (RAP) is the primary
+-- headline backend and flat (AOD) is optional.
+--
+--   quonc --target targets/neutral_atom/generic_rna_v0.json \
+--         --na-backend zoned --emit-na-schedule - samples/neutral-atom/qft_small.qn
+--
+-- The 4-qubit QFT's controlled-rotation ladder means qubit 0 interacts with
+-- every other qubit — a denser interaction graph than `bell_pair.qn`. On
+-- this target, the zoned backend schedules it fine (rearrangement +
+-- Rydberg stages, no legality issue). Try the flat backend on the same
+-- program:
+--
+--   quonc --target targets/neutral_atom/generic_rna_v0.json \
+--         --na-backend flat --emit-na-schedule - samples/neutral-atom/qft_small.qn
+--
+-- ...and it fails closed with an entangling-geometry violation: the flat
+-- AOD placer's row-major grid packs idle atoms closer together than this
+-- target's Rydberg range allows once the interaction graph is denser than
+-- a single pair. That failure is not a bug to work around — it's why the
+-- `--na-placement row-major|degree|clustering` flat-placement knobs are a
+-- footnote, not the headline comparison, for this pack. See `README.md`.
+-- Schedule-model only; no hardware execution claim either way.
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+        H @0
+}
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+        (for i in (range(n - 1)) { controlled(Rz(PI / 4.0)) @(0, i + 1) })
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> = match n {
+0 => identity 0,
+_ => apply_hadamard n |> controlled_rotations n |> on_high(qft(n - 1), n) |> swap_reverse n
+}
+
+fn qft_small(): Q<List<Bit>> = run {
+        q <- (qft(4)) @ (qreg 4)
+        measure_all q
+}

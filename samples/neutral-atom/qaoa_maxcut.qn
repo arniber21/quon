@@ -1,0 +1,46 @@
+-- Neutral-atom QAOA MaxCut layer: the headline routing-agnostic-vs-aware
+-- placer story (#192), and the #111-adjacent story it aligns with.
+--
+-- Four qubits, six `Rzz` cost-layer edges (a 3-regular interaction graph,
+-- so movement scheduling actually has choices to make) plus a mixer layer.
+-- Compare the two zoned placer modes on the same graph:
+--
+--   quonc --target targets/neutral_atom/generic_rna_v0.json --na-backend zoned \
+--         --na-placer routing-agnostic --emit-resource-report - \
+--         --resource-report-format markdown samples/neutral-atom/qaoa_maxcut.qn
+--   quonc --target targets/neutral_atom/generic_rna_v0.json --na-backend zoned \
+--         --na-placer routing-aware --emit-resource-report - \
+--         --resource-report-format markdown samples/neutral-atom/qaoa_maxcut.qn
+--
+-- `routing-agnostic` (ZAC-style, the default) places atoms without looking
+-- ahead at the interaction graph; `routing-aware` (RAP) tries to anticipate
+-- upcoming entangling pairs. On this small 4-qubit graph the two modes land
+-- within a few rearrangement steps of each other — see `README.md` for the
+-- actual numbers and why "aware" isn't a strict win at this size. Analytic
+-- schedule metrics only: this is not a claim about physical fidelity or a
+-- hardware run.
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+        (for q in (qubits n) { H q })
+}
+
+fn maxcut_cost_4(gamma: Float): Circuit<4, 4, 6, Universal> = circuit {
+        (Rzz(gamma)) @(0, 1)
+|> (Rzz(gamma)) @(1, 2)
+|> (Rzz(gamma)) @(2, 3)
+|> (Rzz(gamma)) @(3, 0)
+|> (Rzz(gamma)) @(0, 2)
+|> (Rzz(gamma)) @(1, 3)
+}
+
+fn mixer_4(beta: Float): Circuit<4, 4, 1, Universal> = circuit {
+        (for q in (qubits 4) { Rx(beta, q) })
+}
+
+fn qaoa_layer(gamma: Float, beta: Float): Circuit<4, 4, 8, Universal> = circuit {
+        hadamard_all 4 |> maxcut_cost_4(gamma) |> mixer_4(beta)
+}
+
+fn qaoa_maxcut(): Q<List<Bit>> = run {
+        reg <- (qaoa_layer(0.7, 0.3)) @ (qreg 4)
+        measure_all reg
+}

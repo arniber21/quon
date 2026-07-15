@@ -40,3 +40,17 @@ The shown program prepares `|1>` and should recover `1` on Bob's qubit with
 more than 99% fidelity. The companion case prepares `|+>`, rotates back to the
 Z basis, and should recover `0` above the same threshold. Together they show
 that both classical feed-forward corrections preserve the teleported state.
+
+## Dynamic circuits on the neutral-atom path
+
+This page's fixed/QASM path measures then classically conditions a
+correction. For the same "measure mid-circuit, then act" shape on the
+neutral-atom schedule model — where the compiler must additionally keep the
+ancilla's measurement round ordered relative to the entangling layers that
+feed it — see
+[`samples/neutral-atom/syndrome_round.qn`](https://github.com/arniber21/quon/blob/main/samples/neutral-atom/syndrome_round.qn)
+and its walkthrough in
+[`samples/neutral-atom/README.md`](https://github.com/arniber21/quon/blob/main/samples/neutral-atom/README.md#headline-comparisons).
+Feed-forward *correction* lowering (branching on the mid-circuit outcome) is
+still limited on the NA path, so that sample stops at "measure everything"
+rather than reproducing this page's `X`/`Z` corrections.

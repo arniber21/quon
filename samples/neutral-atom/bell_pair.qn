@@ -1,0 +1,31 @@
+-- Neutral-atom Bell pair: the smallest program that tells the headline
+-- zoned-vs-flat backend story (#192).
+--
+-- The gate program is identical to `samples/learning/hello_bell.qn`; what
+-- changes here is the *target* and the NA movement backend that schedules
+-- the single CNOT as neutral-atom Rydberg entanglement:
+--
+--   quonc --target targets/neutral_atom/generic_rna_v0.json \
+--         --na-backend zoned --emit-na-schedule - samples/neutral-atom/bell_pair.qn
+--   quonc --target targets/neutral_atom/generic_rna_v0.json \
+--         --na-backend flat  --emit-na-schedule - samples/neutral-atom/bell_pair.qn
+--
+-- `zoned` (RAP, the default) routes qubit 0 into a dedicated entanglement
+-- zone before the Rydberg pulse, so its schedule metrics show one
+-- rearrangement step and a handful of trap transfers. `flat` (AOD pair-bank)
+-- instead tries to entangle in place on the row-major storage grid; for
+-- this 2-qubit program the two atoms already sit inside the flat backend's
+-- Rydberg range, so it succeeds with a *shorter* schedule (no rearrangement
+-- at all) — see `README.md` for why that flips for anything denser than a
+-- single pair. This is a schedule-model comparison only: neither run
+-- executes on real neutral-atom hardware.
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+        H @0 |> CNOT @(0, 1)
+}
+
+fn bell_na(): Q<(Bit, Bit)> = run {
+        (q0, q1) <- (bell_state()) @ (qreg 2)
+        b0 <- measure q0
+        b1 <- measure q1
+        return (b0, b1)
+}

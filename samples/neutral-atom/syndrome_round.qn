@@ -1,0 +1,32 @@
+-- Neutral-atom dynamic-circuit sample: mid-circuit measurement on the NA
+-- schedule path (#192). Compare with the [teleportation cookbook
+-- page](../../website/src/content/docs/cookbook/teleportation.mdx), which
+-- shows the same "measure, then use the outcome" shape on the fixed/QASM
+-- path.
+--
+--   quonc --target targets/neutral_atom/generic_rna_v0.json --na-backend zoned \
+--         --emit-na-schedule - --verify-na samples/neutral-atom/syndrome_round.qn
+--
+-- Ancilla `a` is entangled with both data qubits `d0`/`d1`, then *measured
+-- before* the data qubits — the schedule has to keep the ancilla's
+-- measurement round ordered relative to the entangling layers that feed it
+-- (`--verify-na`'s measure/reset-ordering check), the same constraint a
+-- real syndrome round would need for feed-forward correction. This program
+-- deliberately stops at "measure everything" rather than branching on `s`:
+-- feed-forward *correction* lowering on the NA path is still limited (see
+-- `README.md`), so no downstream Pauli-frame correction is scheduled here.
+-- Dynamic-circuit control flow (branching a correction on `s`) is future
+-- work, not claimed by this sample. Schedule-model only — this is not a
+-- QEC threshold claim (see `examples/na_qec/` and its own non-claims) and
+-- not a hardware execution result.
+fn prep(): Circuit<3, 3, 3, Clifford> = circuit {
+        H @0 |> CNOT @(0, 2) |> CNOT @(1, 2)
+}
+
+fn syndrome_round(): Q<(Bit, Bit, Bit)> = run {
+        (d0, d1, a) <- (prep()) @ (qreg 3)
+        s <- measure a
+        b0 <- measure d0
+        b1 <- measure d1
+        return (s, b0, b1)
+}
