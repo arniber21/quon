@@ -61,13 +61,90 @@ entries:
     artifacts: []
     ci: none
 
-  - id: visualization/schedule-preview-stub
-    path: samples/visualization/schedule_preview.qn
-    tags: [visualization, stub, pack-189]
-    difficulty: beginner
+  - id: visualization/dense-swap-mismatch
+    path: test/verify/qaoa.qn
+    tags: [visualization, mapping, swap, qaoa, mapper-viz, pack-189]
+    difficulty: intermediate
+    quonc_args:
+      ["--target", "targets/ibm/fake_manila_v2.json", "--emit-qasm"]
+    artifacts:
+      [
+        samples/visualization/goldens/dense_swap_mismatch/qaoa_manila.qasm,
+        samples/visualization/goldens/dense_swap_mismatch/metrics.json,
+      ]
+    ci: smoke
+
+  - id: visualization/teleport-dynamic
+    path: test/verify/teleport.qn
+    tags: [visualization, teleportation, dynamic, deferral, circuit-viz, pack-189]
+    difficulty: intermediate
     quonc_args: ["--emit-qasm"]
-    artifacts: []
-    ci: none
+    artifacts:
+      [
+        samples/visualization/goldens/teleport_dynamic/teleport.qasm,
+        samples/visualization/goldens/teleport_dynamic/metrics.json,
+      ]
+    ci: smoke
+
+  - id: visualization/qft-depth
+    path: test/verify/qft.qn
+    tags: [visualization, qft, optimizer, depth, circuit-viz, pack-189]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts:
+      [
+        samples/visualization/goldens/qft_depth/before_optimization.mlir,
+        samples/visualization/goldens/qft_depth/after_optimization.mlir,
+        samples/visualization/goldens/qft_depth/metrics.json,
+      ]
+    ci: smoke
+
+  - id: visualization/na-interaction-graph
+    path: test/na/qaoa_graph.qn
+    tags: [visualization, neutral-atom, qaoa, interaction-graph, topology-viz, pack-189]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts: [samples/visualization/goldens/na_interaction_graph/qaoa_graph.dot]
+    ci: smoke
+
+  - id: visualization/na-schedule-metrics
+    path: test/na/bell.qn
+    tags: [visualization, neutral-atom, schedule, resource-report, pack-189]
+    difficulty: beginner
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
+      ]
+    artifacts:
+      [
+        samples/visualization/goldens/na_schedule_metrics/bell_zoned.resource_report.json,
+        samples/visualization/goldens/na_schedule_metrics/qaoa_graph_zoned.resource_report.json,
+      ]
+    ci: smoke
+
+  - id: visualization/noise-aware-target-overlay
+    path: test/verify/ising.qn
+    tags: [visualization, noise, target-overlay, topology-viz, pack-189]
+    difficulty: intermediate
+    quonc_args:
+      ["--target", "targets/ibm/fake_manila_v2.json", "--emit-qasm"]
+    artifacts:
+      [
+        samples/visualization/goldens/noise_target_overlay/ising_manila.qasm,
+        samples/visualization/goldens/noise_target_overlay/metrics.json,
+      ]
+    ci: smoke
 
   - id: research/qec-notebook-stub
     path: samples/research/qec_notebook_stub.md

@@ -1,0 +1,9 @@
+{
+  "metrics": {
+    "depth": 21,
+    "gate_count": 27,
+    "t_count": 0,
+    "qubit_count": 4,
+    "swap_count": 0
+  }
+}
