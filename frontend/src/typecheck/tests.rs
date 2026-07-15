@@ -1773,3 +1773,70 @@ fn qec_mixed_entrypoint_via_helper() {
     ));
 }
 
+#[test]
+fn qec_code_family_param_as_distance_rejected() {
+    assert!(matches!(
+        reject_err("fn f<F: CodeFamily>(b: QecBlock<Repetition, F>): QecBlock<Repetition, F> = b"),
+        TypeError::KindMismatch {
+            expected: "Nat",
+            found: "CodeFamily",
+            ..
+        }
+    ));
+    assert!(matches!(
+        reject_err(
+            "type Weird<F: CodeFamily> = QecBlock<Repetition, F>\n\
+             fn f(b: Weird<Repetition>): Weird<Repetition> = b"
+        ),
+        TypeError::KindMismatch {
+            expected: "Nat",
+            found: "CodeFamily",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn qec_alias_nat_param_as_family_rejected() {
+    assert!(matches!(
+        reject_err(
+            "type Weird<n> = QecBlock<n, 3>\n\
+             fn f(b: Weird<Repetition>): Weird<Repetition> = b"
+        ),
+        TypeError::KindMismatch {
+            expected: "CodeFamily",
+            found: "Nat",
+            ..
+        }
+    ));
+    assert!(matches!(
+        reject_err(
+            "type Weird<F: Nat, d: Nat> = QecBlock<F, d>\n\
+             fn f(b: Weird<Repetition, 3>): Weird<Repetition, 3> = b"
+        ),
+        TypeError::KindMismatch {
+            expected: "CodeFamily",
+            found: "Nat",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn qec_let_bound_special_builtin_rejected_clearly() {
+    // Soft residual: QEC special-cased builtins are not first-class values.
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               let m = measure_logical_z
+               b <- repetition_code<3>()
+               m(b)
+             }"
+        ),
+        TypeError::Unsupported {
+            construct: "let-bound QEC builtin",
+            ..
+        }
+    ));
+}
+

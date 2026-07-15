@@ -155,8 +155,9 @@ pub fn lookup(name: &str) -> Option<Scheme> {
         // ── QEC builtins (issue #247, ADR-0014) ───────────────────────────────
         // Constructors require `TypeApp` (`repetition_code<d>()`); they are *not*
         // listed here so bare `repetition_code()` cannot type via a lying scheme.
-        // `memory_round` / measure / `logical_cx` are special-cased in the checker;
-        // schemes below are completion/hover metadata only (not the typing path).
+        // `memory_round` / measure / `logical_cx` are special-cased in the checker for
+        // direct application; schemes below are completion/hover metadata only.
+        // Let-bound uses are rejected as `Unsupported("let-bound QEC builtin")`.
         "memory_round" => Scheme {
             vars: &[],
             body: {

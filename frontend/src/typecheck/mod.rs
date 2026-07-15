@@ -328,6 +328,17 @@ impl TypeChecker {
             }
         }
 
+        // Pass 1.5: kind-check alias bodies under their params (same as fn signatures).
+        for (decl, _) in decls {
+            if let Decl::TypeAlias { params, ty, .. } = decl {
+                self.push_kind_params(params);
+                if let Err(e) = self.resolve_type(ty) {
+                    errors.push(e);
+                }
+                self.pop_kind_params(params);
+            }
+        }
+
         // Pass 2: function signatures into Γ (so calls resolve regardless of order).
         for (decl, _) in decls {
             if let Decl::Fn {
@@ -784,6 +795,17 @@ impl TypeChecker {
             return result;
         }
         if let Some(scheme) = builtins::lookup(name) {
+            // QEC ops special-cased in `synth_app` are not first-class; reject let-binding them
+            // with a clear diagnostic rather than a later opaque mismatch on the lying scheme.
+            if matches!(
+                name,
+                "memory_round" | "measure_logical_z" | "measure_logical_x" | "logical_cx"
+            ) {
+                return Err(TypeError::Unsupported {
+                    construct: "let-bound QEC builtin",
+                    span,
+                });
+            }
             let ty = self.instantiate(&scheme);
             self.record_resolution(span, ResolvedTarget::Builtin(name.to_string()));
             self.record_annotation(span, &ty);
@@ -2821,10 +2843,15 @@ impl TypeChecker {
             .map(|(p, _)| p.as_str())
             .zip(args.iter().map(|a| &a.0))
             .collect();
-        // Validate CodeFamily args before expanding (tags or rigid vars only).
+        // Validate kinded args before expanding (tags or rigid vars only).
         for ((_, kind), arg) in def.params.iter().zip(args.iter()) {
-            if *kind == Kind::CodeFamily {
-                self.nat_as_code_family(&arg.0, arg.1)?;
+            match kind {
+                Kind::CodeFamily => {
+                    self.nat_as_code_family(&arg.0, arg.1)?;
+                }
+                Kind::Nat => {
+                    self.ensure_nat_kind(&arg.0, arg.1)?;
+                }
             }
         }
         let expanded = subst_nat_in_type(&def.body, &subst);
@@ -2888,11 +2915,47 @@ impl TypeChecker {
 
     /// Convert a surface depth annotation to a [`DepthExpr`]. Best-effort for the classical
     /// fragment: literals/vars/`+`/`*` map directly; richer forms defer to issue #13.
+    /// Rejects `CodeFamily` tags and `F: CodeFamily` params in Nat position.
     fn nat_to_depth(&self, n: &Sp<NatExpr>) -> Result<DepthExpr, TypeError> {
+        self.ensure_nat_kind(&n.0, n.1)?;
         nat_to_depth(&n.0).ok_or(TypeError::Unsupported {
             construct: "depth expression",
             span: n.1,
         })
+    }
+
+    /// Walk a Nat expression and ensure every variable has kind `Nat` (not `CodeFamily`).
+    fn ensure_nat_kind(&self, n: &NatExpr, span: SimpleSpan) -> Result<(), TypeError> {
+        match n {
+            NatExpr::Lit(_) | NatExpr::Hole => Ok(()),
+            NatExpr::Var(name) => self.require_nat_kind(name, span),
+            NatExpr::Add(a, b)
+            | NatExpr::Sub(a, b)
+            | NatExpr::Mul(a, b)
+            | NatExpr::Div(a, b)
+            | NatExpr::Exp(a, b) => {
+                self.ensure_nat_kind(&a.0, a.1)?;
+                self.ensure_nat_kind(&b.0, b.1)
+            }
+        }
+    }
+
+    fn require_nat_kind(&self, name: &str, span: SimpleSpan) -> Result<(), TypeError> {
+        match name {
+            "Repetition" | "Surface" => Err(TypeError::KindMismatch {
+                expected: "Nat",
+                found: "CodeFamily",
+                span,
+            }),
+            other => match self.kind_env.get(other) {
+                Some(Kind::CodeFamily) => Err(TypeError::KindMismatch {
+                    expected: "Nat",
+                    found: "CodeFamily",
+                    span,
+                }),
+                Some(Kind::Nat) | None => Ok(()),
+            },
+        }
     }
 
     // ── QEC helpers (issue #247) ───────────────────────────────────────────────
