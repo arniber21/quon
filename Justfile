@@ -160,7 +160,10 @@ ci-rust: setup-python
       test/verify/qft.py \
       test/verify/ising.py \
       test/verify/qaoa.py \
-      test/verify/shor.py
+      test/verify/shor.py \
+      samples/research/compiler_experiment_log_smoke.py \
+      samples/research/algorithm_correctness_narrative_smoke.py \
+      samples/research/na_resource_study_smoke.py
     do
       echo "==> $script"
       .venv/bin/python "$script"
