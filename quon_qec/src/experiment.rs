@@ -387,6 +387,9 @@ pub fn na_refs_from_expanded(expanded: &ExpandedWorkload) -> Vec<NaScheduleRef> 
 /// Fails closed unless `barrier_cycles.len()` equals the number of
 /// barrier-bearing entries in `na_refs` (memory rounds and lattice-surgery
 /// merge/split/ancilla-measure phases).
+// `trusted`: `barrier_cycles[bi]` is bounded by the fail-closed count check
+// above the loop — a counting invariant flux cannot express without specs.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 pub fn attach_barrier_cycles(
     na_refs: &mut [NaScheduleRef],
     barrier_cycles: &[u32],
@@ -425,6 +428,10 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     emit_stim_single_block_memory(expanded)
 }
 
+// `trusted`: the `.enumerate().filter().map()` chain below ICEs flux-infer
+// (projections.rs "impossible case reached"); this function carries no flux
+// specs, so skipping its body loses nothing.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
     let block = &expanded.blocks[0];
     match block.family {
@@ -608,6 +615,9 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
 /// Merge / ancilla outcomes feed [`OBSERVABLE_INCLUDE`] via frame byproducts —
 /// they are **not** bare `DETECTOR`s. `DETECTOR`s are emitted only for explicit
 /// `memory_round` Z-stabilizer comparisons under codespace prep.
+// `trusted`: iterator-closure chains in this body ICE flux-infer the same way
+// as `emit_stim_single_block_memory` above; no flux specs here either.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
     if expanded.blocks.len() < 2 {
         return Err(ExperimentError::UnsupportedLayout {

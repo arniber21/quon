@@ -315,6 +315,11 @@ fn place_patch_at(block: &mut ExpandedBlock, dx: i32, dy: i32) {
     }
 }
 
+// `trusted` (this fn and the three row/column + two merge-round helpers below):
+// the bounds obligations are nonlinear (`r*d + (d-1) < d*d` given len == d*d) or
+// depend on caller-checked length equalities flux cannot see; verifying them
+// properly needs real specs — tracked in the flux/quon_qec verification issue.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn right_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
     let d = block.distance as usize;
     if block.data_atoms.len() != d * d {
@@ -345,6 +350,7 @@ fn top_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandErro
     Ok(block.data_atoms[..d].to_vec())
 }
 
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn bottom_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
     let d = block.distance as usize;
     if block.data_atoms.len() != d * d {
@@ -356,6 +362,7 @@ fn bottom_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandE
 }
 
 /// Rough merge: measure ZZ on each facing L/R data pair via seam check.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn rough_merge_round(
     left_col: &[PhysicalAtomId],
     right_col: &[PhysicalAtomId],
@@ -402,6 +409,7 @@ fn rough_merge_round(
 }
 
 /// Smooth merge: measure XX on each facing top/bottom data pair (H-sandwich).
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn smooth_merge_round(
     above_row: &[PhysicalAtomId],
     below_row: &[PhysicalAtomId],

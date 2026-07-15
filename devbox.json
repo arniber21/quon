@@ -41,6 +41,12 @@
       "      _z3_libdir=\"$(dirname \"$(readlink -f \"$_z3_libdir/libz3.dylib\")\")\"",
       "    fi",
       "    export DYLD_FALLBACK_LIBRARY_PATH=\"$_z3_libdir${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}\"",
+      "  else",
+      "    _z3_libdir=\"$_z3_prefix/lib\"",
+      "    if [ -e \"$_z3_libdir/libz3.so\" ]; then",
+      "      _z3_libdir=\"$(dirname \"$(readlink -f \"$_z3_libdir/libz3.so\")\")\"",
+      "    fi",
+      "    export LD_LIBRARY_PATH=\"$_z3_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"",
       "  fi",
       "fi",
       "unset _z3_prefix _z3_bin _z3_libdir"
