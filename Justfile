@@ -165,6 +165,8 @@ ci-rust: setup-python
     .venv/bin/python -m unittest python/test_qec_stim_smoke.py
     echo "==> python/test_quon_qec_sinter.py (#253)"
     .venv/bin/python -m unittest python/test_quon_qec_sinter.py
+    echo "==> python/test_quon_qec_benchmarks.py (#254 / ADR-0023)"
+    .venv/bin/python -m unittest python/test_quon_qec_benchmarks.py
 
 # quonfmt · quonlint · LSP smoke on CI corpus
 ci-tooling: _tooling-build
@@ -212,6 +214,60 @@ ci-website:
     cd website
     pnpm install --frozen-lockfile
     pnpm build
+
+# ---------------------------------------------------------------------------
+# QEC benchmarks (#254 / ADR-0023) — local convenience recipes
+# CI smoke + axis coverage live in `python/test_quon_qec_benchmarks.py`
+# (invoked by `just ci-rust`), not these wrappers.
+# ---------------------------------------------------------------------------
+
+# Local convenience: one tiny QEC ablation cell + nested Sinter sample.
+qec-benchmarks-smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    quonc="${QUONC:-target/release/quonc}"
+    if [[ ! -x "$quonc" ]]; then
+      echo "error: quonc not found at $quonc (build release or set QUONC)" >&2
+      exit 1
+    fi
+    mkdir -p /tmp/quon_qec_bench
+    .venv/bin/python python/quon_qec_benchmarks.py --mode smoke \
+      --quonc "$quonc" \
+      --csv /tmp/quon_qec_bench/smoke.csv \
+      --work-dir /tmp/quon_qec_bench/smoke_work
+    echo "wrote /tmp/quon_qec_bench/smoke.csv (+ smoke.sinter.csv)"
+
+# Local convenience: axis-coverage grid (gates full — each axis once + CX).
+qec-benchmarks-axis:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    quonc="${QUONC:-target/release/quonc}"
+    if [[ ! -x "$quonc" ]]; then
+      echo "error: quonc not found at $quonc (build release or set QUONC)" >&2
+      exit 1
+    fi
+    mkdir -p /tmp/quon_qec_bench
+    .venv/bin/python python/quon_qec_benchmarks.py --mode axis \
+      --quonc "$quonc" \
+      --csv /tmp/quon_qec_bench/axis.csv \
+      --work-dir /tmp/quon_qec_bench/axis_work
+    echo "wrote /tmp/quon_qec_bench/axis.csv (+ axis.sinter.csv)"
+
+# Local-only full ablation grid (not part of test-ci; proven by axis mode).
+qec-benchmarks-full:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    quonc="${QUONC:-target/release/quonc}"
+    if [[ ! -x "$quonc" ]]; then
+      echo "error: quonc not found at $quonc (build release or set QUONC)" >&2
+      exit 1
+    fi
+    mkdir -p /tmp/quon_qec_bench
+    .venv/bin/python python/quon_qec_benchmarks.py --mode full \
+      --quonc "$quonc" \
+      --csv /tmp/quon_qec_bench/full.csv \
+      --work-dir /tmp/quon_qec_bench/full_work
+    echo "wrote /tmp/quon_qec_bench/full.csv (+ full.sinter.csv)"
 
 # ---------------------------------------------------------------------------
 # Private helpers

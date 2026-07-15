@@ -189,6 +189,11 @@ the 42-qubit `ising` benchmark, vs the distance-minimizing state of the art
   reproduction of the *paper's* Table I must use the √-law.
 - The paper models storage + entanglement zones only (no readout zone);
   readout-zone constraints in #107 come from [AbstractModel], not [RAP].
+- **QEC vs physical-NA:** Issue #254's QEC compiler-ablation CSV may reuse
+  RAP-style headline field *names* (rearrangement time, Rydberg stages, …)
+  as a methodology style only. It is a distinct experiment class — do not
+  claim Table I numbers for QEC rows. See
+  [`qec_benchmark_methodology.md`](./qec_benchmark_methodology.md).
 
 ### [QMAP-docs] / [QMAP-repo] — Munich Quantum Toolkit zoned compiler (docs v3.7.0)
 

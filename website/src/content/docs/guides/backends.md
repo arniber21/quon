@@ -76,8 +76,10 @@ timing/resource estimates.
 
 `--emit-resource-report` is a compiler **analytic** artifact (schedule metrics,
 QEC metadata, `error_budget` = rate × count). Sampled logical failures from
-`python/quon_qec_sinter.py` stay in a separate CSV — do not merge the two, and
-do not read either as a threshold claim (ADR-0020).
+`python/quon_qec_sinter.py` stay in a separate CSV. An optional labeled join CSV
+from the #254 ablation harness is allowed for comparisons only — it does not
+replace the separate Sinter CSV or mutate the report (ADR-0020). Neither
+artifact is a threshold claim.
 
 `--emit-na-schedule` writes a versioned visualization envelope
 (`kind: na_schedule_view`) with zones, layout, metrics, and schedule layers —
