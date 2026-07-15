@@ -28,7 +28,8 @@ of the circuits.
 | `visualization/teleport-dynamic` | [`test/verify/teleport.qn`](../../test/verify/teleport.qn) | `generic_openqasm` (default) | [#134](https://github.com/arniber21/quon/issues/134) | [`goldens/teleport_dynamic/`](./goldens/teleport_dynamic/) |
 | `visualization/qft-depth` | [`test/verify/qft.qn`](../../test/verify/qft.qn) | `generic_openqasm` (default) | [#134](https://github.com/arniber21/quon/issues/134) | [`goldens/qft_depth/`](./goldens/qft_depth/) |
 | `visualization/na-interaction-graph` | [`test/na/qaoa_graph.qn`](../../test/na/qaoa_graph.qn) | `generic_rna_v0`, zoned | [#113](https://github.com/arniber21/quon/issues/113), [#136](https://github.com/arniber21/quon/issues/136) | [`goldens/na_interaction_graph/`](./goldens/na_interaction_graph/) |
-| `visualization/na-schedule-metrics` | [`test/na/bell.qn`](../../test/na/bell.qn) + [`test/na/qaoa_graph.qn`](../../test/na/qaoa_graph.qn) | `generic_rna_v0`, zoned | [#113](https://github.com/arniber21/quon/issues/113), [#136](https://github.com/arniber21/quon/issues/136) | [`goldens/na_schedule_metrics/`](./goldens/na_schedule_metrics/) |
+| `visualization/na-schedule-metrics-bell` | [`test/na/bell.qn`](../../test/na/bell.qn) | `generic_rna_v0`, zoned | [#113](https://github.com/arniber21/quon/issues/113), [#136](https://github.com/arniber21/quon/issues/136) | [`goldens/na_schedule_metrics/bell_zoned.resource_report.json`](./goldens/na_schedule_metrics/bell_zoned.resource_report.json) |
+| `visualization/na-schedule-metrics-qaoa-graph` | [`test/na/qaoa_graph.qn`](../../test/na/qaoa_graph.qn) | `generic_rna_v0`, zoned | [#113](https://github.com/arniber21/quon/issues/113), [#136](https://github.com/arniber21/quon/issues/136) | [`goldens/na_schedule_metrics/qaoa_graph_zoned.resource_report.json`](./goldens/na_schedule_metrics/qaoa_graph_zoned.resource_report.json) |
 | `visualization/noise-aware-target-overlay` | [`test/verify/ising.qn`](../../test/verify/ising.qn) | `fake_manila_v2` (5-qubit line) | [#136](https://github.com/arniber21/quon/issues/136) | [`goldens/noise_target_overlay/`](./goldens/noise_target_overlay/) |
 
 ### 1. Dense SWAP mismatch (#135)
@@ -97,13 +98,19 @@ interaction strengths NA scheduling used to order entangling layers.
 small, deterministic analytic resource reports for `bell.qn` (2 qubits, the
 smallest possible NA schedule) and `qaoa_graph.qn` (4 qubits, denser) on the
 zoned backend — `rydberg_stages`, `rearrangement_steps`, `trap_transfers`,
-`total_time_us`, and the per-mechanism `error_budget` breakdown. **Not**
+`total_time_us`, and the per-mechanism `error_budget` breakdown. This is two
+catalog rows, `visualization/na-schedule-metrics-bell` and
+`visualization/na-schedule-metrics-qaoa-graph`, one per program, so each
+row's `path` owns exactly the one artifact it declares. **Not**
 checked in: the full `--emit-na-schedule` envelope, which enumerates every
-trap site across a target's zones (tens of MB even for `bell.qn` — verified
-while building this pack) and is not a reasonable thing to commit to git.
-The resource report is the right-sized golden for "what should the schedule
-metrics look like"; #113's own script/#136's canvas should still read the
-full envelope live from `quonc`, not from a checked-in copy.
+trap site across a target's zones — for `bell.qn` on `generic_rna_v0` that's
+~8,437 `AtomSite`s and a ~1 MB JSON file (verified while building this pack:
+`quonc --target targets/neutral_atom/generic_rna_v0.json --na-backend zoned
+--emit-na-schedule -` on `test/na/bell.qn`) — still not something we want to
+check in and diff on every schedule-layout change. The resource report is
+the right-sized golden for "what should the schedule metrics look like";
+#113's own script/#136's canvas should still read the full envelope live
+from `quonc`, not from a checked-in copy.
 
 ### 6. Noise-aware target overlay (#136)
 

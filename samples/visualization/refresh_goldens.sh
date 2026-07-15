@@ -19,6 +19,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+if ! command -v jq >/dev/null 2>&1; then
+  echo "refresh_goldens: jq is required to extract the stable 'metrics' object from" >&2
+  echo "  --metrics-json output. It is not a devbox.json package — install it from" >&2
+  echo "  your OS package manager (e.g. \`brew install jq\` / \`apt-get install jq\`;" >&2
+  echo "  GitHub Actions' ubuntu-latest runners already carry it) and re-run." >&2
+  exit 1
+fi
+
 QUONC="${QUONC_BIN:-$ROOT/target/debug/quonc}"
 if [[ ! -x "$QUONC" ]]; then
   echo "refresh_goldens: building quonc (debug) — set QUONC_BIN to reuse an existing binary" >&2
@@ -91,9 +99,11 @@ rm -f "$DUMP"
 
 # 5. NA bell/QAOA schedule (#113, #136) — analytic resource reports (not the
 # full `--emit-na-schedule` envelope, which enumerates every trap site in the
-# target's zones and is tens of MB for even `bell.qn` — too large to check
-# in). These are the small, deterministic schedule-metrics summaries #113's
-# script and #136's canvas both consume.
+# target's zones — ~8,437 AtomSites / ~1 MB of JSON for even `bell.qn` on
+# generic_rna_v0 — small enough to check in on its own, but not something we
+# want to diff on every schedule-layout change). These are the small,
+# deterministic schedule-metrics summaries #113's script and #136's canvas
+# both consume.
 "$QUONC" --target "$NA_TARGET" --na-backend zoned --emit-resource-report - -q --verify-na \
   test/na/bell.qn > "$OUT_ROOT/na_schedule_metrics/bell_zoned.resource_report.json"
 "$QUONC" --target "$NA_TARGET" --na-backend zoned --emit-resource-report - -q --verify-na \

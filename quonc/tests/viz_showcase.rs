@@ -7,7 +7,18 @@
 //! first. Mirrors `quonc/tests/na_showcase.rs`'s pinning shape (#192).
 //!
 //! Regenerate goldens after an intentional change with
-//! `samples/visualization/refresh_goldens.sh`.
+//! `samples/visualization/refresh_goldens.sh`. That script's own `--check`
+//! mode is additionally smoke-tested end-to-end by
+//! `refresh_goldens_check_script_reports_goldens_up_to_date` below, so the
+//! script's plumbing (not just each invocation's output) is covered too.
+//!
+//! Byte-for-byte comparison assumes deterministic output across runs/
+//! platforms: the interaction graph's edges come from a `BTreeMap`-keyed
+//! aggregation (`quon_na::graph::aggregate_edges`), not hash-map iteration
+//! order, and the resource reports are analytic (no sampling/RNG), so no
+//! separate ordering guard is added here — if a future change swaps either
+//! to an unordered collection, this file's tests (not just CI flakiness)
+//! would be the first signal.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -80,7 +91,11 @@ fn assert_stdout_golden(golden_rel: &str, args: &[&str]) {
 }
 
 /// Replicates `refresh_goldens.sh`'s awk extraction: lines strictly between
-/// (not including) `start_marker` and `end_marker`.
+/// (not including) `start_marker` and `end_marker`. Kept as a small,
+/// independent Rust reimplementation rather than shelling out to `awk` from
+/// every test run — `refresh_goldens_check_script_reports_goldens_up_to_date`
+/// below is what actually proves this stays in sync with the real awk
+/// pipeline, by running the shell script itself end-to-end.
 fn extract_stage(dump: &str, start_marker: &str, end_marker: &str) -> String {
     let mut flag = false;
     let mut out = String::new();
@@ -157,6 +172,27 @@ fn teleport_dynamic_goldens_match_regeneration() {
         "teleport.qn's compiled QASM must not contain a literal feed-forward `if` \
          by default (measurement_deferral, SPEC §7.1): {qasm}"
     );
+
+    // Absence of `if (` alone doesn't prove deferral *happened* — a compiler
+    // that dropped the corrections entirely (a real bug) would also have no
+    // `if`. Assert the two deferred corrections are actually present as
+    // coherent gates: `teleport.qn`'s source has `if z_bit then pauli_x()`
+    // (the X-correction, folded into the alice-bob CNOT that already exists
+    // from Bell prep — so it must appear *twice*) and
+    // `if x_bit then pauli_z()` (the Z-correction, a `cz` with no non-deferred
+    // counterpart, so it must appear exactly once).
+    let alice_bob_cx_count = qasm.matches("cx q[1], q[2];").count();
+    assert_eq!(
+        alice_bob_cx_count, 2,
+        "expected two `cx q[1], q[2];` occurrences — the Bell-pair entangling CNOT from \
+         `prep` and the deferred X-correction (`if z_bit then pauli_x()`) coherently \
+         folded into a second CNOT before alice's measurement: {qasm}"
+    );
+    assert!(
+        qasm.contains("cz q[0], q[2];"),
+        "expected the deferred Z-correction (`if x_bit then pauli_z()`) to appear as a \
+         coherent `cz q[0], q[2];` gate before msg's measurement: {qasm}"
+    );
 }
 
 #[test]
@@ -231,6 +267,25 @@ fn na_interaction_graph_golden_matches_regeneration() {
             "-q",
             "test/na/qaoa_graph.qn",
         ],
+    );
+
+    // The showcase's semantic claim (README §4): `qaoa_graph.qn` is
+    // 3-regular MaxCut-style over 4 qubits, i.e. every pair interacts — a
+    // complete graph K4 (4 nodes, 4-choose-2 = 6 edges). A byte-for-byte
+    // golden match alone wouldn't catch a regression that silently drops a
+    // node or edge if the golden itself were ever mis-refreshed; anchor on
+    // the actual node/edge counts, not just diff equality.
+    let dot = golden("na_interaction_graph/qaoa_graph.dot");
+    let node_count = dot.lines().filter(|l| l.contains("[label=") && !l.contains(" -- ")).count();
+    let edge_count = dot.lines().filter(|l| l.contains(" -- ")).count();
+    assert_eq!(
+        node_count, 4,
+        "expected 4 qubit nodes (K4) in the interaction graph: {dot}"
+    );
+    assert_eq!(
+        edge_count, 6,
+        "expected 6 edges (K4: every one of 4 qubits' pairs interacts) in the \
+         interaction graph: {dot}"
     );
 }
 
@@ -309,6 +364,36 @@ fn noise_aware_target_overlay_goldens_match_regeneration() {
             .as_object()
             .is_some_and(|m| !m.is_empty()),
         "expected {IBM_TARGET} to carry non-empty per-qubit readout_error data"
+    );
+}
+
+/// `refresh_goldens.sh --check` is documented as "a convenience mirror for
+/// humans, not a second CI gate" (see the script's own header comment) — the
+/// per-showcase tests above are the real gate, each independently re-running
+/// its `quonc` invocation in-process. But nothing previously exercised the
+/// script *itself* (#189 review test-gap finding), so a bug in its own
+/// plumbing (argument order, the `awk` stage extraction, the `--check` diff
+/// mode) could go unnoticed even while every in-process test passed. This
+/// runs the real script end-to-end — against the binary `cargo test` already
+/// built (via `QUONC_BIN`, so it doesn't kick off a redundant `cargo build`)
+/// — and asserts it reports the committed goldens as up to date.
+#[test]
+fn refresh_goldens_check_script_reports_goldens_up_to_date() {
+    let script = workspace_path("samples/visualization/refresh_goldens.sh");
+    let output = Command::new("bash")
+        .arg(&script)
+        .arg("--check")
+        .current_dir(workspace_path("."))
+        .env("QUONC_BIN", env!("CARGO_BIN_EXE_quonc"))
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {}: {e}", script.display()));
+    assert!(
+        output.status.success(),
+        "refresh_goldens.sh --check reported drift (or failed to run) against the \
+         committed goldens — regenerate with samples/visualization/refresh_goldens.sh:\n\
+         stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

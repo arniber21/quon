@@ -90,7 +90,7 @@ entries:
     path: test/verify/qft.qn
     tags: [visualization, qft, optimizer, depth, circuit-viz, pack-189]
     difficulty: intermediate
-    quonc_args: ["--emit-qasm"]
+    quonc_args: ["--emit-qasm", "--dump-ir"]
     artifacts:
       [
         samples/visualization/goldens/qft_depth/before_optimization.mlir,
@@ -109,12 +109,13 @@ entries:
         "targets/neutral_atom/generic_rna_v0.json",
         "--na-backend",
         "zoned",
-        "--verify-na",
+        "--emit-na-graph",
+        "-",
       ]
     artifacts: [samples/visualization/goldens/na_interaction_graph/qaoa_graph.dot]
     ci: smoke
 
-  - id: visualization/na-schedule-metrics
+  - id: visualization/na-schedule-metrics-bell
     path: test/na/bell.qn
     tags: [visualization, neutral-atom, schedule, resource-report, pack-189]
     difficulty: beginner
@@ -127,10 +128,23 @@ entries:
         "--verify-na",
       ]
     artifacts:
+      [samples/visualization/goldens/na_schedule_metrics/bell_zoned.resource_report.json]
+    ci: smoke
+
+  - id: visualization/na-schedule-metrics-qaoa-graph
+    path: test/na/qaoa_graph.qn
+    tags: [visualization, neutral-atom, schedule, resource-report, pack-189]
+    difficulty: beginner
+    quonc_args:
       [
-        samples/visualization/goldens/na_schedule_metrics/bell_zoned.resource_report.json,
-        samples/visualization/goldens/na_schedule_metrics/qaoa_graph_zoned.resource_report.json,
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--na-backend",
+        "zoned",
+        "--verify-na",
       ]
+    artifacts:
+      [samples/visualization/goldens/na_schedule_metrics/qaoa_graph_zoned.resource_report.json]
     ci: smoke
 
   - id: visualization/noise-aware-target-overlay
