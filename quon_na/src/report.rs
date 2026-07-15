@@ -528,6 +528,9 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
     }
 
     out.push_str("## Notes\n");
+    out.push_str(
+        "- Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).\n",
+    );
     out.push_str("- Field names align with TUM RAP Table I / Enola headline metrics.\n");
     out.push_str(
         "- `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).\n",
@@ -535,7 +538,7 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
     out.push_str("- Non-QEC reports omit atoms-per-logical and code-family rows.\n");
     if report.error_budget.is_some() {
         out.push_str(
-            "- Physical error budget lines are schedule-count × rate contributions only — not logical error rates or thresholds.\n",
+            "- Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.\n",
         );
     }
     out
@@ -1128,6 +1131,36 @@ mod tests {
         assert!(md.contains("| Rydberg | 0.004 |"));
         assert!(md.contains("| Idle | 8e-9 |"));
         assert!(md.contains("schedule-count × rate"));
+        assert!(md.contains("analytic"));
+        assert!(md.contains("Sinter"));
+        assert!(md.contains("ADR-0020"));
+        assert!(!md.contains("logical_failures"));
+    }
+
+    #[test]
+    fn resource_report_json_excludes_sampled_sinter_fields() {
+        let report = ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
+        let value = match serde_json::to_value(&report) {
+            Ok(v) => v,
+            Err(e) => panic!("serialize: {e}"),
+        };
+        let obj = match value.as_object() {
+            Some(o) => o,
+            None => panic!("object"),
+        };
+        for key in [
+            "logical_failures",
+            "logical_failure_rate",
+            "shots",
+            "sinter",
+            "threshold",
+            "p_logical",
+        ] {
+            assert!(!obj.contains_key(key), "unexpected sampled field `{key}`");
+        }
+        assert!(obj.contains_key("error_budget"));
+        assert!(obj.contains_key("estimated_cycles"));
+        assert!(obj.contains_key("bottleneck"));
     }
 
     #[test]

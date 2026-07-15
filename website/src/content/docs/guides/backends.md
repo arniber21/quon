@@ -74,6 +74,11 @@ The neutral-atom path extracts the interaction graph, schedules entangling
 layers, chooses a movement backend, optionally compacts the result, and reports
 timing/resource estimates.
 
+`--emit-resource-report` is a compiler **analytic** artifact (schedule metrics,
+QEC metadata, `error_budget` = rate × count). Sampled logical failures from
+`python/quon_qec_sinter.py` stay in a separate CSV — do not merge the two, and
+do not read either as a threshold claim (ADR-0020).
+
 `--emit-na-schedule` writes a versioned visualization envelope
 (`kind: na_schedule_view`) with zones, layout, metrics, and schedule layers —
 a debug view, not the canonical schedule IR (`--emit-na-mlir`).

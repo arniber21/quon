@@ -520,10 +520,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Sample logical failures for Quon QEC experiment artifacts "
             "(`*.qec.json` + sibling structure `.stim`) via Stim/Sinter.\n"
             "Noise is annotated in Python from JSON error_model (ADR-0024).\n"
-            "Output CSV is a sampled artifact only — not a threshold claim "
-            "(ADR-0020)."
+            "Output CSV is a sampled artifact only — separate from the compiler "
+            "analytic ResourceReport (--emit-resource-report); not a threshold "
+            "claim (ADR-0020)."
         ),
         epilog="""
+Analytic vs sampled (ADR-0020)
+  quonc --emit-resource-report writes analytic schedule / error-budget metrics.
+  This harness writes a sampled Sinter CSV (logical_failures, …). Keep them as
+  separate files — there is no merged summary generator. Analytic ≠ sampled;
+  neither artifact is a threshold claim.
+
 Distance / round sweeps
   Distance and memory-round count are baked into the structure `.stim` by
   quonc. To sweep those axes, re-invoke quonc --emit-qec-experiment for each

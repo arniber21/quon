@@ -6,7 +6,10 @@ sibling `<stem>.stim` is written beside it (`foo.qec.json` → `foo.stim`).
 
 Physical noise is **not** embedded in the Stim circuit (ADR-0024). Python
 (`#253`) loads both files and annotates noise from the JSON `error_model`
-before Sinter sampling.
+before Sinter sampling. The resulting Sinter CSV is a **sampled** artifact —
+keep it separate from the compiler analytic `ResourceReport`
+(`--emit-resource-report`); do not fuse them or treat either as a threshold
+claim (ADR-0020 / #246).
 
 ## `*.qec.json` fields (`schema_version: 1`, `kind: "qec_experiment"`)
 

@@ -508,6 +508,26 @@ a `ResourceReport` (`quon_na::report`). Emitters produce **JSON** (pretty
 serde) and **Markdown** matching the sample below. Fidelity (Enola Eq. 1) is
 **deferred**; §9 cost weights remain placeholders.
 
+### 11.0 Two artifacts: analytic vs sampled (ADR-0020)
+
+QEC evaluation produces **two separate artifacts**. Do not fuse them into one
+JSON, Markdown file, or required companion summary:
+
+| Artifact | Producer | Contents | Evidence kind |
+| --- | --- | --- | --- |
+| Compiler `ResourceReport` (`--emit-resource-report`) | `quonc` / `quon_na::report` | Schedule metrics, QEC sizing metadata (`distance`, `memory_rounds`, …), analytic `error_budget` (`rate × schedule count`) | **Analytic** estimate |
+| Sinter CSV (`python/quon_qec_sinter.py`) | Python harness on `--emit-qec-experiment` dual-emit | Sampled `logical_failures` / `logical_failure_rate` (plus shot/error-model columns) | **Sampled** Monte Carlo |
+
+Readers may place the files side by side. Documentation and labels must state
+that analytic estimates and sampled results are different kinds of evidence.
+**Neither is a threshold claim** — do not say a code is “below threshold” from
+either artifact alone. There is **no** merged summary generator in the
+compiler or harness (issue #246).
+
+Regression goldens for the analytic report:
+`cargo test -p quon_na --test report_snapshots` (repetition hybrid today;
+surface hybrid when #249 lands).
+
 ### 11.1 Markdown sample (canonical)
 
 When the target has an `error_model`, production `--emit-resource-report` always
@@ -559,10 +579,11 @@ lowercase scientific notation (`8e-9`); otherwise Rust `Display` (`0.004`,
 | Idle | 8e-9 |
 
 ## Notes
+- Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).
 - Field names align with TUM RAP Table I / Enola headline metrics.
 - `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
 - Non-QEC reports omit atoms-per-logical and code-family rows.
-- Physical error budget lines are schedule-count × rate contributions only — not logical error rates or thresholds.
+- Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.
 ```
 
 **Non-QEC omit policy:** always emit Logical qubits and Physical atoms (may be
