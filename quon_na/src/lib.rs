@@ -46,6 +46,7 @@ pub mod qec;
 pub mod report;
 pub mod schedule;
 pub mod schedule_entry;
+pub mod schedule_view;
 pub mod zoned;
 
 pub use compaction::{
@@ -88,6 +89,10 @@ pub use schedule::{
     ScheduleLayer, TransferDirection, TrapTransfer,
 };
 pub use schedule_entry::{GraphScheduleRequest, ScheduleFromGraphError, schedule_from_graph};
+pub use schedule_view::{
+    NA_SCHEDULE_VIEW_KIND, NA_SCHEDULE_VIEW_VERSION, NaScheduleView, NaScheduleViewMeta,
+    ScheduleViewZone,
+};
 pub use zoned::{
     PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, ZonedScheduleError, ZonedScheduleResult,
     euclidean_um, movement_duration_us, routing_cost_eq1, schedule_zoned, sqrt_d_max,

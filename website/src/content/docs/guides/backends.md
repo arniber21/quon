@@ -65,6 +65,7 @@ resource artifacts rather than OpenQASM.
 cargo run -p quonc -- test/na/qaoa_graph.qn \
   --target targets/neutral_atom/generic_rna_v0.json \
   --emit-na-schedule schedule.json \
+  --emit-na-graph graph.dot \
   --emit-resource-report report.md \
   --resource-report-format markdown
 ```
@@ -72,6 +73,23 @@ cargo run -p quonc -- test/na/qaoa_graph.qn \
 The neutral-atom path extracts the interaction graph, schedules entangling
 layers, chooses a movement backend, optionally compacts the result, and reports
 timing/resource estimates.
+
+`--emit-na-schedule` writes a versioned visualization envelope
+(`kind: na_schedule_view`) with zones, layout, metrics, and schedule layers —
+a debug view, not the canonical schedule IR (`--emit-na-mlir`).
+`--emit-na-graph` writes Graphviz DOT for the interaction graph.
+
+Render frames / the graph with matplotlib + Graphviz (no HTML):
+
+```bash
+pip install -r python/requirements-viz.txt
+python python/visualize_na_schedule.py schedule.json --graph graph.dot \
+  -o /tmp/na-viz --format svg
+```
+
+`meta.na_placer` / `meta.na_backend` in the schedule JSON are reserved so a
+future before/after (routing-agnostic vs routing-aware) comparison can share
+axes without a schema bump.
 
 Useful neutral-atom options:
 

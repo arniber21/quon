@@ -27,8 +27,9 @@ use mlir_bridge::pipeline::{
     run_fixed_physical,
 };
 use quon_na::{
-    GraphScheduleRequest, NaBackendKind, NaScheduleOptions, PlacementStrategy, PlacerMode,
-    ResourceReport, ScheduleLayer, ScheduleLowerParams, ScheduleSpec, dump_schedule_text,
+    GraphScheduleRequest, InteractionGraph, NaBackendKind, NaScheduleOptions, NaScheduleView,
+    NaScheduleViewMeta, NeutralAtomLayout, PlacementStrategy, PlacerMode, ResourceReport,
+    ScheduleLayer, ScheduleLowerParams, ScheduleSpec, ScheduleViewZone, dump_schedule_text,
     lower_schedule, run_from_graph, run_from_module,
 };
 
@@ -84,6 +85,10 @@ pub struct CompileReport {
     pub qasm: Option<String>,
     /// Neutral-atom schedule layers when the NA path ran.
     pub na_schedule: Option<Vec<ScheduleLayer>>,
+    /// Final NA layout (sites + bindings) when the NA path ran.
+    pub na_layout: Option<NeutralAtomLayout>,
+    /// Interaction graph when the NA path ran (DOT / JSON tooling).
+    pub na_graph: Option<InteractionGraph>,
     /// Canonical `quantum.na` schedule spec (ADR-0011) when the NA path ran.
     pub na_schedule_spec: Option<ScheduleSpec>,
     /// Neutral-atom resource report when the NA path ran.
@@ -116,6 +121,8 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
             CompileReport {
                 qasm: artifacts.qasm,
                 na_schedule: artifacts.na_schedule,
+                na_layout: artifacts.na_layout,
+                na_graph: artifacts.na_graph,
                 na_schedule_spec: artifacts.na_schedule_spec,
                 resource_report: artifacts.resource_report,
                 na_logical_qubits: artifacts.na_logical_qubits,
@@ -133,6 +140,8 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
             CompileReport {
                 qasm: None,
                 na_schedule: None,
+                na_layout: None,
+                na_graph: None,
                 na_schedule_spec: None,
                 resource_report: None,
                 na_logical_qubits: None,
@@ -157,6 +166,8 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
 struct CompileArtifacts {
     qasm: Option<String>,
     na_schedule: Option<Vec<ScheduleLayer>>,
+    na_layout: Option<NeutralAtomLayout>,
+    na_graph: Option<InteractionGraph>,
     na_schedule_spec: Option<ScheduleSpec>,
     resource_report: Option<ResourceReport>,
     na_logical_qubits: Option<u64>,
@@ -220,6 +231,8 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
             Ok(CompileArtifacts {
                 qasm: None,
                 na_schedule: Some(artifacts.layers),
+                na_layout: artifacts.request.layout.clone(),
+                na_graph: Some(artifacts.request.graph.clone()),
                 na_schedule_spec: Some(schedule_spec),
                 resource_report: Some(artifacts.resource_report),
                 na_logical_qubits: Some(artifacts.logical_qubits),
@@ -264,6 +277,8 @@ fn compile_fixed(
     Ok(CompileArtifacts {
         qasm: Some(qasm),
         na_schedule: None,
+        na_layout: None,
+        na_graph: None,
         na_schedule_spec: None,
         resource_report: None,
         na_logical_qubits: None,
@@ -271,10 +286,54 @@ fn compile_fixed(
     })
 }
 
-/// Serialize schedule layers to pretty JSON (debug/visualization view;
-/// `quantum.na` MLIR is the canonical schedule artifact, ADR-0011).
-pub fn schedule_to_json(layers: &[ScheduleLayer]) -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(layers)
+/// Build the debug/visualization schedule envelope (#113).
+pub fn build_na_schedule_view(
+    report: &CompileReport,
+    request: &CompileRequest,
+) -> Result<NaScheduleView, anyhow::Error> {
+    let layers = report
+        .na_schedule
+        .as_ref()
+        .ok_or_else(|| anyhow!("no NA schedule available (compile with a neutral-atom target)"))?;
+    let metrics = report.resource_report.clone().ok_or_else(|| {
+        anyhow!("no resource report available (compile with a neutral-atom target)")
+    })?;
+    let zones = match &request.target.kind {
+        TargetKind::NeutralAtomReconfigurable(na) => na
+            .zones
+            .iter()
+            .map(|z| ScheduleViewZone {
+                zone_id: z.zone_id,
+                kind: z.kind,
+                origin_um: [z.origin_um.0, z.origin_um.1],
+                width_um: z.width_um(),
+                height_um: z.height_um(),
+                rows: z.rows,
+                cols: z.cols,
+                site_pitch_um: [z.site_pitch_um.0, z.site_pitch_um.1],
+            })
+            .collect(),
+        TargetKind::Fixed(_) => {
+            bail!("NA schedule view requires a neutral-atom target")
+        }
+    };
+    Ok(NaScheduleView::new(
+        NaScheduleViewMeta {
+            target_id: request.target.id.clone(),
+            na_backend: request.na_backend,
+            na_placer: request.na_placer,
+        },
+        metrics,
+        zones,
+        report.na_layout.clone(),
+        layers.clone(),
+    ))
+}
+
+/// Serialize a schedule visualization envelope to pretty JSON
+/// (`quantum.na` MLIR is the canonical schedule artifact, ADR-0011).
+pub fn schedule_to_json(view: &NaScheduleView) -> Result<String, serde_json::Error> {
+    view.to_json_string_pretty()
 }
 
 /// Render the canonical `quantum.na` schedule as generic-form textual MLIR.

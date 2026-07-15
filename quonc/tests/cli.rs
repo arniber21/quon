@@ -16,6 +16,7 @@ fn help_shows_usage() {
     assert!(stdout.contains("Quon quantum compiler") || stdout.contains("OpenQASM"));
     assert!(stdout.contains("emit-qasm"));
     assert!(stdout.contains("emit-na-schedule"));
+    assert!(stdout.contains("emit-na-graph"));
     assert!(stdout.contains("target"));
     assert!(stdout.contains("dump-ir"));
     assert!(stdout.contains("verify-linear"));
@@ -71,6 +72,7 @@ fn help_lists_all_documented_flags() {
     for flag in [
         "--emit-qasm",
         "--emit-na-schedule",
+        "--emit-na-graph",
         "--emit-resource-report",
         "--resource-report-format",
         "--target",

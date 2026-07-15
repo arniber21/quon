@@ -43,11 +43,23 @@ fn bell_emits_na_schedule_and_resource_report() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Schedule JSON on stdout; resource report on stderr when both use `-`.
+    // Schedule JSON envelope on stdout; resource report on stderr when both use `-`.
+    assert!(
+        stdout.contains("\"kind\": \"na_schedule_view\""),
+        "missing schedule envelope: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"schema_version\": 1"),
+        "missing schema_version: {stdout}"
+    );
     assert!(stdout.contains("\"cycle\""), "missing schedule: {stdout}");
     assert!(
         stdout.contains("\"Entangle2\""),
         "missing Entangle2 in schedule: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"zones\""),
+        "missing zones in schedule envelope: {stdout}"
     );
     assert!(
         stderr.contains("\"estimated_cycles\""),
@@ -66,6 +78,33 @@ fn bell_emits_na_schedule_and_resource_report() {
         stderr.contains("\"entangle2_count\": 1"),
         "expected one Entangle2, got: {stderr}"
     );
+}
+
+#[test]
+fn bell_emits_interaction_graph_dot() {
+    let source = workspace_path("../test/na/bell.qn");
+    let output = quonc()
+        .arg(&source)
+        .arg("--target")
+        .arg(na_target())
+        .arg("--emit-na-graph")
+        .arg("-")
+        .arg("--quiet")
+        .output()
+        .expect("spawn");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("graph InteractionGraph"),
+        "missing DOT header: {stdout}"
+    );
+    assert!(stdout.contains("q0"), "missing qubit node: {stdout}");
+    assert!(stdout.contains("--"), "missing edge: {stdout}");
 }
 
 #[test]

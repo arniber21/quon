@@ -27,6 +27,7 @@ out/
 __pycache__/
 *.pyc
 .venv/
+python/testdata/_out/
 # CocoIndex Code (ccc)
 /.cocoindex_code/
 test/na/Output/

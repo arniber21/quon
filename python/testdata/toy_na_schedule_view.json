@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "kind": "na_schedule_view",
+  "meta": {
+    "target_id": "toy_viz",
+    "na_backend": "zoned",
+    "na_placer": "routing_agnostic"
+  },
+  "metrics": {
+    "rydberg_stages": 1,
+    "rearrangement_steps": 1,
+    "rearrangement_time_us": 10,
+    "trap_transfers": 2,
+    "transfer_time_us": 30,
+    "entangle2_count": 1,
+    "entangle_n_count": 0,
+    "measurement_rounds": 0,
+    "reset_rounds": 0,
+    "wait_time_us": 0,
+    "total_time_us": 41,
+    "logical_qubits": 2,
+    "physical_atoms": 2,
+    "estimated_cycles": 3,
+    "bottleneck": "rearrangement"
+  },
+  "zones": [
+    {
+      "zone_id": 0,
+      "kind": "storage",
+      "origin_um": [0.0, 0.0],
+      "width_um": 40.0,
+      "height_um": 20.0,
+      "rows": 5,
+      "cols": 10,
+      "site_pitch_um": [4.0, 4.0]
+    },
+    {
+      "zone_id": 1,
+      "kind": "entanglement",
+      "origin_um": [0.0, 30.0],
+      "width_um": 24.0,
+      "height_um": 10.0,
+      "rows": 1,
+      "cols": 2,
+      "site_pitch_um": [12.0, 10.0]
+    }
+  ],
+  "layout": {
+    "sites": [
+      {"id": 0, "position": {"x_um": 0.0, "y_um": 0.0}},
+      {"id": 1, "position": {"x_um": 4.0, "y_um": 0.0}},
+      {"id": 10, "position": {"x_um": 0.0, "y_um": 30.0}},
+      {"id": 11, "position": {"x_um": 12.0, "y_um": 30.0}}
+    ],
+    "initial_bindings": [
+      {"atom": 0, "trap": {"Slm": {"site": 0}}},
+      {"atom": 1, "trap": {"Slm": {"site": 1}}}
+    ]
+  },
+  "layers": [
+    {
+      "cycle": 0,
+      "actions": [
+        {
+          "Move": {
+            "moves": [
+              {"atom": 0, "from": 0, "to": 10},
+              {"atom": 1, "from": 1, "to": 11}
+            ],
+            "duration_us": 10
+          }
+        }
+      ]
+    },
+    {
+      "cycle": 1,
+      "actions": [
+        {
+          "Transfer": {
+            "atom": 0,
+            "direction": "AodToSlm",
+            "site": 10,
+            "aod": {"aod_id": 0, "row": 0, "col": 0},
+            "duration_us": 15
+          }
+        },
+        {
+          "Transfer": {
+            "atom": 1,
+            "direction": "AodToSlm",
+            "site": 11,
+            "aod": {"aod_id": 0, "row": 0, "col": 1},
+            "duration_us": 15
+          }
+        }
+      ]
+    },
+    {
+      "cycle": 2,
+      "actions": [
+        {"Entangle2": {"atoms": [0, 1], "duration_us": 1}}
+      ]
+    }
+  ]
+}
