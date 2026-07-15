@@ -15,6 +15,10 @@ use quon_na::{
 };
 
 use backend::{BackendTarget, TargetKind};
+use quon_qec::{
+    ErrorModelSnapshot, attach_barrier_cycles, dual_emit, expand_workload, experiment_to_json,
+    na_refs_from_expanded, sibling_stim_path,
+};
 use quonc::compile::{
     CompileRequest, build_na_schedule_view, compile, schedule_to_json, schedule_to_mlir,
 };
@@ -35,6 +39,11 @@ Examples:
   quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
     --emit-na-schedule --emit-na-graph --emit-resource-report
 
+  # QEC experiment: semantic *.qec.json + sibling structure-level .stim
+  quonc examples/na_qec/repetition_d3_memory.qn \\
+    --target targets/neutral_atom/generic_rna_v0.json \\
+    --emit-qec-experiment /tmp/rep_d3.qec.json
+
   # Debug IR after each pass
   quonc program.qn --dump-ir --verify-linear --emit-qasm
 
@@ -54,6 +63,8 @@ Notes:
   Schedule JSON (--emit-na-schedule) is a debug/visualization view
   (layout + zones + metrics envelope for python/visualize_na_schedule.py).
   --emit-na-graph writes Graphviz DOT for the interaction graph.
+  --emit-qec-experiment writes QEC evaluation JSON + structure-only Stim
+  (no physical noise; Python annotates from JSON error_model).
 ";
 
 #[derive(Parser, Debug)]
@@ -126,6 +137,10 @@ struct Cli {
         help_heading = "Emit"
     )]
     emit_resource_report: Option<String>,
+
+    /// Emit QEC experiment JSON + sibling structure-level `.stim` (ADR-0018)
+    #[arg(long, value_name = "PATH", help_heading = "Emit")]
+    emit_qec_experiment: Option<PathBuf>,
 
     /// Force resource-report format (overrides PATH extension)
     #[arg(long, value_enum, value_name = "FMT", help_heading = "Emit")]
@@ -500,24 +515,34 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
         bail!(
             "--emit-qasm requires a fixed (gate-model) target; \
              use --emit-na-mlir (or --emit-na-schedule / --emit-na-graph / \
-             --emit-resource-report) for neutral-atom targets"
+             --emit-resource-report / --emit-qec-experiment) for neutral-atom targets"
         );
     }
     if (cli.emit_na_mlir.is_some()
         || cli.emit_na_schedule.is_some()
         || cli.emit_na_graph.is_some()
-        || cli.emit_resource_report.is_some())
+        || cli.emit_resource_report.is_some()
+        || cli.emit_qec_experiment.is_some())
         && !is_na
     {
         bail!(
-            "--emit-na-mlir / --emit-na-schedule / --emit-na-graph / --emit-resource-report \
-             require a neutral_atom_reconfigurable target (see targets/neutral_atom/)"
+            "--emit-na-mlir / --emit-na-schedule / --emit-na-graph / --emit-resource-report / \
+             --emit-qec-experiment require a neutral_atom_reconfigurable target \
+             (see targets/neutral_atom/)"
         );
     }
     if cli.verify_na && !is_na {
         bail!(
             "--verify-na requires a neutral_atom_reconfigurable target \
              (or a standalone .mlir schedule with --verify-na)"
+        );
+    }
+    if let Some(path) = &cli.emit_qec_experiment
+        && path.as_os_str() == "-"
+    {
+        bail!(
+            "--emit-qec-experiment requires a filesystem PATH (writes JSON + sibling .stim); \
+             stdout dual-emit is not supported"
         );
     }
     Ok(())
@@ -614,6 +639,11 @@ fn emit_artifacts(cli: &Cli, request: &CompileRequest, report: &quonc::CompileRe
         emitted = true;
     }
 
+    if let Some(json_path) = &cli.emit_qec_experiment {
+        emit_qec_experiment_artifacts(request, report, json_path)?;
+        emitted = true;
+    }
+
     if !emitted
         && cli.metrics_json.is_none()
         && cli.metrics_snapshot.is_none()
@@ -626,8 +656,8 @@ fn emit_artifacts(cli: &Cli, request: &CompileRequest, report: &quonc::CompileRe
                 eprintln!(
                     "{dim}(compiled successfully for neutral-atom target `{id}`; \
                      pass --emit-na-mlir for quantum.na MLIR, or \
-                     --emit-na-schedule / --emit-na-graph / --emit-resource-report \
-                     for debug views){dim:#}"
+                     --emit-na-schedule / --emit-na-graph / --emit-resource-report / \
+                     --emit-qec-experiment for debug / QEC evaluation artifacts){dim:#}"
                 );
             }
             id => {
@@ -637,6 +667,88 @@ fn emit_artifacts(cli: &Cli, request: &CompileRequest, report: &quonc::CompileRe
             }
         }
     }
+
+    Ok(())
+}
+
+/// Dual-emit `*.qec.json` + sibling `.stim` from the same expanded QEC IR (ADR-0018).
+fn emit_qec_experiment_artifacts(
+    request: &CompileRequest,
+    report: &quonc::CompileReport,
+    json_path: &PathBuf,
+) -> Result<()> {
+    let workload = report.qec_workload.as_ref().ok_or_else(|| {
+        anyhow!(
+            "--emit-qec-experiment requires a QEC-backed program (e.g. repetition_code / \
+             memory_round); bare-qubit NA programs have no experiment IR"
+        )
+    })?;
+    let na = match &request.target.kind {
+        TargetKind::NeutralAtomReconfigurable(na) => na,
+        _ => bail!(
+            "--emit-qec-experiment requires a neutral_atom_reconfigurable target \
+             (see targets/neutral_atom/)"
+        ),
+    };
+    // ADR-0017: hard-fail when error_model is missing (never invent rates).
+    let model = require_target_error_model(na).map_err(|e| anyhow!("{e}"))?;
+    let snap = model.error_model_snapshot();
+    let error_model = ErrorModelSnapshot {
+        rydberg: snap.rydberg,
+        measurement: snap.measurement,
+        reset: snap.reset,
+        movement: snap.movement,
+        transfer: snap.transfer,
+        idle_per_us: snap.idle_per_us,
+    };
+
+    // Re-expand from the same in-memory workload IR (never re-parse quantum.na).
+    let expanded = expand_workload(workload).map_err(|e| anyhow!("QEC expand for experiment: {e}"))?;
+    let stim_path = sibling_stim_path(json_path);
+    let stim_basename = stim_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("experiment.stim")
+        .to_string();
+
+    let mut na_refs = na_refs_from_expanded(&expanded);
+    if let Some(layers) = &report.na_schedule {
+        let barriers: Vec<u32> = layers
+            .iter()
+            .filter(|layer| {
+                layer
+                    .actions
+                    .iter()
+                    .any(|a| matches!(a, quon_na::NeutralAtomAction::Wait { .. }))
+            })
+            .map(|layer| layer.cycle)
+            .collect();
+        attach_barrier_cycles(&mut na_refs, &barriers);
+    }
+
+    let (experiment, stim) = dual_emit(&expanded, error_model, &stim_basename, na_refs)
+        .map_err(|e| anyhow!("{e}"))?;
+    let json = experiment_to_json(&experiment).map_err(|e| anyhow!("{e}"))?;
+
+    if let Some(parent) = json_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut json_body = json;
+    if !json_body.ends_with('\n') {
+        json_body.push('\n');
+    }
+    std::fs::write(json_path, json_body)
+        .with_context(|| format!("write QEC experiment JSON {}", json_path.display()))?;
+
+    if let Some(parent) = stim_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut stim_body = stim;
+    if !stim_body.ends_with('\n') {
+        stim_body.push('\n');
+    }
+    std::fs::write(&stim_path, stim_body)
+        .with_context(|| format!("write QEC Stim circuit {}", stim_path.display()))?;
 
     Ok(())
 }

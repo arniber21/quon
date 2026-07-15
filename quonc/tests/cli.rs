@@ -74,6 +74,7 @@ fn help_lists_all_documented_flags() {
         "--emit-na-schedule",
         "--emit-na-graph",
         "--emit-resource-report",
+        "--emit-qec-experiment",
         "--resource-report-format",
         "--target",
         "--print-target",

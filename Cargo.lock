@@ -1527,6 +1527,7 @@ dependencies = [
  "notify",
  "quon_core",
  "quon_na",
+ "quon_qec",
  "serde",
  "serde_json",
  "sha2",
