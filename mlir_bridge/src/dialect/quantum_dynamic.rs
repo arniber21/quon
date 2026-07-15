@@ -215,6 +215,9 @@ pub enum BuildError {
     /// The constructed op failed verification.
     #[error("operation failed verification: {0}")]
     Verify(#[from] VerifyError),
+    /// An MLIR type string failed to parse in the current context.
+    #[error("failed to parse MLIR type `{0}`")]
+    TypeParse(&'static str),
 }
 
 // --- Verifier --------------------------------------------------------------

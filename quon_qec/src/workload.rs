@@ -4,12 +4,18 @@
 //! schedule expansion into `quantum.na` is issue #248 — this module stops at
 //! the ordered op list plus per-block metadata.
 
+use std::collections::HashSet;
+
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::family::{CodeFamily, SourceFamily};
 
 /// Backend/IR identifier for one encoded logical qubit after QEC lowering.
+///
+/// Single source of truth for CONTEXT's "Logical qubit"; re-exported from
+/// `quon_na` (graph / qec layers).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogicalQubitId(pub u32);
@@ -17,6 +23,7 @@ pub struct LogicalQubitId(pub u32);
 /// Logical Pauli basis for preparation or measurement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum LogicalBasis {
     X,
     Z,
@@ -66,8 +73,10 @@ pub enum WorkloadOp {
 }
 
 /// Per-block metadata recovered from constructors (and validated against later ops).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// `code_family` is always derived from `family` + `distance` at construct /
+/// deserialize time (never an independent wire SoT).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct WorkloadBlock {
     pub logical_id: LogicalQubitId,
     pub family: SourceFamily,
@@ -75,6 +84,49 @@ pub struct WorkloadBlock {
     pub init_basis: LogicalBasis,
     /// Backend sizing family (`RepetitionCodeToy` / `SurfaceCodeLike`).
     pub code_family: CodeFamily,
+}
+
+impl<'de> Deserialize<'de> for WorkloadBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            logical_id: LogicalQubitId,
+            family: SourceFamily,
+            distance: u32,
+            init_basis: LogicalBasis,
+            #[serde(default)]
+            code_family: Option<CodeFamily>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        let derived = raw
+            .family
+            .to_code_family(raw.distance)
+            .map_err(de::Error::custom)?;
+        if let Some(ref claimed) = raw.code_family
+            && claimed != &derived
+        {
+            return Err(de::Error::custom(
+                "code_family inconsistent with family/distance",
+            ));
+        }
+        if raw.family == SourceFamily::Repetition && raw.init_basis == LogicalBasis::X {
+            return Err(de::Error::custom(
+                "repetition code does not support X-basis init",
+            ));
+        }
+        Ok(WorkloadBlock {
+            logical_id: raw.logical_id,
+            family: raw.family,
+            distance: raw.distance,
+            init_basis: raw.init_basis,
+            code_family: derived,
+        })
+    }
 }
 
 /// Ordered QEC workload collected from a `run { }` / `quantum.dynamic` program.
@@ -115,6 +167,10 @@ pub enum WorkloadError {
     UnknownLogicalId(u32),
     #[error("duplicate construct for logical qubit {0}")]
     DuplicateConstruct(u32),
+    #[error("logical qubit {0} was already measured")]
+    AlreadyMeasured(u32),
+    #[error("use of logical qubit {0} after it was measured")]
+    UseAfterMeasure(u32),
     #[error(
         "unsupported QEC combination: `{op}` is not valid for family `{family}` (distance {distance})"
     )]
@@ -123,8 +179,17 @@ pub enum WorkloadError {
         family: &'static str,
         distance: u32,
     },
-    #[error("logical_cx requires two distinct surface-code blocks at equal distance")]
-    LogicalCxFamilyMismatch,
+    #[error("logical_cx requires surface-code blocks; logical {id} is `{family}`")]
+    LogicalCxNotSurface { id: u32, family: &'static str },
+    #[error(
+        "logical_cx requires equal distances; control distance {control_distance}, target distance {target_distance}"
+    )]
+    LogicalCxDistanceMismatch {
+        control_distance: u32,
+        target_distance: u32,
+    },
+    #[error("logical_cx control and target must be distinct; both are {0}")]
+    LogicalCxSameLogical(u32),
     #[error("invalid code-family distance: {0}")]
     InvalidFamily(#[from] crate::family::QecError),
 }
@@ -134,6 +199,8 @@ pub enum WorkloadError {
 pub struct WorkloadBuilder {
     blocks: Vec<WorkloadBlock>,
     ops: Vec<WorkloadOp>,
+    /// Logical ids that have been constructed and not yet measured.
+    live: HashSet<LogicalQubitId>,
 }
 
 impl WorkloadBuilder {
@@ -167,6 +234,7 @@ impl WorkloadBuilder {
             init_basis: basis,
             code_family,
         });
+        self.live.insert(logical_id);
         self.ops.push(WorkloadOp::Construct {
             family,
             distance,
@@ -177,7 +245,7 @@ impl WorkloadBuilder {
     }
 
     pub fn memory_round(&mut self, logical_id: LogicalQubitId) -> Result<(), WorkloadError> {
-        self.require_block(logical_id)?;
+        self.require_live(logical_id)?;
         self.ops.push(WorkloadOp::MemoryRound { logical_id });
         Ok(())
     }
@@ -187,7 +255,13 @@ impl WorkloadBuilder {
         logical_id: LogicalQubitId,
         basis: LogicalBasis,
     ) -> Result<(), WorkloadError> {
-        self.require_block(logical_id)?;
+        if self.blocks.iter().all(|b| b.logical_id != logical_id) {
+            return Err(WorkloadError::UnknownLogicalId(logical_id.0));
+        }
+        if !self.live.contains(&logical_id) {
+            return Err(WorkloadError::AlreadyMeasured(logical_id.0));
+        }
+        self.live.remove(&logical_id);
         self.ops.push(WorkloadOp::MeasureLogical { logical_id, basis });
         Ok(())
     }
@@ -197,14 +271,28 @@ impl WorkloadBuilder {
         control: LogicalQubitId,
         target: LogicalQubitId,
     ) -> Result<(), WorkloadError> {
-        let a = self.require_block(control)?;
-        let b = self.require_block(target)?;
-        if a.family != SourceFamily::Surface
-            || b.family != SourceFamily::Surface
-            || a.distance != b.distance
-            || control == target
-        {
-            return Err(WorkloadError::LogicalCxFamilyMismatch);
+        if control == target {
+            return Err(WorkloadError::LogicalCxSameLogical(control.0));
+        }
+        let a = self.require_live(control)?.clone();
+        let b = self.require_live(target)?.clone();
+        if a.family != SourceFamily::Surface {
+            return Err(WorkloadError::LogicalCxNotSurface {
+                id: control.0,
+                family: a.family.as_str(),
+            });
+        }
+        if b.family != SourceFamily::Surface {
+            return Err(WorkloadError::LogicalCxNotSurface {
+                id: target.0,
+                family: b.family.as_str(),
+            });
+        }
+        if a.distance != b.distance {
+            return Err(WorkloadError::LogicalCxDistanceMismatch {
+                control_distance: a.distance,
+                target_distance: b.distance,
+            });
         }
         self.ops.push(WorkloadOp::LogicalCx { control, target });
         Ok(())
@@ -217,11 +305,16 @@ impl WorkloadBuilder {
         }
     }
 
-    fn require_block(&self, id: LogicalQubitId) -> Result<&WorkloadBlock, WorkloadError> {
-        self.blocks
+    fn require_live(&self, id: LogicalQubitId) -> Result<&WorkloadBlock, WorkloadError> {
+        let block = self
+            .blocks
             .iter()
             .find(|b| b.logical_id == id)
-            .ok_or(WorkloadError::UnknownLogicalId(id.0))
+            .ok_or(WorkloadError::UnknownLogicalId(id.0))?;
+        if !self.live.contains(&id) {
+            return Err(WorkloadError::UseAfterMeasure(id.0));
+        }
+        Ok(block)
     }
 }
 
@@ -280,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn surface_workload_with_logical_cx() {
+    fn surface_workload_with_logical_cx_full_order_and_metadata() {
         let mut b = WorkloadBuilder::new();
         b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
             .expect("a");
@@ -295,17 +388,48 @@ mod tests {
         let w = b.finish();
 
         assert_eq!(w.blocks.len(), 2);
+        let a = w.block(LogicalQubitId(0)).expect("block 0");
+        assert_eq!(a.family, SourceFamily::Surface);
+        assert_eq!(a.distance, 3);
+        assert_eq!(a.init_basis, LogicalBasis::Z);
+        assert_eq!(a.code_family, CodeFamily::SurfaceCodeLike { distance: 3 });
+        let b_block = w.block(LogicalQubitId(1)).expect("block 1");
+        assert_eq!(b_block.family, SourceFamily::Surface);
+        assert_eq!(b_block.distance, 3);
+        assert_eq!(b_block.init_basis, LogicalBasis::X);
         assert_eq!(
-            w.block(LogicalQubitId(1)).map(|bl| bl.code_family.clone()),
-            Some(CodeFamily::SurfaceCodeLike { distance: 3 })
+            b_block.code_family,
+            CodeFamily::SurfaceCodeLike { distance: 3 }
         );
-        assert!(matches!(
-            w.ops[2],
-            WorkloadOp::LogicalCx {
-                control: LogicalQubitId(0),
-                target: LogicalQubitId(1),
-            }
-        ));
+        assert_eq!(
+            w.ops,
+            vec![
+                WorkloadOp::Construct {
+                    family: SourceFamily::Surface,
+                    distance: 3,
+                    basis: LogicalBasis::Z,
+                    logical_id: LogicalQubitId(0),
+                },
+                WorkloadOp::Construct {
+                    family: SourceFamily::Surface,
+                    distance: 3,
+                    basis: LogicalBasis::X,
+                    logical_id: LogicalQubitId(1),
+                },
+                WorkloadOp::LogicalCx {
+                    control: LogicalQubitId(0),
+                    target: LogicalQubitId(1),
+                },
+                WorkloadOp::MeasureLogical {
+                    logical_id: LogicalQubitId(0),
+                    basis: LogicalBasis::Z,
+                },
+                WorkloadOp::MeasureLogical {
+                    logical_id: LogicalQubitId(1),
+                    basis: LogicalBasis::X,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -343,7 +467,56 @@ mod tests {
             .unwrap();
         assert_eq!(
             b.logical_cx(LogicalQubitId(0), LogicalQubitId(1)),
-            Err(WorkloadError::LogicalCxFamilyMismatch)
+            Err(WorkloadError::LogicalCxNotSurface {
+                id: 0,
+                family: "repetition",
+            })
+        );
+    }
+
+    #[test]
+    fn logical_cx_rejects_distance_mismatch_and_same_logical() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.construct(SourceFamily::Surface, 5, LogicalBasis::Z, LogicalQubitId(1))
+            .unwrap();
+        assert_eq!(
+            b.logical_cx(LogicalQubitId(0), LogicalQubitId(1)),
+            Err(WorkloadError::LogicalCxDistanceMismatch {
+                control_distance: 3,
+                target_distance: 5,
+            })
+        );
+
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        assert_eq!(
+            b.logical_cx(LogicalQubitId(0), LogicalQubitId(0)),
+            Err(WorkloadError::LogicalCxSameLogical(0))
+        );
+    }
+
+    #[test]
+    fn rejects_use_after_measure_and_double_measure() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(
+            SourceFamily::Repetition,
+            3,
+            LogicalBasis::Z,
+            LogicalQubitId(0),
+        )
+        .unwrap();
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .unwrap();
+        assert_eq!(
+            b.memory_round(LogicalQubitId(0)),
+            Err(WorkloadError::UseAfterMeasure(0))
+        );
+        assert_eq!(
+            b.measure_logical(LogicalQubitId(0), LogicalBasis::Z),
+            Err(WorkloadError::AlreadyMeasured(0))
         );
     }
 
@@ -355,5 +528,32 @@ mod tests {
             "extra": true,
         });
         assert!(serde_json::from_value::<QecWorkload>(value).is_err());
+    }
+
+    #[test]
+    fn workload_block_serde_rejects_inconsistent_code_family() {
+        let value = serde_json::json!({
+            "logical_id": 0,
+            "family": "repetition",
+            "distance": 3,
+            "init_basis": "z",
+            "code_family": { "family": "surface_code_like", "distance": 5 },
+        });
+        assert!(serde_json::from_value::<WorkloadBlock>(value).is_err());
+    }
+
+    #[test]
+    fn workload_block_serde_derives_code_family() {
+        let value = serde_json::json!({
+            "logical_id": 0,
+            "family": "surface",
+            "distance": 3,
+            "init_basis": "x",
+        });
+        let block: WorkloadBlock = serde_json::from_value(value).expect("derive");
+        assert_eq!(
+            block.code_family,
+            CodeFamily::SurfaceCodeLike { distance: 3 }
+        );
     }
 }

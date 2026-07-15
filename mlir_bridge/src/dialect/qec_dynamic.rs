@@ -35,8 +35,8 @@ pub mod attr {
 }
 
 /// The MLIR type of a QEC block SSA value.
-pub fn qec_block_type(context: &Context) -> Type<'_> {
-    Type::parse(context, QEC_BLOCK_TYPE).unwrap_or_else(|| Type::none(context))
+pub fn qec_block_type(context: &Context) -> Result<Type<'_>, BuildError> {
+    Type::parse(context, QEC_BLOCK_TYPE).ok_or(BuildError::TypeParse(QEC_BLOCK_TYPE))
 }
 
 /// True if `r#type` is `!quantum.qec_block`.
@@ -48,8 +48,8 @@ fn i64_type(context: &Context) -> Type<'_> {
     IntegerType::new(context, 64).into()
 }
 
-fn bit_type(context: &Context) -> Type<'_> {
-    Type::parse(context, BIT_TYPE).unwrap_or_else(|| Type::none(context))
+fn bit_type(context: &Context) -> Result<Type<'_>, BuildError> {
+    Type::parse(context, BIT_TYPE).ok_or(BuildError::TypeParse(BIT_TYPE))
 }
 
 fn finish(builder: OperationBuilder) -> Result<Operation, BuildError> {
@@ -187,23 +187,39 @@ fn verify_construct<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
 ) -> Result<(), VerifyError> {
     expect_counts(operation, op::CONSTRUCT, 0, 1)?;
     expect_result_qec(operation, op::CONSTRUCT, 0)?;
-    let family = require_string_attr(operation, op::CONSTRUCT, attr::FAMILY)?;
-    if quon_qec::SourceFamily::parse(&family).is_none() {
-        return Err(VerifyError::WrongAttributeType {
-            op: op::CONSTRUCT,
-            attr: attr::FAMILY,
-            expected: "\"repetition\" or \"surface\"",
-        });
-    }
-    let basis = require_string_attr(operation, op::CONSTRUCT, attr::BASIS)?;
-    if quon_qec::LogicalBasis::parse(&basis).is_none() {
+    let family_s = require_string_attr(operation, op::CONSTRUCT, attr::FAMILY)?;
+    let family = quon_qec::SourceFamily::parse(&family_s).ok_or(VerifyError::WrongAttributeType {
+        op: op::CONSTRUCT,
+        attr: attr::FAMILY,
+        expected: "\"repetition\" or \"surface\"",
+    })?;
+    let basis_s = require_string_attr(operation, op::CONSTRUCT, attr::BASIS)?;
+    let basis = quon_qec::LogicalBasis::parse(&basis_s).ok_or(VerifyError::WrongAttributeType {
+        op: op::CONSTRUCT,
+        attr: attr::BASIS,
+        expected: "\"x\" or \"z\"",
+    })?;
+    // Repetition has no X-basis constructor (ADR-0014 / typecheck).
+    if family == quon_qec::SourceFamily::Repetition && basis == quon_qec::LogicalBasis::X {
         return Err(VerifyError::WrongAttributeType {
             op: op::CONSTRUCT,
             attr: attr::BASIS,
-            expected: "\"x\" or \"z\"",
+            expected: "\"z\" for repetition (x init unsupported)",
         });
     }
-    let _ = require_i64_attr(operation, op::CONSTRUCT, attr::DISTANCE)?;
+    let distance_i64 = require_i64_attr(operation, op::CONSTRUCT, attr::DISTANCE)?;
+    let distance = u32::try_from(distance_i64).map_err(|_| VerifyError::WrongAttributeType {
+        op: op::CONSTRUCT,
+        attr: attr::DISTANCE,
+        expected: "non-negative i64 in u32 range",
+    })?;
+    family
+        .to_code_family(distance)
+        .map_err(|_| VerifyError::WrongAttributeType {
+            op: op::CONSTRUCT,
+            attr: attr::DISTANCE,
+            expected: "valid distance for family (repetition d>=2; surface odd d>=3)",
+        })?;
     let _ = require_i64_attr(operation, op::CONSTRUCT, attr::LOGICAL_ID)?;
     Ok(())
 }
@@ -271,9 +287,10 @@ pub fn qec_construct<'c>(
     logical_id: i64,
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
+    let block_ty = qec_block_type(context)?;
     finish(
         OperationBuilder::new(op::CONSTRUCT, location)
-            .add_results(&[qec_block_type(context)])
+            .add_results(&[block_ty])
             .add_attributes(&[
                 (
                     Identifier::new(context, attr::FAMILY),
@@ -302,10 +319,11 @@ pub fn qec_memory_round<'c>(
     logical_id: i64,
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
+    let block_ty = qec_block_type(context)?;
     finish(
         OperationBuilder::new(op::MEMORY_ROUND, location)
             .add_operands(&[block])
-            .add_results(&[qec_block_type(context)])
+            .add_results(&[block_ty])
             .add_attributes(&[(
                 Identifier::new(context, attr::LOGICAL_ID),
                 IntegerAttribute::new(i64_type(context), logical_id).into(),
@@ -321,10 +339,11 @@ pub fn qec_measure_logical<'c>(
     logical_id: i64,
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
+    let bit_ty = bit_type(context)?;
     finish(
         OperationBuilder::new(op::MEASURE_LOGICAL, location)
             .add_operands(&[block])
-            .add_results(&[bit_type(context)])
+            .add_results(&[bit_ty])
             .add_attributes(&[
                 (
                     Identifier::new(context, attr::BASIS),
@@ -347,10 +366,11 @@ pub fn qec_logical_cx<'c>(
     target_id: i64,
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
+    let block_ty = qec_block_type(context)?;
     finish(
         OperationBuilder::new(op::LOGICAL_CX, location)
             .add_operands(&[control, target])
-            .add_results(&[qec_block_type(context), qec_block_type(context)])
+            .add_results(&[block_ty, block_ty])
             .add_attributes(&[
                 (
                     Identifier::new(context, attr::CONTROL_ID),

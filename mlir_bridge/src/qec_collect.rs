@@ -1,7 +1,14 @@
 //! Collect `quantum.dynamic` QEC ops into [`quon_qec::QecWorkload`] (issue #251).
+//!
+//! Melior collect site for ADR-0015: frontend/`mlir_bridge` lower QEC builtins
+//! into `quantum.dynamic`; this module walks the module and builds MLIR-free
+//! workload IR. Wiring into the `quonc` compile pipeline / NA schedule expansion
+//! is issue #248.
+
+use std::collections::HashMap;
 
 use melior::ir::operation::OperationLike;
-use melior::ir::{BlockLike, Module, OperationRef, RegionLike};
+use melior::ir::{BlockLike, Module, OperationRef, RegionLike, ValueLike};
 use thiserror::Error;
 
 use crate::dialect::qec_dynamic::{self, attr, op};
@@ -16,6 +23,16 @@ pub enum CollectError {
     Workload(#[from] WorkloadError),
     #[error("invalid QEC op `{op}`: {detail}")]
     InvalidOp { op: String, detail: String },
+    #[error(
+        "`{op}` attribute logical id {attr_id} does not match SSA operand logical id {ssa_id}"
+    )]
+    LogicalIdMismatch {
+        op: String,
+        attr_id: u32,
+        ssa_id: u32,
+    },
+    #[error("`{op}`: operand SSA value is not a known QEC block")]
+    UnknownSsaBlock { op: String },
 }
 
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
@@ -25,6 +42,10 @@ fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
         .as_str()
         .unwrap_or("")
         .to_string()
+}
+
+fn value_key<'a>(value: &impl ValueLike<'a>) -> usize {
+    value.to_raw().ptr as usize
 }
 
 fn logical_id_from_i64(value: i64, op: &str) -> Result<LogicalQubitId, CollectError> {
@@ -42,9 +63,60 @@ fn distance_from_i64(value: i64, op: &str) -> Result<u32, CollectError> {
     })
 }
 
+fn resolve_ssa_id(
+    operation: OperationRef<'_, '_>,
+    operand_index: usize,
+    op: &str,
+    ssa_ids: &HashMap<usize, LogicalQubitId>,
+) -> Result<LogicalQubitId, CollectError> {
+    let operand = operation
+        .operand(operand_index)
+        .map_err(|_| CollectError::InvalidOp {
+            op: op.to_string(),
+            detail: format!("missing operand {operand_index}"),
+        })?;
+    ssa_ids
+        .get(&value_key(&operand))
+        .copied()
+        .ok_or_else(|| CollectError::UnknownSsaBlock { op: op.to_string() })
+}
+
+fn require_attr_matches_ssa(
+    op: &str,
+    attr_id: LogicalQubitId,
+    ssa_id: LogicalQubitId,
+) -> Result<(), CollectError> {
+    if attr_id != ssa_id {
+        return Err(CollectError::LogicalIdMismatch {
+            op: op.to_string(),
+            attr_id: attr_id.0,
+            ssa_id: ssa_id.0,
+        });
+    }
+    Ok(())
+}
+
+fn bind_result(
+    operation: OperationRef<'_, '_>,
+    result_index: usize,
+    logical_id: LogicalQubitId,
+    ssa_ids: &mut HashMap<usize, LogicalQubitId>,
+    op: &str,
+) -> Result<(), CollectError> {
+    let result = operation
+        .result(result_index)
+        .map_err(|_| CollectError::InvalidOp {
+            op: op.to_string(),
+            detail: format!("missing result {result_index}"),
+        })?;
+    ssa_ids.insert(value_key(&result), logical_id);
+    Ok(())
+}
+
 fn collect_op(
     operation: OperationRef<'_, '_>,
     builder: &mut WorkloadBuilder,
+    ssa_ids: &mut HashMap<usize, LogicalQubitId>,
 ) -> Result<(), CollectError> {
     let name = op_name(&operation);
     match name.as_str() {
@@ -88,9 +160,11 @@ fn collect_op(
                 &name,
             )?;
             builder.construct(family, distance, basis, logical_id)?;
+            bind_result(operation, 0, logical_id, ssa_ids, &name)?;
         }
         op::MEMORY_ROUND => {
-            let logical_id = logical_id_from_i64(
+            let ssa_id = resolve_ssa_id(operation, 0, &name, ssa_ids)?;
+            let attr_id = logical_id_from_i64(
                 qec_dynamic::read_i64_attr(&operation, attr::LOGICAL_ID).map_err(|e| {
                     CollectError::InvalidOp {
                         op: name.clone(),
@@ -99,9 +173,12 @@ fn collect_op(
                 })?,
                 &name,
             )?;
-            builder.memory_round(logical_id)?;
+            require_attr_matches_ssa(&name, attr_id, ssa_id)?;
+            builder.memory_round(ssa_id)?;
+            bind_result(operation, 0, ssa_id, ssa_ids, &name)?;
         }
         op::MEASURE_LOGICAL => {
+            let ssa_id = resolve_ssa_id(operation, 0, &name, ssa_ids)?;
             let basis_s = qec_dynamic::read_string_attr(&operation, attr::BASIS).map_err(|e| {
                 CollectError::InvalidOp {
                     op: name.clone(),
@@ -112,7 +189,7 @@ fn collect_op(
                 op: name.clone(),
                 detail: format!("unknown basis `{basis_s}`"),
             })?;
-            let logical_id = logical_id_from_i64(
+            let attr_id = logical_id_from_i64(
                 qec_dynamic::read_i64_attr(&operation, attr::LOGICAL_ID).map_err(|e| {
                     CollectError::InvalidOp {
                         op: name.clone(),
@@ -121,10 +198,13 @@ fn collect_op(
                 })?,
                 &name,
             )?;
-            builder.measure_logical(logical_id, basis)?;
+            require_attr_matches_ssa(&name, attr_id, ssa_id)?;
+            builder.measure_logical(ssa_id, basis)?;
         }
         op::LOGICAL_CX => {
-            let control = logical_id_from_i64(
+            let control_ssa = resolve_ssa_id(operation, 0, &name, ssa_ids)?;
+            let target_ssa = resolve_ssa_id(operation, 1, &name, ssa_ids)?;
+            let control_attr = logical_id_from_i64(
                 qec_dynamic::read_i64_attr(&operation, attr::CONTROL_ID).map_err(|e| {
                     CollectError::InvalidOp {
                         op: name.clone(),
@@ -133,7 +213,7 @@ fn collect_op(
                 })?,
                 &name,
             )?;
-            let target = logical_id_from_i64(
+            let target_attr = logical_id_from_i64(
                 qec_dynamic::read_i64_attr(&operation, attr::TARGET_ID).map_err(|e| {
                     CollectError::InvalidOp {
                         op: name.clone(),
@@ -142,7 +222,17 @@ fn collect_op(
                 })?,
                 &name,
             )?;
-            builder.logical_cx(control, target)?;
+            require_attr_matches_ssa(&name, control_attr, control_ssa)?;
+            require_attr_matches_ssa(&name, target_attr, target_ssa)?;
+            builder.logical_cx(control_ssa, target_ssa)?;
+            bind_result(operation, 0, control_ssa, ssa_ids, &name)?;
+            bind_result(operation, 1, target_ssa, ssa_ids, &name)?;
+        }
+        other if other.starts_with("quantum.dynamic.qec_") => {
+            return Err(CollectError::InvalidOp {
+                op: name,
+                detail: "unrecognized QEC dynamic op".into(),
+            });
         }
         _ => {}
     }
@@ -152,15 +242,16 @@ fn collect_op(
 fn walk_block(
     block: melior::ir::BlockRef<'_, '_>,
     builder: &mut WorkloadBuilder,
+    ssa_ids: &mut HashMap<usize, LogicalQubitId>,
 ) -> Result<(), CollectError> {
     let mut operation = block.first_operation();
     while let Some(op) = operation {
-        collect_op(op, builder)?;
+        collect_op(op, builder, ssa_ids)?;
         for region_index in 0..op.region_count() {
             if let Ok(region) = op.region(region_index) {
                 let mut inner = region.first_block();
                 while let Some(inner_block) = inner {
-                    walk_block(inner_block, builder)?;
+                    walk_block(inner_block, builder, ssa_ids)?;
                     inner = inner_block.next_in_region();
                 }
             }
@@ -172,17 +263,20 @@ fn walk_block(
 
 /// Walk a `quantum.dynamic` module and collect QEC ops into a [`QecWorkload`].
 ///
-/// Ops are recorded in module textual order. Unsupported family/op combinations
-/// surface as [`CollectError::Workload`].
+/// Ops are recorded in module textual order. Logical ids are taken from SSA
+/// result→id bindings established at `qec_construct` (and threaded through
+/// round/CX results); attributes must match those SSA ids. Unsupported
+/// family/op combinations surface as [`CollectError::Workload`].
 pub fn collect_qec_workload(module: &Module<'_>) -> Result<QecWorkload, CollectError> {
     let mut builder = WorkloadBuilder::new();
+    let mut ssa_ids = HashMap::new();
     let module_op = module.as_operation();
     let Ok(region) = module_op.region(0) else {
         return Ok(builder.finish());
     };
     let mut block = region.first_block();
     while let Some(current) = block {
-        walk_block(current, &mut builder)?;
+        walk_block(current, &mut builder, &mut ssa_ids)?;
         block = current.next_in_region();
     }
     Ok(builder.finish())
@@ -251,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn collects_surface_with_logical_cx() {
+    fn collects_surface_with_logical_cx_full_order_and_metadata() {
         with_ctx(|context| {
             let location = Location::unknown(context);
             let module = melior::ir::Module::new(location);
@@ -279,11 +373,78 @@ mod tests {
 
             let workload = collect_qec_workload(&module).expect("collect");
             assert_eq!(workload.blocks.len(), 2);
+            let block0 = &workload.blocks[0];
+            assert_eq!(block0.family, SourceFamily::Surface);
+            assert_eq!(block0.distance, 3);
+            assert_eq!(block0.init_basis, LogicalBasis::Z);
+            assert_eq!(
+                block0.code_family,
+                CodeFamily::SurfaceCodeLike { distance: 3 }
+            );
+            let block1 = &workload.blocks[1];
+            assert_eq!(block1.family, SourceFamily::Surface);
+            assert_eq!(block1.distance, 3);
+            assert_eq!(block1.init_basis, LogicalBasis::X);
+            assert_eq!(
+                block1.code_family,
+                CodeFamily::SurfaceCodeLike { distance: 3 }
+            );
+            assert_eq!(
+                workload.ops,
+                vec![
+                    WorkloadOp::Construct {
+                        family: SourceFamily::Surface,
+                        distance: 3,
+                        basis: LogicalBasis::Z,
+                        logical_id: LogicalQubitId(0),
+                    },
+                    WorkloadOp::Construct {
+                        family: SourceFamily::Surface,
+                        distance: 3,
+                        basis: LogicalBasis::X,
+                        logical_id: LogicalQubitId(1),
+                    },
+                    WorkloadOp::LogicalCx {
+                        control: LogicalQubitId(0),
+                        target: LogicalQubitId(1),
+                    },
+                    WorkloadOp::MeasureLogical {
+                        logical_id: LogicalQubitId(0),
+                        basis: LogicalBasis::Z,
+                    },
+                    WorkloadOp::MeasureLogical {
+                        logical_id: LogicalQubitId(1),
+                        basis: LogicalBasis::X,
+                    },
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn rejects_attr_ssa_logical_id_mismatch() {
+        with_ctx(|context| {
+            let location = Location::unknown(context);
+            let module = melior::ir::Module::new(location);
+            let body = module.body();
+
+            let c = body.append_operation(
+                qec_dynamic::qec_construct(context, "repetition", 3, "z", 0, location)
+                    .expect("construct"),
+            );
+            let block = Value::from(c.result(0).expect("r0"));
+            // Operand is block 0, but attribute claims logical_id=1.
+            body.append_operation(
+                qec_dynamic::qec_memory_round(context, block, 1, location).expect("round"),
+            );
+
+            let err = collect_qec_workload(&module).expect_err("mismatch");
             assert!(matches!(
-                workload.ops[2],
-                WorkloadOp::LogicalCx {
-                    control: LogicalQubitId(0),
-                    target: LogicalQubitId(1),
+                err,
+                CollectError::LogicalIdMismatch {
+                    attr_id: 1,
+                    ssa_id: 0,
+                    ..
                 }
             ));
         });
@@ -313,8 +474,26 @@ mod tests {
             let err = collect_qec_workload(&module).expect_err("should reject");
             assert!(matches!(
                 err,
-                CollectError::Workload(WorkloadError::LogicalCxFamilyMismatch)
+                CollectError::Workload(WorkloadError::LogicalCxNotSurface {
+                    id: 0,
+                    family: "repetition",
+                })
             ));
+        });
+    }
+
+    #[test]
+    fn verify_rejects_repetition_x_and_invalid_distance() {
+        with_ctx(|context| {
+            let location = Location::unknown(context);
+            assert!(
+                qec_dynamic::qec_construct(context, "repetition", 3, "x", 0, location).is_err(),
+                "repetition + x must fail at build/verify"
+            );
+            assert!(
+                qec_dynamic::qec_construct(context, "surface", 2, "z", 0, location).is_err(),
+                "even surface distance must fail at build/verify"
+            );
         });
     }
 }

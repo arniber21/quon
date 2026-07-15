@@ -13,6 +13,7 @@ use melior::ir::{
 };
 use mlir_bridge::dialect::monadic_staging as staging;
 use mlir_bridge::dialect::quantum_circ as qc;
+use mlir_bridge::dialect::quantum_dynamic as qd;
 use quon_core::DepthExpr;
 use thiserror::Error;
 
@@ -47,6 +48,8 @@ pub enum LowerError {
     UnresolvedSpecializationWidth,
     #[error("MLIR builder failed: {0}")]
     Mlir(#[from] qc::BuildError),
+    #[error("MLIR dynamic/staging builder failed: {0}")]
+    Dynamic(#[from] qd::BuildError),
     #[error("internal lowering error: {0}")]
     Internal(&'static str),
     #[error("type checking failed: {0}")]
@@ -688,7 +691,7 @@ impl<'c> LoweringCtx<'c> {
                                 block_val,
                                 logical_id,
                                 self.location,
-                            ));
+                            )?);
                             let results = collect_results(op, 1)?;
                             if let Some(result) = results.first() {
                                 self.qec_logical_ids
@@ -714,7 +717,7 @@ impl<'c> LoweringCtx<'c> {
                                 control_id,
                                 target_id,
                                 self.location,
-                            ));
+                            )?);
                             let results = collect_results(op, 2)?;
                             if results.len() == 2 {
                                 self.qec_logical_ids
@@ -753,7 +756,7 @@ impl<'c> LoweringCtx<'c> {
             basis,
             logical_id,
             self.location,
-        ));
+        )?);
         let results = collect_results(op, 1)?;
         if let Some(result) = results.first() {
             self.qec_logical_ids.insert(value_key(result), logical_id);
@@ -776,7 +779,7 @@ impl<'c> LoweringCtx<'c> {
             basis,
             logical_id,
             self.location,
-        ));
+        )?);
         collect_results(op, 1)
     }
 

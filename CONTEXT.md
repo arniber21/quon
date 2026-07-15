@@ -106,7 +106,7 @@ _Avoid_: transversal CX (for this op), lattice surgery (unqualified as the whole
 
 ### Neutral-atom backend
 
-**Logical qubit**: A backend/IR-level identifier for one encoded logical qubit after QEC lowering, used to track its expansion into atoms. Distinct from the source-level `QecBlock` (the typed resource) and from bare `Qubit`.
+**Logical qubit**: A backend/IR-level identifier for one encoded logical qubit after QEC lowering, used to track its expansion into atoms. Owned as `quon_qec::LogicalQubitId` and re-exported from `quon_na` (graph / qec). Distinct from the source-level `QecBlock` (the typed resource) and from bare `Qubit`.
 _Avoid_: QEC qubit
 
 **Atom**: A single physical site occupant in the neutral-atom architecture-aware schedule — the physical unit that a code block expands into. Exists only in the neutral-atom backend (`quon_na`), below the frontend's linear type system.

@@ -20,6 +20,10 @@
 //!    [`crate::emit::openqasm3`].
 //!
 //! Neutral-atom scheduling after dynamic IR lives in `quon_na::pipeline`.
+//!
+//! QEC: after monadic lowering, [`crate::collect_qec_workload`] builds MLIR-free
+//! workload IR (#251). Calling it from this pipeline / expanding to `quantum.na`
+//! is issue #248.
 
 use backend::BackendTarget;
 use melior::Context;

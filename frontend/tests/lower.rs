@@ -190,7 +190,7 @@ fn main(): Q<Bit> = run {
 fn qec_surface_workload_extracts_with_logical_cx() {
     use mlir_bridge::collect_qec_workload;
     use mlir_bridge::passes::monadic_lowering;
-    use quon_qec::{LogicalQubitId, WorkloadOp};
+    use quon_qec::{CodeFamily, LogicalBasis, LogicalQubitId, SourceFamily, WorkloadOp};
 
     let src = r#"
 fn main(): Q<(Bit, Bit)> = run {
@@ -207,11 +207,43 @@ fn main(): Q<(Bit, Bit)> = run {
     monadic_lowering::run_on_module(&context, &module).expect("monadic");
     let workload = collect_qec_workload(&module).expect("collect");
     assert_eq!(workload.blocks.len(), 2);
-    assert!(matches!(
-        workload.ops[2],
-        WorkloadOp::LogicalCx {
-            control: LogicalQubitId(0),
-            target: LogicalQubitId(1),
-        }
-    ));
+    let a = &workload.blocks[0];
+    assert_eq!(a.family, SourceFamily::Surface);
+    assert_eq!(a.distance, 3);
+    assert_eq!(a.init_basis, LogicalBasis::Z);
+    assert_eq!(a.code_family, CodeFamily::SurfaceCodeLike { distance: 3 });
+    let b = &workload.blocks[1];
+    assert_eq!(b.family, SourceFamily::Surface);
+    assert_eq!(b.distance, 3);
+    assert_eq!(b.init_basis, LogicalBasis::X);
+    assert_eq!(b.code_family, CodeFamily::SurfaceCodeLike { distance: 3 });
+    assert_eq!(
+        workload.ops,
+        vec![
+            WorkloadOp::Construct {
+                family: SourceFamily::Surface,
+                distance: 3,
+                basis: LogicalBasis::Z,
+                logical_id: LogicalQubitId(0),
+            },
+            WorkloadOp::Construct {
+                family: SourceFamily::Surface,
+                distance: 3,
+                basis: LogicalBasis::X,
+                logical_id: LogicalQubitId(1),
+            },
+            WorkloadOp::LogicalCx {
+                control: LogicalQubitId(0),
+                target: LogicalQubitId(1),
+            },
+            WorkloadOp::MeasureLogical {
+                logical_id: LogicalQubitId(0),
+                basis: LogicalBasis::Z,
+            },
+            WorkloadOp::MeasureLogical {
+                logical_id: LogicalQubitId(1),
+                basis: LogicalBasis::X,
+            },
+        ]
+    );
 }

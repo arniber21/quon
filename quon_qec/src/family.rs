@@ -139,6 +139,7 @@ pub fn ceil_div(numerator: u32, denominator: u32) -> Result<u32, QecError> {
 /// Wire/report strings use `"repetition"` / `"surface"` (ADR-0014).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum SourceFamily {
     Repetition,
     Surface,

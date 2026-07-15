@@ -2,22 +2,21 @@
 //!
 //! Sizing formulas and [`CodeFamily`] live in [`quon_qec`] (ADR-0015) and are
 //! re-exported here for API stability. Backend-only IR concepts
-//! ([`LogicalQubitId`], [`CodeBlock`], [`LogicalOp`]) with no Quon
-//! source-language representation remain in this module.
+//! ([`CodeBlock`], [`LogicalOp`]) with no Quon source-language representation
+//! remain in this module. [`LogicalQubitId`] is owned by `quon_qec` and
+//! re-exported from both this module and [`crate::graph`].
 //!
 //! Overhead formulas are normative in
 //! [`docs/neutral_atom/architecture_model.md`](../../docs/neutral_atom/architecture_model.md)
 //! §10 (issue #109).
-//!
-//! [`LogicalQubitId`] is shared with the interaction-graph layer ([`crate::graph`]).
 
 use serde::{Deserialize, Serialize};
 
 use crate::layout::AtomId;
 
-pub use crate::graph::LogicalQubitId;
 pub use quon_qec::{
-    CodeFamily, NetRate, QecError, atoms_per_logical, ceil_div, repetition_n, surface_n,
+    CodeFamily, LogicalQubitId, NetRate, QecError, atoms_per_logical, ceil_div, repetition_n,
+    surface_n,
 };
 
 /// Identifier for a code block grouping atoms under one [`CodeFamily`].

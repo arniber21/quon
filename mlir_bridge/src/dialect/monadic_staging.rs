@@ -12,7 +12,7 @@ use melior::ir::{Block, Identifier, Location, Operation, Region, Type, Value};
 
 use super::qec_dynamic::{self, QEC_BLOCK_TYPE};
 use super::quantum_circ::{self, QUBIT_TYPE};
-use super::quantum_dynamic::BIT_TYPE;
+use super::quantum_dynamic::{BIT_TYPE, BuildError};
 
 /// Staging operation names (lowered away by the monadic lowering pass).
 pub mod op {
@@ -190,6 +190,10 @@ pub fn run_entry_block<'c>(
 }
 
 /// Builds a staging `quantum.circ.qec_construct` op.
+///
+/// Staging QEC builders skip `verify()` (monadic lowering rebuilds verified
+/// `qec_dynamic` ops); they still return [`Result`] so Melior / type-parse
+/// failures are not `.expect`'d.
 pub fn qec_construct<'c>(
     context: &'c Context,
     family: &str,
@@ -197,9 +201,10 @@ pub fn qec_construct<'c>(
     basis: &str,
     logical_id: i64,
     location: Location<'c>,
-) -> Operation<'c> {
-    OperationBuilder::new(op::QEC_CONSTRUCT, location)
-        .add_results(&[qec_dynamic::qec_block_type(context)])
+) -> Result<Operation<'c>, BuildError> {
+    let block_ty = qec_dynamic::qec_block_type(context)?;
+    Ok(OperationBuilder::new(op::QEC_CONSTRUCT, location)
+        .add_results(&[block_ty])
         .add_attributes(&[
             (
                 Identifier::new(context, attr::FAMILY),
@@ -218,8 +223,7 @@ pub fn qec_construct<'c>(
                 IntegerAttribute::new(i64_type(context), logical_id).into(),
             ),
         ])
-        .build()
-        .expect("staging qec_construct builds")
+        .build()?)
 }
 
 /// Builds a staging `quantum.circ.qec_memory_round` op.
@@ -228,16 +232,16 @@ pub fn qec_memory_round<'c>(
     block: Value<'c, '_>,
     logical_id: i64,
     location: Location<'c>,
-) -> Operation<'c> {
-    OperationBuilder::new(op::QEC_MEMORY_ROUND, location)
+) -> Result<Operation<'c>, BuildError> {
+    let block_ty = qec_dynamic::qec_block_type(context)?;
+    Ok(OperationBuilder::new(op::QEC_MEMORY_ROUND, location)
         .add_operands(&[block])
-        .add_results(&[qec_dynamic::qec_block_type(context)])
+        .add_results(&[block_ty])
         .add_attributes(&[(
             Identifier::new(context, attr::LOGICAL_ID),
             IntegerAttribute::new(i64_type(context), logical_id).into(),
         )])
-        .build()
-        .expect("staging qec_memory_round builds")
+        .build()?)
 }
 
 /// Builds a staging `quantum.circ.qec_measure_logical` op.
@@ -247,8 +251,8 @@ pub fn qec_measure_logical<'c>(
     basis: &str,
     logical_id: i64,
     location: Location<'c>,
-) -> Operation<'c> {
-    OperationBuilder::new(op::QEC_MEASURE_LOGICAL, location)
+) -> Result<Operation<'c>, BuildError> {
+    Ok(OperationBuilder::new(op::QEC_MEASURE_LOGICAL, location)
         .add_operands(&[block])
         .add_results(&[bit_type(context)])
         .add_attributes(&[
@@ -261,8 +265,7 @@ pub fn qec_measure_logical<'c>(
                 IntegerAttribute::new(i64_type(context), logical_id).into(),
             ),
         ])
-        .build()
-        .expect("staging qec_measure_logical builds")
+        .build()?)
 }
 
 /// Builds a staging `quantum.circ.qec_logical_cx` op.
@@ -273,13 +276,11 @@ pub fn qec_logical_cx<'c>(
     control_id: i64,
     target_id: i64,
     location: Location<'c>,
-) -> Operation<'c> {
-    OperationBuilder::new(op::QEC_LOGICAL_CX, location)
+) -> Result<Operation<'c>, BuildError> {
+    let block_ty = qec_dynamic::qec_block_type(context)?;
+    Ok(OperationBuilder::new(op::QEC_LOGICAL_CX, location)
         .add_operands(&[control, target])
-        .add_results(&[
-            qec_dynamic::qec_block_type(context),
-            qec_dynamic::qec_block_type(context),
-        ])
+        .add_results(&[block_ty, block_ty])
         .add_attributes(&[
             (
                 Identifier::new(context, attr::CONTROL_ID),
@@ -290,8 +291,7 @@ pub fn qec_logical_cx<'c>(
                 IntegerAttribute::new(i64_type(context), target_id).into(),
             ),
         ])
-        .build()
-        .expect("staging qec_logical_cx builds")
+        .build()?)
 }
 
 /// True when `name` is a staging op consumed by monadic lowering.

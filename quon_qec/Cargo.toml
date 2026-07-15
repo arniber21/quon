@@ -2,7 +2,7 @@
 name        = "quon_qec"
 version     = "0.1.0"
 edition     = "2024"
-description = "MLIR-free QEC workload IR, code-family formulas, and experiment-facing types"
+description = "MLIR-free QEC workload IR and code-family sizing formulas"
 
 [features]
 default = []
@@ -11,10 +11,9 @@ default = []
 flux = ["dep:flux-rs"]
 
 [dependencies]
-serde      = { workspace = true }
-serde_json = { workspace = true }
-thiserror  = { workspace = true }
-flux-rs    = { workspace = true, optional = true }
+serde     = { workspace = true }
+thiserror = { workspace = true }
+flux-rs   = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
