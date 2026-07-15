@@ -127,5 +127,13 @@ _Avoid_: grid movement, Manhattan movement
 **Schedule IR**: The `quantum.na` MLIR form of a scheduled neutral-atom program, built via `ScheduleSpec` in `quon_na/src/dialect.rs` — the driver's canonical schedule artifact (ADR-0007, ADR-0011). The JSON schedule emit is a debug/visualization view of it, never a second source of truth.
 _Avoid_: schedule JSON (as the IR), ScheduleSpec (for the concept)
 
+### Sample corpus
+
+**Sample**: A narrative, regenerable demo under `samples/` (catalogued in `catalog.yaml`) aimed at learners, researchers, or toolkit consumers — distinct from CI fixtures in `test/` and from compiler-oriented `examples/na_qec/`.
+_Avoid_: fixture (for narrative demos), cookbook page (the website may deep-link samples)
+
+**Sample catalog**: The machine-readable `samples/catalog.yaml` index of every sample (`id`, path, tags, difficulty, `quonc` args, artifacts, optional `ci: smoke|none`). Contribution requires a catalog row.
+_Avoid_: samples README alone (as the index of record)
+
 **ScheduleLayer**: The planners' in-memory working representation of one time slice of a neutral-atom schedule (`quon_na/src/schedule.rs`) — what extract / place / entangle / compact produce and validate. Planner-internal: converted to the schedule IR at the driver boundary by the single named `ScheduleLayer → ScheduleSpec` converter (ADR-0011); never serialized as a primary artifact.
 _Avoid_: schedule IR (for this type), layer spec
