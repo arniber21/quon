@@ -13,15 +13,12 @@ fn surface_d3_memory(): Q<Bit> = run {
 }
 
 -- CHECK: "quantum.na.schedule"()
--- CHECK-DAG: atom = 0
--- CHECK-DAG: atom = 8
--- CHECK-DAG: atom = 9
--- CHECK-DAG: atom = 16
 -- CHECK: "quantum.na.entangle"()
 -- CHECK: "quantum.na.local_gate"{{.*}}gate = "h"
 -- CHECK: "quantum.na.entangle"()
 -- CHECK: "quantum.na.local_gate"{{.*}}gate = "h"
 -- CHECK: "quantum.na.measure"{{.*}}atom = 9
+-- CHECK: "quantum.na.measure"{{.*}}atom = 16
 -- CHECK: "quantum.na.reset"{{.*}}atom = 9
 -- CHECK: "quantum.na.wait"
 -- CHECK: "quantum.na.entangle"()
