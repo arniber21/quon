@@ -6,10 +6,14 @@ Quon QEC benchmark harness: workload × compiler ablations with nested Sinter (#
 
 Runs a grid over QEC workloads (repetition / surface memory, surface CX) and
 compiler ablations (`--na-placer`, `--na-backend`, compaction on/off). Each cell
-emits a compiler ResourceReport + dual-emit `*.qec.json`/`.stim`, then takes a
-tiny fixed-seed Sinter sample. The sweep CSV joins schedule/resource/error-budget
-columns with sampled logical-failure columns while labeling both evidence kinds
-(ADR-0020 / ADR-0023).
+emits a compiler ResourceReport + dual-emit `*.qec.json`/`.stim`, runs a tiny
+fixed-seed Sinter sample, writes a **separate** sampled Sinter CSV, and appends
+one labeled join-CSV row for ablation comparison (ADR-0020 amendment / ADR-0023).
+
+Nested Sinter samples are **schedule-agnostic under ADR-0024**: noise comes from
+JSON `error_model` rate proxies, not from NA schedule event counts. Analytic
+columns track placer/backend/compaction ablations; sampled `logical_failures`
+may be invariant across those axes.
 
 This is a **QEC compiler-ablation** experiment class. Issue #111 / RAP Table I is
 the physical-NA external methodology anchor only — do **not** claim RAP numbers
@@ -18,10 +22,14 @@ for these QEC rows. Neither analytic nor sampled columns are threshold claims.
     # CI smoke — one tiny grid point
     python python/quon_qec_benchmarks.py --mode smoke --csv /tmp/qec_smoke.csv
 
-    # Full local grid (not for CI)
+    # Axis coverage (each supported ablation axis once + CX) — proves full-grid flags
+    python python/quon_qec_benchmarks.py --mode axis --csv /tmp/qec_axis.csv
+
+    # Full local grid (zoned; not for CI)
     python python/quon_qec_benchmarks.py --mode full --csv /tmp/qec_full.csv
 
     just qec-benchmarks-smoke
+    just qec-benchmarks-axis
     just qec-benchmarks-full
 """
 
@@ -32,6 +40,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence, TextIO
@@ -46,6 +55,7 @@ EXPERIMENT_CLASS = "qec_compiler_ablation"
 METHODOLOGY_ANCHOR = "issue_111_rap_table_i_physical_na_only"
 DEFAULT_TARGET = "targets/neutral_atom/generic_rna_v0.json"
 DEFAULT_SHOTS_SMOKE = 16
+DEFAULT_SHOTS_AXIS = 16
 DEFAULT_SHOTS_FULL = 32
 DEFAULT_SEED = 7
 
@@ -54,11 +64,20 @@ CSV_BANNER = (
     "# QEC compiler-ablation sweep with nested tiny Sinter samples (issue #254 / ADR-0023).\n"
     "# Analytic schedule/error-budget columns come from --emit-resource-report; "
     "sampled logical_failures* from Stim/Sinter. Evidence kinds stay distinct "
-    "(ADR-0020) — this CSV joins them for ablation comparison only.\n"
+    "(ADR-0020) — this CSV is an optional harness join for ablation comparison only.\n"
+    "# Primary artifacts stay separate: ResourceReport JSON, *.qec.json/.stim, "
+    "and a sibling Sinter CSV (sampled-only columns).\n"
+    "# Nested Sinter is schedule-agnostic under ADR-0024 (noise from error_model "
+    "rate proxies, not NA schedule counts); analytic columns track ablations; "
+    "sampled logical_failures may be invariant across placer/backend/compaction.\n"
     f"# methodology_anchor: {METHODOLOGY_ANCHOR} — #111 / RAP Table I is the "
     "physical-NA external methodology anchor; do not claim RAP numbers for QEC rows.\n"
     "# Not a threshold claim: analytic error_budget and sampled "
     "logical_failure_rate are different evidence kinds (ADR-0020).\n"
+    "# Note: --na-placer is a zoned-path option; if --include-flat is used, "
+    "flat×placer cells are placer no-ops (quonc ignores --na-placer unless "
+    "--na-backend=zoned). Flat QEC on generic_rna_v0 currently fail-closes "
+    "(Rydberg geometry) — default grids are zoned-only.\n"
 )
 
 CSV_COLUMNS = [
@@ -96,6 +115,20 @@ CSV_COLUMNS = [
     "logical_failure_rate",
 ]
 
+# Required ResourceReport integer fields (hard-fail if missing).
+REQUIRED_REPORT_INTS = (
+    "estimated_cycles",
+    "rydberg_stages",
+    "rearrangement_steps",
+    "rearrangement_time_us",
+    "trap_transfers",
+    "transfer_time_us",
+    "measurement_rounds",
+    "reset_rounds",
+    "physical_atoms",
+    "logical_qubits",
+)
+
 ERROR_BUDGET_KEYS = (
     "rydberg",
     "measurement",
@@ -112,8 +145,13 @@ WORKLOADS: tuple[tuple[str, str], ...] = (
 )
 
 PLACERS: tuple[str, ...] = ("routing-agnostic", "routing-aware")
-BACKENDS: tuple[str, ...] = ("zoned", "flat")
+# Default successful grid is zoned-only: flat AOD fail-closes on these QEC
+# workloads with generic_rna_v0 (Rydberg geometry). Opt in with --include-flat.
+BACKENDS: tuple[str, ...] = ("zoned",)
+FLAT_BACKEND = "flat"
 COMPACT_FLAGS: tuple[bool, ...] = (True, False)
+
+MODES = ("smoke", "axis", "full")
 
 
 class BenchmarkError(Exception):
@@ -156,26 +194,92 @@ class BenchmarkRow:
     logical_failure_rate: float
 
 
-def expand_grid(*, mode: str, repo_root: Path | None = None) -> list[GridCell]:
-    """Build the ablation grid for ``smoke`` (1 cell) or ``full`` (all cells)."""
+def _workload_source(repo_root: Path, name: str) -> Path:
+    rel = dict(WORKLOADS)[name]
+    return repo_root / rel
+
+
+def expand_grid(
+    *,
+    mode: str,
+    repo_root: Path | None = None,
+    include_flat: bool = False,
+) -> list[GridCell]:
+    """Build the ablation grid for ``smoke``, ``axis``, or ``full``.
+
+    Default backends are zoned-only. ``include_flat`` adds flat cells that
+    currently fail closed on QEC + generic_rna_v0 (clear quonc geometry error).
+    """
     root = repo_root or Path.cwd()
+    backends: tuple[str, ...] = BACKENDS
+    if include_flat:
+        backends = tuple(dict.fromkeys((*BACKENDS, FLAT_BACKEND)))
+
     if mode == "smoke":
-        rel = dict(WORKLOADS)["repetition_d3_memory"]
         return [
             GridCell(
                 workload="repetition_d3_memory",
-                source=root / rel,
+                source=_workload_source(root, "repetition_d3_memory"),
                 na_placer="routing-agnostic",
                 na_backend="zoned",
                 na_compact=True,
             )
         ]
+    if mode == "axis":
+        # Reduced coverage: each supported ablation axis once + one CX cell.
+        # Proves full-grid flag combinations without the full Cartesian.
+        # Flat is not part of the success path — see flat fail-closed tests.
+        rep = _workload_source(root, "repetition_d3_memory")
+        cx = _workload_source(root, "surface_d3_cx")
+        cells = [
+            GridCell(
+                workload="repetition_d3_memory",
+                source=rep,
+                na_placer="routing-agnostic",
+                na_backend="zoned",
+                na_compact=True,
+            ),
+            GridCell(
+                workload="repetition_d3_memory",
+                source=rep,
+                na_placer="routing-aware",
+                na_backend="zoned",
+                na_compact=True,
+            ),
+            GridCell(
+                workload="repetition_d3_memory",
+                source=rep,
+                na_placer="routing-agnostic",
+                na_backend="zoned",
+                na_compact=False,
+            ),
+            GridCell(
+                workload="surface_d3_cx",
+                source=cx,
+                na_placer="routing-agnostic",
+                na_backend="zoned",
+                na_compact=True,
+            ),
+        ]
+        if include_flat:
+            cells.append(
+                GridCell(
+                    workload="repetition_d3_memory",
+                    source=rep,
+                    na_placer="routing-agnostic",
+                    na_backend=FLAT_BACKEND,
+                    na_compact=True,
+                )
+            )
+        return cells
     if mode != "full":
-        raise BenchmarkError(f"unknown mode {mode!r} (expected smoke or full)")
+        raise BenchmarkError(
+            f"unknown mode {mode!r} (expected {', '.join(MODES)})"
+        )
     cells: list[GridCell] = []
     for workload, rel in WORKLOADS:
         for placer in PLACERS:
-            for backend in BACKENDS:
+            for backend in backends:
                 for compact in COMPACT_FLAGS:
                     cells.append(
                         GridCell(
@@ -208,8 +312,10 @@ def resolve_quonc(repo_root: Path, explicit: str | None = None) -> Path | None:
     return None
 
 
-def _require_int(doc: Mapping[str, Any], key: str, default: int = 0) -> int:
-    value = doc.get(key, default)
+def _require_int(doc: Mapping[str, Any], key: str) -> int:
+    if key not in doc:
+        raise BenchmarkError(f"resource report missing required field {key!r}")
+    value = doc[key]
     if isinstance(value, bool) or not isinstance(value, int):
         raise BenchmarkError(f"resource report field {key!r} must be an int (got {value!r})")
     return value
@@ -222,6 +328,23 @@ def _optional_int(doc: Mapping[str, Any], key: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise BenchmarkError(f"resource report field {key!r} must be an int (got {value!r})")
     return value
+
+
+def _require_error_budget(doc: Mapping[str, Any]) -> dict[str, float]:
+    if "error_budget" not in doc:
+        raise BenchmarkError("resource report missing required field 'error_budget'")
+    budget_raw = doc["error_budget"]
+    if not isinstance(budget_raw, dict):
+        raise BenchmarkError("resource report error_budget must be an object")
+    budget: dict[str, float] = {}
+    for key in ERROR_BUDGET_KEYS:
+        if key not in budget_raw:
+            raise BenchmarkError(f"resource report error_budget missing key {key!r}")
+        value = budget_raw[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise BenchmarkError(f"error_budget[{key!r}] must be a number")
+        budget[key] = float(value)
+    return budget
 
 
 def load_resource_report(path: Path) -> dict[str, Any]:
@@ -245,15 +368,9 @@ def join_cell(
     sample: sinter_harness.SampleResult,
     seed: int,
 ) -> BenchmarkRow:
-    budget_raw = report.get("error_budget") or {}
-    if not isinstance(budget_raw, dict):
-        raise BenchmarkError("resource report error_budget must be an object when present")
-    budget: dict[str, float] = {}
-    for key in ERROR_BUDGET_KEYS:
-        value = budget_raw.get(key, 0.0)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise BenchmarkError(f"error_budget[{key!r}] must be a number")
-        budget[key] = float(value)
+    budget = _require_error_budget(report)
+    if "bottleneck" not in report:
+        raise BenchmarkError("resource report missing required field 'bottleneck'")
 
     source = str(cell.source)
     try:
@@ -261,6 +378,8 @@ def join_cell(
         source = str(cell.source.resolve().relative_to(Path.cwd().resolve()))
     except ValueError:
         pass
+
+    ints = {key: _require_int(report, key) for key in REQUIRED_REPORT_INTS}
 
     return BenchmarkRow(
         workload=cell.workload,
@@ -272,17 +391,17 @@ def join_cell(
         memory_rounds=_optional_int(report, "memory_rounds"),
         shots=sample.shots,
         seed=seed,
-        estimated_cycles=_require_int(report, "estimated_cycles"),
-        rydberg_stages=_require_int(report, "rydberg_stages"),
-        rearrangement_steps=_require_int(report, "rearrangement_steps"),
-        rearrangement_time_us=_require_int(report, "rearrangement_time_us"),
-        trap_transfers=_require_int(report, "trap_transfers"),
-        transfer_time_us=_require_int(report, "transfer_time_us"),
-        measurement_rounds=_require_int(report, "measurement_rounds"),
-        reset_rounds=_require_int(report, "reset_rounds"),
-        physical_atoms=_require_int(report, "physical_atoms"),
-        logical_qubits=_require_int(report, "logical_qubits"),
-        bottleneck=str(report.get("bottleneck", "none")),
+        estimated_cycles=ints["estimated_cycles"],
+        rydberg_stages=ints["rydberg_stages"],
+        rearrangement_steps=ints["rearrangement_steps"],
+        rearrangement_time_us=ints["rearrangement_time_us"],
+        trap_transfers=ints["trap_transfers"],
+        transfer_time_us=ints["transfer_time_us"],
+        measurement_rounds=ints["measurement_rounds"],
+        reset_rounds=ints["reset_rounds"],
+        physical_atoms=ints["physical_atoms"],
+        logical_qubits=ints["logical_qubits"],
+        bottleneck=str(report["bottleneck"]),
         error_budget=budget,
         logical_failures=sample.logical_failures,
         logical_failure_rate=sample.logical_failure_rate,
@@ -324,55 +443,26 @@ def write_csv(out: TextIO, rows: Sequence[BenchmarkRow]) -> None:
             "logical_failure_rate": row.logical_failure_rate,
         }
         for key in ERROR_BUDGET_KEYS:
-            record[f"error_budget_{key}"] = row.error_budget.get(key, 0.0)
+            record[f"error_budget_{key}"] = row.error_budget[key]
         writer.writerow(record)
 
 
-def evaluate_artifacts(
-    cell: GridCell,
-    *,
-    report_path: Path,
-    experiment_json: Path,
-    shots: int,
-    seed: int,
-) -> BenchmarkRow:
-    """Join a ResourceReport JSON with a tiny Sinter sample (no quonc invoke)."""
-    report = load_resource_report(report_path)
-    sinter_rows = sinter_harness.run_experiments(
-        [experiment_json],
-        shots_list=[shots],
-        seed=seed,
+def cell_dir_name(cell: GridCell) -> str:
+    return (
+        f"{cell.workload}__{cell.na_backend}__{cell.na_placer}__"
+        f"{'compact' if cell.na_compact else 'nocompact'}"
     )
-    if len(sinter_rows) != 1:
-        raise BenchmarkError(f"expected one Sinter row, got {len(sinter_rows)}")
-    sample = sinter_harness.SampleResult(
-        shots=sinter_rows[0].shots,
-        logical_failures=sinter_rows[0].logical_failures,
-    )
-    return join_cell(cell, report=report, sample=sample, seed=seed)
 
 
-def compile_cell(
+def compile_cell_argv(
     cell: GridCell,
     *,
     quonc: Path,
     target: Path,
-    work_dir: Path,
-) -> tuple[Path, Path]:
-    """Run quonc dual emit: resource report JSON + QEC experiment pair."""
-    if not cell.source.is_file():
-        raise BenchmarkError(f"workload source not found: {cell.source}")
-    if not target.is_file():
-        raise BenchmarkError(f"NA target not found: {target}")
-
-    cell_dir = work_dir / (
-        f"{cell.workload}__{cell.na_backend}__{cell.na_placer}__"
-        f"{'compact' if cell.na_compact else 'nocompact'}"
-    )
-    cell_dir.mkdir(parents=True, exist_ok=True)
-    report_path = cell_dir / "resource_report.json"
-    experiment_json = cell_dir / f"{cell.workload}.qec.json"
-
+    report_path: Path,
+    experiment_json: Path,
+) -> list[str]:
+    """Build the quonc argv for one cell (pure; no subprocess)."""
     cmd = [
         str(quonc),
         str(cell.source),
@@ -390,6 +480,40 @@ def compile_cell(
     ]
     if not cell.na_compact:
         cmd.append("--no-na-compact")
+    return cmd
+
+
+def compile_cell(
+    cell: GridCell,
+    *,
+    quonc: Path,
+    target: Path,
+    work_dir: Path,
+    dry_run: bool = False,
+) -> tuple[Path, Path, list[str]]:
+    """Run quonc dual emit: resource report JSON + QEC experiment pair.
+
+    Returns ``(report_path, experiment_json, argv)``. On ``dry_run``, validates
+    paths and returns argv without invoking quonc (artifacts are not written).
+    """
+    if not cell.source.is_file():
+        raise BenchmarkError(f"workload source not found: {cell.source}")
+    if not target.is_file():
+        raise BenchmarkError(f"NA target not found: {target}")
+
+    cell_dir = work_dir / cell_dir_name(cell)
+    cell_dir.mkdir(parents=True, exist_ok=True)
+    report_path = cell_dir / "resource_report.json"
+    experiment_json = cell_dir / f"{cell.workload}.qec.json"
+    cmd = compile_cell_argv(
+        cell,
+        quonc=quonc,
+        target=target,
+        report_path=report_path,
+        experiment_json=experiment_json,
+    )
+    if dry_run:
+        return report_path, experiment_json, cmd
 
     try:
         proc = subprocess.run(
@@ -403,15 +527,52 @@ def compile_cell(
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise BenchmarkError(
-            f"quonc failed for {cell.workload} "
+            f"unsupported or failed grid cell for {cell.workload} "
             f"(backend={cell.na_backend}, placer={cell.na_placer}, "
-            f"compact={cell.na_compact}):\n{detail}"
+            f"compact={cell.na_compact}): quonc exited {proc.returncode}\n"
+            f"{detail}"
         )
     if not report_path.is_file() or not experiment_json.is_file():
         raise BenchmarkError(
             f"quonc did not write expected artifacts under {cell_dir}"
         )
-    return report_path, experiment_json
+    # Dual-emit writes <stem>.stim next to <stem>.qec.json (ADR-0018).
+    stim = sinter_harness.sibling_stim_path(experiment_json)
+    if not stim.is_file():
+        raise BenchmarkError(
+            f"quonc did not write sibling Stim circuit expected at {stim}"
+        )
+    return report_path, experiment_json, cmd
+
+
+def evaluate_artifacts(
+    cell: GridCell,
+    *,
+    report_path: Path,
+    experiment_json: Path,
+    shots: int,
+    seed: int,
+    sinter_csv_path: Path | None = None,
+) -> tuple[BenchmarkRow, list[sinter_harness.ResultRow]]:
+    """Join a ResourceReport JSON with a tiny Sinter sample; optionally write sinter CSV."""
+    report = load_resource_report(report_path)
+    sinter_rows = sinter_harness.run_experiments(
+        [experiment_json],
+        shots_list=[shots],
+        seed=seed,
+    )
+    if len(sinter_rows) != 1:
+        raise BenchmarkError(f"expected one Sinter row, got {len(sinter_rows)}")
+    if sinter_csv_path is not None:
+        sinter_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(sinter_csv_path, "w", newline="") as f:
+            sinter_harness.write_csv(f, sinter_rows)
+    sample = sinter_harness.SampleResult(
+        shots=sinter_rows[0].shots,
+        logical_failures=sinter_rows[0].logical_failures,
+    )
+    row = join_cell(cell, report=report, sample=sample, seed=seed)
+    return row, sinter_rows
 
 
 def run_suite(
@@ -423,23 +584,56 @@ def run_suite(
     work_dir: Path,
     shots: int,
     seed: int,
-) -> list[BenchmarkRow]:
-    cells = expand_grid(mode=mode, repo_root=repo_root)
+    dry_run_compile: bool = False,
+    include_flat: bool = False,
+) -> tuple[list[BenchmarkRow], list[sinter_harness.ResultRow]]:
+    cells = expand_grid(
+        mode=mode, repo_root=repo_root, include_flat=include_flat
+    )
     rows: list[BenchmarkRow] = []
+    all_sinter: list[sinter_harness.ResultRow] = []
+    if dry_run_compile:
+        for cell in cells:
+            _, _, argv = compile_cell(
+                cell,
+                quonc=quonc,
+                target=target,
+                work_dir=work_dir,
+                dry_run=True,
+            )
+            # Validate flag shape without invoking quonc.
+            if "--na-backend" not in argv or "--na-placer" not in argv:
+                raise BenchmarkError(f"dry-run argv missing NA flags: {argv}")
+            if "--emit-resource-report" not in argv or "--emit-qec-experiment" not in argv:
+                raise BenchmarkError(f"dry-run argv missing dual-emit flags: {argv}")
+            if not cell.na_compact and "--no-na-compact" not in argv:
+                raise BenchmarkError(f"dry-run argv missing --no-na-compact: {argv}")
+        return [], []
+
     for cell in cells:
-        report_path, experiment_json = compile_cell(
+        report_path, experiment_json, _ = compile_cell(
             cell, quonc=quonc, target=target, work_dir=work_dir
         )
-        rows.append(
-            evaluate_artifacts(
-                cell,
-                report_path=report_path,
-                experiment_json=experiment_json,
-                shots=shots,
-                seed=seed,
-            )
+        cell_sinter = report_path.parent / "sinter.csv"
+        row, sinter_rows = evaluate_artifacts(
+            cell,
+            report_path=report_path,
+            experiment_json=experiment_json,
+            shots=shots,
+            seed=seed,
+            sinter_csv_path=cell_sinter,
         )
-    return rows
+        rows.append(row)
+        all_sinter.extend(sinter_rows)
+    return rows, all_sinter
+
+
+def default_shots_for_mode(mode: str) -> int:
+    if mode == "smoke":
+        return DEFAULT_SHOTS_SMOKE
+    if mode == "axis":
+        return DEFAULT_SHOTS_AXIS
+    return DEFAULT_SHOTS_FULL
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -448,8 +642,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description=(
             "QEC workload × compiler ablation grid with nested tiny Sinter "
             "samples (issue #254 / ADR-0023).\n"
-            "Joins analytic ResourceReport fields with sampled logical failures "
-            "in one sweep CSV while keeping evidence kinds labeled (ADR-0020).\n"
+            "Writes an optional join CSV (labeled analytic + sampled columns) "
+            "plus a separate Sinter CSV; keeps ResourceReport / *.qec.json / "
+            ".stim primaries (ADR-0020 amendment).\n"
             "Experiment class is QEC compiler-ablation — #111 / RAP Table I is "
             "physical-NA methodology only; no RAP number claims; no thresholds."
         ),
@@ -457,17 +652,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
 Modes
   smoke   One tiny grid point for CI (repetition_d3_memory, zoned,
           routing-agnostic, compaction on). Default --shots 16.
+  axis    Axis-coverage grid: each supported ablation axis once + one CX
+          cell (zoned placers × compaction + CX). Proves full-grid flags.
+          Default --shots 16. CI integration test when quonc is present.
   full    Local-only full grid: repetition + surface memory + surface CX
-          × --na-placer × --na-backend × compaction on/off. Default --shots 32.
+          × --na-placer × compaction on/off on zoned (default). Default
+          --shots 32. Gated by axis coverage. Add --include-flat to
+          enumerate flat cells (currently fail-closed on QEC + generic_rna_v0).
+
+Notes
+  Nested Sinter is schedule-agnostic (ADR-0024): noise from error_model
+  proxies, not NA schedule counts. Analytic columns track ablations;
+  sampled logical_failures may be invariant across placer/backend/compaction.
+  --na-placer is zoned-path only; flat×placer (with --include-flat) are
+  placer no-ops. Flat QEC currently fail-closes (Rydberg geometry).
 
 Examples
-  # CI smoke
+  # CI smoke (also covered by python/test_quon_qec_benchmarks.py in just ci-rust)
   python python/quon_qec_benchmarks.py --mode smoke --csv /tmp/qec_smoke.csv
+
+  # Axis coverage (proves full-grid axes)
+  python python/quon_qec_benchmarks.py --mode axis --csv /tmp/qec_axis.csv
 
   # Full local ablation grid (not for CI)
   python python/quon_qec_benchmarks.py --mode full --csv /tmp/qec_full.csv
 
-  just qec-benchmarks-smoke
+  # Validate argv/flags without compiling or sampling
+  python python/quon_qec_benchmarks.py --mode full --dry-run-compile
+
+  just qec-benchmarks-smoke   # local convenience (CI uses unittest via ci-rust)
+  just qec-benchmarks-axis
   just qec-benchmarks-full
 
 Methodology
@@ -478,9 +692,16 @@ Methodology
     )
     parser.add_argument(
         "--mode",
-        choices=("smoke", "full"),
+        choices=MODES,
         default="smoke",
-        help="smoke = CI one-cell; full = local ablation grid (default: smoke)",
+        help="smoke = CI one-cell; axis = axis coverage; full = local grid "
+        "(default: smoke)",
+    )
+    parser.add_argument(
+        "--include-flat",
+        action="store_true",
+        help="include --na-backend=flat cells (currently fail-closed on QEC "
+        "+ generic_rna_v0; flat×placer are placer no-ops)",
     )
     parser.add_argument(
         "--repo-root",
@@ -504,14 +725,26 @@ Methodology
         "--work-dir",
         type=Path,
         default=None,
-        help="directory for per-cell quonc artifacts (default: temp under cwd)",
+        help="directory for per-cell primary artifacts (default: temp under "
+        "cwd; kept unless --cleanup)",
+    )
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="delete auto-created --work-dir after the run (default: keep "
+        "ResourceReport / *.qec.json / .stim / sinter.csv)",
+    )
+    parser.add_argument(
+        "--dry-run-compile",
+        action="store_true",
+        help="validate per-cell quonc argv/flags without compiling or Sinter",
     )
     parser.add_argument(
         "--shots",
         type=int,
         default=None,
         help=f"Sinter shots per cell (default: {DEFAULT_SHOTS_SMOKE} smoke / "
-        f"{DEFAULT_SHOTS_FULL} full)",
+        f"{DEFAULT_SHOTS_AXIS} axis / {DEFAULT_SHOTS_FULL} full)",
     )
     parser.add_argument(
         "--seed",
@@ -523,9 +756,23 @@ Methodology
         "--csv",
         type=str,
         default=None,
-        help="write sweep CSV to this path (default: stdout)",
+        help="write join CSV to this path (default: stdout)",
+    )
+    parser.add_argument(
+        "--sinter-csv",
+        type=str,
+        default=None,
+        help="write aggregated sampled-only Sinter CSV (default: sibling of "
+        "--csv with .sinter.csv suffix, or <work-dir>/sinter_aggregated.csv)",
     )
     return parser
+
+
+def _default_sinter_csv(csv_path: str | None, work_dir: Path) -> Path:
+    if csv_path:
+        p = Path(csv_path)
+        return p.with_name(p.stem + ".sinter.csv")
+    return work_dir / "sinter_aggregated.csv"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -535,7 +782,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     target = (args.target or (repo_root / DEFAULT_TARGET)).resolve()
     shots = args.shots
     if shots is None:
-        shots = DEFAULT_SHOTS_SMOKE if args.mode == "smoke" else DEFAULT_SHOTS_FULL
+        shots = default_shots_for_mode(args.mode)
     if shots < 1:
         print("error: --shots must be >= 1", file=sys.stderr)
         return 2
@@ -550,18 +797,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     work_dir = args.work_dir
-    cleanup = False
+    auto_work_dir = False
     if work_dir is None:
-        import tempfile
-
-        work_dir = Path(tempfile.mkdtemp(prefix="quon_qec_bench_"))
-        cleanup = True
+        work_dir = Path(tempfile.mkdtemp(prefix="quon_qec_bench_", dir=str(Path.cwd())))
+        auto_work_dir = True
     else:
         work_dir = work_dir.resolve()
         work_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        rows = run_suite(
+        rows, sinter_rows = run_suite(
             mode=args.mode,
             repo_root=repo_root,
             quonc=quonc,
@@ -569,19 +814,47 @@ def main(argv: Sequence[str] | None = None) -> int:
             work_dir=work_dir,
             shots=shots,
             seed=args.seed,
+            dry_run_compile=args.dry_run_compile,
+            include_flat=args.include_flat,
         )
     except (BenchmarkError, sinter_harness.HarnessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
-        if cleanup:
+        if auto_work_dir and args.cleanup:
             shutil.rmtree(work_dir, ignore_errors=True)
+
+    if args.dry_run_compile:
+        n = len(
+            expand_grid(
+                mode=args.mode,
+                repo_root=repo_root,
+                include_flat=args.include_flat,
+            )
+        )
+        print(f"dry-run-compile ok: {n} cells validated under mode={args.mode}")
+        if auto_work_dir and not args.cleanup:
+            print(f"work-dir (empty dry-run dirs): {work_dir}")
+        return 0
 
     if args.csv:
         with open(args.csv, "w", newline="") as f:
             write_csv(f, rows)
     else:
         write_csv(sys.stdout, rows)
+
+    sinter_out = (
+        Path(args.sinter_csv)
+        if args.sinter_csv
+        else _default_sinter_csv(args.csv, work_dir)
+    )
+    sinter_out.parent.mkdir(parents=True, exist_ok=True)
+    with open(sinter_out, "w", newline="") as f:
+        sinter_harness.write_csv(f, sinter_rows)
+
+    if auto_work_dir and not args.cleanup:
+        print(f"kept primary artifacts under {work_dir}", file=sys.stderr)
+    print(f"wrote separate Sinter CSV: {sinter_out}", file=sys.stderr)
     return 0
 
 

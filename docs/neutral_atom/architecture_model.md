@@ -524,11 +524,15 @@ that analytic estimates and sampled results are different kinds of evidence.
 either artifact alone. There is **no** fused claim summary that collapses
 analytic and sampled evidence into one undifferentiated number (issue #246).
 
-The #254 ablation harness (`python/quon_qec_benchmarks.py`) may **join** the
-two on one sweep CSV row for compiler comparisons, but every row keeps
-`evidence_kind_analytic` / `evidence_kind_sampled` labels and
-`experiment_class=qec_compiler_ablation`. That join is not a ResourceReport
-mutation and must not claim RAP Table I (#111) physical-NA numbers — see
+The #254 ablation harness (`python/quon_qec_benchmarks.py`) may emit an
+**optional join CSV** (ADR-0020 amendment) that places labeled analytic and
+sampled columns on one comparison row (`evidence_kind_analytic` /
+`evidence_kind_sampled`, `experiment_class=qec_compiler_ablation`). The harness
+must still write a **separate** Sinter CSV and keep `ResourceReport` /
+`*.qec.json` / `.stim` primaries by default. Nested Sinter samples are
+schedule-agnostic under ADR-0024 (noise from `error_model` rate proxies, not NA
+schedule counts). That join is not a ResourceReport mutation and must not claim
+RAP Table I (#111) physical-NA numbers — see
 [`qec_benchmark_methodology.md`](./qec_benchmark_methodology.md).
 
 Regression goldens for the analytic report:

@@ -15,8 +15,9 @@ Static analysis and refinement-type checks for the Quon workspace.
 | `just ci-rust` | What the `ci.yml` `rust` job runs (sets `QUON_REQUIRE_LIT`) |
 | `just ci-tooling` | What the `ci.yml` `tooling` job runs |
 | `just tooling-full` | Broader local fmt/lint corpus (not CI) |
-| `just qec-benchmarks-smoke` | #254 CI one-cell QEC ablation + nested Sinter (`--mode smoke`) |
-| `just qec-benchmarks-full` | #254 local-only full ablation grid (`--mode full`) |
+| `just qec-benchmarks-smoke` | #254 local convenience: one-cell ablation + nested Sinter (`--mode smoke`). CI smoke is the unittest in `just ci-rust`. |
+| `just qec-benchmarks-axis` | #254 local convenience: axis-coverage grid (`--mode axis`; gates full). Also covered by CI unittest when quonc is built. |
+| `just qec-benchmarks-full` | #254 local-only full ablation grid (`--mode full`; proven by axis coverage) |
 | `just ci-docs-assert` | `./scripts/assert-validation-docs.sh` |
 | `just ci-website` | Starlight `pnpm build` under `website/` |
 

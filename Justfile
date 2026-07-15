@@ -216,10 +216,12 @@ ci-website:
     pnpm build
 
 # ---------------------------------------------------------------------------
-# QEC benchmarks (#254 / ADR-0023)
+# QEC benchmarks (#254 / ADR-0023) — local convenience recipes
+# CI smoke + axis coverage live in `python/test_quon_qec_benchmarks.py`
+# (invoked by `just ci-rust`), not these wrappers.
 # ---------------------------------------------------------------------------
 
-# CI smoke: one tiny QEC ablation cell + nested Sinter sample.
+# Local convenience: one tiny QEC ablation cell + nested Sinter sample.
 qec-benchmarks-smoke:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -233,9 +235,25 @@ qec-benchmarks-smoke:
       --quonc "$quonc" \
       --csv /tmp/quon_qec_bench/smoke.csv \
       --work-dir /tmp/quon_qec_bench/smoke_work
-    echo "wrote /tmp/quon_qec_bench/smoke.csv"
+    echo "wrote /tmp/quon_qec_bench/smoke.csv (+ smoke.sinter.csv)"
 
-# Local-only full ablation grid (not part of test-ci).
+# Local convenience: axis-coverage grid (gates full — each axis once + CX).
+qec-benchmarks-axis:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    quonc="${QUONC:-target/release/quonc}"
+    if [[ ! -x "$quonc" ]]; then
+      echo "error: quonc not found at $quonc (build release or set QUONC)" >&2
+      exit 1
+    fi
+    mkdir -p /tmp/quon_qec_bench
+    .venv/bin/python python/quon_qec_benchmarks.py --mode axis \
+      --quonc "$quonc" \
+      --csv /tmp/quon_qec_bench/axis.csv \
+      --work-dir /tmp/quon_qec_bench/axis_work
+    echo "wrote /tmp/quon_qec_bench/axis.csv (+ axis.sinter.csv)"
+
+# Local-only full ablation grid (not part of test-ci; proven by axis mode).
 qec-benchmarks-full:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -249,7 +267,7 @@ qec-benchmarks-full:
       --quonc "$quonc" \
       --csv /tmp/quon_qec_bench/full.csv \
       --work-dir /tmp/quon_qec_bench/full_work
-    echo "wrote /tmp/quon_qec_bench/full.csv"
+    echo "wrote /tmp/quon_qec_bench/full.csv (+ full.sinter.csv)"
 
 # ---------------------------------------------------------------------------
 # Private helpers
