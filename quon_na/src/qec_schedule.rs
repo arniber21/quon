@@ -477,6 +477,51 @@ mod tests {
         assert!(has_measure && has_reset && has_entangle && has_wait);
     }
 
+    fn surface_d3_workload() -> QecWorkload {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.memory_round(LogicalQubitId(0)).unwrap();
+        b.memory_round(LogicalQubitId(0)).unwrap();
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .unwrap();
+        b.finish()
+    }
+
+    #[test]
+    fn surface_d3_schedules_with_qec_report_fields() {
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            compact: true,
+            dump_ir: false,
+            ..Default::default()
+        };
+        let artifacts =
+            run_from_qec_workload(&surface_d3_workload(), &na, opts).expect("schedule");
+        let report = &artifacts.resource_report;
+
+        assert_eq!(report.logical_qubits, 1);
+        assert_eq!(report.physical_atoms, 17);
+        assert_eq!(report.atoms_per_logical, Some(17));
+        assert_eq!(report.code_family.as_deref(), Some("surface_code_like"));
+        assert_eq!(report.distance, Some(3));
+        assert_eq!(report.memory_rounds, Some(2));
+        assert_eq!(report.entangle2_count, 48);
+        assert_eq!(report.measurement_rounds, 3);
+        assert_eq!(report.reset_rounds, 2);
+
+        let waits = artifacts
+            .layers
+            .iter()
+            .filter(|l| {
+                l.actions
+                    .iter()
+                    .any(|a| matches!(a, NeutralAtomAction::Wait { .. }))
+            })
+            .count();
+        assert_eq!(waits, 2, "one durable Wait per memory round");
+    }
+
     /// Wait/round cuts are causal: compact with cuts vs without must differ for
     /// atom-disjoint cross-Wait E0. Deleting only `round_barrier_cuts` fails this.
     ///

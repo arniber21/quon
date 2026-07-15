@@ -61,7 +61,9 @@ pub struct StabilizerCheck {
     pub logical_id: u32,
     /// Check ancilla atom id.
     pub check_atom: u32,
-    /// Neighboring data atoms whose ZZ parity this check extracts.
+    /// Pauli type of this stabilizer (`x` / `z`).
+    pub basis: LogicalBasis,
+    /// Data atoms in the stabilizer support.
     pub data_atoms: Vec<u32>,
 }
 
@@ -183,12 +185,12 @@ pub enum ExperimentError {
     #[error("QEC experiment emit requires a non-empty expanded workload")]
     EmptyWorkload,
     #[error(
-        "QEC experiment Stim emit currently supports a single repetition-code block; \
-         got {block_count} blocks (surface / multi-block is out of scope for #255)"
+        "QEC experiment Stim emit currently supports a single code block; \
+         got {block_count} blocks (multi-block / lattice surgery is out of scope for #249)"
     )]
     UnsupportedLayout { block_count: usize },
     #[error(
-        "QEC experiment emit requires repetition-code blocks; got family `{family}` \
+        "QEC experiment emit requires repetition or surface blocks; got family `{family}` \
          distance {distance}"
     )]
     UnsupportedFamily {
@@ -199,24 +201,16 @@ pub enum ExperimentError {
     Serialize(String),
     #[error("stabilizer data atom {atom} missing from final logical measurement record")]
     MissingDataMeasurement { atom: u32 },
-    #[error(
-        "repetition stabilizer layout invalid: check index {check_index} needs data atoms \
-         [{left_index}] and [{right_index}] but only {data_len} data atoms are present"
-    )]
-    InvalidStabilizerLayout {
-        check_index: usize,
-        left_index: usize,
-        right_index: usize,
-        data_len: usize,
-    },
+    #[error("expanded block is missing stabilizer definitions")]
+    MissingStabilizers,
     #[error(
         "QEC na_refs barrier_cycle: got {got} Wait barrier cycle(s), expected \
          {expected} memory_round(s); refusing unchecked Wait mapping"
     )]
     BarrierCycleMismatch { got: usize, expected: usize },
     #[error(
-        "Stim structure emit requires Z measure-logical basis for repetition-code \
-         memory (ZZ detectors); got `{basis}`"
+        "Stim structure emit requires Z measure-logical basis for memory detectors; \
+         got `{basis}`"
     )]
     UnsupportedMeasureBasis { basis: &'static str },
     #[error("measure-logical round is missing a uniform measurement basis")]
@@ -256,20 +250,15 @@ pub fn build_experiment(
     if expanded.blocks.is_empty() {
         return Err(ExperimentError::EmptyWorkload);
     }
-    for block in &expanded.blocks {
-        if block.family != SourceFamily::Repetition {
-            return Err(ExperimentError::UnsupportedFamily {
-                family: block.family.as_str(),
-                distance: block.distance,
-            });
-        }
-    }
     // v1 metadata is homogeneous single-block; Stim also requires one block.
     let primary = &expanded.blocks[0];
     if expanded.blocks.len() != 1 {
         return Err(ExperimentError::UnsupportedLayout {
             block_count: expanded.blocks.len(),
         });
+    }
+    match primary.family {
+        SourceFamily::Repetition | SourceFamily::Surface => {}
     }
 
     let check_graph = check_graph_from_blocks(&expanded.blocks)?;
@@ -340,14 +329,13 @@ pub fn attach_barrier_cycles(
     Ok(())
 }
 
-/// Emit a structure-only Stim circuit for repetition-code memory (no noise).
+/// Emit a structure-only Stim circuit for a single-block memory experiment.
 ///
-/// Layout matches Kelly-style alternating `D C D C … D` with CNOT(data→check)
-/// syndrome extraction. Detectors compare consecutive check measurements;
-/// final data measurements close the last detectors and form the Z observable.
+/// Repetition: Kelly alternating chain with CNOT(data→check).
+/// Surface: rotated-code H sandwich on X-checks + CX pattern from expand.
 ///
-/// Measure-logical basis must be Z (emits `MZ`); non-Z hard-fails because
-/// final ZZ-detector closure assumes Z data measurements.
+/// Measure-logical basis must be Z (detectors / observable closure assume Z
+/// data measurements for Z-memory).
 pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
     if expanded.blocks.len() != 1 {
         return Err(ExperimentError::UnsupportedLayout {
@@ -355,11 +343,8 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         });
     }
     let block = &expanded.blocks[0];
-    if block.family != SourceFamily::Repetition {
-        return Err(ExperimentError::UnsupportedFamily {
-            family: block.family.as_str(),
-            distance: block.distance,
-        });
+    match block.family {
+        SourceFamily::Repetition | SourceFamily::Surface => {}
     }
 
     let n_checks = block.check_atoms.len();
@@ -382,13 +367,14 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     let mut out = String::new();
     out.push_str(&format!(
         "# Quon QEC experiment — structure only (no noise; ADR-0024)\n\
-         # family=repetition distance={} memory_rounds={}\n",
+         # family={} distance={} memory_rounds={}\n",
+        block.family.as_str(),
         block.distance,
         memory_rounds.len()
     ));
 
-    for (i, atom) in block.atoms.iter().enumerate() {
-        out.push_str(&format!("QUBIT_COORDS({i}, 0) {}\n", atom.0));
+    for (atom, &(x, y)) in block.atoms.iter().zip(block.coords.iter()) {
+        out.push_str(&format!("QUBIT_COORDS({x}, {y}) {}\n", atom.0));
     }
 
     // Prepare |0…0⟩
@@ -398,20 +384,35 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     }
     out.push_str("\nTICK\n");
 
-    // rec[] stack after each MR of all checks: newest is last check.
-    // After round k (1-based), we have k * n_checks check measurements.
+    let z_check_indices: Vec<usize> = block
+        .stabilizers
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.basis == LogicalBasis::Z)
+        .map(|(i, _)| i)
+        .collect();
+
     for (round_i, round) in memory_rounds.iter().enumerate() {
-        // Non-overlapping CX layers in expand order (Stim forbids overlapping
-        // targets/controls in one CX instruction).
-        for layer in layer_nonoverlapping_cnots(&round.entangling) {
+        emit_local_ops(&mut out, &round.local_before);
+        let z_count = round.z_cnot_count.min(round.entangling.len());
+        let (z_cnots, x_cnots) = round.entangling.split_at(z_count);
+        for layer in layer_nonoverlapping_cnots(z_cnots) {
             out.push_str("CX");
             for cnot in layer {
                 out.push_str(&format!(" {} {}", cnot.control.0, cnot.target.0));
             }
             out.push_str("\nTICK\n");
         }
+        emit_local_ops(&mut out, &round.local_mid);
+        for layer in layer_nonoverlapping_cnots(x_cnots) {
+            out.push_str("CX");
+            for cnot in layer {
+                out.push_str(&format!(" {} {}", cnot.control.0, cnot.target.0));
+            }
+            out.push_str("\nTICK\n");
+        }
+        emit_local_ops(&mut out, &round.local_after);
 
-        // Measure + reset checks (Stim MR)
         out.push_str("MR");
         for term in &round.terminal {
             if let RoundTerminal::Measure { atom, .. } = term {
@@ -420,14 +421,18 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         }
         out.push('\n');
 
-        // Detectors: first round vs +1 (reset |0|); later rounds vs prior round.
-        for c in 0..n_checks {
-            // Within this MR, check c is rec[-(n_checks - c)]
+        // First round: only Z-check detectors (X-checks are random under |0⟩^n).
+        // Later rounds: all checks vs prior round (Stim rotated_memory_z style).
+        let detector_indices: Vec<usize> = if round_i == 0 {
+            z_check_indices.clone()
+        } else {
+            (0..n_checks).collect()
+        };
+        for &c in &detector_indices {
             let cur = -(n_checks as i32 - c as i32);
             if round_i == 0 {
                 out.push_str(&format!("DETECTOR({c}, {round_i}) rec[{cur}]\n"));
             } else {
-                // Previous round's same check is n_checks measurements earlier.
                 let prev = cur - n_checks as i32;
                 out.push_str(&format!(
                     "DETECTOR({c}, {round_i}) rec[{cur}] rec[{prev}]\n"
@@ -437,7 +442,6 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         out.push_str("TICK\n");
     }
 
-    // Final logical measurement on data atoms (basis from measure-logical).
     let data_atoms: Vec<PhysicalAtomId> = if let Some(mz) = measure_logical {
         mz.terminal
             .iter()
@@ -460,22 +464,19 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     }
     out.push('\n');
 
-    // Close detectors: each check's last syndrome vs product of its two data Zs.
-    // After M of d data qubits, rec[-d .. -1] are data measurements (layout order).
-    // Last check MR is still under the data measurements: check c is at
-    // rec[-(d + n_checks - c)].
+    // Close Z detectors: last Z-check syndrome vs product of support data Zs.
     let d = data_atoms.len() as i32;
     if !memory_rounds.is_empty() && n_checks > 0 {
         let final_round = memory_rounds.len();
-        for (c, stab) in check_graph_stabilizers(block)?.into_iter().enumerate() {
+        for &c in &z_check_indices {
+            let stab = &block.stabilizers[c];
             let check_rec = -(d + n_checks as i32 - c as i32);
-            // Data atom indices in the final M record (layout order of data_atoms).
             let mut parts = format!("DETECTOR({c}, {final_round}) rec[{check_rec}]");
-            for data in &stab.data_atoms {
+            for data in &stab.data {
                 let pos = data_atoms
                     .iter()
-                    .position(|a| a.0 == *data)
-                    .ok_or(ExperimentError::MissingDataMeasurement { atom: *data })?;
+                    .position(|a| a.0 == data.0)
+                    .ok_or(ExperimentError::MissingDataMeasurement { atom: data.0 })?;
                 let data_rec = -(d - pos as i32);
                 parts.push_str(&format!(" rec[{data_rec}]"));
             }
@@ -484,15 +485,55 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         }
     }
 
-    // Logical observable = product of data measurements in the measure basis.
+    // Logical observable support: repetition = all data; surface Z = top row.
     out.push_str("OBSERVABLE_INCLUDE(0)");
-    for i in 0..data_atoms.len() {
-        let rec = -(d - i as i32);
+    let obs_atoms = logical_observable_atoms(block, measure_basis);
+    for atom in &obs_atoms {
+        let pos = data_atoms
+            .iter()
+            .position(|a| a.0 == *atom)
+            .ok_or(ExperimentError::MissingDataMeasurement { atom: *atom })?;
+        let rec = -(d - pos as i32);
         out.push_str(&format!(" rec[{rec}]"));
     }
     out.push('\n');
 
     Ok(out)
+}
+
+fn emit_local_ops(out: &mut String, ops: &[crate::expand::RoundLocalOp]) {
+    use crate::expand::RoundLocalOp;
+    let mut hs = Vec::new();
+    for op in ops {
+        match op {
+            RoundLocalOp::H { atom } => hs.push(atom.0),
+        }
+    }
+    if hs.is_empty() {
+        return;
+    }
+    out.push('H');
+    for id in hs {
+        out.push_str(&format!(" {id}"));
+    }
+    out.push_str("\nTICK\n");
+}
+
+fn logical_observable_atoms(block: &ExpandedBlock, basis: LogicalBasis) -> Vec<u32> {
+    match block.family {
+        SourceFamily::Repetition => block.data_atoms.iter().map(|a| a.0).collect(),
+        SourceFamily::Surface => {
+            let d = block.distance as usize;
+            match basis {
+                // Top row of the d×d data grid.
+                LogicalBasis::Z => block.data_atoms.iter().take(d).map(|a| a.0).collect(),
+                // Left column.
+                LogicalBasis::X => (0..d)
+                    .map(|r| block.data_atoms[r * d].0)
+                    .collect(),
+            }
+        }
+    }
 }
 
 /// Sibling `.stim` path for an experiment JSON path (ADR-0018).
@@ -563,30 +604,19 @@ fn check_graph_from_blocks(blocks: &[ExpandedBlock]) -> Result<CheckGraph, Exper
 }
 
 fn check_graph_stabilizers(block: &ExpandedBlock) -> Result<Vec<StabilizerCheck>, ExperimentError> {
-    let mut out = Vec::with_capacity(block.check_atoms.len());
-    for i in 0..block.check_atoms.len() {
-        let left = block.data_atoms.get(i).ok_or(ExperimentError::InvalidStabilizerLayout {
-            check_index: i,
-            left_index: i,
-            right_index: i + 1,
-            data_len: block.data_atoms.len(),
-        })?;
-        let right = block
-            .data_atoms
-            .get(i + 1)
-            .ok_or(ExperimentError::InvalidStabilizerLayout {
-                check_index: i,
-                left_index: i,
-                right_index: i + 1,
-                data_len: block.data_atoms.len(),
-            })?;
-        out.push(StabilizerCheck {
-            logical_id: block.logical_id.0,
-            check_atom: block.check_atoms[i].0,
-            data_atoms: vec![left.0, right.0],
-        });
+    if block.stabilizers.is_empty() && !block.check_atoms.is_empty() {
+        return Err(ExperimentError::MissingStabilizers);
     }
-    Ok(out)
+    Ok(block
+        .stabilizers
+        .iter()
+        .map(|s| StabilizerCheck {
+            logical_id: block.logical_id.0,
+            check_atom: s.check.0,
+            basis: s.basis,
+            data_atoms: s.data.iter().map(|a| a.0).collect(),
+        })
+        .collect())
 }
 
 fn measurement_schedule_from_expanded(expanded: &ExpandedWorkload) -> Vec<MeasurementScheduleEntry> {
@@ -641,7 +671,7 @@ fn logical_observables_from_expanded(
             id: i as u32,
             logical_id: block.logical_id.0,
             basis: measure_basis,
-            atoms: block.data_atoms.iter().map(|a| a.0).collect(),
+            atoms: logical_observable_atoms(block, measure_basis),
         })
         .collect())
 }
@@ -670,8 +700,9 @@ fn measure_logical_basis(
 fn atom_site_map_from_blocks(blocks: &[ExpandedBlock]) -> Vec<AtomSiteMapping> {
     let mut out = Vec::new();
     for block in blocks {
+        let data_set: HashSet<u32> = block.data_atoms.iter().map(|a| a.0).collect();
         for (index_in_block, atom) in block.atoms.iter().enumerate() {
-            let role = if index_in_block % 2 == 0 {
+            let role = if data_set.contains(&atom.0) {
                 AtomRole::Data
             } else {
                 AtomRole::Check
@@ -762,6 +793,7 @@ mod tests {
         assert_eq!(exp.check_graph.stabilizers[0].data_atoms, vec![0, 2]);
         assert_eq!(exp.logical_observables[0].atoms, vec![0, 2, 4]);
         assert_eq!(exp.logical_observables[0].basis, LogicalBasis::Z);
+        assert_eq!(exp.check_graph.stabilizers[0].basis, LogicalBasis::Z);
         assert_eq!(exp.atom_site_map[0].role, AtomRole::Data);
         assert_eq!(exp.atom_site_map[1].role, AtomRole::Check);
         assert_eq!(exp.na_refs.len(), 4);
@@ -801,7 +833,7 @@ mod tests {
         let cases: &[(&str, &str)] = &[
             (
                 "StabilizerCheck",
-                r#"{"logical_id":0,"check_atom":1,"data_atoms":[0,2],"bonus":1}"#,
+                r#"{"logical_id":0,"check_atom":1,"basis":"z","data_atoms":[0,2],"bonus":1}"#,
             ),
             (
                 "MeasurementScheduleEntry",
@@ -999,20 +1031,79 @@ mod tests {
     }
 
     #[test]
-    fn check_graph_stabilizers_fail_on_short_data() {
+    fn check_graph_stabilizers_fail_when_missing() {
         let mut expanded = repetition_d3_two_rounds();
-        expanded.blocks[0].data_atoms.pop(); // 3 → 2 data, still 2 checks
-        let err = check_graph_stabilizers(&expanded.blocks[0]).expect_err("short");
-        assert!(
-            matches!(
-                err,
-                ExperimentError::InvalidStabilizerLayout {
-                    check_index: 1,
-                    ..
-                }
-            ),
-            "{err:?}"
+        expanded.blocks[0].stabilizers.clear();
+        let err = check_graph_stabilizers(&expanded.blocks[0]).expect_err("missing");
+        assert!(matches!(err, ExperimentError::MissingStabilizers), "{err:?}");
+    }
+
+    #[test]
+    fn surface_d3_dual_emit_json_and_stim() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .expect("construct");
+        b.memory_round(LogicalQubitId(0)).expect("r1");
+        b.memory_round(LogicalQubitId(0)).expect("r2");
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .expect("mz");
+        let expanded = expand_workload(&b.finish()).expect("expand");
+
+        let (exp, stim) = dual_emit(
+            &expanded,
+            example_error_model(),
+            "surface_d3.stim",
+            na_refs_from_expanded(&expanded),
+        )
+        .expect("dual_emit");
+
+        assert_eq!(exp.family, "surface");
+        assert_eq!(exp.code_family, "surface_code_like");
+        assert_eq!(exp.distance, 3);
+        assert_eq!(exp.rounds, 2);
+        assert_eq!(exp.check_graph.atoms.len(), 17);
+        assert_eq!(exp.check_graph.check_atoms.len(), 8);
+        assert_eq!(exp.check_graph.stabilizers.len(), 8);
+        assert_eq!(
+            exp.check_graph
+                .stabilizers
+                .iter()
+                .filter(|s| s.basis == LogicalBasis::X)
+                .count(),
+            4
         );
+        assert_eq!(exp.logical_observables[0].atoms, vec![0, 1, 2]);
+        assert_eq!(exp.atom_site_map.len(), 17);
+        assert_eq!(exp.atom_site_map[0].role, AtomRole::Data);
+        assert_eq!(exp.atom_site_map[9].role, AtomRole::Check);
+
+        assert!(stim.contains("family=surface"), "{stim}");
+        assert!(stim.contains("H 9 11 14 16"), "{stim}");
+        assert!(stim.contains("MR 9 10 11 12 13 14 15 16"), "{stim}");
+        assert!(stim.contains("MZ 0 1 2 3 4 5 6 7 8"), "{stim}");
+        assert!(stim.contains("OBSERVABLE_INCLUDE(0)"), "{stim}");
+        assert!(stim.contains("DETECTOR"), "{stim}");
+        // First-round detectors only on Z checks (indices 1,3,4,6).
+        assert!(stim.contains("DETECTOR(1, 0)"), "{stim}");
+        assert!(!stim.contains("DETECTOR(0, 0)"), "{stim}");
+        for line in stim.lines() {
+            let op = line.split_whitespace().next().unwrap_or("");
+            assert!(
+                !matches!(
+                    op,
+                    "DEPOLARIZE1"
+                        | "DEPOLARIZE2"
+                        | "X_ERROR"
+                        | "Z_ERROR"
+                        | "Y_ERROR"
+                        | "E"
+                        | "ELSE_CORRELATED_ERROR"
+                        | "PAULI_CHANNEL_1"
+                        | "PAULI_CHANNEL_2"
+                ),
+                "noise op {op} must not appear:\n{stim}"
+            );
+        }
     }
 
     #[test]

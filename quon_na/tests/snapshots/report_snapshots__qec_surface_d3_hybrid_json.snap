@@ -1,0 +1,35 @@
+---
+source: quon_na/tests/report_snapshots.rs
+expression: json
+---
+{
+  "evidence_kind": "analytic",
+  "evidence_disclaimer": "Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).",
+  "rydberg_stages": 8,
+  "rearrangement_steps": 36,
+  "rearrangement_time_us": 5268,
+  "trap_transfers": 176,
+  "transfer_time_us": 2640,
+  "entangle2_count": 48,
+  "entangle_n_count": 0,
+  "measurement_rounds": 3,
+  "reset_rounds": 2,
+  "wait_time_us": 2,
+  "total_time_us": 6363,
+  "logical_qubits": 1,
+  "physical_atoms": 17,
+  "atoms_per_logical": 17,
+  "code_family": "surface_code_like",
+  "distance": 3,
+  "memory_rounds": 2,
+  "estimated_cycles": 123,
+  "bottleneck": "rearrangement",
+  "error_budget": {
+    "rydberg": 0.016,
+    "measurement": 0.009,
+    "reset": 0.008,
+    "movement": 0.018,
+    "transfer": 0.1232,
+    "idle": 4e-9
+  }
+}

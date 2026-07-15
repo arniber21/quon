@@ -46,6 +46,35 @@ fn qec_repetition_auto_verifies_on_emit() {
 }
 
 #[test]
+fn qec_surface_auto_verifies_on_emit() {
+    let source = workspace_path("../examples/na_qec/surface_d3_memory.qn");
+    let output = quonc()
+        .arg(&source)
+        .arg("--target")
+        .arg(na_target())
+        .arg("--emit-na-mlir")
+        .arg("-")
+        .output()
+        .expect("spawn");
+
+    assert!(
+        output.status.success(),
+        "surface QEC emit must auto-verify; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("quantum.na.schedule") && stdout.contains("atom = 16"),
+        "missing surface schedule atoms: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("quantum.na verification passed") && stderr.contains("QEC auto"),
+        "expected QEC auto-verify banner; stderr: {stderr}"
+    );
+}
+
+#[test]
 fn physical_na_skips_verify_without_flag() {
     let source = workspace_path("../test/na/bell.qn");
     let output = quonc()

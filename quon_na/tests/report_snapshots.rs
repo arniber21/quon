@@ -2,7 +2,6 @@
 //!
 //! These goldens pin the **analytic** compiler artifact (ADR-0020). Sampled
 //! Sinter CSV fields (`logical_failures`, …) must never appear here.
-//! Surface-code hybrid snapshots land with #249 (not available yet).
 //!
 //! Update goldens after intentional metric changes:
 //! ```bash
@@ -320,6 +319,65 @@ fn qec_repetition_d3_hybrid_schedule_report() {
     assert!(json.contains("\"measurement\": 0.009"));
 
     assert_json_md("qec_repetition_d3_hybrid", report);
+}
+
+#[test]
+fn qec_surface_d3_hybrid_schedule_report() {
+    // Analytic hybrid surface path (#249 / ADR-0020) — closes the #246 gap.
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../targets/neutral_atom/generic_rna_v0.json"
+    ));
+    let loaded = backend::json::load(path).expect("load target");
+    let na = loaded.neutral_atom_target().expect("na target").clone();
+
+    let mut b = WorkloadBuilder::new();
+    b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+        .expect("construct");
+    b.memory_round(LogicalQubitId(0)).expect("r1");
+    b.memory_round(LogicalQubitId(0)).expect("r2");
+    b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+        .expect("mz");
+    let workload = b.finish();
+
+    let artifacts = run_from_qec_workload(
+        &workload,
+        &na,
+        NaScheduleOptions {
+            compact: true,
+            dump_ir: false,
+            ..Default::default()
+        },
+    )
+    .expect("schedule");
+    let report = &artifacts.resource_report;
+
+    assert_eq!(report.logical_qubits, 1);
+    assert_eq!(report.physical_atoms, 17);
+    assert_eq!(report.atoms_per_logical, Some(17));
+    assert_eq!(report.distance, Some(3));
+    assert_eq!(report.memory_rounds, Some(2));
+    assert_eq!(report.code_family.as_deref(), Some("surface_code_like"));
+    assert_eq!(report.evidence_kind, RESOURCE_REPORT_EVIDENCE_KIND);
+    assert_eq!(report.entangle2_count, 48);
+    assert_eq!(report.measurement_rounds, 3);
+    assert_eq!(report.reset_rounds, 2);
+    assert!(report.estimated_cycles > 0);
+    assert_ne!(report.bottleneck, BottleneckKind::None);
+    let budget = report
+        .error_budget
+        .expect("hybrid QEC report attaches analytic error_budget");
+    assert!(budget.rydberg > 0.0);
+    assert!(budget.measurement > 0.0);
+    assert!(budget.reset > 0.0);
+
+    let md = resource_report_to_markdown(report);
+    assert!(md.contains("| Distance | 3 |"));
+    assert!(md.contains("| Memory rounds | 2 |"));
+    assert!(md.contains("surface_code_like"));
+    assert_markdown_notes(&md, true);
+
+    assert_json_md("qec_surface_d3_hybrid", report);
 }
 
 #[test]
