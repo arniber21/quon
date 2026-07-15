@@ -850,14 +850,14 @@ User-defined gates participate in all optimization passes. If a user-defined gat
 
 | Builtin | Type | Notes |
 |---|---|---|
-| `repetition_code<d>()` | `Q<QecBlock<Repetition, d>>` | Z-basis init; requires `d ≥ 2` |
-| `surface_code<d>()` | `Q<QecBlock<Surface, d>>` | Z-basis init; requires odd `d ≥ 3` |
+| `repetition_code<d>()` | `Q<QecBlock<Repetition, d>>` | Z-basis init; requires literal `d ≥ 2` |
+| `surface_code<d>()` | `Q<QecBlock<Surface, d>>` | Z-basis init; requires literal odd `d ≥ 3` |
 | `surface_code_x<d>()` | `Q<QecBlock<Surface, d>>` | X-basis init; same distance rule |
 | `memory_round(b)` | `QecBlock<F, d> → Q<QecBlock<F, d>>` | One syndrome-extraction round |
 | `measure_logical_z(b)` / `measure_logical_x(b)` | `QecBlock<F, d> → Q<Bit>` | Consumes the block |
-| `logical_cx(a, b)` | surface + same `d` only | Returns `Q<(QecBlock, QecBlock)>`; lowering may stub |
+| `logical_cx(a, b)` | `QecBlock<Surface, d> → QecBlock<Surface, d> → Q<(QecBlock<Surface, d>, QecBlock<Surface, d>)>` | Both args must be surface blocks at the same distance; lowering may stub |
 
-Kinded aliases remain valid with Nat-default parameters (`type Oracle<n> = ...`) and with explicit kinds (`type Encoded<F: CodeFamily, d: Nat> = QecBlock<F, d>`).
+Kinded aliases remain valid with Nat-default parameters (`type Oracle<n> = ...`) and with explicit kinds (`type Encoded<F: CodeFamily, d: Nat> = QecBlock<F, d>`). Constructors require an explicit distance type argument (`repetition_code<3>()`, not bare `repetition_code()`).
 
 ---
 

@@ -1524,7 +1524,7 @@ fn qec_family_mismatch_on_logical_cx() {
                logical_cx(a, b)
              }"
         ),
-        TypeError::Mismatch { .. }
+        TypeError::LogicalCxRequiresSurface { .. }
     ));
 }
 
@@ -1562,5 +1562,214 @@ fn qec_oracle_nat_alias_still_works() {
         "type Oracle<n> = Circuit<n, n, _, Universal>
 fn f(o: Oracle<2>): Oracle<2> = o",
     );
+}
+
+#[test]
+fn qec_kinded_multi_arg_family_conflict() {
+    assert!(matches!(
+        reject_run_err(
+            "fn f<F: CodeFamily, d: Nat>(a: QecBlock<F, d>, b: QecBlock<F, d>): Q<(QecBlock<F, d>, QecBlock<F, d>)> = run {
+               return (a, b)
+             }
+             fn main(): Q<(QecBlock<Repetition, 3>, QecBlock<Surface, 3>)> = run {
+               a <- repetition_code<3>()
+               b <- surface_code<3>()
+               f(a, b)
+             }"
+        ),
+        TypeError::Mismatch { .. }
+    ));
+}
+
+#[test]
+fn qec_kinded_multi_arg_distance_conflict() {
+    assert!(matches!(
+        reject_run_err(
+            "fn f<F: CodeFamily, d: Nat>(a: QecBlock<F, d>, b: QecBlock<F, d>): Q<(QecBlock<F, d>, QecBlock<F, d>)> = run {
+               return (a, b)
+             }
+             fn main(): Q<(QecBlock<Repetition, 3>, QecBlock<Repetition, 5>)> = run {
+               a <- repetition_code<3>()
+               b <- repetition_code<5>()
+               f(a, b)
+             }"
+        ),
+        TypeError::Mismatch { .. }
+    ));
+}
+
+#[test]
+fn qec_d_only_generic_with_fixed_family() {
+    accepts_run(
+        "fn g<d: Nat>(b: QecBlock<Repetition, d>): Q<Bit> = run {
+           measure_logical_z(b)
+         }
+         fn main(): Q<Bit> = run {
+           b <- repetition_code<3>()
+           g(b)
+         }",
+    );
+    accepts_run(
+        "fn g<d: Nat>(b: QecBlock<Surface, d>): Q<Bit> = run {
+           measure_logical_z(b)
+         }
+         fn main(): Q<Bit> = run {
+           b <- surface_code<3>()
+           g(b)
+         }",
+    );
+}
+
+#[test]
+fn qec_ctor_requires_distance_type_arg() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               b <- repetition_code()
+               measure_logical_z(b)
+             }"
+        ),
+        TypeError::QecCtorRequiresDistance {
+            name: "repetition_code",
+            ..
+        }
+    ));
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               b <- surface_code()
+               measure_logical_z(b)
+             }"
+        ),
+        TypeError::QecCtorRequiresDistance {
+            name: "surface_code",
+            ..
+        }
+    ));
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               b <- surface_code_x()
+               measure_logical_z(b)
+             }"
+        ),
+        TypeError::QecCtorRequiresDistance {
+            name: "surface_code_x",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn qec_unknown_code_family_rejected() {
+    assert!(matches!(
+        reject_err("fn f(b: QecBlock<Foo, 3>): QecBlock<Foo, 3> = b"),
+        TypeError::UnknownCodeFamily { name, .. } if name == "Foo"
+    ));
+    assert!(matches!(
+        reject_run_err(
+            "type Encoded<F: CodeFamily, d: Nat> = QecBlock<F, d>\n\
+             fn main(): Q<Bit> = run {\n\
+               b <- repetition_code<3>()\n\
+               measure_logical_z(b)\n\
+             }\n\
+             fn bad(b: Encoded<Foo, 3>): Q<Bit> = run {\n\
+               measure_logical_z(b)\n\
+             }"
+        ),
+        TypeError::UnknownCodeFamily { name, .. } if name == "Foo"
+    ));
+}
+
+#[test]
+fn qec_kind_mismatch_nat_as_family() {
+    assert!(matches!(
+        reject_err("fn f<F: Nat>(b: QecBlock<F, 3>): QecBlock<F, 3> = b"),
+        TypeError::KindMismatch {
+            expected: "CodeFamily",
+            found: "Nat",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn qec_undeclared_family_param_rejected() {
+    assert!(matches!(
+        reject_err("fn f(b: QecBlock<F, 3>): QecBlock<F, 3> = b"),
+        TypeError::UnknownCodeFamily { name, .. } if name == "F"
+    ));
+}
+
+#[test]
+fn qec_non_literal_ctor_distance_rejected() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               b <- repetition_code<d>()
+               measure_logical_z(b)
+             }"
+        ),
+        TypeError::NonLiteralQecDistance { .. }
+    ));
+}
+
+#[test]
+fn qec_logical_cx_distance_mismatch() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<(QecBlock<Surface, 3>, QecBlock<Surface, 5>)> = run {
+               a <- surface_code<3>()
+               b <- surface_code<5>()
+               logical_cx(a, b)
+             }"
+        ),
+        TypeError::LogicalCxDistanceMismatch { .. }
+    ));
+}
+
+#[test]
+fn qec_logical_cx_requires_surface_diagnostic() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<(QecBlock<Surface, 3>, QecBlock<Surface, 3>)> = run {
+               a <- repetition_code<3>()
+               b <- surface_code<3>()
+               logical_cx(a, b)
+             }"
+        ),
+        TypeError::LogicalCxRequiresSurface { .. }
+    ));
+}
+
+#[test]
+fn qec_surface_code_x_invalid_distance() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               b <- surface_code_x<4>()
+               measure_logical_z(b)
+             }"
+        ),
+        TypeError::InvalidQecDistance { family: "surface", distance: 4, .. }
+    ));
+}
+
+#[test]
+fn qec_mixed_entrypoint_via_helper() {
+    assert!(matches!(
+        reject_run_err(
+            "fn helper(): Q<Bit> = run {
+               q <- qubit()
+               measure(q)
+             }
+             fn main(): Q<Bit> = run {
+               b <- repetition_code<3>()
+               _ <- measure_logical_z(b)
+               helper()
+             }"
+        ),
+        TypeError::MixedQecEntrypoint { .. }
+    ));
 }
 

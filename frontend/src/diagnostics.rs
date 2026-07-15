@@ -42,6 +42,11 @@ impl DiagnosticCode {
     // QEC
     pub const QEC_INVALID_DISTANCE: Self = Self("quon.qec.invalid-distance");
     pub const QEC_MIXED_ENTRYPOINT: Self = Self("quon.qec.mixed-entrypoint");
+    pub const QEC_UNKNOWN_FAMILY: Self = Self("quon.qec.unknown-family");
+    pub const QEC_LOGICAL_CX_FAMILY: Self = Self("quon.qec.logical-cx-family");
+    pub const QEC_LOGICAL_CX_DISTANCE: Self = Self("quon.qec.logical-cx-distance");
+    pub const QEC_CTOR_REQUIRES_DISTANCE: Self = Self("quon.qec.ctor-requires-distance");
+    pub const QEC_NON_LITERAL_DISTANCE: Self = Self("quon.qec.non-literal-distance");
 
     // Linearity
     pub const LINEARITY_USED_TWICE: Self = Self("quon.linearity.used-twice");

@@ -153,9 +153,10 @@ pub fn lookup(name: &str) -> Option<Scheme> {
         "qubit" | "init_one" | "init_plus" => Scheme::mono(func(Ty::Unit, q(Ty::Qubit))),
 
         // ── QEC builtins (issue #247, ADR-0014) ───────────────────────────────
-        // Constructors and polymorphic ops are special-cased in the checker
-        // (`repetition_code<d>()`, `memory_round`, …). Schemes here exist for
-        // completion/hover and are not the primary typing path.
+        // Constructors require `TypeApp` (`repetition_code<d>()`); they are *not*
+        // listed here so bare `repetition_code()` cannot type via a lying scheme.
+        // `memory_round` / measure / `logical_cx` are special-cased in the checker;
+        // schemes below are completion/hover metadata only (not the typing path).
         "memory_round" => Scheme {
             vars: &[],
             body: {
@@ -176,11 +177,6 @@ pub fn lookup(name: &str) -> Option<Scheme> {
                     q(tuple(vec![block.clone(), block])),
                 )
             },
-        },
-        "repetition_code" | "surface_code" | "surface_code_x" => Scheme {
-            vars: &[],
-            // Placeholder; real type comes from `TypeApp` specialization.
-            body: func(Ty::Unit, q(qec(CodeFamilyTy::Repetition, "d"))),
         },
 
         // ── §5.11 Physics constants ─────────────────────────────────────────
