@@ -35,7 +35,7 @@ expression: md
 | Reset | 0.004 |
 | Movement | 0.0005 |
 | Transfer | 0.0007 |
-| Idle | 0.000000008 |
+| Idle | 8e-9 |
 
 ## Notes
 - Field names align with TUM RAP Table I / Enola headline metrics.

@@ -464,6 +464,32 @@ impl NeutralAtomErrorModel {
     }
 }
 
+impl TryFrom<NeutralAtomErrorModelSnapshot> for NeutralAtomErrorModel {
+    type Error = crate::error::BackendError;
+
+    /// Validate snapshot rates into the domain model (same `[0, 1]` rule as
+    /// target-descriptor load).
+    fn try_from(s: NeutralAtomErrorModelSnapshot) -> Result<Self, Self::Error> {
+        fn probability(field: &str, value: f64) -> Result<f64, crate::error::BackendError> {
+            if value.is_finite() && value >= 0.0 && value <= 1.0 {
+                Ok(value)
+            } else {
+                Err(crate::error::BackendError::InvalidTargetConfig(format!(
+                    "{field} must be a probability in [0, 1], got {value}"
+                )))
+            }
+        }
+        Ok(Self {
+            rydberg: probability("error_model.rydberg", s.rydberg)?,
+            measurement: probability("error_model.measurement", s.measurement)?,
+            reset: probability("error_model.reset", s.reset)?,
+            movement: probability("error_model.movement", s.movement)?,
+            transfer: probability("error_model.transfer", s.transfer)?,
+            idle_per_us: probability("error_model.idle_per_us", s.idle_per_us)?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NeutralAtomCostModel {
     pub rydberg_stage_weight: f64,

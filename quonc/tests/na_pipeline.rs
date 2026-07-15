@@ -78,9 +78,19 @@ fn bell_emits_na_schedule_and_resource_report() {
         stderr.contains("\"entangle2_count\": 1"),
         "expected one Entangle2, got: {stderr}"
     );
+    let report: serde_json::Value =
+        serde_json::from_str(&stderr).expect("resource report on stderr is JSON");
+    let budget = report
+        .get("error_budget")
+        .expect("resource report must include error_budget when target has error_model");
+    let stages = report["rydberg_stages"]
+        .as_u64()
+        .expect("rydberg_stages") as f64;
+    let rydberg = budget["rydberg"].as_f64().expect("error_budget.rydberg");
+    // generic_rna_v0.json error_model.rydberg = 0.002
     assert!(
-        stderr.contains("\"error_budget\""),
-        "resource report must include error_budget when target has error_model: {stderr}"
+        (rydberg - 0.002 * stages).abs() < 1e-12,
+        "rydberg contribution {rydberg} != 0.002 × {stages}"
     );
 }
 
