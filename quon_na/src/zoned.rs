@@ -897,8 +897,7 @@ struct AssignInputs<'a> {
 /// joint-optimal assignment for a layer, or gave up and fell back to
 /// [`assign_greedy_legal`] (issue #111 review finding: a silent fallback here
 /// is indistinguishable from "no routing contention" unless it is surfaced).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AwareSearchOutcome {
     /// [`assign_greedy_legal`] was called directly (routing-agnostic mode);
     /// the aware-search-completion concept doesn't apply.

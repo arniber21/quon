@@ -255,7 +255,8 @@ banner whenever `aware_search_fell_back_layers > 0`), not to fix it.
 
 ## Tolerances (for Phase 2 enforcement)
 
-Locked decisions (not yet enforced — dump-only in Phase 1):
+Locked decisions (implemented behind the enforce flag; **off by default** in
+Phase 1):
 
 - **±2 steps** on each placer's `rearrangement_steps` vs its published value
   (22 agnostic / 9 aware).
@@ -263,18 +264,18 @@ Locked decisions (not yet enforced — dump-only in Phase 1):
   (3.1 ms agnostic / 1.6 ms aware).
 - **Meaningful aware improvement**: aware must beat agnostic by a documented
   relative floor (not just `<`), reflecting [RAP]'s reported −59% steps /
-  −49% time story. The exact floor is a Phase 2 decision — see the finding
-  above for why picking one now, before the mechanism gap is resolved, would
-  just be enforcing today's (non-reproducing) numbers.
+  −49% time story. The exact floor wired today is whatever
+  `rap_table_i.rs` encodes; Phase 2 may revise it after human sign-off.
 
 `QUON_RAP_TABLE_I_ENFORCE=1` is read by
-`ising_n42_dumps_both_placer_rearrangement_metrics`; Phase 1 wires the flag
-check but leaves the concrete hard asserts as `todo!`-free no-ops beyond the
-placer-independent pre-flight re-check, since enforcing tolerances against
-numbers we already know don't reproduce the paper's mechanism (see the
-finding above) would be worse than not enforcing at all. Phase 2 fills in the
-actual ±2 / ±10% / floor comparisons once a human has signed off on which
-setup (if any changes) makes the reproduction legitimate.
+`ising_n42_dumps_both_placer_rearrangement_metrics`. The ±2 / ±10% / floor
+asserts are **already implemented** in that test — they are not stubs or
+no-ops. With the flag unset (CI default), those numeric asserts are skipped
+and only the dump + structural checks run. With the flag set to `1` today,
+the test **will hard-fail** on this fixture because routing-aware still falls
+back to greedy on every layer (23/23 steps, no paper delta) — see the finding
+above. Do **not** enable the flag in CI until Phase 2 human sign-off closes
+the mechanism gap (real A* / larger budget / tighter geometry / etc.).
 
 ## n = 98 (optional, local)
 
