@@ -1,0 +1,48 @@
+---
+source: quon_na/tests/report_snapshots.rs
+expression: md
+---
+# Neutral-atom resource report
+
+## Qubit resources
+| Metric | Value |
+| --- | ---: |
+| Logical qubits | 1 |
+| Physical atoms | 5 |
+| Atoms per logical | 5 |
+| Code family | repetition_code_toy |
+| Distance | 3 |
+| Memory rounds | 2 |
+
+## Schedule metrics
+| Metric | Value |
+| --- | ---: |
+| Estimated cycles | 37 |
+| Bottleneck | rearrangement |
+| Rydberg stages | 6 |
+| Rearrangement steps | 8 |
+| Rearrangement time (µs) | 1060 |
+| Trap transfers | 26 |
+| Transfer time (µs) | 390 |
+| Entangle2 count | 8 |
+| EntangleN count | 0 |
+| Measurement rounds | 3 |
+| Reset rounds | 2 |
+| Wait time (µs) | 2 |
+| Total time (µs) | 1313 |
+
+## Physical error budget
+| Category | Contribution (rate × count) |
+| --- | ---: |
+| Rydberg | 0.012 |
+| Measurement | 0.009000000000000001 |
+| Reset | 0.008 |
+| Movement | 0.004 |
+| Transfer | 0.0182 |
+| Idle | 4e-9 |
+
+## Notes
+- Field names align with TUM RAP Table I / Enola headline metrics.
+- `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
+- Non-QEC reports omit atoms-per-logical and code-family rows.
+- Physical error budget lines are schedule-count × rate contributions only — not logical error rates or thresholds.

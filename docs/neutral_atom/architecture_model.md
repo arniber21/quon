@@ -566,11 +566,22 @@ lowercase scientific notation (`8e-9`); otherwise Rust `Display` (`0.004`,
 ```
 
 **Non-QEC omit policy:** always emit Logical qubits and Physical atoms (may be
-`0` if sizing unset). Emit Atoms per logical and Code family **only when** the
-corresponding optional fields are set. Never print `N/A` for omitted QEC
-detail. Bottleneck cell text uses the same snake_case strings as JSON.
-Microsecond headers use Unicode `(µs)`. Emit the Physical error budget table
-and its Notes bullet **only when** `error_budget` is set.
+`0` if sizing unset). Emit Atoms per logical, Code family, Distance, and Memory
+rounds **only when** the corresponding optional fields are set (Distance from
+homogeneous `with_code_blocks`; Memory rounds from the hybrid QEC schedule path
+in #248). Never print `N/A` for omitted QEC detail. Bottleneck cell text uses
+the same snake_case strings as JSON. Microsecond headers use Unicode `(µs)`.
+Emit the Physical error budget table and its Notes bullet **only when**
+`error_budget` is set.
+
+QEC hybrid reports (e.g. repetition-code memory) additionally include:
+
+```markdown
+| Distance | 3 |
+| Memory rounds | 2 |
+```
+
+under Qubit resources when those fields are set.
 
 ### 11.2 JSON fields (paper-name mapping)
 
@@ -586,6 +597,8 @@ and its Notes bullet **only when** `error_budget` is set.
 | `wait_time_us` / `total_time_us` | Idle sum / max-per-layer sum | Idle + wall-clock proxy |
 | `logical_qubits` / `physical_atoms` | Sizing (§10) | QEC overhead |
 | `atoms_per_logical` / `code_family` | Optional; omitted when unset | Single-family QEC detail |
+| `distance` | Optional code distance when a single homogeneous QEC family is set (#248) | §10 `d` |
+| `memory_rounds` | Optional count of syndrome/`memory_round` cycles (#248) | QEC schedule depth |
 | `estimated_cycles` | `layers.len()` as `u64` | Parallel schedule cycles |
 | `bottleneck` | `none` / `rydberg` / `rearrangement` / `transfer` / `measurement` / `mixed` | Max of four scores below |
 | `error_budget` | Optional object of analytic `rate × count` contributions (ADR-0017) | Not a logical error rate / threshold |
@@ -621,7 +634,7 @@ deserializes. Optional QEC fields and `error_budget` use
 | --- | --- |
 | Bare `from_layers` | Schedule metrics + cycles/bottleneck; sizing zeros; Options unset |
 | Non-QEC `with_physical_atoms(n)` | `physical_atoms = logical_qubits = n`; Options unset |
-| QEC `with_code_blocks` | logical = Σ `logical_qubits.len()`; physical = Σ `atoms.len()`; single shared family → set `atoms_per_logical` / `code_family`; mixed families → counts only |
+| QEC `with_code_blocks` | logical = Σ `logical_qubits.len()`; physical = Σ `atoms.len()`; single shared family → set `atoms_per_logical` / `code_family` / `distance`; mixed families → counts only. `memory_rounds` is set by the hybrid QEC schedule path (#248), not by sizing alone. |
 
 Stable `code_family` labels: `surface_code_like`, `repetition_code_toy`,
 `high_rate_qldpc_like`, `abstract_block_code`. Formulas: §10.

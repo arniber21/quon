@@ -10,7 +10,7 @@ pub mod family;
 pub mod workload;
 
 pub use expand::{
-    ExpandError, ExpandedBlock, ExpandedWorkload, PhysicalAtomId, PhysicalCz, PhysicalRound,
+    ExpandError, ExpandedBlock, ExpandedWorkload, PhysicalAtomId, PhysicalCnot, PhysicalRound,
     RoundKind, RoundTerminal, expand_workload,
 };
 pub use family::{

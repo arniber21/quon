@@ -1,8 +1,8 @@
 -- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-mlir - --quiet | %FileCheck %s
 --
--- Repetition d=3 memory → quantum.na (#248 / ADR-0016): data+check atoms,
--- CZ entangles, check measure/reset across two memory rounds, then logical
--- data measure.
+-- Repetition d=3 memory → quantum.na (#248 / ADR-0016): five data+check atoms,
+-- Kelly-style CNOT syndrome entangles, durable Wait round barriers, check
+-- measure/reset across two memory rounds, then logical data measure.
 
 fn repetition_d3_memory(): Q<Bit> = run {
         b <- repetition_code<3>()
@@ -12,16 +12,23 @@ fn repetition_d3_memory(): Q<Bit> = run {
 }
 
 -- CHECK: "quantum.na.schedule"()
+-- CHECK-DAG: atom = 0
+-- CHECK-DAG: atom = 1
+-- CHECK-DAG: atom = 2
+-- CHECK-DAG: atom = 3
+-- CHECK-DAG: atom = 4
 -- CHECK: "quantum.na.entangle"()
 -- CHECK: "quantum.na.measure"{{.*}}atom = 1
 -- CHECK: "quantum.na.measure"{{.*}}atom = 3
 -- CHECK: "quantum.na.reset"{{.*}}atom = 1
 -- CHECK: "quantum.na.reset"{{.*}}atom = 3
+-- CHECK: "quantum.na.wait"
 -- CHECK: "quantum.na.entangle"()
 -- CHECK: "quantum.na.measure"{{.*}}atom = 1
 -- CHECK: "quantum.na.measure"{{.*}}atom = 3
 -- CHECK: "quantum.na.reset"{{.*}}atom = 1
 -- CHECK: "quantum.na.reset"{{.*}}atom = 3
+-- CHECK: "quantum.na.wait"
 -- CHECK: "quantum.na.measure"{{.*}}atom = 0
 -- CHECK: "quantum.na.measure"{{.*}}atom = 2
 -- CHECK: "quantum.na.measure"{{.*}}atom = 4

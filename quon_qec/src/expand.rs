@@ -8,6 +8,10 @@
 //! Atom layout for [`SourceFamily::Repetition`] / [`CodeFamily::RepetitionCodeToy`]:
 //! alternating data/check chain of length `N = 2d − 1` (architecture_model §10.2 /
 //! [Kelly15]): `D C D C … D`.
+//!
+//! Syndrome gadget (Kelly-style bit-flip): each check ancilla starts in `|0⟩`
+//! and extracts ZZ parity of its two neighboring data qubits via CNOTs
+//! (control = data, target = check), then Z-measure + reset the check.
 
 use thiserror::Error;
 
@@ -20,12 +24,11 @@ use crate::workload::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalAtomId(pub u32);
 
-/// Undirected CZ between two physical atoms (canonical `a < b` not required here;
-/// the NA graph layer canonicalizes).
+/// CNOT for syndrome extraction: control (data) → target (check ancilla).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PhysicalCz {
-    pub a: PhysicalAtomId,
-    pub b: PhysicalAtomId,
+pub struct PhysicalCnot {
+    pub control: PhysicalAtomId,
+    pub target: PhysicalAtomId,
 }
 
 /// Post-entangling measure or reset on one atom.
@@ -51,15 +54,15 @@ pub enum RoundKind {
     MeasureLogical,
 }
 
-/// One schedulable unit: entangling CZs, then terminal measure/reset.
+/// One schedulable unit: entangling CNOTs, then terminal measure/reset.
 ///
-/// `quon_na` runs place/entangle/move/compact on `entangling` alone, then
-/// appends `terminal` layers, then treats the round end as a barrier cut.
+/// `quon_na` runs place/entangle/move on `entangling` alone, then appends
+/// `terminal` layers and a durable round barrier, then compacts with cuts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhysicalRound {
     pub kind: RoundKind,
     pub logical_id: LogicalQubitId,
-    pub entangling: Vec<PhysicalCz>,
+    pub entangling: Vec<PhysicalCnot>,
     pub terminal: Vec<RoundTerminal>,
 }
 
@@ -118,9 +121,17 @@ pub enum ExpandError {
     LogicalCxUnsupported,
     #[error("expanded atom id overflow")]
     AtomIdOverflow,
+    #[error(
+        "repetition-code construct requires Z init basis (ADR-0014); got `{basis}` \
+         for logical {logical_id}"
+    )]
+    NonZInitBasis {
+        logical_id: u32,
+        basis: &'static str,
+    },
 }
 
-/// Expand a validated [`QecWorkload`] into per-round physical CZ / measure / reset.
+/// Expand a validated [`QecWorkload`] into per-round physical CNOT / measure / reset.
 pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, ExpandError> {
     let mut next_atom = 0u32;
     let mut blocks = Vec::with_capacity(workload.blocks.len());
@@ -139,13 +150,19 @@ pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, Expan
                 logical_id,
                 family,
                 distance,
-                ..
+                basis,
             } => {
                 let layout = find_layout(&layouts, *logical_id)?;
                 if *family != SourceFamily::Repetition {
                     return Err(ExpandError::UnsupportedFamily {
                         family: family.as_str(),
                         distance: *distance,
+                    });
+                }
+                if *basis != LogicalBasis::Z || layout.init_basis != LogicalBasis::Z {
+                    return Err(ExpandError::NonZInitBasis {
+                        logical_id: logical_id.0,
+                        basis: basis.as_str(),
                     });
                 }
                 // Construct allocates; v0 emits no physical gates (state prep is |0…0⟩).
@@ -155,7 +172,6 @@ pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, Expan
                     entangling: Vec::new(),
                     terminal: Vec::new(),
                 });
-                let _ = layout;
             }
             WorkloadOp::MemoryRound { logical_id } => {
                 let layout = find_layout(&layouts, *logical_id)?;
@@ -244,9 +260,9 @@ fn expand_repetition_layout(
     })
 }
 
-/// Stabilizer entanglements: each check `C_i` couples to neighboring data
-/// `D_i` and `D_{i+1}` via CZ (Kelly-style parity ladder on the alternating chain).
-fn repetition_cz_pattern(layout: &ExpandedBlock) -> Result<Vec<PhysicalCz>, ExpandError> {
+/// Kelly-style bit-flip syndrome: each check `C_i` is the CNOT target of
+/// neighboring data `D_i` and `D_{i+1}` (ZZ parity ladder on the alternating chain).
+fn repetition_cnot_pattern(layout: &ExpandedBlock) -> Result<Vec<PhysicalCnot>, ExpandError> {
     let d = layout.distance;
     if layout.data_atoms.len() != d as usize
         || layout.check_atoms.len() != d.saturating_sub(1) as usize
@@ -255,22 +271,25 @@ fn repetition_cz_pattern(layout: &ExpandedBlock) -> Result<Vec<PhysicalCz>, Expa
             distance: d,
         }));
     }
-    let mut czs = Vec::with_capacity(2 * layout.check_atoms.len());
+    let mut cnots = Vec::with_capacity(2 * layout.check_atoms.len());
     for i in 0..layout.check_atoms.len() {
         let check = layout.check_atoms[i];
         let left = layout.data_atoms[i];
         let right = layout.data_atoms[i + 1];
-        czs.push(PhysicalCz { a: left, b: check });
-        czs.push(PhysicalCz {
-            a: check,
-            b: right,
+        cnots.push(PhysicalCnot {
+            control: left,
+            target: check,
+        });
+        cnots.push(PhysicalCnot {
+            control: right,
+            target: check,
         });
     }
-    Ok(czs)
+    Ok(cnots)
 }
 
 fn repetition_memory_round(layout: &ExpandedBlock) -> Result<PhysicalRound, ExpandError> {
-    let entangling = repetition_cz_pattern(layout)?;
+    let entangling = repetition_cnot_pattern(layout)?;
     let mut terminal = Vec::with_capacity(2 * layout.check_atoms.len());
     for &atom in &layout.check_atoms {
         terminal.push(RoundTerminal::Measure {
@@ -353,10 +372,11 @@ mod tests {
             vec![PhysicalAtomId(1), PhysicalAtomId(3)]
         );
         assert_eq!(expanded.physical_atom_count(), 5);
+        assert_eq!(block.init_basis, LogicalBasis::Z);
     }
 
     #[test]
-    fn repetition_d3_memory_round_cz_measure_reset_pattern() {
+    fn repetition_d3_memory_round_cnot_measure_reset_pattern() {
         let expanded = expand_workload(&repetition_d3_two_rounds()).expect("expand");
         assert_eq!(expanded.memory_round_count(), 2);
 
@@ -367,26 +387,27 @@ mod tests {
             .collect();
         assert_eq!(memory.len(), 2);
 
-        let expected_cz = vec![
-            PhysicalCz {
-                a: PhysicalAtomId(0),
-                b: PhysicalAtomId(1),
+        // Kelly bit-flip: CNOT(D→C) for each neighboring data.
+        let expected_cnot = vec![
+            PhysicalCnot {
+                control: PhysicalAtomId(0),
+                target: PhysicalAtomId(1),
             },
-            PhysicalCz {
-                a: PhysicalAtomId(1),
-                b: PhysicalAtomId(2),
+            PhysicalCnot {
+                control: PhysicalAtomId(2),
+                target: PhysicalAtomId(1),
             },
-            PhysicalCz {
-                a: PhysicalAtomId(2),
-                b: PhysicalAtomId(3),
+            PhysicalCnot {
+                control: PhysicalAtomId(2),
+                target: PhysicalAtomId(3),
             },
-            PhysicalCz {
-                a: PhysicalAtomId(3),
-                b: PhysicalAtomId(4),
+            PhysicalCnot {
+                control: PhysicalAtomId(4),
+                target: PhysicalAtomId(3),
             },
         ];
         for round in &memory {
-            assert_eq!(round.entangling, expected_cz);
+            assert_eq!(round.entangling, expected_cnot);
             assert_eq!(
                 round.terminal,
                 vec![
@@ -464,16 +485,72 @@ mod tests {
 
     #[test]
     fn logical_cx_is_rejected_in_248() {
-        let mut b = WorkloadBuilder::new();
-        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
-            .unwrap();
-        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
-            .unwrap();
-        b.logical_cx(LogicalQubitId(0), LogicalQubitId(1)).unwrap();
-        // Surface fails at construct expansion before CX — use a hand-built workload
-        // that somehow has CX (builder validates surface). Expand still rejects CX
-        // if we only expand a CX-only path via surface rejection first.
-        let err = expand_workload(&b.finish()).expect_err("no surface");
-        assert!(matches!(err, ExpandError::UnsupportedFamily { .. }));
+        // Hand-build Repetition blocks + LogicalCx so the CX arm is exercised
+        // (WorkloadBuilder refuses CX on non-Surface).
+        let workload = QecWorkload {
+            blocks: vec![
+                WorkloadBlock {
+                    logical_id: LogicalQubitId(0),
+                    family: SourceFamily::Repetition,
+                    distance: 3,
+                    init_basis: LogicalBasis::Z,
+                    code_family: CodeFamily::RepetitionCodeToy { distance: 3 },
+                },
+                WorkloadBlock {
+                    logical_id: LogicalQubitId(1),
+                    family: SourceFamily::Repetition,
+                    distance: 3,
+                    init_basis: LogicalBasis::Z,
+                    code_family: CodeFamily::RepetitionCodeToy { distance: 3 },
+                },
+            ],
+            ops: vec![
+                WorkloadOp::Construct {
+                    family: SourceFamily::Repetition,
+                    distance: 3,
+                    basis: LogicalBasis::Z,
+                    logical_id: LogicalQubitId(0),
+                },
+                WorkloadOp::Construct {
+                    family: SourceFamily::Repetition,
+                    distance: 3,
+                    basis: LogicalBasis::Z,
+                    logical_id: LogicalQubitId(1),
+                },
+                WorkloadOp::LogicalCx {
+                    control: LogicalQubitId(0),
+                    target: LogicalQubitId(1),
+                },
+            ],
+        };
+        let err = expand_workload(&workload).expect_err("logical_cx");
+        assert!(matches!(err, ExpandError::LogicalCxUnsupported));
+    }
+
+    #[test]
+    fn repetition_construct_rejects_non_z_init_basis() {
+        let workload = QecWorkload {
+            blocks: vec![WorkloadBlock {
+                logical_id: LogicalQubitId(0),
+                family: SourceFamily::Repetition,
+                distance: 3,
+                init_basis: LogicalBasis::X,
+                code_family: CodeFamily::RepetitionCodeToy { distance: 3 },
+            }],
+            ops: vec![WorkloadOp::Construct {
+                family: SourceFamily::Repetition,
+                distance: 3,
+                basis: LogicalBasis::X,
+                logical_id: LogicalQubitId(0),
+            }],
+        };
+        let err = expand_workload(&workload).expect_err("non-z");
+        assert!(matches!(
+            err,
+            ExpandError::NonZInitBasis {
+                logical_id: 0,
+                basis: "x"
+            }
+        ));
     }
 }

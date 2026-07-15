@@ -1,5 +1,5 @@
--- Repetition-code distance-3 memory: two syndrome rounds then logical Z
--- measure. Compiles on the NA/QEC hybrid path (#248 / ADR-0016).
+-- Repetition-code distance-3 memory: two Kelly-style CNOT syndrome rounds
+-- then logical Z measure. Compiles on the NA/QEC hybrid path (#248 / ADR-0016).
 
 fn repetition_d3_memory(): Q<Bit> = run {
         b <- repetition_code<3>()

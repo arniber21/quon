@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use serde_json::Value;
+
 fn quonc() -> Command {
     Command::new(env!("CARGO_BIN_EXE_quonc"))
 }
@@ -18,12 +20,18 @@ fn na_target() -> PathBuf {
 #[test]
 fn repetition_d3_memory_resource_counts() {
     let source = workspace_path("../examples/na_qec/repetition_d3_memory.qn");
+    let report_path = std::env::temp_dir().join(format!(
+        "quon-qec-248-report-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&report_path);
+
     let output = quonc()
         .arg(&source)
         .arg("--target")
         .arg(na_target())
         .arg("--emit-resource-report")
-        .arg("-")
+        .arg(&report_path)
         .arg("--quiet")
         .output()
         .expect("spawn");
@@ -33,58 +41,49 @@ fn repetition_d3_memory_resource_counts() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    // When only resource report uses `-`, it goes to stdout.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let report = if stdout.contains("\"logical_qubits\"") {
-        stdout
-    } else {
-        String::from_utf8_lossy(&output.stderr).into_owned().into()
-    };
 
-    assert!(
-        report.contains("\"logical_qubits\": 1"),
-        "logical_qubits: {report}"
+    let report_text = std::fs::read_to_string(&report_path)
+        .unwrap_or_else(|e| panic!("read report {}: {e}", report_path.display()));
+    let report: Value =
+        serde_json::from_str(&report_text).unwrap_or_else(|e| panic!("parse JSON: {e}\n{report_text}"));
+
+    assert_eq!(report["logical_qubits"], 1);
+    assert_eq!(report["physical_atoms"], 5);
+    assert_eq!(report["atoms_per_logical"], 5);
+    assert_eq!(report["code_family"], "repetition_code_toy");
+    assert_eq!(report["distance"], 3);
+    assert_eq!(report["memory_rounds"], 2);
+    assert_eq!(
+        report["entangle2_count"], 8,
+        "two rounds × 4 CNOTs: {report_text}"
     );
-    assert!(
-        report.contains("\"physical_atoms\": 5"),
-        "physical_atoms (N=2d-1): {report}"
+    assert_eq!(
+        report["measurement_rounds"], 3,
+        "2 check rounds + 1 logical: {report_text}"
     );
-    assert!(
-        report.contains("\"atoms_per_logical\": 5"),
-        "atoms_per_logical: {report}"
+    assert_eq!(
+        report["reset_rounds"], 2,
+        "one reset layer per memory round: {report_text}"
     );
-    assert!(
-        report.contains("\"code_family\": \"repetition_code_toy\""),
-        "code_family: {report}"
-    );
-    assert!(report.contains("\"distance\": 3"), "distance: {report}");
-    assert!(
-        report.contains("\"memory_rounds\": 2"),
-        "memory_rounds: {report}"
-    );
-    assert!(
-        report.contains("\"entangle2_count\": 8"),
-        "two rounds × 4 CZs: {report}"
-    );
-    assert!(
-        report.contains("\"measurement_rounds\": 3"),
-        "2 check rounds + 1 logical: {report}"
-    );
-    assert!(
-        report.contains("\"reset_rounds\": 2"),
-        "one reset layer per memory round: {report}"
-    );
+
+    let _ = std::fs::remove_file(&report_path);
 }
 
 #[test]
 fn bare_qubit_bell_still_uses_physical_path() {
     let source = workspace_path("../test/na/bell.qn");
+    let report_path = std::env::temp_dir().join(format!(
+        "quon-qec-248-bare-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&report_path);
+
     let output = quonc()
         .arg(&source)
         .arg("--target")
         .arg(na_target())
         .arg("--emit-resource-report")
-        .arg("-")
+        .arg(&report_path)
         .arg("--quiet")
         .output()
         .expect("spawn");
@@ -94,21 +93,20 @@ fn bare_qubit_bell_still_uses_physical_path() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    let report_text = std::fs::read_to_string(&report_path)
+        .unwrap_or_else(|e| panic!("read report {}: {e}", report_path.display()));
+    let report: Value =
+        serde_json::from_str(&report_text).unwrap_or_else(|e| panic!("parse JSON: {e}\n{report_text}"));
+
+    assert_eq!(report["logical_qubits"], 2);
+    assert!(
+        report.get("code_family").is_none_or(|v| v.is_null()),
+        "bare path must not set QEC code_family: {report_text}"
     );
     assert!(
-        text.contains("\"logical_qubits\": 2"),
-        "bare path should stay 1:1 physical: {text}"
+        report.get("memory_rounds").is_none_or(|v| v.is_null()),
+        "bare path must not set memory_rounds: {report_text}"
     );
-    assert!(
-        !text.contains("\"code_family\""),
-        "bare path must not set QEC code_family: {text}"
-    );
-    assert!(
-        !text.contains("\"memory_rounds\""),
-        "bare path must not set memory_rounds: {text}"
-    );
+
+    let _ = std::fs::remove_file(&report_path);
 }
