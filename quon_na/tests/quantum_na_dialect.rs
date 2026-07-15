@@ -529,6 +529,214 @@ fn verifier_rejects_two_moves_claiming_one_trap_from_different_sources() {
 }
 
 #[test]
+fn verifier_rejects_measure_then_entangle_without_reset() {
+    let mut spec = valid_spec();
+    spec.layers = vec![
+        LayerSpec {
+            cycle: 0,
+            actions: vec![ActionSpec::Measure {
+                atom: 0,
+                basis: "z".to_string(),
+                duration_us: 10,
+            }],
+        },
+        LayerSpec {
+            cycle: 1,
+            actions: vec![ActionSpec::Entangle {
+                pairs: vec![pair(atom(0, 0.0, 0.0), atom(1, 6.0, 0.0))],
+                duration_us: 1,
+            }],
+        },
+    ];
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::MeasureReuseWithoutReset {
+            atom: 0,
+            measure_cycle: 0,
+            reuse_cycle: 1,
+        })
+    );
+}
+
+#[test]
+fn verifier_rejects_measure_and_entangle_same_cycle() {
+    let mut spec = valid_spec();
+    spec.layers = vec![LayerSpec {
+        cycle: 0,
+        actions: vec![
+            ActionSpec::Measure {
+                atom: 0,
+                basis: "z".to_string(),
+                duration_us: 10,
+            },
+            ActionSpec::Entangle {
+                pairs: vec![pair(atom(0, 0.0, 0.0), atom(1, 6.0, 0.0))],
+                duration_us: 1,
+            },
+        ],
+    }];
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::MeasureUseSameCycle { cycle: 0, atom: 0 })
+    );
+}
+
+#[test]
+fn verifier_rejects_reset_before_measure_same_atom() {
+    let mut spec = valid_spec();
+    spec.layers = vec![
+        LayerSpec {
+            cycle: 0,
+            actions: vec![ActionSpec::Reset {
+                atom: 0,
+                duration_us: 10,
+            }],
+        },
+        LayerSpec {
+            cycle: 1,
+            actions: vec![ActionSpec::Measure {
+                atom: 0,
+                basis: "z".to_string(),
+                duration_us: 10,
+            }],
+        },
+    ];
+    // Reset then later measure is a new round — allowed. Same-cycle reset→measure:
+    spec.layers = vec![LayerSpec {
+        cycle: 0,
+        actions: vec![
+            ActionSpec::Reset {
+                atom: 0,
+                duration_us: 10,
+            },
+            ActionSpec::Measure {
+                atom: 0,
+                basis: "z".to_string(),
+                duration_us: 10,
+            },
+        ],
+    }];
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::ResetBeforeMeasure {
+            atom: 0,
+            reset_cycle: 0,
+            measure_cycle: 0,
+        })
+    );
+}
+
+#[test]
+fn verifier_rejects_reset_and_entangle_same_cycle() {
+    let mut spec = valid_spec();
+    spec.layers = vec![LayerSpec {
+        cycle: 0,
+        actions: vec![
+            ActionSpec::Reset {
+                atom: 0,
+                duration_us: 10,
+            },
+            ActionSpec::Entangle {
+                pairs: vec![pair(atom(0, 0.0, 0.0), atom(1, 6.0, 0.0))],
+                duration_us: 1,
+            },
+        ],
+    }];
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::ResetUseSameCycle { cycle: 0, atom: 0 })
+    );
+}
+
+#[test]
+fn verifier_rejects_layer_after_wait_with_same_cycle() {
+    let mut spec = valid_spec();
+    spec.layers = vec![
+        LayerSpec {
+            cycle: 0,
+            actions: vec![ActionSpec::Entangle {
+                pairs: vec![pair(atom(0, 0.0, 0.0), atom(1, 6.0, 0.0))],
+                duration_us: 1,
+            }],
+        },
+        LayerSpec {
+            cycle: 1,
+            actions: vec![ActionSpec::Wait { duration_us: 1 }],
+        },
+        LayerSpec {
+            cycle: 1,
+            actions: vec![ActionSpec::Entangle {
+                pairs: vec![pair(atom(2, 30.0, 0.0), atom(3, 36.0, 0.0))],
+                duration_us: 1,
+            }],
+        },
+    ];
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::RoundBarrierCycleOrder {
+            wait_cycle: 1,
+            after_cycle: 1,
+        })
+    );
+}
+
+#[test]
+fn verifier_accepts_measure_reset_wait_then_reuse() {
+    let mut spec = valid_spec();
+    spec.layers = vec![
+        LayerSpec {
+            cycle: 0,
+            actions: vec![ActionSpec::Measure {
+                atom: 1,
+                basis: "z".to_string(),
+                duration_us: 10,
+            }],
+        },
+        LayerSpec {
+            cycle: 1,
+            actions: vec![ActionSpec::Reset {
+                atom: 1,
+                duration_us: 10,
+            }],
+        },
+        LayerSpec {
+            cycle: 2,
+            actions: vec![ActionSpec::Wait { duration_us: 1 }],
+        },
+        LayerSpec {
+            cycle: 3,
+            actions: vec![ActionSpec::Entangle {
+                pairs: vec![pair(atom(0, 0.0, 0.0), atom(1, 6.0, 0.0))],
+                duration_us: 1,
+            }],
+        },
+    ];
+    assert_eq!(verify_spec(&spec), Ok(()));
+}
+
+#[test]
+fn verifier_rejects_non_monotonic_cycles() {
+    let mut spec = valid_spec();
+    spec.layers = vec![
+        LayerSpec {
+            cycle: 2,
+            actions: vec![ActionSpec::Wait { duration_us: 1 }],
+        },
+        LayerSpec {
+            cycle: 1,
+            actions: vec![ActionSpec::Wait { duration_us: 1 }],
+        },
+    ];
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::NonMonotonicCycles {
+            previous_cycle: 2,
+            cycle: 1,
+        })
+    );
+}
+
+#[test]
 fn verifier_rejects_malformed_move_payload() {
     let context = context();
     let location = Location::unknown(&context);

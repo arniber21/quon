@@ -363,6 +363,44 @@ pub enum VerifyError {
         second: u32,
         min_separation_um: f64,
     },
+    #[error(
+        "cycle {cycle}: schedule cycles must be non-decreasing in layer order (previous cycle was {previous_cycle})"
+    )]
+    NonMonotonicCycles { previous_cycle: u32, cycle: u32 },
+    #[error(
+        "cycle {after_cycle}: layer after round-barrier Wait at cycle {wait_cycle} must have a strictly later cycle (QEC round dependency)"
+    )]
+    RoundBarrierCycleOrder { wait_cycle: u32, after_cycle: u32 },
+    #[error(
+        "cycle {cycle}: atom {atom} is measured and entangled or moved in the same cycle (measurement ordering)"
+    )]
+    MeasureUseSameCycle { cycle: u32, atom: u32 },
+    #[error(
+        "cycle {reuse_cycle}: atom {atom} is reused at cycle {reuse_cycle} after measure at cycle {measure_cycle} without an intervening reset (measurement ordering)"
+    )]
+    MeasureReuseWithoutReset {
+        atom: u32,
+        measure_cycle: u32,
+        reuse_cycle: u32,
+    },
+    #[error(
+        "cycle {cycle}: atom {atom} is reset and entangled or moved in the same cycle (reset ordering)"
+    )]
+    ResetUseSameCycle { cycle: u32, atom: u32 },
+    #[error(
+        "cycle {reset_cycle}: atom {atom} is reset before its measure at cycle {measure_cycle} (reset ordering)"
+    )]
+    ResetBeforeMeasure {
+        atom: u32,
+        reset_cycle: u32,
+        measure_cycle: u32,
+    },
+    #[error(
+        "module: expected a top-level quantum.na.schedule op, found none"
+    )]
+    MissingSchedule,
+    #[error("failed to parse quantum.na MLIR module")]
+    ParseFailed,
 }
 
 #[derive(Debug, Error)]
@@ -387,10 +425,56 @@ pub fn verify<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(),
         op::MEASURE => verify_measure(operation),
         op::RESET => verify_reset(operation),
         op::WAIT => verify_wait(operation),
-        op::LAYER => verify_layer(operation, None, None),
+        op::LAYER => verify_layer(operation, None, None).map(|_| ()),
         op::SCHEDULE => verify_schedule(operation),
         _ => Ok(()),
     }
+}
+
+/// Verify every top-level `quantum.na.schedule` in a parsed MLIR module.
+pub fn verify_module(module: &Module<'_>) -> Result<(), VerifyError> {
+    let Some(body) = module.as_operation().region(0).ok().and_then(|r| r.first_block()) else {
+        return Err(VerifyError::MissingSchedule);
+    };
+    let mut op = body.first_operation();
+    let mut found = false;
+    while let Some(current) = op {
+        let name = current
+            .name()
+            .as_string_ref()
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
+        if name == op::SCHEDULE {
+            found = true;
+            verify_schedule(&current)?;
+        }
+        op = current.next_in_block();
+    }
+    if found {
+        Ok(())
+    } else {
+        Err(VerifyError::MissingSchedule)
+    }
+}
+
+/// Parse generic-form `quantum.na` MLIR text and run [`verify_module`].
+pub fn verify_mlir_text(text: &str) -> Result<(), VerifyError> {
+    let context = Context::new();
+    register_dialect(&context);
+    let module = Module::parse(&context, text).ok_or(VerifyError::ParseFailed)?;
+    verify_module(&module)
+}
+
+/// Build a schedule module from [`ScheduleSpec`] and verify it.
+pub fn verify_schedule_spec(spec: &ScheduleSpec) -> Result<(), VerifyError> {
+    let context = Context::new();
+    let module = match schedule_module(&context, spec) {
+        Ok(module) => module,
+        Err(BuildError::Verify(error)) => return Err(error),
+        Err(_) => return Err(VerifyError::ParseFailed),
+    };
+    verify_module(&module)
 }
 
 fn require_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
@@ -727,6 +811,7 @@ fn verify_schedule<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Resul
         .ok_or(VerifyError::MissingRegion { op: op::SCHEDULE })?;
     let mut inner = block.first_operation();
     let mut aod_bindings: BTreeMap<u32, AodTrapKey> = BTreeMap::new();
+    let mut layer_facts = Vec::new();
     while let Some(operation) = inner {
         let identifier = operation.name();
         let name = identifier.as_string_ref().as_str().unwrap_or("").to_owned();
@@ -736,20 +821,35 @@ fn verify_schedule<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Resul
                 found: name,
             });
         }
-        verify_layer(&operation, Some(limits), Some(&mut aod_bindings))?;
+        let facts = verify_layer(&operation, Some(limits), Some(&mut aod_bindings))?;
+        layer_facts.push(facts);
         inner = operation.next_in_block();
     }
-    Ok(())
+    verify_schedule_ordering(&layer_facts)
 }
 
 /// `(aod_id, row, col)` of an AOD trap, as carried by transfer and move ops.
 type AodTrapKey = (u32, u32, u32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AtomEvent {
+    Measure(u32),
+    Reset(u32),
+    Use(u32),
+}
+
+#[derive(Clone, Debug, Default)]
+struct LayerFacts {
+    cycle: u32,
+    has_wait: bool,
+    events: Vec<AtomEvent>,
+}
+
 fn verify_layer<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
     limits: Option<ScheduleLimits>,
     aod_bindings: Option<&mut BTreeMap<u32, AodTrapKey>>,
-) -> Result<(), VerifyError> {
+) -> Result<LayerFacts, VerifyError> {
     expect_counts(operation, op::LAYER, 0, 0)?;
     let cycle = require_non_negative_i64(operation, op::LAYER, attr::CYCLE)? as u32;
     if operation.region_count() != 1 {
@@ -770,7 +870,7 @@ fn verify_layer_region(
     cycle: u32,
     limits: Option<ScheduleLimits>,
     aod_bindings: Option<&mut BTreeMap<u32, AodTrapKey>>,
-) -> Result<(), VerifyError> {
+) -> Result<LayerFacts, VerifyError> {
     let block = region
         .first_block()
         .ok_or(VerifyError::MissingRegion { op: op::LAYER })?;
@@ -779,6 +879,11 @@ fn verify_layer_region(
     // moves in one layer), so binding updates are buffered until the walk
     // finishes.
     let mut binding_updates: Vec<(u32, TransferDirection, AodTrapKey)> = Vec::new();
+    let mut facts = LayerFacts {
+        cycle,
+        has_wait: false,
+        events: Vec::new(),
+    };
     let mut inner = block.first_operation();
     while let Some(operation) = inner {
         let identifier = operation.name();
@@ -798,6 +903,9 @@ fn verify_layer_region(
                         )?;
                     }
                 }
+                for spec in &moves {
+                    facts.events.push(AtomEvent::Use(spec.atom));
+                }
                 context.record_moves(cycle, &moves)?;
             }
             op::TRANSFER => {
@@ -805,6 +913,7 @@ fn verify_layer_region(
                 let atom = require_non_negative_i64(&operation, op::TRANSFER, attr::ATOM)? as u32;
                 let site = require_non_negative_i64(&operation, op::TRANSFER, attr::SITE)? as u32;
                 context.claim_occupancy(cycle, atom, site)?;
+                facts.events.push(AtomEvent::Use(atom));
                 if aod_bindings.is_some() {
                     let trap = (
                         require_non_negative_i64(&operation, op::TRANSFER, attr::AOD_ID)? as u32,
@@ -833,16 +942,25 @@ fn verify_layer_region(
                     attr::PAIRS,
                     "Vec<EntanglePairSpec>",
                 )?;
+                for pair in &pairs {
+                    facts.events.push(AtomEvent::Use(pair.lhs.atom));
+                    facts.events.push(AtomEvent::Use(pair.rhs.atom));
+                }
                 context.record_entangle(cycle, &pairs)?;
             }
             op::MEASURE => {
                 verify_measure(&operation)?;
+                let atom = require_non_negative_i64(&operation, op::MEASURE, attr::ATOM)? as u32;
+                facts.events.push(AtomEvent::Measure(atom));
             }
             op::RESET => {
                 verify_reset(&operation)?;
+                let atom = require_non_negative_i64(&operation, op::RESET, attr::ATOM)? as u32;
+                facts.events.push(AtomEvent::Reset(atom));
             }
             op::WAIT => {
                 verify_wait(&operation)?;
+                facts.has_wait = true;
             }
             op::ALLOC_ATOM => {
                 verify_alloc_atom(&operation)?;
@@ -876,6 +994,130 @@ fn verify_layer_region(
             }
         }
     }
+    Ok(facts)
+}
+
+/// Cross-layer measurement / reset / Wait round-barrier ordering (ADR-0021).
+fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
+    let mut previous_cycle: Option<u32> = None;
+    for layer in layers {
+        if let Some(prev) = previous_cycle
+            && layer.cycle < prev
+        {
+            return Err(VerifyError::NonMonotonicCycles {
+                previous_cycle: prev,
+                cycle: layer.cycle,
+            });
+        }
+        previous_cycle = Some(layer.cycle);
+    }
+
+    for (i, layer) in layers.iter().enumerate() {
+        if !layer.has_wait {
+            continue;
+        }
+        for later in layers.iter().skip(i + 1) {
+            if later.cycle <= layer.cycle {
+                return Err(VerifyError::RoundBarrierCycleOrder {
+                    wait_cycle: layer.cycle,
+                    after_cycle: later.cycle,
+                });
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum AtomPhase {
+        /// Measured and not yet reset.
+        Measured { cycle: u32 },
+        /// Reset completed; atom may be reused in a later cycle.
+        Reset { cycle: u32 },
+    }
+
+    let mut phase: BTreeMap<u32, AtomPhase> = BTreeMap::new();
+    let mut measured_this_cycle: BTreeSet<u32> = BTreeSet::new();
+    let mut reset_this_cycle: BTreeSet<u32> = BTreeSet::new();
+    let mut last_cycle: Option<u32> = None;
+
+    for layer in layers {
+        if last_cycle != Some(layer.cycle) {
+            measured_this_cycle.clear();
+            reset_this_cycle.clear();
+            last_cycle = Some(layer.cycle);
+        }
+
+        for event in &layer.events {
+            match *event {
+                AtomEvent::Measure(atom) => {
+                    if let Some(AtomPhase::Reset {
+                        cycle: reset_cycle,
+                    }) = phase.get(&atom).copied()
+                        && layer.cycle == reset_cycle
+                    {
+                        return Err(VerifyError::ResetBeforeMeasure {
+                            atom,
+                            reset_cycle,
+                            measure_cycle: layer.cycle,
+                        });
+                    }
+                    phase.insert(atom, AtomPhase::Measured { cycle: layer.cycle });
+                    measured_this_cycle.insert(atom);
+                }
+                AtomEvent::Reset(atom) => {
+                    if let Some(AtomPhase::Measured {
+                        cycle: measure_cycle,
+                    }) = phase.get(&atom).copied()
+                        && layer.cycle < measure_cycle
+                    {
+                        return Err(VerifyError::ResetBeforeMeasure {
+                            atom,
+                            reset_cycle: layer.cycle,
+                            measure_cycle,
+                        });
+                    }
+                    phase.insert(atom, AtomPhase::Reset { cycle: layer.cycle });
+                    reset_this_cycle.insert(atom);
+                    measured_this_cycle.remove(&atom);
+                }
+                AtomEvent::Use(atom) => {
+                    if measured_this_cycle.contains(&atom) {
+                        return Err(VerifyError::MeasureUseSameCycle {
+                            cycle: layer.cycle,
+                            atom,
+                        });
+                    }
+                    if reset_this_cycle.contains(&atom) {
+                        return Err(VerifyError::ResetUseSameCycle {
+                            cycle: layer.cycle,
+                            atom,
+                        });
+                    }
+                    match phase.get(&atom).copied() {
+                        Some(AtomPhase::Measured {
+                            cycle: measure_cycle,
+                        }) => {
+                            return Err(VerifyError::MeasureReuseWithoutReset {
+                                atom,
+                                measure_cycle,
+                                reuse_cycle: layer.cycle,
+                            });
+                        }
+                        Some(AtomPhase::Reset { cycle: reset_cycle }) => {
+                            if layer.cycle <= reset_cycle {
+                                return Err(VerifyError::ResetUseSameCycle {
+                                    cycle: layer.cycle,
+                                    atom,
+                                });
+                            }
+                            phase.remove(&atom);
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
