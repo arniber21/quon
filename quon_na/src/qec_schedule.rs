@@ -129,6 +129,11 @@ fn schedule_expanded(
                 "QEC hybrid schedule missing durable round-barrier cuts".into(),
             )));
         }
+        // Only durable Wait / round cuts are hard Barriers. Do **not** insert a
+        // consecutive-layer total-order Barrier chain: that makes exclusive-cycle
+        // ASAP an identity and turns compact into a no-op (ADR-0016: optimize
+        // inside the round). AtomHazard cycle-order in `compact_schedule` keeps
+        // Move→Entangle occupancy legal without faking a total order.
         for &(before, after) in &cuts {
             deps.push(ScheduleDependency {
                 before,
@@ -136,20 +141,10 @@ fn schedule_expanded(
                 kind: ScheduleDependencyKind::Barrier,
             });
         }
-        // Preserve planner Move/Entangle order: exclusive-cycle ASAP may otherwise
-        // reorder independent layers and break occupancy replay at lower_schedule.
-        // Round Barrier cuts still forbid cross-round same-cycle merges.
-        for i in 0..req.layers.len().saturating_sub(1) {
-            deps.push(ScheduleDependency {
-                before: i as u32,
-                after: (i + 1) as u32,
-                kind: ScheduleDependencyKind::Barrier,
-            });
-        }
         let compact_opts = CompactionOptions {
             arch: None,
             legality: None,
-            greedy: false,
+            greedy: true,
         };
         let compacted = compact_schedule(req.clone(), &deps, &compact_opts)?;
         if opts.dump_ir {
@@ -482,37 +477,117 @@ mod tests {
         assert!(has_measure && has_reset && has_entangle && has_wait);
     }
 
+    /// Wait/round cuts are causal: compact with cuts vs without must differ for
+    /// atom-disjoint cross-Wait E0. Deleting only `round_barrier_cuts` fails this.
+    ///
+    /// Also see `wait_barrier_cuts_are_causal_for_cross_round_e0` in
+    /// `tests/compaction.rs`.
     #[test]
     fn round_barriers_constrain_compaction() {
+        use crate::graph::{DEFAULT_GAMMA, InteractionGraph};
+        use crate::layout::AtomId;
+        use crate::schedule_entry::GraphScheduleRequest;
+
         let na = load_na();
-        let opts = NaScheduleOptions {
-            compact: true,
-            dump_ir: false,
-            ..Default::default()
-        };
-        let artifacts = run_from_qec_workload(&d3_workload(), &na, opts).expect("schedule");
-
-        let cuts = round_barrier_cuts(&artifacts.layers);
-        assert!(
-            !cuts.is_empty(),
-            "expected non-empty round barrier cuts after compact"
-        );
-
-        let wait_count = artifacts
+        let uncompacted = run_from_qec_workload(
+            &d3_workload(),
+            &na,
+            NaScheduleOptions {
+                compact: false,
+                dump_ir: false,
+                ..Default::default()
+            },
+        )
+        .expect("uncompacted");
+        let cuts = round_barrier_cuts(&uncompacted.layers);
+        assert!(!cuts.is_empty(), "hybrid schedule must expose Wait/round cuts");
+        let wait_idxs: Vec<u32> = uncompacted
             .layers
             .iter()
-            .filter(|l| {
+            .enumerate()
+            .filter(|(_, l)| {
                 l.actions
                     .iter()
                     .any(|a| matches!(a, NeutralAtomAction::Wait { .. }))
             })
-            .count();
-        assert!(
-            wait_count >= 2,
-            "expected ≥2 durable Wait barriers (one per memory round), got {wait_count}"
+            .map(|(i, _)| i as u32)
+            .collect();
+        assert!(wait_idxs.len() >= 2, "expected ≥2 Wait layers");
+        for &w in &wait_idxs {
+            assert!(
+                cuts.iter().any(|(b, _)| *b == w),
+                "Wait index {w} must be a cut predecessor (cuts are derived from Wait)"
+            );
+        }
+
+        // Causal compact: same three layers, with vs without Wait cuts.
+        let vertices: Vec<LogicalQubitId> = (0..4).map(LogicalQubitId).collect();
+        let graph =
+            InteractionGraph::from_interactions(vertices, vec![], vec![], DEFAULT_GAMMA)
+                .expect("graph");
+        let synthetic = GraphScheduleRequest {
+            graph,
+            layers: vec![
+                ScheduleLayer {
+                    cycle: 0,
+                    actions: vec![NeutralAtomAction::Entangle2 {
+                        atoms: [AtomId(0), AtomId(1)],
+                        duration_us: 1,
+                    }],
+                },
+                ScheduleLayer {
+                    cycle: 1,
+                    actions: vec![NeutralAtomAction::Wait { duration_us: 1 }],
+                },
+                ScheduleLayer {
+                    cycle: 2,
+                    actions: vec![NeutralAtomAction::Entangle2 {
+                        atoms: [AtomId(2), AtomId(3)],
+                        duration_us: 1,
+                    }],
+                },
+            ],
+            layout: None,
+        };
+        let syn_cuts = round_barrier_cuts(&synthetic.layers);
+        assert_eq!(syn_cuts, vec![(1, 2)]);
+        let opts = CompactionOptions {
+            arch: None,
+            legality: None,
+            greedy: true,
+        };
+        let without = compact_schedule(synthetic.clone(), &[], &opts).expect("without cuts");
+        let mut with_deps = Vec::new();
+        for &(before, after) in &syn_cuts {
+            with_deps.push(ScheduleDependency {
+                before,
+                after,
+                kind: ScheduleDependencyKind::Barrier,
+            });
+        }
+        let with = compact_schedule(synthetic, &with_deps, &opts).expect("with cuts");
+        assert_eq!(
+            without.request.layers.len(),
+            2,
+            "without Wait cuts, atom-disjoint E2∥E2 across Wait must merge"
+        );
+        assert_eq!(
+            with.request.layers.len(),
+            3,
+            "with Wait cuts, cross-Wait E2∥E2 must not merge"
         );
 
-        let last_memory_reset_cycle = artifacts
+        let compacted = run_from_qec_workload(
+            &d3_workload(),
+            &na,
+            NaScheduleOptions {
+                compact: true,
+                dump_ir: false,
+                ..Default::default()
+            },
+        )
+        .expect("compact schedule");
+        let last_memory_reset_cycle = compacted
             .layers
             .iter()
             .filter_map(|l| {
@@ -524,8 +599,7 @@ mod tests {
             })
             .max()
             .expect("memory reset");
-
-        let logical_measure_cycle = artifacts
+        let logical_measure_cycle = compacted
             .layers
             .iter()
             .filter_map(|l| {
@@ -539,13 +613,11 @@ mod tests {
             })
             .min()
             .expect("logical measure");
-
         assert!(
             last_memory_reset_cycle < logical_measure_cycle,
             "last memory Reset cycle {last_memory_reset_cycle} must precede logical Measure cycle {logical_measure_cycle}"
         );
-
-        for layer in &artifacts.layers {
+        for layer in &compacted.layers {
             let has_check_reset = layer.actions.iter().any(|a| match a {
                 NeutralAtomAction::Reset { atom, .. } => atom.0 == 1 || atom.0 == 3,
                 _ => false,

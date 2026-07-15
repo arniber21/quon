@@ -86,7 +86,7 @@ pub use qec::{
     CodeBlock, CodeBlockId, CodeFamily, LogicalOp, NetRate, QecError, atoms_per_logical, ceil_div,
     expand_code_block, repetition_n, surface_n,
 };
-pub use qec_schedule::run_from_qec_workload;
+pub use qec_schedule::{round_barrier_cuts, run_from_qec_workload};
 pub use report::{
     BottleneckKind, ErrorBudgetContributions, ReportError, ResourceReport,
     attach_qec_error_budget, build_resource_report, require_target_error_model,
