@@ -1,0 +1,53 @@
+-- RAP Table I regression fixture (issue #111) — NOT the narrative Ising
+-- sample (see test/na/ising.qn, n=6; test/verify/ising.qn). This is a
+-- CI regression circuit: structural fidelity to [RAP]'s reproduced row
+-- matters more than physical Trotter semantics.
+--
+-- Target row: [RAP] (Stade, Lin, Cong, Wille, ICCAD 2025, arXiv:2505.22715)
+-- Table I, Sec. VI-B, `ising` n=42 — published as 82 two-qubit gates over
+-- 4 entangling layers; 22 rearrangement steps / 3.1 ms routing-agnostic vs
+-- 9 steps / 1.6 ms routing-aware. See docs/neutral_atom/literature_notes.md
+-- and docs/neutral_atom/rap_table_i_methodology.md for the full mapping.
+--
+-- Structure: two Trotter-shaped steps of a 42-qubit nearest-neighbor chain.
+-- Each step's "ZZ layer" is split into two explicit sequential `for` loops —
+-- even bonds (0,1)(2,3)...(40,41), then odd bonds (1,2)(3,4)...(39,40) —
+-- instead of one ascending loop. Both groups are perfect matchings (disjoint
+-- qubit pairs within a group), so `quon_na`'s ASAP dependency-DAG scheduler
+-- (last-qubit-use tracking; ties to actual SSA wire threading, not program
+-- text order) places every gate in a group on the SAME dag_layer and only
+-- serializes between groups. Result: layers 0/1 (step 1 even/odd) then 2/3
+-- (step 2 even/odd) — 4 layers total, 21+20+21+20 = 82 two-qubit gates.
+-- A single ascending `for i in range(41)` loop would instead chain every
+-- gate through its shared neighbor and produce 41 serial layers per step —
+-- do not "simplify" this file back to that shape.
+--
+-- Uses native `CZ` (not `Rzz`): `Rzz(theta) @(a,b)` elaborates to
+-- `CNOT; Rz; CNOT` (frontend/src/elaborate.rs's decompose_rzz), which would
+-- double the two-qubit gate count to 164 and break the 82/4 pre-flight
+-- check. `CZ` is in every NA target's `native_gates` and is not decomposed.
+-- The single-qubit `Rx` layer is cosmetic Trotter-shape flavor: `qubits(42)`
+-- iteration is a parallel (depth-1) construct, and single-qubit gates are
+-- invisible to the two-qubit interaction-graph extraction, so it cannot
+-- perturb the 82/4 counts either way.
+
+fn zz_even_42(tau: Float): Circuit<42, 42, 21, Universal> = circuit {
+    for k in range(21) { CZ @(2 * k, 2 * k + 1) }
+}
+
+fn zz_odd_42(tau: Float): Circuit<42, 42, 20, Universal> = circuit {
+    for k in range(20) { CZ @(2 * k + 1, 2 * k + 2) }
+}
+
+fn x_layer_42(h: Float, tau: Float): Circuit<42, 42, 1, Universal> = circuit {
+    for q in qubits(42) { Rx(-2.0 * h * tau) q }
+}
+
+fn trotter_step_42(h: Float, tau: Float): Circuit<42, 42, 42, Universal> = circuit {
+    zz_even_42(tau) |> zz_odd_42(tau) |> x_layer_42(h, tau)
+}
+
+fn main(): Q<List<Bit>> = run {
+    q <- (trotter_step_42(0.5, 0.1) |> trotter_step_42(0.5, 0.1)) @ (qreg 42)
+    measure_all q
+}

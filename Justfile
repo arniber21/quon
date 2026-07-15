@@ -146,6 +146,8 @@ ci-rust: setup-python
     export PATH="$PWD/.venv/bin:$PATH"
     export QUON_REQUIRE_LIT=1
     cargo test --workspace {{WORKSPACE_EXCLUDE}}
+    echo "==> RAP Table I dump (#111, --release --include-ignored)"
+    cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture
     export QUONC=target/release/quonc
     for script in \
       test/verify/bell.py \
