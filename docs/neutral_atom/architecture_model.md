@@ -515,6 +515,11 @@ includes the Physical error budget section (and the matching Notes bullet).
 When `error_budget` is unset (library builders without a model), that section
 and Notes bullet are omitted.
 
+**Contribution float format:** nonzero values with absolute value `< 1e-4` use
+lowercase scientific notation (`8e-9`); otherwise Rust `Display` (`0.004`,
+`0.0005`). The sample below matches `resource_report_to_markdown` + the
+`toy_with_error_budget` snapshot for the Physical error budget rows.
+
 ```markdown
 # Neutral-atom resource report
 

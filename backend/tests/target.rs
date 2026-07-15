@@ -558,11 +558,32 @@ fn neutral_atom_error_model_round_trips_fields() {
         serde_json::from_value(wire).expect("deserialize snapshot");
     assert_eq!(back, snap);
 
+    let domain = backend::NeutralAtomErrorModel::try_from(snap).expect("snapshot → domain");
+    assert_eq!(&domain, model);
+
     // Descriptor round-trip preserves error_model rates.
     let desc = target.to_descriptor();
     let reloaded = backend::BackendTarget::try_from(desc).expect("descriptor → target");
     let na2 = reloaded.neutral_atom_target().expect("na");
     assert_eq!(na2.error_model, na.error_model);
+}
+
+#[test]
+fn neutral_atom_error_model_snapshot_try_from_rejects_oor() {
+    let bad = backend::NeutralAtomErrorModelSnapshot {
+        rydberg: 1.5,
+        measurement: 0.0,
+        reset: 0.0,
+        movement: 0.0,
+        transfer: 0.0,
+        idle_per_us: 0.0,
+    };
+    let err = backend::NeutralAtomErrorModel::try_from(bad).expect_err("oor");
+    assert!(
+        matches!(err, BackendError::InvalidTargetConfig(_)),
+        "got {err:?}"
+    );
+    assert!(err.to_string().contains("error_model.rydberg"));
 }
 
 #[test]

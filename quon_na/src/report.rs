@@ -152,19 +152,6 @@ pub enum ReportError {
     Qec(#[from] QecError),
 }
 
-impl From<BackendError> for ReportError {
-    /// Maps [`BackendError::MissingErrorModel`] only.
-    ///
-    /// Other `BackendError` variants are not expected on the
-    /// [`require_target_error_model`] boundary; they still surface as
-    /// [`Self::MissingErrorModel`] so callers keep a single diagnostic.
-    fn from(err: BackendError) -> Self {
-        match err {
-            BackendError::MissingErrorModel => Self::MissingErrorModel,
-            _ => Self::MissingErrorModel,
-        }
-    }
-}
 
 /// Simultaneous actions make a layer's elapsed time the maximum action duration.
 #[cfg_attr(
@@ -400,19 +387,41 @@ pub fn attach_qec_error_budget(
 
 /// Resolve a target's error model for QEC error artifacts.
 ///
-/// Maps [`BackendError::MissingErrorModel`] via [`From`]. Prefer this (or
+/// Maps [`BackendError::MissingErrorModel`] only — call sites match that
+/// variant explicitly so other [`BackendError`]s are never laundered into
+/// [`ReportError::MissingErrorModel`]. Prefer this (or
 /// [`backend::NeutralAtomTarget::require_error_model`]) from CLI paths that
 /// request QEC error reporting (`--emit-resource-report`) or
 /// `--emit-qec-experiment`.
 pub fn require_target_error_model(
     target: &backend::NeutralAtomTarget,
 ) -> Result<&NeutralAtomErrorModel, ReportError> {
-    Ok(target.require_error_model()?)
+    match target.require_error_model() {
+        Ok(model) => Ok(model),
+        Err(BackendError::MissingErrorModel) => Err(ReportError::MissingErrorModel),
+        Err(other) => unreachable!(
+            "NeutralAtomTarget::require_error_model only returns MissingErrorModel; got {other}"
+        ),
+    }
 }
 
 /// Pretty-printed JSON for a resource report (stable struct field order).
 pub fn resource_report_to_json(report: &ResourceReport) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(report)
+}
+
+/// Format an error-budget contribution for Markdown tables.
+///
+/// Rule (architecture_model.md §11.1): use lowercase scientific notation when
+/// `|v|` is nonzero and `< 1e-4` (e.g. `8e-9`); otherwise Rust `Display`
+/// (e.g. `0.004`, `0.0005`).
+fn format_contribution(v: f64) -> String {
+    let abs = v.abs();
+    if v != 0.0 && abs < 1e-4 {
+        format!("{v:e}")
+    } else {
+        format!("{v}")
+    }
 }
 
 /// Deterministic Markdown matching architecture_model.md §11.
@@ -480,12 +489,30 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
         out.push_str("## Physical error budget\n");
         out.push_str("| Category | Contribution (rate × count) |\n");
         out.push_str("| --- | ---: |\n");
-        out.push_str(&format!("| Rydberg | {} |\n", budget.rydberg));
-        out.push_str(&format!("| Measurement | {} |\n", budget.measurement));
-        out.push_str(&format!("| Reset | {} |\n", budget.reset));
-        out.push_str(&format!("| Movement | {} |\n", budget.movement));
-        out.push_str(&format!("| Transfer | {} |\n", budget.transfer));
-        out.push_str(&format!("| Idle | {} |\n", budget.idle));
+        out.push_str(&format!(
+            "| Rydberg | {} |\n",
+            format_contribution(budget.rydberg)
+        ));
+        out.push_str(&format!(
+            "| Measurement | {} |\n",
+            format_contribution(budget.measurement)
+        ));
+        out.push_str(&format!(
+            "| Reset | {} |\n",
+            format_contribution(budget.reset)
+        ));
+        out.push_str(&format!(
+            "| Movement | {} |\n",
+            format_contribution(budget.movement)
+        ));
+        out.push_str(&format!(
+            "| Transfer | {} |\n",
+            format_contribution(budget.transfer)
+        ));
+        out.push_str(&format!(
+            "| Idle | {} |\n",
+            format_contribution(budget.idle)
+        ));
         out.push('\n');
     }
 
@@ -1085,7 +1112,17 @@ mod tests {
         assert!(md.contains("## Physical error budget"));
         assert!(md.contains("| Category | Contribution (rate × count) |"));
         assert!(md.contains("| Rydberg | 0.004 |"));
+        assert!(md.contains("| Idle | 8e-9 |"));
         assert!(md.contains("schedule-count × rate"));
+    }
+
+    #[test]
+    fn format_contribution_uses_scientific_below_1e_minus_4() {
+        assert_eq!(format_contribution(0.004), "0.004");
+        assert_eq!(format_contribution(0.0005), "0.0005");
+        assert_eq!(format_contribution(1e-4), "0.0001");
+        assert_eq!(format_contribution(8e-9), "8e-9");
+        assert_eq!(format_contribution(0.0), "0");
     }
 
     #[test]
