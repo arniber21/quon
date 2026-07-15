@@ -2,7 +2,7 @@
 source: quon_na/tests/report_snapshots.rs
 expression: md
 ---
-# Neutral-atom resource report
+# Neutral-atom analytic resource report
 
 ## Qubit resources
 | Metric | Value |

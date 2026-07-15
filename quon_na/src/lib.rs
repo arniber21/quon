@@ -88,9 +88,10 @@ pub use qec::{
 };
 pub use qec_schedule::{round_barrier_cuts, run_from_qec_workload};
 pub use report::{
-    BottleneckKind, ErrorBudgetContributions, ReportError, ResourceReport,
-    attach_qec_error_budget, build_resource_report, require_target_error_model,
-    resource_report_to_json, resource_report_to_markdown, simultaneous_layer_time,
+    BottleneckKind, ErrorBudgetContributions, RESOURCE_REPORT_EVIDENCE_DISCLAIMER,
+    RESOURCE_REPORT_EVIDENCE_KIND, ReportError, ResourceReport, attach_qec_error_budget,
+    build_resource_report, require_target_error_model, resource_report_to_json,
+    resource_report_to_markdown, simultaneous_layer_time,
 };
 pub use schedule::{
     AtomMove, EntanglingAction, MeasurementBasis, MovementGroup, NeutralAtomAction, ScheduleError,

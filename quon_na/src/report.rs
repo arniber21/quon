@@ -50,10 +50,31 @@ impl BottleneckKind {
     }
 }
 
+/// Wire value for [`ResourceReport::evidence_kind`] (ADR-0020).
+pub const RESOURCE_REPORT_EVIDENCE_KIND: &str = "analytic";
+
+/// Short ADR-0020 disclaimer embedded in JSON for machine readers.
+pub const RESOURCE_REPORT_EVIDENCE_DISCLAIMER: &str = "Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).";
+
+fn default_evidence_kind() -> String {
+    RESOURCE_REPORT_EVIDENCE_KIND.to_string()
+}
+
+fn default_evidence_disclaimer() -> String {
+    RESOURCE_REPORT_EVIDENCE_DISCLAIMER.to_string()
+}
+
 /// Aggregated resource metrics for a neutral-atom schedule.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceReport {
+    /// Always [`RESOURCE_REPORT_EVIDENCE_KIND`] — labels analytic vs Sinter CSV (ADR-0020).
+    #[serde(default = "default_evidence_kind")]
+    pub evidence_kind: String,
+    /// Human/machine disclaimer: analytic ≠ sampled; not a threshold claim.
+    #[serde(default = "default_evidence_disclaimer")]
+    pub evidence_disclaimer: String,
+
     pub rydberg_stages: u64,
     pub rearrangement_steps: u64,
     pub rearrangement_time_us: u64,
@@ -98,6 +119,35 @@ pub struct ResourceReport {
     pub error_budget: Option<ErrorBudgetContributions>,
 }
 
+impl Default for ResourceReport {
+    fn default() -> Self {
+        Self {
+            evidence_kind: default_evidence_kind(),
+            evidence_disclaimer: default_evidence_disclaimer(),
+            rydberg_stages: 0,
+            rearrangement_steps: 0,
+            rearrangement_time_us: 0,
+            trap_transfers: 0,
+            transfer_time_us: 0,
+            entangle2_count: 0,
+            entangle_n_count: 0,
+            measurement_rounds: 0,
+            reset_rounds: 0,
+            wait_time_us: 0,
+            total_time_us: 0,
+            logical_qubits: 0,
+            physical_atoms: 0,
+            atoms_per_logical: None,
+            code_family: None,
+            distance: None,
+            memory_rounds: None,
+            estimated_cycles: 0,
+            bottleneck: BottleneckKind::None,
+            error_budget: None,
+        }
+    }
+}
+
 /// Per-category physical error-budget contributions: `rate × schedule count`.
 ///
 /// These are **not** logical failure probabilities or threshold estimates.
@@ -121,6 +171,16 @@ pub struct ErrorBudgetContributions {
     pub idle: f64,
 }
 
+/// Collapse binary float dust from `rate × count` products for stable JSON/MD emit.
+fn clean_contribution(v: f64) -> f64 {
+    if !v.is_finite() || v == 0.0 {
+        return if v == 0.0 { 0.0 } else { v };
+    }
+    // Absolute 15 decimal places keeps idle (~1e-9) while fixing 0.003×3 dust.
+    let scale = 1e15;
+    (v * scale).round() / scale
+}
+
 impl ErrorBudgetContributions {
     /// `rate × count` only — uses report schedule aggregates, never fidelities.
     ///
@@ -130,12 +190,12 @@ impl ErrorBudgetContributions {
         model: &NeutralAtomErrorModel,
     ) -> Self {
         Self {
-            rydberg: model.rydberg * report.rydberg_stages as f64,
-            measurement: model.measurement * report.measurement_rounds as f64,
-            reset: model.reset * report.reset_rounds as f64,
-            movement: model.movement * report.rearrangement_steps as f64,
-            transfer: model.transfer * report.trap_transfers as f64,
-            idle: model.idle_per_us * report.wait_time_us as f64,
+            rydberg: clean_contribution(model.rydberg * report.rydberg_stages as f64),
+            measurement: clean_contribution(model.measurement * report.measurement_rounds as f64),
+            reset: clean_contribution(model.reset * report.reset_rounds as f64),
+            movement: clean_contribution(model.movement * report.rearrangement_steps as f64),
+            transfer: clean_contribution(model.transfer * report.trap_transfers as f64),
+            idle: clean_contribution(model.idle_per_us * report.wait_time_us as f64),
         }
     }
 }
@@ -418,14 +478,34 @@ pub fn resource_report_to_json(report: &ResourceReport) -> Result<String, serde_
 /// Format an error-budget contribution for Markdown tables.
 ///
 /// Rule (architecture_model.md §11.1): use lowercase scientific notation when
-/// `|v|` is nonzero and `< 1e-4` (e.g. `8e-9`); otherwise Rust `Display`
-/// (e.g. `0.004`, `0.0005`).
+/// `|v|` is nonzero and `< 1e-4` (e.g. `8e-9`); otherwise a short decimal
+/// (`0.004`, `0.0005`, `0.009`) — never binary dust like `0.009000000000000001`.
 fn format_contribution(v: f64) -> String {
+    let v = clean_contribution(v);
     let abs = v.abs();
     if v != 0.0 && abs < 1e-4 {
-        format!("{v:e}")
+        let exp = abs.log10().floor() as i32;
+        let mant = v / 10f64.powi(exp);
+        let mant = clean_contribution(mant);
+        if (mant - mant.round()).abs() < 1e-12 {
+            format!("{}e{exp}", mant.round() as i64)
+        } else {
+            format!("{mant}e{exp}")
+        }
+    } else if v == 0.0 {
+        "0".to_string()
     } else {
-        format!("{v}")
+        // Trim trailing zeros from a fixed-precision decimal.
+        let mut s = format!("{v:.12}");
+        if s.contains('.') {
+            while s.ends_with('0') {
+                s.pop();
+            }
+            if s.ends_with('.') {
+                s.pop();
+            }
+        }
+        s
     }
 }
 
@@ -434,7 +514,7 @@ fn format_contribution(v: f64) -> String {
 /// Non-QEC reports omit atoms-per-logical and code-family rows (never `N/A`).
 pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
     let mut out = String::new();
-    out.push_str("# Neutral-atom resource report\n\n");
+    out.push_str("# Neutral-atom analytic resource report\n\n");
     out.push_str("## Qubit resources\n");
     out.push_str("| Metric | Value |\n");
     out.push_str("| --- | ---: |\n");
@@ -939,6 +1019,7 @@ mod tests {
             estimated_cycles: 4,
             bottleneck: BottleneckKind::Rydberg,
             error_budget: None,
+            ..ResourceReport::default()
         };
 
         let value = match serde_json::to_value(&report) {
@@ -949,6 +1030,8 @@ mod tests {
         assert_eq!(
             value,
             json!({
+                "evidence_kind": "analytic",
+                "evidence_disclaimer": RESOURCE_REPORT_EVIDENCE_DISCLAIMER,
                 "rydberg_stages": 2,
                 "rearrangement_steps": 3,
                 "rearrangement_time_us": 17,
@@ -992,6 +1075,8 @@ mod tests {
         assert_eq!(report.estimated_cycles, 0);
         assert_eq!(report.bottleneck, BottleneckKind::None);
         assert_eq!(report.atoms_per_logical, None);
+        assert_eq!(report.evidence_kind, RESOURCE_REPORT_EVIDENCE_KIND);
+        assert_eq!(report.evidence_disclaimer, RESOURCE_REPORT_EVIDENCE_DISCLAIMER);
     }
 
     #[test]
@@ -1003,7 +1088,7 @@ mod tests {
         assert!(!md.contains("Atoms per logical"));
         assert!(!md.contains("Code family"));
         assert!(!md.contains("N/A"));
-        assert!(md.contains("# Neutral-atom resource report"));
+        assert!(md.contains("# Neutral-atom analytic resource report"));
         assert!(md.contains("## Qubit resources"));
         assert!(md.contains("## Schedule metrics"));
         assert!(md.contains("## Notes"));
@@ -1140,27 +1225,56 @@ mod tests {
     #[test]
     fn resource_report_json_excludes_sampled_sinter_fields() {
         let report = ResourceReport::from_layers(&toy_layers()).with_error_budget(&example_error_model());
-        let value = match serde_json::to_value(&report) {
-            Ok(v) => v,
+        let json = match resource_report_to_json(&report) {
+            Ok(s) => s,
             Err(e) => panic!("serialize: {e}"),
+        };
+        let value: serde_json::Value = match serde_json::from_str(&json) {
+            Ok(v) => v,
+            Err(e) => panic!("parse emit: {e}"),
         };
         let obj = match value.as_object() {
             Some(o) => o,
             None => panic!("object"),
         };
+        assert_eq!(
+            obj.get("evidence_kind").and_then(|v| v.as_str()),
+            Some(RESOURCE_REPORT_EVIDENCE_KIND)
+        );
+        assert!(
+            obj.get("evidence_disclaimer")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.contains("ADR-0020") && s.contains("threshold")),
+            "JSON must carry an anti-threshold analytic disclaimer"
+        );
         for key in [
             "logical_failures",
             "logical_failure_rate",
             "shots",
             "sinter",
-            "threshold",
             "p_logical",
+            "pL",
         ] {
             assert!(!obj.contains_key(key), "unexpected sampled field `{key}`");
         }
         assert!(obj.contains_key("error_budget"));
         assert!(obj.contains_key("estimated_cycles"));
         assert!(obj.contains_key("bottleneck"));
+
+        // Non-tautological: deny_unknown_fields rejects fused sinter keys on round-trip.
+        let mut fused = match serde_json::to_value(&report) {
+            Ok(v) => v,
+            Err(e) => panic!("to_value: {e}"),
+        };
+        fused
+            .as_object_mut()
+            .expect("object")
+            .insert("logical_failures".into(), json!(3));
+        let rejected = serde_json::from_value::<ResourceReport>(fused);
+        assert!(
+            rejected.is_err(),
+            "ResourceReport must reject unknown sinter fields (deny_unknown_fields)"
+        );
     }
 
     #[test]
@@ -1170,6 +1284,9 @@ mod tests {
         assert_eq!(format_contribution(1e-4), "0.0001");
         assert_eq!(format_contribution(8e-9), "8e-9");
         assert_eq!(format_contribution(0.0), "0");
+        // Binary dust from rate × count must not appear in emit.
+        assert_eq!(format_contribution(0.003 * 3.0), "0.009");
+        assert_eq!(clean_contribution(0.003 * 3.0), 0.009);
     }
 
     #[test]
@@ -1205,7 +1322,7 @@ mod tests {
         );
         let report = ResourceReport {
             rydberg_stages: 2,
-            ..ResourceReport::default()
+            ..Default::default()
         }
         .with_error_budget(&model);
         let budget = match report.error_budget {

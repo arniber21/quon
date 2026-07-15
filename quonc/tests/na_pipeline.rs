@@ -185,7 +185,7 @@ fn resource_report_markdown_via_extension() {
         String::from_utf8_lossy(&output.stderr)
     );
     let md = std::fs::read_to_string(&out_path).expect("read md");
-    assert!(md.contains("# Neutral-atom resource report"));
+    assert!(md.contains("# Neutral-atom analytic resource report"));
     assert!(md.contains("Estimated cycles"));
     assert!(
         md.contains("## Physical error budget"),

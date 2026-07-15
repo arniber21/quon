@@ -541,7 +541,7 @@ lowercase scientific notation (`8e-9`); otherwise Rust `Display` (`0.004`,
 `toy_with_error_budget` snapshot for the Physical error budget rows.
 
 ```markdown
-# Neutral-atom resource report
+# Neutral-atom analytic resource report
 
 ## Qubit resources
 | Metric | Value |
@@ -605,6 +605,14 @@ QEC hybrid reports (e.g. repetition-code memory) additionally include:
 under Qubit resources when those fields are set.
 
 ### 11.2 JSON fields (paper-name mapping)
+
+Default `--emit-resource-report` JSON (non-`.md`) is the same analytic DTO with
+explicit evidence labels for machine readers:
+
+| JSON field | Meaning |
+| --- | --- |
+| `evidence_kind` | Always `"analytic"` (ADR-0020) |
+| `evidence_disclaimer` | Short note: analytic ≠ Sinter CSV; not a threshold claim |
 
 | JSON field | Meaning | RAP / Enola alignment |
 | --- | --- | --- |

@@ -82,9 +82,10 @@ standard output. A `.md` path selects Markdown; other paths select JSON unless
 `--resource-report-format` overrides it.
 
 This artifact is **not** fused with Python/Sinter sampled results
-(`python/quon_qec_sinter.py` CSV). Analytic estimates and sampled logical
-failure rates are different kinds of evidence; neither is a threshold claim
-(ADR-0020).
+(`python/quon_qec_sinter.py` CSV). JSON includes `evidence_kind: "analytic"`
+and a short `evidence_disclaimer`; Markdown uses an analytic H1 and Notes.
+Analytic estimates and sampled logical failure rates are different kinds of
+evidence; neither is a threshold claim (ADR-0020).
 
 ```bash
 quonc program.qn \

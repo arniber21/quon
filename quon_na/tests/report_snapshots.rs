@@ -15,7 +15,8 @@ use backend::NeutralAtomErrorModel;
 use quon_na::{
     AodTrapRef, AtomId, AtomMove, BottleneckKind, CodeBlockId, CodeFamily, LogicalQubitId,
     MeasurementBasis, MovementGroup, NaScheduleOptions, NetRate, NeutralAtomAction,
-    ResourceReport, ScheduleLayer, SiteId, TransferDirection, TrapTransfer, build_resource_report,
+    RESOURCE_REPORT_EVIDENCE_DISCLAIMER, RESOURCE_REPORT_EVIDENCE_KIND, ResourceReport,
+    ScheduleLayer, SiteId, TransferDirection, TrapTransfer, build_resource_report,
     expand_code_block, resource_report_to_json, resource_report_to_markdown,
     run_from_qec_workload,
 };
@@ -104,10 +105,32 @@ const FORBIDDEN_SAMPLED_KEYS: &[&str] = &[
     "logical_failure_rate",
     "shots",
     "sinter",
-    "threshold",
     "p_logical",
     "pL",
 ];
+
+/// Positive threshold *claims* — anti-threshold disclaimer text may still say "threshold".
+const FORBIDDEN_THRESHOLD_CLAIMS: &[&str] = &[
+    "below the threshold",
+    "below threshold",
+    "above the threshold",
+    "above threshold",
+    "at the threshold",
+    "at threshold",
+];
+
+const NOTES_ANALYTIC_BULLET: &str = "- Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).";
+const NOTES_BUDGET_BULLET: &str = "- Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.";
+
+fn assert_no_threshold_claims(text: &str) {
+    let lower = text.to_ascii_lowercase();
+    for claim in FORBIDDEN_THRESHOLD_CLAIMS {
+        assert!(
+            !lower.contains(claim),
+            "must not make threshold claim `{claim}` (ADR-0020)"
+        );
+    }
+}
 
 fn assert_analytic_only_json(json: &str) {
     let value: Value = match serde_json::from_str(json) {
@@ -118,6 +141,16 @@ fn assert_analytic_only_json(json: &str) {
         Some(o) => o,
         None => panic!("resource report JSON must be an object"),
     };
+    assert_eq!(
+        obj.get("evidence_kind").and_then(|v| v.as_str()),
+        Some(RESOURCE_REPORT_EVIDENCE_KIND),
+        "JSON ResourceReport must label evidence_kind=analytic (ADR-0020)"
+    );
+    assert_eq!(
+        obj.get("evidence_disclaimer").and_then(|v| v.as_str()),
+        Some(RESOURCE_REPORT_EVIDENCE_DISCLAIMER),
+        "JSON ResourceReport must carry the ADR-0020 evidence disclaimer"
+    );
     for key in FORBIDDEN_SAMPLED_KEYS {
         assert!(
             !obj.contains_key(*key),
@@ -129,9 +162,34 @@ fn assert_analytic_only_json(json: &str) {
         !text.contains("logical_failure"),
         "ResourceReport JSON must not mention logical_failure* (ADR-0020)"
     );
+    // Disclaimer may contain the word "threshold"; ban positive claims only.
+    assert_no_threshold_claims(json);
+}
+
+fn assert_markdown_notes(md: &str, expect_budget_note: bool) {
     assert!(
-        !text.contains("threshold"),
-        "ResourceReport JSON must not mention threshold (ADR-0020)"
+        md.contains("# Neutral-atom analytic resource report"),
+        "Markdown H1 must label the report as analytic"
+    );
+    assert!(
+        md.contains(NOTES_ANALYTIC_BULLET),
+        "Markdown must include the exact analytic Notes bullet (ADR-0020)"
+    );
+    if expect_budget_note {
+        assert!(
+            md.contains(NOTES_BUDGET_BULLET),
+            "Markdown with error_budget must include the exact budget Notes bullet"
+        );
+    } else {
+        assert!(
+            !md.contains("Physical error budget lines"),
+            "Markdown without error_budget must omit the budget Notes bullet"
+        );
+    }
+    assert_no_threshold_claims(md);
+    assert!(
+        !md.contains("logical_failures"),
+        "Markdown must not include Sinter logical_failures"
     );
 }
 
@@ -142,17 +200,10 @@ fn assert_json_md(name: &str, report: &ResourceReport) {
     };
     assert_analytic_only_json(&json);
     let md = resource_report_to_markdown(report);
+    assert_markdown_notes(&md, report.error_budget.is_some());
     assert!(
         md.contains("analytic"),
         "Markdown must label the report as analytic (ADR-0020)"
-    );
-    assert!(
-        !md.to_ascii_lowercase().contains("below the threshold"),
-        "Markdown must not make threshold claims"
-    );
-    assert!(
-        !md.contains("logical_failures"),
-        "Markdown must not include Sinter logical_failures"
     );
     insta::assert_snapshot!(format!("{name}_json"), json);
     insta::assert_snapshot!(format!("{name}_md"), md);
@@ -240,6 +291,7 @@ fn qec_repetition_d3_hybrid_schedule_report() {
     assert_eq!(report.distance, Some(3));
     assert_eq!(report.memory_rounds, Some(2));
     assert_eq!(report.code_family.as_deref(), Some("repetition_code_toy"));
+    assert_eq!(report.evidence_kind, RESOURCE_REPORT_EVIDENCE_KIND);
     assert!(report.estimated_cycles > 0);
     assert_ne!(report.bottleneck, BottleneckKind::None);
     let budget = report
@@ -255,13 +307,17 @@ fn qec_repetition_d3_hybrid_schedule_report() {
     assert!(md.contains("| Distance | 3 |"));
     assert!(md.contains("| Memory rounds | 2 |"));
     assert!(md.contains("## Physical error budget"));
-    assert!(md.contains("Sinter"));
-    assert!(md.contains("ADR-0020"));
-    assert!(
-        md.to_ascii_lowercase().contains("not")
-            && md.to_ascii_lowercase().contains("threshold"),
-        "Markdown must forbid threshold claims in Notes"
-    );
+    assert!(md.contains("| Measurement | 0.009 |"));
+    assert!(!md.contains("0.009000000000000001"));
+    // Exact Notes bullets — not a vacuous "contains not && threshold".
+    assert_markdown_notes(&md, true);
+
+    let json = match resource_report_to_json(report) {
+        Ok(s) => s,
+        Err(e) => panic!("json: {e}"),
+    };
+    assert!(!json.contains("0.009000000000000001"));
+    assert!(json.contains("\"measurement\": 0.009"));
 
     assert_json_md("qec_repetition_d3_hybrid", report);
 }
@@ -358,7 +414,9 @@ fn markdown_headline_matches_json_for_qldpc() {
     let md = resource_report_to_markdown(&report);
     assert!(json.contains("\"logical_qubits\": 12"));
     assert!(json.contains("\"physical_atoms\": 288"));
+    assert!(json.contains("\"evidence_kind\": \"analytic\""));
     assert!(md.contains("| Logical qubits | 12 |"));
     assert!(md.contains("| Physical atoms | 288 |"));
     assert!(md.contains("| Atoms per logical | 24 |"));
+    assert!(md.contains("# Neutral-atom analytic resource report"));
 }

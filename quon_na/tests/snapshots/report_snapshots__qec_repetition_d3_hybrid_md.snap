@@ -2,7 +2,7 @@
 source: quon_na/tests/report_snapshots.rs
 expression: md
 ---
-# Neutral-atom resource report
+# Neutral-atom analytic resource report
 
 ## Qubit resources
 | Metric | Value |
@@ -35,7 +35,7 @@ expression: md
 | Category | Contribution (rate × count) |
 | --- | ---: |
 | Rydberg | 0.012 |
-| Measurement | 0.009000000000000001 |
+| Measurement | 0.009 |
 | Reset | 0.008 |
 | Movement | 0.004 |
 | Transfer | 0.0182 |
