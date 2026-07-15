@@ -32,7 +32,7 @@ use quon_na::{
     GraphScheduleRequest, InteractionGraph, NaBackendKind, NaScheduleOptions, NaScheduleView,
     NaScheduleViewMeta, NeutralAtomLayout, PlacementStrategy, PlacerMode, ResourceReport,
     ScheduleLayer, ScheduleLowerParams, ScheduleSpec, ScheduleViewZone, dump_schedule_text,
-    lower_schedule, run_from_graph, run_from_module, run_from_qec_workload,
+    lower_schedule, run_from_graph, run_from_module, run_from_qec_workload, verify_schedule_spec,
 };
 
 /// Inputs for one compile invocation.
@@ -44,6 +44,9 @@ pub struct CompileRequest {
     pub target_descriptor_path: Option<PathBuf>,
     pub dump_ir: bool,
     pub verify_linear: bool,
+    /// Run `quantum.na` schedule verification after NA lowering (ADR-0021).
+    /// QEC-backed programs always verify regardless of this flag.
+    pub verify_na: bool,
     /// SABRE noise-weight coefficient γ (SPEC §7.4). Default 0.3.
     pub sabre_gamma: f64,
     /// SABRE critical-path coefficient β (SPEC §7.4). Default 0.5.
@@ -69,6 +72,7 @@ impl Default for CompileRequest {
             target_descriptor_path: None,
             dump_ir: false,
             verify_linear: false,
+            verify_na: false,
             sabre_gamma: 0.3,
             sabre_beta: 0.5,
             sabre_lookahead: 20,
@@ -97,6 +101,8 @@ pub struct CompileReport {
     pub resource_report: Option<ResourceReport>,
     /// Interaction-graph vertex count (logical qubits) for NA compiles.
     pub na_logical_qubits: Option<u64>,
+    /// True when the entrypoint used QEC builtins (ADR-0021 auto `--verify-na`).
+    pub qec_backed: bool,
     pub snapshot: MetricsSnapshot,
 }
 
@@ -128,6 +134,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
                 na_schedule_spec: artifacts.na_schedule_spec,
                 resource_report: artifacts.resource_report,
                 na_logical_qubits: artifacts.na_logical_qubits,
+                qec_backed: artifacts.qec_backed,
                 snapshot: MetricsSnapshot::ok(
                     program,
                     target_info,
@@ -147,6 +154,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
                 na_schedule_spec: None,
                 resource_report: None,
                 na_logical_qubits: None,
+                qec_backed: false,
                 snapshot: MetricsSnapshot {
                     schema_version: quon_core::SCHEMA_VERSION,
                     program,
@@ -173,6 +181,7 @@ struct CompileArtifacts {
     na_schedule_spec: Option<ScheduleSpec>,
     resource_report: Option<ResourceReport>,
     na_logical_qubits: Option<u64>,
+    qec_backed: bool,
     circuit_metrics: CircuitMetrics,
 }
 
@@ -218,7 +227,8 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
             // bare-qubit NA programs keep the interaction-graph extract path.
             let workload =
                 collect_qec_workload(&module).map_err(|e| format!("QEC workload collect: {e}"))?;
-            let artifacts = if !workload.blocks.is_empty() {
+            let qec_backed = !workload.blocks.is_empty();
+            let artifacts = if qec_backed {
                 if request.dump_ir {
                     eprintln!(
                         "--- QEC workload ---\nblocks={} ops={} memory_rounds={}",
@@ -237,6 +247,9 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
             let lower_params = ScheduleLowerParams::from_target(request.target.id.clone(), na);
             let schedule_spec = lower_schedule(&artifacts.request, &lower_params)
                 .map_err(|e| format!("lowering schedule to quantum.na failed: {e}"))?;
+            // ADR-0021: auto-verify any QEC-backed NA compile; physical NA only
+            // when `--verify-na` is set. Feed-forward deps stay compaction-only.
+            maybe_verify_na_schedule(&schedule_spec, request.verify_na, qec_backed)?;
             let circuit_metrics = CircuitMetrics {
                 depth: artifacts.resource_report.estimated_cycles,
                 depth_bound: Some(artifacts.resource_report.estimated_cycles.to_string()),
@@ -254,6 +267,7 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 na_schedule_spec: Some(schedule_spec),
                 resource_report: Some(artifacts.resource_report),
                 na_logical_qubits: Some(artifacts.logical_qubits),
+                qec_backed,
                 circuit_metrics,
             })
         }
@@ -300,6 +314,7 @@ fn compile_fixed(
         na_schedule_spec: None,
         resource_report: None,
         na_logical_qubits: None,
+        qec_backed: false,
         circuit_metrics,
     })
 }
@@ -357,6 +372,95 @@ pub fn schedule_to_json(view: &NaScheduleView) -> Result<String, serde_json::Err
 /// Render the canonical `quantum.na` schedule as generic-form textual MLIR.
 pub fn schedule_to_mlir(spec: &ScheduleSpec) -> Result<String> {
     dump_schedule_text(spec).map_err(|e| anyhow!("emitting quantum.na MLIR failed: {e}"))
+}
+
+/// Whether NA schedule verification should run (ADR-0021 / #256).
+///
+/// QEC-backed compiles always verify; physical NA only when `--verify-na`.
+pub fn should_verify_na(verify_na: bool, qec_backed: bool) -> bool {
+    verify_na || qec_backed
+}
+
+/// Run [`verify_schedule_spec`] when [`should_verify_na`] is true.
+///
+/// Extracted so tests fail if the auto-verify gate stops calling the verifier.
+pub fn maybe_verify_na_schedule(
+    spec: &ScheduleSpec,
+    verify_na: bool,
+    qec_backed: bool,
+) -> Result<(), String> {
+    if !should_verify_na(verify_na, qec_backed) {
+        return Ok(());
+    }
+    verify_schedule_spec(spec).map_err(|e| format!("quantum.na verification failed: {e}"))
+}
+
+#[cfg(test)]
+mod verify_na_gate_tests {
+    use super::*;
+    use quon_na::dialect::{ActionSpec, LayerSpec, ScheduleSpec};
+
+    fn bad_measure_reuse_spec() -> ScheduleSpec {
+        ScheduleSpec {
+            target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
+            rydberg_range_um: 7.5,
+            min_rydberg_spacing_um: 18.75,
+            aod_min_separation_um: 2.0,
+            layers: vec![
+                LayerSpec {
+                    cycle: 0,
+                    actions: vec![ActionSpec::Measure {
+                        atom: 0,
+                        basis: "z".to_string(),
+                        duration_us: 10,
+                    }],
+                },
+                LayerSpec {
+                    cycle: 1,
+                    actions: vec![ActionSpec::Entangle {
+                        pairs: vec![quon_na::dialect::EntanglePairSpec {
+                            lhs: quon_na::dialect::PositionedAtom {
+                                atom: 0,
+                                x_um: 0.0,
+                                y_um: 0.0,
+                            },
+                            rhs: quon_na::dialect::PositionedAtom {
+                                atom: 1,
+                                x_um: 6.0,
+                                y_um: 0.0,
+                            },
+                        }],
+                        duration_us: 1,
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn qec_backed_gate_runs_verify_without_flag() {
+        let bad = bad_measure_reuse_spec();
+        assert!(
+            maybe_verify_na_schedule(&bad, false, true).is_err(),
+            "QEC-backed must verify even when verify_na=false"
+        );
+        assert!(
+            maybe_verify_na_schedule(&bad, false, false).is_ok(),
+            "physical without flag must skip verify"
+        );
+        assert!(
+            maybe_verify_na_schedule(&bad, true, false).is_err(),
+            "physical with --verify-na must verify"
+        );
+    }
+
+    #[test]
+    fn should_verify_na_matches_adr_0021() {
+        assert!(should_verify_na(false, true));
+        assert!(should_verify_na(true, false));
+        assert!(should_verify_na(true, true));
+        assert!(!should_verify_na(false, false));
+    }
 }
 
 /// Renders frontend diagnostics with a caret at the offending source span.

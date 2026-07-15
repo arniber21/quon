@@ -79,6 +79,7 @@ fn help_lists_all_documented_flags() {
         "--print-target",
         "--dump-ir",
         "--verify-linear",
+        "--verify-na",
         "--list-passes",
         "--metrics",
         "--metrics-json",

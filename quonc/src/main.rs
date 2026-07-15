@@ -38,6 +38,11 @@ Examples:
   # Debug IR after each pass
   quonc program.qn --dump-ir --verify-linear --emit-qasm
 
+  # Verify quantum.na (standalone MLIR or after emit; QEC auto-verifies)
+  quonc schedule.mlir --verify-na
+  quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
+    --emit-na-mlir --verify-na
+
   # Inspect a target without compiling
   quonc --target targets/neutral_atom/generic_rna_v0.json --print-target
 
@@ -177,6 +182,14 @@ struct Cli {
     /// Run circ/dynamic linearity verifiers (debug)
     #[arg(long, help_heading = "Debug", action = ArgAction::SetTrue)]
     verify_linear: bool,
+
+    /// Verify `quantum.na` schedule legality (occupancy, Rydberg, AOD, measure/reset
+    /// ordering, Wait hard schedule barriers). Feed-forward / correction ordering
+    /// is compaction-only (out of scope for #256). Auto-runs for any QEC-backed
+    /// NA compile (ADR-0021); physical NA requires this flag. Also accepts
+    /// standalone `.mlir`.
+    #[arg(long, help_heading = "Neutral atom", action = ArgAction::SetTrue)]
+    verify_na: bool,
 
     /// List compiler pass stages and exit
     #[arg(long, help_heading = "Debug", action = ArgAction::SetTrue)]
@@ -389,6 +402,17 @@ fn run() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Standalone quantum.na MLIR verification (ADR-0021 / #256).
+    if cli.verify_na
+        && let Some(path) = &cli.source
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("mlir"))
+    {
+        return verify_na_mlir_file(path, cli.quiet);
+    }
+
     validate_emit_flags(&cli, &target)?;
 
     if cli.watch && !cli.metrics {
@@ -411,6 +435,19 @@ fn run() -> Result<ExitCode> {
     }
 
     emit_artifacts(&cli, &request, &report)?;
+
+    if report.na_schedule_spec.is_some()
+        && (cli.verify_na || report.qec_backed)
+        && !cli.quiet
+    {
+        let dim = dim_style();
+        let kind = if report.qec_backed {
+            "QEC auto"
+        } else {
+            "physical"
+        };
+        eprintln!("{dim}quantum.na verification passed ({kind}){dim:#}");
+    }
 
     if cli.metrics {
         eprintln!("{}", format_metrics_line(&report.snapshot));
@@ -477,6 +514,12 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
              require a neutral_atom_reconfigurable target (see targets/neutral_atom/)"
         );
     }
+    if cli.verify_na && !is_na {
+        bail!(
+            "--verify-na requires a neutral_atom_reconfigurable target \
+             (or a standalone .mlir schedule with --verify-na)"
+        );
+    }
     Ok(())
 }
 
@@ -501,6 +544,13 @@ fn emit_artifacts(cli: &Cli, request: &CompileRequest, report: &quonc::CompileRe
             anyhow!("no quantum.na schedule available (compile with a neutral-atom target)")
         })?;
         let mlir = schedule_to_mlir(spec)?;
+        // Prefer verifying the emitted text so dump drift cannot slip past the
+        // in-memory `verify_schedule_spec` path (ADR-0021 nit).
+        if cli.verify_na || report.qec_backed {
+            quon_na::verify_mlir_text(&mlir).map_err(|e| {
+                anyhow!("emitted quantum.na failed verification: {e}")
+            })?;
+        }
         write_output(path, &mlir, qasm_owns_stdout && path == "-")?;
         emitted = true;
     }
@@ -742,6 +792,7 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
         target_descriptor_path: cli.target.clone(),
         dump_ir: cli.dump_ir,
         verify_linear: cli.verify_linear,
+        verify_na: cli.verify_na,
         sabre_gamma: cli.sabre_gamma,
         sabre_beta: cli.sabre_beta,
         sabre_lookahead: cli.sabre_lookahead,
@@ -750,6 +801,25 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
         na_compact: !cli.no_na_compact,
         na_placement: cli.na_placement.into(),
     })
+}
+
+fn verify_na_mlir_file(path: &PathBuf, quiet: bool) -> Result<ExitCode> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    match quon_na::verify_mlir_text(&text) {
+        Ok(()) => {
+            if !quiet {
+                let ok = ok_style();
+                eprintln!("{ok}quantum.na verification passed{ok:#}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            let style = error_style();
+            eprintln!("{style}error{style:#}: quantum.na verification failed: {err}");
+            Ok(ExitCode::from(1))
+        }
+    }
 }
 
 fn load_regression_config(path: Option<&PathBuf>) -> Result<RegressionConfig> {
