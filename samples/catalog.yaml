@@ -82,7 +82,7 @@ entries:
     difficulty: intermediate
     quonc_args: ["--target", "targets/neutral_atom/generic_rna_v0.json"]
     artifacts: []
-    ci: none
+    ci: smoke
 
   - id: workflows/failure-clinic-linearity-broken
     path: samples/workflows/failure_clinic/linearity_broken.qn

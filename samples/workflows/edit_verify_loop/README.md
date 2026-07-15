@@ -71,6 +71,11 @@ when adding a checker for your own workflow or sample: point `SOURCE` at
 your `.qn` file, describe the distribution you expect, and let
 `verify_distribution` do the compile/simulate/compare.
 
+`verify_edit_verify_loop.py` runs in CI: `just ci-rust` appends it to the
+same Aer verify list as `test/verify/*.py` (no new Python deps — it's the
+`python/requirements.txt` already installed by `setup-python` for that
+job), checked in at the default `--expect 0` fixed point.
+
 ## See also
 
 - [`quonc` CLI reference](../../../website/src/content/docs/reference/quonc.md) —

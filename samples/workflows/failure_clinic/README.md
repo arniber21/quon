@@ -95,6 +95,14 @@ $QUONC $D/borrow_fixed.qn
 Error: lowering is not implemented for `run-block expression`
 ```
 
+**Learner note: `borrow_fixed.qn` still exits non-zero — that's expected.**
+The fix corrected the *typecheck* bug; it does not (and can't yet) reach a
+clean exit, because lowering `borrow` blocks to MLIR is a separate,
+unimplemented stage — swapping the `run { ... }` wrapper for a
+`circuit { ... }` one doesn't help either (verified: it just trades this
+error for an earlier type mismatch, since a `circuit` block's type is
+`Circuit`, not the `Q<Unit>` `main` needs here).
+
 **This second error is not the bug the fix was for.** Compare the error
 *kind*, not just its exit code: `borrow_broken.qn` fails type checking
 (a `TypeError::BorrowEscape`, from `frontend/src/typecheck/`); `borrow_fixed.qn`

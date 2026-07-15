@@ -102,6 +102,17 @@ comparison on a larger fixture — e.g.
 against a wider device target — to see a case with more room for the two
 lookahead settings to diverge.
 
+## CI coverage
+
+`samples/catalog.yaml`'s `workflows/routing-sensitivity` row is `ci: smoke`
+against Config B (`--target device_linear_chain.json --metrics`) — that's
+the one invocation CI actually runs. Config A's default-target run, every
+`--metrics-json -` variant above, and the `--sabre-lookahead 5` tuning
+example are prose-verified (re-run manually when touching the routing pass
+or this README), not separately CI-gated; they exercise the same compile
+path with different output flags, so the smoke entry's job is catching
+routing/lowering regressions, not re-checking every flag combination.
+
 ## See also
 
 - [`quonc` CLI reference — Target options](../../../website/src/content/docs/reference/quonc.md#target-options) —
