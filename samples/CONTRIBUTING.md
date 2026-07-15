@@ -7,9 +7,12 @@
    visualization #189, research #190, neutral-atom #192), coordinate there
    first — one canonical artifact per story; don't fork an existing `.qn`
    into a second copy.
-2. If your program already has a canonical home (a `test/verify/*.qn`
-   fixture or an `examples/na_qec/*.qn` file), link to it from your
-   category's `README.md` instead of copying it into `samples/`.
+2. If your program already has a canonical home (a `test/verify/*.qn` or
+   `test/na/*.qn` fixture, or an `examples/na_qec/*.qn` file), link to it
+   from your category's `README.md` and `catalog.yaml` `path` instead of
+   copying it into `samples/`. Only add an owned copy under `samples/` when
+   the circuit is genuinely new pedagogy that doesn't already exist as one
+   of those canonical fixtures.
 
 ## Steps
 
@@ -65,5 +68,10 @@ enforces:
 The catalog's `id` prefix — not the file's `path` — determines a sample's
 category. This lets a category link to a canonical artifact that lives
 elsewhere: e.g. `neutral-atom/repetition-d3-memory` has `id` prefix
-`neutral-atom/` but `path: examples/na_qec/repetition_d3_memory.qn`, per the
-"link, don't fork" rule above.
+`neutral-atom/` but `path: examples/na_qec/repetition_d3_memory.qn`, and
+`neutral-atom/bell-pair` has `path: test/na/bell.qn`, per the "link, don't
+fork" rule above. Both `test/na/` and `examples/na_qec/` are exempt from
+the path/id category-alignment check the same way — see
+`entry_path_category_matches_id_prefix_when_under_samples` and the
+`negative_fixtures::linked_*_path_is_exempt_from_alignment_check` tests in
+`quonc/tests/samples_catalog.rs`.
