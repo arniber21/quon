@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
-"""Stim structure smoke for QEC experiment emit (ADR-0022 / #255).
+"""Stim structure + tiny Sinter harness smoke (ADR-0022 / #255 / #253).
 
 Run:  python -m unittest python/test_qec_stim_smoke.py
 
 Validates that a minimal structure-only Stim circuit (matching the repetition
 d=3 emit shape) parses, exposes detectors/observables, and samples
 deterministically with a fixed seed when no noise channels are present.
+
+Also runs a tiny fixed-seed noisy sample through `quon_qec_sinter` so CI
+covers the Python noise-annotation + decode path (ADR-0024), including the
+pinned #255 rounds=2 dual-emit pair under python/testdata/.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import stim
@@ -18,6 +29,23 @@ try:
     HAS_STIM = True
 except ImportError:
     HAS_STIM = False
+
+try:
+    import pymatching  # noqa: F401
+    import sinter  # noqa: F401
+
+    import quon_qec_sinter as harness
+
+    HAS_HARNESS = True
+except ImportError:
+    HAS_HARNESS = False
+
+# Fail hard under CI if the Stim stack is missing (do not skip green).
+if (not HAS_STIM or not HAS_HARNESS) and os.environ.get("CI"):
+    raise ImportError(
+        "stim/sinter/pymatching required in CI for QEC smoke tests "
+        "(python/requirements.txt / just setup-python / ADR-0022)"
+    )
 
 
 # Minimal structure-only circuit mirroring quon_qec emit_stim_structure for d=3,
@@ -44,6 +72,30 @@ DETECTOR(1, 1) rec[-4] rec[-2] rec[-1]
 OBSERVABLE_INCLUDE(0) rec[-3] rec[-2] rec[-1]
 """
 
+_SMOKE_ERROR_MODEL = {
+    "rydberg": 0.01,
+    "measurement": 0.02,
+    "reset": 0.03,
+    "movement": 0.004,
+    "transfer": 0.005,
+    "idle_per_us": 1e-6,
+}
+
+# Higher-noise golden circuit (non-trivial under compose movement+idle).
+_GOLDEN_ERROR_MODEL = {
+    "rydberg": 0.05,
+    "measurement": 0.05,
+    "reset": 0.05,
+    "movement": 0.02,
+    "transfer": 0.02,
+    "idle_per_us": 1e-4,
+}
+# Golden for MINIMAL_REP_STIM + _GOLDEN_ERROR_MODEL, shots=32, seed=7.
+GOLDEN_SMOKE_LOGICAL_FAILURES = 4
+
+TESTDATA = Path(__file__).resolve().parent / "testdata"
+PINNED_REP_D3_R2_JSON = TESTDATA / "qec_rep_d3_r2.qec.json"
+
 
 @unittest.skipUnless(HAS_STIM, "requires stim (python/requirements.txt / ADR-0022)")
 class StimStructureSmokeTests(unittest.TestCase):
@@ -61,6 +113,101 @@ class StimStructureSmokeTests(unittest.TestCase):
         a = circuit.compile_sampler(seed=7).sample(shots=16)
         b = circuit.compile_sampler(seed=7).sample(shots=16)
         self.assertTrue((a == b).all())
+
+
+@unittest.skipUnless(
+    HAS_STIM and HAS_HARNESS,
+    "requires stim/sinter/pymatching (python/requirements.txt / ADR-0022)",
+)
+class SinterHarnessSmokeTests(unittest.TestCase):
+    """Tiny-shot deterministic check for the #253 harness (CI)."""
+
+    def test_noisy_sample_is_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stim_path = root / "rep_d3.stim"
+            json_path = root / "rep_d3.qec.json"
+            stim_path.write_text(MINIMAL_REP_STIM)
+            json_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "qec_experiment",
+                        "family": "repetition",
+                        "code_family": "repetition_code_toy",
+                        "distance": 3,
+                        "rounds": 1,
+                        "logical_ids": [0],
+                        "check_graph": {
+                            "atoms": [0, 1, 2, 3, 4],
+                            "data_atoms": [0, 2, 4],
+                            "check_atoms": [1, 3],
+                            "stabilizers": [],
+                        },
+                        "measurement_schedule": [],
+                        "logical_observables": [],
+                        "atom_site_map": [],
+                        "error_model": dict(_SMOKE_ERROR_MODEL),
+                        "na_refs": [],
+                        "stim_file": "rep_d3.stim",
+                    }
+                )
+            )
+            rows_a = harness.run_experiments(
+                [json_path], shots_list=[16], seed=7, error_scales=[1.0]
+            )
+            rows_b = harness.run_experiments(
+                [json_path], shots_list=[16], seed=7, error_scales=[1.0]
+            )
+            self.assertEqual(len(rows_a), 1)
+            self.assertEqual(rows_a[0].logical_failures, rows_b[0].logical_failures)
+            self.assertEqual(rows_a[0].shots, 16)
+
+    def test_golden_logical_failures_fixed_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stim_path = root / "rep_d3.stim"
+            json_path = root / "rep_d3.qec.json"
+            stim_path.write_text(MINIMAL_REP_STIM)
+            json_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "qec_experiment",
+                        "family": "repetition",
+                        "code_family": "repetition_code_toy",
+                        "distance": 3,
+                        "rounds": 1,
+                        "logical_ids": [0],
+                        "check_graph": {
+                            "atoms": [0, 1, 2, 3, 4],
+                            "data_atoms": [0, 2, 4],
+                            "check_atoms": [1, 3],
+                            "stabilizers": [],
+                        },
+                        "measurement_schedule": [],
+                        "logical_observables": [],
+                        "atom_site_map": [],
+                        "error_model": dict(_GOLDEN_ERROR_MODEL),
+                        "na_refs": [],
+                        "stim_file": "rep_d3.stim",
+                    }
+                )
+            )
+            rows = harness.run_experiments(
+                [json_path], shots_list=[32], seed=7, error_scales=[1.0]
+            )
+            self.assertEqual(rows[0].logical_failures, GOLDEN_SMOKE_LOGICAL_FAILURES)
+
+    def test_pinned_rounds2_dual_emit_smoke(self) -> None:
+        """CI exercises the real #255 rounds=2 dual-emit pair."""
+        self.assertTrue(PINNED_REP_D3_R2_JSON.is_file(), PINNED_REP_D3_R2_JSON)
+        rows = harness.run_experiments(
+            [PINNED_REP_D3_R2_JSON], shots_list=[32], seed=7, error_scales=[1.0]
+        )
+        self.assertEqual(rows[0].rounds, 2)
+        self.assertEqual(rows[0].distance, 3)
+        self.assertEqual(rows[0].logical_failures, 0)
 
 
 if __name__ == "__main__":

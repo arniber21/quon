@@ -1,0 +1,29 @@
+# Quon QEC experiment — structure only (no noise; ADR-0024)
+# family=repetition distance=3 memory_rounds=2
+QUBIT_COORDS(0, 0) 0
+QUBIT_COORDS(1, 0) 1
+QUBIT_COORDS(2, 0) 2
+QUBIT_COORDS(3, 0) 3
+QUBIT_COORDS(4, 0) 4
+R 0 1 2 3 4
+TICK
+CX 0 1 2 3
+TICK
+CX 2 1 4 3
+TICK
+MR 1 3
+DETECTOR(0, 0) rec[-2]
+DETECTOR(1, 0) rec[-1]
+TICK
+CX 0 1 2 3
+TICK
+CX 2 1 4 3
+TICK
+MR 1 3
+DETECTOR(0, 1) rec[-2] rec[-4]
+DETECTOR(1, 1) rec[-1] rec[-3]
+TICK
+MZ 0 2 4
+DETECTOR(0, 2) rec[-5] rec[-3] rec[-2]
+DETECTOR(1, 2) rec[-4] rec[-2] rec[-1]
+OBSERVABLE_INCLUDE(0) rec[-3] rec[-2] rec[-1]
