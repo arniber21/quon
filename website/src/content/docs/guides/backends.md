@@ -100,7 +100,9 @@ axes without a schema bump.
 
 Useful neutral-atom options:
 
-- `--na-backend zoned` uses zoned RAP scheduling.
+- `--na-backend zoned` uses zoned architecture scheduling (default placer is
+  routing-agnostic / ZAC-style; `--na-placer routing-aware` selects the RAP-style
+  search).
 - `--na-backend flat` uses the flat AOD movement path.
 - `--na-placer routing-agnostic` or `--na-placer routing-aware` selects the
   zoned placement mode.
