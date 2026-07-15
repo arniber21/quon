@@ -126,6 +126,8 @@ entries:
         "--na-backend",
         "zoned",
         "--verify-na",
+        "--emit-resource-report",
+        "-",
       ]
     artifacts:
       [samples/visualization/goldens/na_schedule_metrics/bell_zoned.resource_report.json]
@@ -142,6 +144,8 @@ entries:
         "--na-backend",
         "zoned",
         "--verify-na",
+        "--emit-resource-report",
+        "-",
       ]
     artifacts:
       [samples/visualization/goldens/na_schedule_metrics/qaoa_graph_zoned.resource_report.json]
