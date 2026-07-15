@@ -125,3 +125,125 @@ fn controlled_unsupported_body_is_diagnostic() {
         "unexpected diagnostic: {msg}"
     );
 }
+
+#[test]
+fn qec_repetition_lowers_to_staging_ops() {
+    let src = r#"
+fn main(): Q<Bit> = run {
+  b <- repetition_code<3>()
+  b2 <- memory_round(b)
+  measure_logical_z(b2)
+}
+"#;
+    let text = lower_text(src);
+    assert!(
+        text.contains("quantum.circ.qec_construct"),
+        "missing construct: {text}"
+    );
+    assert!(
+        text.contains("quantum.circ.qec_memory_round"),
+        "missing memory_round: {text}"
+    );
+    assert!(
+        text.contains("quantum.circ.qec_measure_logical"),
+        "missing measure: {text}"
+    );
+    assert!(text.contains(r#"family = "repetition""#), "{text}");
+    assert!(text.contains("distance = 3"), "{text}");
+}
+
+#[test]
+fn qec_workload_extracts_after_monadic_lowering() {
+    use mlir_bridge::collect_qec_workload;
+    use mlir_bridge::passes::monadic_lowering;
+    use quon_qec::{CodeFamily, LogicalBasis, LogicalQubitId, SourceFamily, WorkloadOp};
+
+    let src = r#"
+fn main(): Q<Bit> = run {
+  b <- repetition_code<3>()
+  b2 <- memory_round(b)
+  b3 <- memory_round(b2)
+  measure_logical_z(b3)
+}
+"#;
+    let context = Context::new();
+    let module = lower_program(&context, src).expect("lower");
+    monadic_lowering::run_on_module(&context, &module).expect("monadic");
+    let workload = collect_qec_workload(&module).expect("collect");
+    assert_eq!(workload.blocks.len(), 1);
+    assert_eq!(workload.blocks[0].family, SourceFamily::Repetition);
+    assert_eq!(
+        workload.blocks[0].code_family,
+        CodeFamily::RepetitionCodeToy { distance: 3 }
+    );
+    assert_eq!(workload.memory_round_count(), 2);
+    assert_eq!(
+        workload.ops.last(),
+        Some(&WorkloadOp::MeasureLogical {
+            logical_id: LogicalQubitId(0),
+            basis: LogicalBasis::Z,
+        })
+    );
+}
+
+#[test]
+fn qec_surface_workload_extracts_with_logical_cx() {
+    use mlir_bridge::collect_qec_workload;
+    use mlir_bridge::passes::monadic_lowering;
+    use quon_qec::{CodeFamily, LogicalBasis, LogicalQubitId, SourceFamily, WorkloadOp};
+
+    let src = r#"
+fn main(): Q<(Bit, Bit)> = run {
+  a <- surface_code<3>()
+  b <- surface_code_x<3>()
+  (a2, b2) <- logical_cx(a, b)
+  mz <- measure_logical_z(a2)
+  mx <- measure_logical_x(b2)
+  return (mz, mx)
+}
+"#;
+    let context = Context::new();
+    let module = lower_program(&context, src).expect("lower");
+    monadic_lowering::run_on_module(&context, &module).expect("monadic");
+    let workload = collect_qec_workload(&module).expect("collect");
+    assert_eq!(workload.blocks.len(), 2);
+    let a = &workload.blocks[0];
+    assert_eq!(a.family, SourceFamily::Surface);
+    assert_eq!(a.distance, 3);
+    assert_eq!(a.init_basis, LogicalBasis::Z);
+    assert_eq!(a.code_family, CodeFamily::SurfaceCodeLike { distance: 3 });
+    let b = &workload.blocks[1];
+    assert_eq!(b.family, SourceFamily::Surface);
+    assert_eq!(b.distance, 3);
+    assert_eq!(b.init_basis, LogicalBasis::X);
+    assert_eq!(b.code_family, CodeFamily::SurfaceCodeLike { distance: 3 });
+    assert_eq!(
+        workload.ops,
+        vec![
+            WorkloadOp::Construct {
+                family: SourceFamily::Surface,
+                distance: 3,
+                basis: LogicalBasis::Z,
+                logical_id: LogicalQubitId(0),
+            },
+            WorkloadOp::Construct {
+                family: SourceFamily::Surface,
+                distance: 3,
+                basis: LogicalBasis::X,
+                logical_id: LogicalQubitId(1),
+            },
+            WorkloadOp::LogicalCx {
+                control: LogicalQubitId(0),
+                target: LogicalQubitId(1),
+            },
+            WorkloadOp::MeasureLogical {
+                logical_id: LogicalQubitId(0),
+                basis: LogicalBasis::Z,
+            },
+            WorkloadOp::MeasureLogical {
+                logical_id: LogicalQubitId(1),
+                basis: LogicalBasis::X,
+            },
+        ]
+    );
+}

@@ -15,9 +15,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Backend-only logical qubit / future code-block scheduling unit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LogicalQubitId(pub u32);
+///
+/// Owned by [`quon_qec::LogicalQubitId`] (CONTEXT "Logical qubit"); re-exported
+/// here so the interaction-graph layer shares one newtype with the QEC workload IR.
+pub use quon_qec::LogicalQubitId;
 
 /// Dense identifier for one multi-qubit entangling interaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

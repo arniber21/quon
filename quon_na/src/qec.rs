@@ -1,21 +1,23 @@
 //! QEC logical-op layer: code blocks and per-family overhead formulas.
 //!
-//! Backend-only IR concepts ([`LogicalQubitId`], [`CodeBlock`], [`LogicalOp`]) with
-//! no Quon source-language representation. Overhead formulas are normative in
+//! Sizing formulas and [`CodeFamily`] live in [`quon_qec`] (ADR-0015) and are
+//! re-exported here for API stability. Backend-only IR concepts
+//! ([`CodeBlock`], [`LogicalOp`]) with no Quon source-language representation
+//! remain in this module. [`LogicalQubitId`] is owned by `quon_qec` and
+//! re-exported from both this module and [`crate::graph`].
+//!
+//! Overhead formulas are normative in
 //! [`docs/neutral_atom/architecture_model.md`](../../docs/neutral_atom/architecture_model.md)
 //! §10 (issue #109).
-//!
-//! [`LogicalQubitId`] is shared with the interaction-graph layer ([`crate::graph`]).
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::layout::AtomId;
 
-#[cfg(feature = "flux")]
-use flux_rs::attrs::*;
-
-pub use crate::graph::LogicalQubitId;
+pub use quon_qec::{
+    CodeFamily, LogicalQubitId, NetRate, QecError, atoms_per_logical, ceil_div, repetition_n,
+    surface_n,
+};
 
 /// Identifier for a code block grouping atoms under one [`CodeFamily`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -41,34 +43,6 @@ pub enum LogicalOp {
     MagicStateInjection,
 }
 
-/// Net code rate `r = numerator / denominator` (checks included).
-///
-/// For [`CodeFamily::HighRateQldpcLike`], atoms per logical is `ceil(1/r)` =
-/// `ceil(denominator / numerator)`. See architecture_model.md §10.3.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NetRate {
-    pub numerator: u32,
-    pub denominator: u32,
-}
-
-/// Error-correcting code family with a closed-form atoms-per-logical formula.
-///
-/// Formulas: architecture_model.md §10.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "family", rename_all = "snake_case")]
-#[serde(deny_unknown_fields)]
-pub enum CodeFamily {
-    /// Rotated surface code: `N = 2d² − 1`, `d` odd, `d ≥ 3` (§10.1).
-    SurfaceCodeLike { distance: u32 },
-    /// Bit-flip repetition toy: `N = 2d − 1`, `d ≥ 2` (§10.2).
-    RepetitionCodeToy { distance: u32 },
-    /// High-rate qLDPC-like: `N = ceil(1/r)` for net rate `r` (§10.3).
-    HighRateQldpcLike { net_rate: NetRate },
-    /// User `[[n, k, d]]` block: `N = ceil(n/k)` (§10.4).
-    AbstractBlockCode { n: u32, k: u32, d: u32 },
-}
-
 /// Group of atoms implementing one or more logical qubits under a [`CodeFamily`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,56 +51,6 @@ pub struct CodeBlock {
     pub family: CodeFamily,
     pub logical_qubits: Vec<LogicalQubitId>,
     pub atoms: Vec<AtomId>,
-}
-
-/// Failures from validating a [`CodeFamily`] or expanding a [`CodeBlock`].
-#[derive(Clone, Debug, PartialEq, Eq, Error)]
-pub enum QecError {
-    #[error("surface-code distance must be odd and >= 3, got {distance}")]
-    InvalidSurfaceDistance { distance: u32 },
-    #[error("repetition-code distance must be >= 2, got {distance}")]
-    InvalidRepetitionDistance { distance: u32 },
-    #[error("QLDPC net rate numerator must be > 0")]
-    ZeroNetRateNumerator,
-    #[error("QLDPC net rate denominator must be > 0")]
-    ZeroNetRateDenominator,
-    #[error("abstract block code requires n > 0")]
-    ZeroPhysicalDimension,
-    #[error("abstract block code requires k > 0")]
-    ZeroLogicalDimension,
-    #[error("abstract block code: expected {expected} logical qubits (k), got {actual}")]
-    LogicalQubitCountMismatch { expected: u32, actual: usize },
-    #[error("code block must contain at least one logical qubit")]
-    EmptyLogicalQubits,
-    #[error("code-block atom count overflowed")]
-    AtomCountOverflow,
-}
-
-/// Atoms per logical qubit for `family`, including syndrome/check ancillas
-/// where the family formula accounts for them (architecture_model.md §10).
-pub fn atoms_per_logical(family: &CodeFamily) -> Result<u32, QecError> {
-    match family {
-        CodeFamily::SurfaceCodeLike { distance } => surface_n(*distance),
-        CodeFamily::RepetitionCodeToy { distance } => repetition_n(*distance),
-        CodeFamily::HighRateQldpcLike { net_rate } => {
-            if net_rate.numerator == 0 {
-                return Err(QecError::ZeroNetRateNumerator);
-            }
-            if net_rate.denominator == 0 {
-                return Err(QecError::ZeroNetRateDenominator);
-            }
-            ceil_div(net_rate.denominator, net_rate.numerator)
-        }
-        CodeFamily::AbstractBlockCode { n, k, d: _ } => {
-            if *n == 0 {
-                return Err(QecError::ZeroPhysicalDimension);
-            }
-            if *k == 0 {
-                return Err(QecError::ZeroLogicalDimension);
-            }
-            ceil_div(*n, *k)
-        }
-    }
 }
 
 /// Expand `logical_qubits` under `family` into a [`CodeBlock`] with consecutive
@@ -180,51 +104,6 @@ pub fn expand_code_block(
         logical_qubits,
         atoms,
     })
-}
-
-/// `N(d) = 2d² − 1` for odd `d ≥ 3` (architecture_model.md §10.1).
-#[cfg_attr(
-    feature = "flux",
-    spec(fn(d: u32) -> Result<u32, QecError>)
-)]
-pub fn surface_n(distance: u32) -> Result<u32, QecError> {
-    if distance < 3 || distance.is_multiple_of(2) {
-        return Err(QecError::InvalidSurfaceDistance { distance });
-    }
-    let d2 = distance
-        .checked_mul(distance)
-        .ok_or(QecError::AtomCountOverflow)?;
-    let two_d2 = d2.checked_mul(2).ok_or(QecError::AtomCountOverflow)?;
-    two_d2.checked_sub(1).ok_or(QecError::AtomCountOverflow)
-}
-
-/// `N(d) = 2d − 1` for `d ≥ 2` (architecture_model.md §10.2).
-#[cfg_attr(
-    feature = "flux",
-    spec(fn(d: u32) -> Result<u32, QecError>)
-)]
-pub fn repetition_n(distance: u32) -> Result<u32, QecError> {
-    if distance < 2 {
-        return Err(QecError::InvalidRepetitionDistance { distance });
-    }
-    let two_d = distance.checked_mul(2).ok_or(QecError::AtomCountOverflow)?;
-    two_d.checked_sub(1).ok_or(QecError::AtomCountOverflow)
-}
-
-/// Ceiling division `(numerator + denominator - 1) / denominator`.
-#[cfg_attr(
-    feature = "flux",
-    spec(fn(numerator: u32, denominator: u32{v: v > 0}) -> Result<u32, QecError>)
-)]
-pub fn ceil_div(numerator: u32, denominator: u32) -> Result<u32, QecError> {
-    if denominator == 0 {
-        return Err(QecError::ZeroLogicalDimension);
-    }
-    let sum = numerator
-        .checked_add(denominator)
-        .ok_or(QecError::AtomCountOverflow)?;
-    let adjusted = sum.checked_sub(1).ok_or(QecError::AtomCountOverflow)?;
-    Ok(adjusted / denominator)
 }
 
 #[cfg(test)]

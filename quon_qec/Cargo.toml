@@ -1,0 +1,22 @@
+[package]
+name        = "quon_qec"
+version     = "0.1.0"
+edition     = "2024"
+description = "MLIR-free QEC workload IR and code-family sizing formulas"
+
+[features]
+default = []
+# Opt-in Flux refinement-type checking (nightly). Off by default so the stable
+# workspace build never compiles flux-rs.
+flux = ["dep:flux-rs"]
+
+[dependencies]
+serde     = { workspace = true }
+thiserror = { workspace = true }
+flux-rs   = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[package.metadata.flux]
+enabled = true

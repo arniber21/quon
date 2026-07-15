@@ -3,6 +3,10 @@
 //! Pass order and Fixed/NA orchestration live in `mlir_bridge::pipeline` and
 //! `quon_na::pipeline`. This module collects CLI-facing request/report types and
 //! toolchain metadata.
+//!
+//! QEC workload collection (`mlir_bridge::collect_qec_workload`) is available
+//! after monadic lowering for tests (#251). Wiring that IR into the compile
+//! pipeline / NA hybrid schedule expansion is intentionally deferred to #248.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

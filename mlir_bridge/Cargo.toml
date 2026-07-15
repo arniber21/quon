@@ -10,6 +10,7 @@ mlir-sys  = "220"           # raw C API — used only at the diagnostics FFI bou
 zx        = { path = "../zx" }
 backend   = { path = "../backend" }
 quon_core = { path = "../quon_core" } # shared DepthExpr (MLIR-free)
+quon_qec  = { path = "../quon_qec" }
 thiserror = { workspace = true }
 
 [dev-dependencies]

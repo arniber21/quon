@@ -113,6 +113,7 @@ When adding fallible parsing or serialization, add at least: happy-path unit tes
 | **mlir_bridge** | MLIR dialects, passes, emit | `Diagnostics`; `quantum_circ` builders + `verify`; fuzz for parsers |
 | **backend** | Target descriptor, connectivity, gates | `BackendError`; `deny_unknown_fields`; `props.rs` differential tests |
 | **zx** | ZX-calculus rewriting | Graph invariants; typed errors |
+| **quon_qec** | QEC workload IR + code-family formulas | `thiserror`/`Result`; no Melior; `deny_unknown_fields` on wire DTOs; derive/`Validate` `code_family` from family+distance |
 | **quonc** | CLI driver | `anyhow`; clap; thin orchestration — no heavy logic |
 | **flux_verify** | Flux refinement demos | `cargo flux`; nightly only |
 

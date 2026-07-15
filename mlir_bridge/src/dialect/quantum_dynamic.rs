@@ -215,6 +215,9 @@ pub enum BuildError {
     /// The constructed op failed verification.
     #[error("operation failed verification: {0}")]
     Verify(#[from] VerifyError),
+    /// An MLIR type string failed to parse in the current context.
+    #[error("failed to parse MLIR type `{0}`")]
+    TypeParse(&'static str),
 }
 
 // --- Verifier --------------------------------------------------------------
@@ -233,6 +236,7 @@ pub fn verify<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(),
         op::IF => verify_if(operation),
         op::BARRIER => verify_barrier(operation),
         op::YIELD => verify_yield(operation),
+        name if super::qec_dynamic::is_qec_op(name) => super::qec_dynamic::verify(operation),
         _ => Ok(()),
     }
 }

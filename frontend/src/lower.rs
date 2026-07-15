@@ -9,14 +9,15 @@ use melior::ir::attribute::{BoolAttribute, StringAttribute};
 use melior::ir::operation::OperationBuilder;
 use melior::ir::{
     Block, BlockLike, Identifier, Location, Module, Operation, OperationRef, Region, RegionLike,
-    Value,
+    Value, ValueLike,
 };
 use mlir_bridge::dialect::monadic_staging as staging;
 use mlir_bridge::dialect::quantum_circ as qc;
+use mlir_bridge::dialect::quantum_dynamic as qd;
 use quon_core::DepthExpr;
 use thiserror::Error;
 
-use crate::ast::{CliffordClass, Decl, Expr, Name, Pat, Stmt, Type as AstType};
+use crate::ast::{CliffordClass, Decl, Expr, Name, NatExpr, Pat, Stmt, Type as AstType};
 use crate::diagnostics::Diagnostic;
 use crate::elaborate;
 use crate::lexer::Sp;
@@ -47,6 +48,8 @@ pub enum LowerError {
     UnresolvedSpecializationWidth,
     #[error("MLIR builder failed: {0}")]
     Mlir(#[from] qc::BuildError),
+    #[error("MLIR dynamic/staging builder failed: {0}")]
+    Dynamic(#[from] qd::BuildError),
     #[error("internal lowering error: {0}")]
     Internal(&'static str),
     #[error("type checking failed: {0}")]
@@ -74,6 +77,10 @@ pub struct LoweringCtx<'c> {
     /// `hadamard_all(n)` reached twice with `n = 3`) is not re-emitted.
     specialized: HashMap<String, Name>,
     next_synth_id: u64,
+    /// Next logical-qubit id for QEC constructs in the current module.
+    next_logical_id: i64,
+    /// Maps QEC-block SSA values to their logical ids (for memory/measure/cx).
+    qec_logical_ids: HashMap<usize, i64>,
 }
 
 #[derive(Clone)]
@@ -105,6 +112,8 @@ impl<'c> LoweringCtx<'c> {
             parametric: HashMap::new(),
             specialized: HashMap::new(),
             next_synth_id: 0,
+            next_logical_id: 0,
+            qec_logical_ids: HashMap::new(),
         }
     }
 
@@ -611,6 +620,22 @@ impl<'c> LoweringCtx<'c> {
             }
             Expr::App(f, x) => {
                 let (head, args) = flatten_app(f, x);
+                // QEC constructors: `repetition_code<d>()` / `surface_code<d>()` /
+                // `surface_code_x<d>()` (ADR-0014 / issue #251).
+                if let Expr::TypeApp {
+                    callee,
+                    args: targs,
+                } = &head.0
+                    && let Expr::Var(fname) = &callee.0
+                    && is_unit_args(&args)
+                    && targs.len() == 1
+                    && let Some((family, basis)) = qec_constructor_meta(fname)
+                {
+                    let distance = nat_lit(&targs[0]).ok_or(LowerError::Unsupported {
+                        construct: "QEC constructor distance must be a literal Nat",
+                    })?;
+                    return self.lower_qec_construct(family, basis, distance, block);
+                }
                 if let Expr::Var(fname) = &head.0 {
                     match fname.as_str() {
                         // `qreg(n)` — allocate `n` fresh qubits.
@@ -658,6 +683,50 @@ impl<'c> LoweringCtx<'c> {
                             }
                             return Ok(bits);
                         }
+                        "memory_round" if args.len() == 1 => {
+                            let block_val = single_value(self.eval(args[0], block, env)?)?;
+                            let logical_id = self.qec_id_of(block_val)?;
+                            let op = block.append_operation(staging::qec_memory_round(
+                                self.context,
+                                block_val,
+                                logical_id,
+                                self.location,
+                            )?);
+                            let results = collect_results(op, 1)?;
+                            if let Some(result) = results.first() {
+                                self.qec_logical_ids
+                                    .insert(value_key(result), logical_id);
+                            }
+                            return Ok(results);
+                        }
+                        "measure_logical_z" if args.len() == 1 => {
+                            return self.lower_qec_measure(args[0], "z", block, env);
+                        }
+                        "measure_logical_x" if args.len() == 1 => {
+                            return self.lower_qec_measure(args[0], "x", block, env);
+                        }
+                        "logical_cx" if args.len() == 2 => {
+                            let control = single_value(self.eval(args[0], block, env)?)?;
+                            let target = single_value(self.eval(args[1], block, env)?)?;
+                            let control_id = self.qec_id_of(control)?;
+                            let target_id = self.qec_id_of(target)?;
+                            let op = block.append_operation(staging::qec_logical_cx(
+                                self.context,
+                                control,
+                                target,
+                                control_id,
+                                target_id,
+                                self.location,
+                            )?);
+                            let results = collect_results(op, 2)?;
+                            if results.len() == 2 {
+                                self.qec_logical_ids
+                                    .insert(value_key(&results[0]), control_id);
+                                self.qec_logical_ids
+                                    .insert(value_key(&results[1]), target_id);
+                            }
+                            return Ok(results);
+                        }
                         _ => {}
                     }
                 }
@@ -669,6 +738,56 @@ impl<'c> LoweringCtx<'c> {
                 construct: "run-block expression",
             }),
         }
+    }
+
+    fn lower_qec_construct(
+        &mut self,
+        family: &'static str,
+        basis: &'static str,
+        distance: i64,
+        block: &mut Block<'c>,
+    ) -> Result<Vec<Value<'c, 'c>>, LowerError> {
+        let logical_id = self.next_logical_id;
+        self.next_logical_id += 1;
+        let op = block.append_operation(staging::qec_construct(
+            self.context,
+            family,
+            distance,
+            basis,
+            logical_id,
+            self.location,
+        )?);
+        let results = collect_results(op, 1)?;
+        if let Some(result) = results.first() {
+            self.qec_logical_ids.insert(value_key(result), logical_id);
+        }
+        Ok(results)
+    }
+
+    fn lower_qec_measure(
+        &mut self,
+        arg: &Sp<Expr>,
+        basis: &'static str,
+        block: &mut Block<'c>,
+        env: &mut HashMap<Name, Vec<Value<'c, 'c>>>,
+    ) -> Result<Vec<Value<'c, 'c>>, LowerError> {
+        let block_val = single_value(self.eval(arg, block, env)?)?;
+        let logical_id = self.qec_id_of(block_val)?;
+        let op = block.append_operation(staging::qec_measure_logical(
+            self.context,
+            block_val,
+            basis,
+            logical_id,
+            self.location,
+        )?);
+        collect_results(op, 1)
+    }
+
+    fn qec_id_of(&self, value: Value<'c, 'c>) -> Result<i64, LowerError> {
+        self.qec_logical_ids
+            .get(&value_key(&value))
+            .copied()
+            .ok_or(LowerError::Internal("missing QEC logical id for block SSA"))
     }
 
     fn lower_circuit_block(
@@ -1141,6 +1260,27 @@ fn circuit_callee(gate: &Sp<Expr>) -> Option<String> {
     match &gate.0 {
         Expr::Var(name) => Some(name.clone()),
         Expr::App(f, x) => zero_arg_callee_name_from_app(f, x),
+        _ => None,
+    }
+}
+
+fn value_key<'c>(value: &Value<'c, 'c>) -> usize {
+    value.to_raw().ptr as usize
+}
+
+fn nat_lit(expr: &Sp<NatExpr>) -> Option<i64> {
+    match &expr.0 {
+        NatExpr::Lit(n) => i64::try_from(*n).ok(),
+        _ => None,
+    }
+}
+
+/// `(family_wire, basis)` for a QEC constructor builtin name.
+fn qec_constructor_meta(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "repetition_code" => Some(("repetition", "z")),
+        "surface_code" => Some(("surface", "z")),
+        "surface_code_x" => Some(("surface", "x")),
         _ => None,
     }
 }
