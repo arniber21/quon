@@ -15,9 +15,9 @@ use crate::gates;
 use crate::keys;
 use crate::target::{
     AodMovement, AodMovementModel, AodSpeedModel, AodSpeedModelKind, BackendTarget,
-    ConnectivityGraph, FixedTarget, NeutralAtomCostModel, NeutralAtomFidelity, NeutralAtomGrid,
-    NeutralAtomTarget, NeutralAtomTiming, NeutralAtomZone, NoiseModel, RydbergInteraction,
-    ZoneKind,
+    ConnectivityGraph, FixedTarget, NeutralAtomCostModel, NeutralAtomErrorModel,
+    NeutralAtomFidelity, NeutralAtomGrid, NeutralAtomTarget, NeutralAtomTiming, NeutralAtomZone,
+    NoiseModel, RydbergInteraction, ZoneKind,
 };
 
 /// Top-level target JSON. The fixed descriptor remains backward-compatible:
@@ -124,6 +124,10 @@ pub struct NeutralAtomTargetDescriptor {
     pub native_gates: Vec<String>,
     pub timing: NeutralAtomTimingDescriptor,
     pub fidelity: NeutralAtomFidelityDescriptor,
+    /// Optional QEC physical error probabilities (ADR-0017). Sibling to
+    /// `fidelity`; omitted targets still load for non-QEC paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_model: Option<NeutralAtomErrorModelDescriptor>,
     pub cost_model: NeutralAtomCostModelDescriptor,
 }
 
@@ -208,6 +212,19 @@ pub struct NeutralAtomFidelityDescriptor {
     pub single_qubit: f64,
     pub atom_transfer: f64,
     pub coherence_time_us: f64,
+}
+
+/// Wire form of [`NeutralAtomErrorModel`] (ADR-0017). All fields required when
+/// the object is present; unknown keys are rejected.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NeutralAtomErrorModelDescriptor {
+    pub rydberg: f64,
+    pub measurement: f64,
+    pub reset: f64,
+    pub movement: f64,
+    pub transfer: f64,
+    pub idle_per_us: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -394,6 +411,10 @@ fn neutral_atom_from_descriptor(
                 d.fidelity.coherence_time_us,
             )?,
         },
+        error_model: d
+            .error_model
+            .map(error_model_from_descriptor)
+            .transpose()?,
         cost_model: NeutralAtomCostModel {
             rydberg_stage_weight: non_negative_f64(
                 "cost_model.rydberg_stage_weight",
@@ -555,6 +576,14 @@ fn neutral_atom_to_descriptor(id: &str, target: &NeutralAtomTarget) -> NeutralAt
             atom_transfer: target.fidelity.atom_transfer,
             coherence_time_us: target.fidelity.coherence_time_us,
         },
+        error_model: target.error_model.map(|m| NeutralAtomErrorModelDescriptor {
+            rydberg: m.rydberg,
+            measurement: m.measurement,
+            reset: m.reset,
+            movement: m.movement,
+            transfer: m.transfer,
+            idle_per_us: m.idle_per_us,
+        }),
         cost_model: NeutralAtomCostModelDescriptor {
             rydberg_stage_weight: target.cost_model.rydberg_stage_weight,
             movement_time_weight: target.cost_model.movement_time_weight,
@@ -562,6 +591,19 @@ fn neutral_atom_to_descriptor(id: &str, target: &NeutralAtomTarget) -> NeutralAt
             idle_time_weight: target.cost_model.idle_time_weight,
         },
     }
+}
+
+fn error_model_from_descriptor(
+    m: NeutralAtomErrorModelDescriptor,
+) -> Result<NeutralAtomErrorModel, BackendError> {
+    Ok(NeutralAtomErrorModel {
+        rydberg: probability("error_model.rydberg", m.rydberg)?,
+        measurement: probability("error_model.measurement", m.measurement)?,
+        reset: probability("error_model.reset", m.reset)?,
+        movement: probability("error_model.movement", m.movement)?,
+        transfer: probability("error_model.transfer", m.transfer)?,
+        idle_per_us: probability("error_model.idle_per_us", m.idle_per_us)?,
+    })
 }
 
 fn non_empty_native_gates(gates: Vec<String>) -> Result<Vec<String>, BackendError> {
@@ -611,4 +653,59 @@ fn probability(field: &str, value: f64) -> Result<f64, BackendError> {
 
 fn invalid_config<T>(message: impl Into<String>) -> Result<T, BackendError> {
     Err(BackendError::InvalidTargetConfig(message.into()))
+}
+
+#[cfg(test)]
+mod error_model_validation_tests {
+    use super::*;
+
+    fn valid_descriptor() -> NeutralAtomErrorModelDescriptor {
+        NeutralAtomErrorModelDescriptor {
+            rydberg: 0.002,
+            measurement: 0.003,
+            reset: 0.004,
+            movement: 0.0005,
+            transfer: 0.0007,
+            idle_per_us: 2e-9,
+        }
+    }
+
+    #[test]
+    fn accepts_placeholder_rates() {
+        let model = match error_model_from_descriptor(valid_descriptor()) {
+            Ok(m) => m,
+            Err(e) => panic!("valid descriptor rejected: {e}"),
+        };
+        assert_eq!(model.rydberg, 0.002);
+    }
+
+    #[test]
+    fn rejects_nan() {
+        let mut d = valid_descriptor();
+        d.transfer = f64::NAN;
+        let err = match error_model_from_descriptor(d) {
+            Ok(_) => panic!("NaN should fail"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, BackendError::InvalidTargetConfig(_)),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("error_model.transfer"));
+    }
+
+    #[test]
+    fn rejects_infinity() {
+        let mut d = valid_descriptor();
+        d.idle_per_us = f64::INFINITY;
+        let err = match error_model_from_descriptor(d) {
+            Ok(_) => panic!("Inf should fail"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, BackendError::InvalidTargetConfig(_)),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("error_model.idle_per_us"));
+    }
 }

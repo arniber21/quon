@@ -22,7 +22,7 @@ use crate::entangling_schedule::schedule_entangling_layers;
 use crate::graph::InteractionGraph;
 use crate::movement::{MovementParams, plan_aod_movement};
 use crate::placement::{PlacementStrategy, place};
-use crate::report::{ResourceReport, build_resource_report};
+use crate::report::{ResourceReport, attach_qec_error_budget, build_resource_report};
 use crate::schedule::ScheduleLayer;
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
 use crate::zoned::{PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, schedule_zoned};
@@ -262,6 +262,13 @@ pub fn run_from_graph(
     }
 
     let report = build_resource_report(&req.layers, None, Some(logical_qubits.max(1)))?;
+    // Production path: attach analytic error_budget whenever the target carries
+    // an error_model (ADR-0017). `--emit-resource-report` in quonc additionally
+    // hard-requires the model so missing budgets fail at emit time.
+    let report = match na.error_model.as_ref() {
+        Some(model) => attach_qec_error_budget(report, Some(model))?,
+        None => report,
+    };
 
     Ok(NaScheduleArtifacts {
         layers: req.layers.clone(),

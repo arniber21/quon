@@ -271,12 +271,28 @@ pub struct NeutralAtomTarget {
     pub native_gates: Vec<String>,
     pub timing: NeutralAtomTiming,
     pub fidelity: NeutralAtomFidelity,
+    /// Optional physical error probabilities for QEC reporting / experiment emit.
+    /// Absent when QEC error artifacts are requested is a hard failure — never
+    /// derived from [`Self::fidelity`] (ADR-0017).
+    pub error_model: Option<NeutralAtomErrorModel>,
     pub cost_model: NeutralAtomCostModel,
 }
 
 impl NeutralAtomTarget {
     pub fn is_native(&self, gate: &str) -> bool {
         self.native_gates.iter().any(|g| g == gate)
+    }
+
+    /// Return the physical error model, or [`BackendError::MissingErrorModel`].
+    ///
+    /// Call this when QEC error-budget reporting or `--emit-qec-experiment` is
+    /// requested. Do not convert from `fidelity`.
+    pub fn require_error_model(
+        &self,
+    ) -> Result<&NeutralAtomErrorModel, crate::error::BackendError> {
+        self.error_model
+            .as_ref()
+            .ok_or(crate::error::BackendError::MissingErrorModel)
     }
 
     /// Sum of `rows * cols` over zones of `kind`.
@@ -393,6 +409,85 @@ pub struct NeutralAtomFidelity {
     pub single_qubit: f64,
     pub atom_transfer: f64,
     pub coherence_time_us: f64,
+}
+
+/// Explicit physical error probabilities for QEC (ADR-0017).
+///
+/// Sibling to [`NeutralAtomFidelity`]; not derived as `1 - fidelity`.
+/// Wire JSON lives in [`crate::descriptor::NeutralAtomErrorModelDescriptor`]
+/// with validated conversion — this domain type has no serde derives.
+///
+/// See also [`NeutralAtomErrorModel::error_model_snapshot`] for the stable
+/// experiment-JSON DTO reused by issue #255.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeutralAtomErrorModel {
+    /// Per Rydberg illumination stage (paired with `rydberg_stages`, not per CZ).
+    pub rydberg: f64,
+    /// Per measurement round (`measurement_rounds`).
+    pub measurement: f64,
+    /// Per reset round (`reset_rounds`).
+    pub reset: f64,
+    /// Per rearrangement step (`rearrangement_steps`).
+    pub movement: f64,
+    /// Per trap transfer (`trap_transfers`).
+    pub transfer: f64,
+    /// Per microsecond of wait / idle (`wait_time_us`).
+    pub idle_per_us: f64,
+}
+
+/// Stable serde DTO of [`NeutralAtomErrorModel`] for experiment JSON snapshots (#255).
+///
+/// Field names match the target wire form. Prefer this over serializing the
+/// domain type directly.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NeutralAtomErrorModelSnapshot {
+    pub rydberg: f64,
+    pub measurement: f64,
+    pub reset: f64,
+    pub movement: f64,
+    pub transfer: f64,
+    pub idle_per_us: f64,
+}
+
+impl NeutralAtomErrorModel {
+    /// Snapshot physical rates for experiment JSON emit (#255).
+    pub fn error_model_snapshot(&self) -> NeutralAtomErrorModelSnapshot {
+        NeutralAtomErrorModelSnapshot {
+            rydberg: self.rydberg,
+            measurement: self.measurement,
+            reset: self.reset,
+            movement: self.movement,
+            transfer: self.transfer,
+            idle_per_us: self.idle_per_us,
+        }
+    }
+}
+
+impl TryFrom<NeutralAtomErrorModelSnapshot> for NeutralAtomErrorModel {
+    type Error = crate::error::BackendError;
+
+    /// Validate snapshot rates into the domain model (same `[0, 1]` rule as
+    /// target-descriptor load).
+    fn try_from(s: NeutralAtomErrorModelSnapshot) -> Result<Self, Self::Error> {
+        fn probability(field: &str, value: f64) -> Result<f64, crate::error::BackendError> {
+            if value.is_finite() && value >= 0.0 && value <= 1.0 {
+                Ok(value)
+            } else {
+                Err(crate::error::BackendError::InvalidTargetConfig(format!(
+                    "{field} must be a probability in [0, 1], got {value}"
+                )))
+            }
+        }
+        Ok(Self {
+            rydberg: probability("error_model.rydberg", s.rydberg)?,
+            measurement: probability("error_model.measurement", s.measurement)?,
+            reset: probability("error_model.reset", s.reset)?,
+            movement: probability("error_model.movement", s.movement)?,
+            transfer: probability("error_model.transfer", s.transfer)?,
+            idle_per_us: probability("error_model.idle_per_us", s.idle_per_us)?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

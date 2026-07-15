@@ -10,7 +10,8 @@ use quon_core::{
     save_snapshot,
 };
 use quon_na::{
-    PlacementStrategy, PlacerMode, resource_report_to_json, resource_report_to_markdown,
+    PlacementStrategy, PlacerMode, attach_qec_error_budget, require_target_error_model,
+    resource_report_to_json, resource_report_to_markdown,
 };
 
 use backend::{BackendTarget, TargetKind};
@@ -535,9 +536,21 @@ fn emit_artifacts(cli: &Cli, request: &CompileRequest, report: &quonc::CompileRe
         let report_body = report.resource_report.as_ref().ok_or_else(|| {
             anyhow!("no resource report available (compile with a neutral-atom target)")
         })?;
+        // ADR-0017: NA resource-report emit always attaches analytic error_budget
+        // and hard-fails when the target has no error_model (never 1−fidelity).
+        let na = match &request.target.kind {
+            TargetKind::NeutralAtomReconfigurable(na) => na,
+            _ => bail!(
+                "--emit-resource-report requires a neutral_atom_reconfigurable target \
+                 (see targets/neutral_atom/)"
+            ),
+        };
+        let model = require_target_error_model(na).map_err(|e| anyhow!("{e}"))?;
+        let report_body = attach_qec_error_budget(report_body.clone(), Some(model))
+            .map_err(|e| anyhow!("{e}"))?;
         let text = match resolve_report_format(cli, path) {
-            ReportFormat::Json => resource_report_to_json(report_body)?,
-            ReportFormat::Markdown => resource_report_to_markdown(report_body),
+            ReportFormat::Json => resource_report_to_json(&report_body)?,
+            ReportFormat::Markdown => resource_report_to_markdown(&report_body),
         };
         // If MLIR / schedule / graph already printed to stdout on `-`, send the
         // report to stderr so all artifacts remain recoverable without

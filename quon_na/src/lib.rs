@@ -28,6 +28,11 @@
 //! Schedule compaction (#108) is engineering glue: exclusive-cycle ASAP baseline
 //! plus greedy E0 merge — **not** Enola-optimal true ASAP; see
 //! [`compaction`] and `docs/neutral_atom/architecture_model.md` §4.
+//!
+//! Physical error-budget reporting uses optional target `error_model`
+//! (ADR-0017 / `docs/adr/0017-na-physical-error-model.md`): analytic
+//! `rate × schedule count` contributions on [`ResourceReport`], hard-fail when
+//! `--emit-resource-report` requests a budget and the model is absent.
 
 pub mod compaction;
 #[cfg(feature = "mlir")]
@@ -81,8 +86,9 @@ pub use qec::{
     expand_code_block, repetition_n, surface_n,
 };
 pub use report::{
-    BottleneckKind, ReportError, ResourceReport, build_resource_report, resource_report_to_json,
-    resource_report_to_markdown, simultaneous_layer_time,
+    BottleneckKind, ErrorBudgetContributions, ReportError, ResourceReport,
+    attach_qec_error_budget, build_resource_report, require_target_error_model,
+    resource_report_to_json, resource_report_to_markdown, simultaneous_layer_time,
 };
 pub use schedule::{
     AtomMove, EntanglingAction, MeasurementBasis, MovementGroup, NeutralAtomAction, ScheduleError,

@@ -269,6 +269,7 @@ Units: lengths in µm, times in µs, fidelities as probabilities in [0, 1].
 | `native_gates` | array of string | Gate names executable natively, e.g. `["cz", "rz_local", "ry_global", "measure_z"]` | Lowering must decompose to this set |
 | `timing` | object | Operation durations (§8.5) | Schedule makespan, decoherence-weighted cost |
 | `fidelity` | object | Operation fidelities + coherence time (§8.5) | Deferred fidelity estimate (future; not #110 — see §11) |
+| `error_model` | object, optional | Explicit physical error probabilities for QEC (ADR-0017; §8.5) | Resource-report `error_budget` (`--emit-resource-report`); `--emit-qec-experiment` (#255). Hard-fail when those emits are requested and the object is absent — never derived as `1 − fidelity` |
 | `cost_model` | object | Linear cost weights (§9) | Scheduler objective, resource report |
 
 ### 8.2 Zone
@@ -317,7 +318,7 @@ zoned target (stage 2, #107) declares at least one `storage` and one
 capacity, e.g. 340 pairs in the [QMAP-repo] evaluation architecture) but kept
 as an explicit field so targets can model tighter laser/control limits.
 
-### 8.5 Timing and fidelity
+### 8.5 Timing, fidelity, and error model
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -329,6 +330,17 @@ as an explicit field so targets can model tighter laser/control limits.
 | `fidelity.single_qubit` | number | Per-1Q-gate fidelity |
 | `fidelity.atom_transfer` | number | Per-transfer fidelity |
 | `fidelity.coherence_time_us` | number | Coherence time T (idle decay 1 − t/T as in [Enola] Eq. (1)) |
+| `error_model.rydberg` | number in [0, 1] | Physical error probability **per Rydberg illumination stage** (pairs with `rydberg_stages`, not per Entangle2/CZ) |
+| `error_model.measurement` | number in [0, 1] | Per measurement **round** (`measurement_rounds`) |
+| `error_model.reset` | number in [0, 1] | Per reset **round** (`reset_rounds`) |
+| `error_model.movement` | number in [0, 1] | Per rearrangement **step** (`rearrangement_steps`) |
+| `error_model.transfer` | number in [0, 1] | Per trap **transfer** (`trap_transfers`) |
+| `error_model.idle_per_us` | number in [0, 1] | Idle error probability **per µs** of wait (`wait_time_us`) |
+
+`error_model` is optional on load. When present, every field above is required
+(`deny_unknown_fields`). It is a sibling of `fidelity`, not a replacement: do
+not convert rates as `1 − fidelity.*` (ADR-0017). Analytic report contributions
+are `rate × schedule count` only — see §11.
 
 ### 8.6 Numeric constants in `generic_rna_v0.json`: provenance
 
@@ -354,6 +366,12 @@ labeled placeholders.
 | Zone geometry (storage 73 × 101 @ 4 µm pitch; entanglement 10 × 34 pairs, pair gap 2 µm, pair pitch 12 × 10 µm; AOD 100 × 100) | — | cited (as a published artifact, not a physics claim) | [QMAP-repo] `eval/na/zoned/square_architecture.json`, the reference architecture shipped with the [RAP] compiler |
 | `max_parallel_entangling_pairs` | 340 | derived | Entanglement-zone pair capacity of the geometry above |
 | `cost_model` weights | see §9 | **placeholder** | Weights are tuning knobs, not measurements |
+| `error_model.rydberg` | 0.002 | **placeholder** | Illustrative QEC rate; deliberately ≠ `1 − fidelity.cz` (0.005). ADR-0017. |
+| `error_model.measurement` | 0.003 | **placeholder** | Illustrative; not a literature claim. |
+| `error_model.reset` | 0.004 | **placeholder** | Illustrative; not a literature claim. |
+| `error_model.movement` | 0.0005 | **placeholder** | Illustrative; not a literature claim. |
+| `error_model.transfer` | 0.0007 | **placeholder** | Illustrative; deliberately ≠ `1 − fidelity.atom_transfer` (0.001). |
+| `error_model.idle_per_us` | 2e-9 | **placeholder** | Illustrative per-µs idle rate; not derived from `coherence_time_us`. |
 
 ## 9. Cost model
 
@@ -492,6 +510,16 @@ serde) and **Markdown** matching the sample below. Fidelity (Enola Eq. 1) is
 
 ### 11.1 Markdown sample (canonical)
 
+When the target has an `error_model`, production `--emit-resource-report` always
+includes the Physical error budget section (and the matching Notes bullet).
+When `error_budget` is unset (library builders without a model), that section
+and Notes bullet are omitted.
+
+**Contribution float format:** nonzero values with absolute value `< 1e-4` use
+lowercase scientific notation (`8e-9`); otherwise Rust `Display` (`0.004`,
+`0.0005`). The sample below matches `resource_report_to_markdown` + the
+`toy_with_error_budget` snapshot for the Physical error budget rows.
+
 ```markdown
 # Neutral-atom resource report
 
@@ -520,17 +548,29 @@ serde) and **Markdown** matching the sample below. Fidelity (Enola Eq. 1) is
 | Wait time (µs) | 4 |
 | Total time (µs) | 30 |
 
+## Physical error budget
+| Category | Contribution (rate × count) |
+| --- | ---: |
+| Rydberg | 0.004 |
+| Measurement | 0.003 |
+| Reset | 0.004 |
+| Movement | 0.0005 |
+| Transfer | 0.0007 |
+| Idle | 8e-9 |
+
 ## Notes
 - Field names align with TUM RAP Table I / Enola headline metrics.
 - `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
 - Non-QEC reports omit atoms-per-logical and code-family rows.
+- Physical error budget lines are schedule-count × rate contributions only — not logical error rates or thresholds.
 ```
 
 **Non-QEC omit policy:** always emit Logical qubits and Physical atoms (may be
 `0` if sizing unset). Emit Atoms per logical and Code family **only when** the
 corresponding optional fields are set. Never print `N/A` for omitted QEC
 detail. Bottleneck cell text uses the same snake_case strings as JSON.
-Microsecond headers use Unicode `(µs)`.
+Microsecond headers use Unicode `(µs)`. Emit the Physical error budget table
+and its Notes bullet **only when** `error_budget` is set.
 
 ### 11.2 JSON fields (paper-name mapping)
 
@@ -548,10 +588,23 @@ Microsecond headers use Unicode `(µs)`.
 | `atoms_per_logical` / `code_family` | Optional; omitted when unset | Single-family QEC detail |
 | `estimated_cycles` | `layers.len()` as `u64` | Parallel schedule cycles |
 | `bottleneck` | `none` / `rydberg` / `rearrangement` / `transfer` / `measurement` / `mixed` | Max of four scores below |
+| `error_budget` | Optional object of analytic `rate × count` contributions (ADR-0017) | Not a logical error rate / threshold |
+
+`error_budget` field multipliers (when attached from `error_model`):
+
+| `error_budget` field | Multiplier |
+| --- | --- |
+| `rydberg` | `error_model.rydberg × rydberg_stages` (per stage, not per CZ) |
+| `measurement` | `error_model.measurement × measurement_rounds` |
+| `reset` | `error_model.reset × reset_rounds` |
+| `movement` | `error_model.movement × rearrangement_steps` |
+| `transfer` | `error_model.transfer × trap_transfers` |
+| `idle` | `error_model.idle_per_us × wait_time_us` |
 
 New required numerics (`logical_qubits`, `physical_atoms`, `estimated_cycles`,
 `bottleneck`) use `#[serde(default)]` so older JSON without those keys still
-deserializes. Optional QEC fields use `skip_serializing_if = "Option::is_none"`.
+deserializes. Optional QEC fields and `error_budget` use
+`skip_serializing_if = "Option::is_none"`.
 
 ### 11.3 `estimated_cycles` and `bottleneck`
 

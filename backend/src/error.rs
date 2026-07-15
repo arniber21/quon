@@ -37,6 +37,17 @@ pub enum BackendError {
     #[error("invalid target configuration: {0}")]
     InvalidTargetConfig(String),
 
+    /// QEC error reporting (`--emit-resource-report` with error budget) or
+    /// `--emit-qec-experiment` was requested, but the neutral-atom target has
+    /// no `error_model`. Never invent defaults or derive rates from `fidelity`
+    /// (ADR-0017). Keep this message aligned with `quon_na::ReportError::MissingErrorModel`.
+    #[error(
+        "neutral-atom target is missing error_model required for QEC error reporting \
+         (--emit-resource-report) or --emit-qec-experiment; set error_model on the \
+         target (do not derive from fidelity)"
+    )]
+    MissingErrorModel,
+
     /// A two-qubit noise key was not of the form `\"u,v\"`.
     #[error("malformed two-qubit noise key `{0}` (expected \"u,v\")")]
     BadTwoQubitKey(String),
