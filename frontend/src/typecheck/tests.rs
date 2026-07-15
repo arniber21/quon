@@ -1419,3 +1419,148 @@ fn reference_algorithm_fixtures_type_check() {
         check_run(teleport).err()
     );
 }
+
+// ── QEC frontend (issue #247) ──────────────────────────────────────────────────
+
+#[test]
+fn qec_block_is_linear_resource() {
+    accepts(
+        "fn f(b: QecBlock<Repetition, 3>): QecBlock<Repetition, 3> = b",
+    );
+    rejects(
+        "fn f(b: QecBlock<Repetition, 3>): (QecBlock<Repetition, 3>, QecBlock<Repetition, 3>) = (b, b)",
+    );
+}
+
+#[test]
+fn qec_constructors_typecheck() {
+    accepts_run(
+        "fn main(): Q<Bit> = run {
+  b <- repetition_code<3>()
+  measure_logical_z(b)
+}",
+    );
+    accepts_run(
+        "fn main(): Q<Bit> = run {
+  b <- surface_code<3>()
+  measure_logical_x(b)
+}",
+    );
+    accepts_run(
+        "fn main(): Q<Bit> = run {
+  b <- surface_code_x<5>()
+  measure_logical_z(b)
+}",
+    );
+}
+
+#[test]
+fn qec_invalid_distance_rejected() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+  b <- repetition_code<1>()
+  measure_logical_z(b)
+}"
+        ),
+        TypeError::InvalidQecDistance { family: "repetition", distance: 1, .. }
+    ));
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+  b <- surface_code<4>()
+  measure_logical_z(b)
+}"
+        ),
+        TypeError::InvalidQecDistance { family: "surface", distance: 4, .. }
+    ));
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+  b <- surface_code<2>()
+  measure_logical_z(b)
+}"
+        ),
+        TypeError::InvalidQecDistance { family: "surface", .. }
+    ));
+}
+
+#[test]
+fn qec_memory_round_and_generic_helper() {
+    accepts_run(
+        "fn rounds<F: CodeFamily, d: Nat>(b: QecBlock<F, d>): Q<QecBlock<F, d>> = run {
+           b2 <- memory_round(b)
+           return b2
+         }
+         fn main(): Q<Bit> = run {
+           b <- repetition_code<3>()
+           b2 <- rounds(b)
+           measure_logical_z(b2)
+         }",
+    );
+}
+
+#[test]
+fn qec_kinded_alias() {
+    accepts_run(
+        "type Encoded<F: CodeFamily, d: Nat> = QecBlock<F, d>\n\
+         fn consume(b: Encoded<Repetition, 3>): Q<Bit> = run {\n\
+           measure_logical_z(b)\n\
+         }\n\
+         fn main(): Q<Bit> = run {\n\
+           b <- repetition_code<3>()\n\
+           consume(b)\n\
+         }",
+    );
+}
+
+#[test]
+fn qec_family_mismatch_on_logical_cx() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<(QecBlock<Surface, 3>, QecBlock<Surface, 3>)> = run {
+               a <- repetition_code<3>()
+               b <- surface_code<3>()
+               logical_cx(a, b)
+             }"
+        ),
+        TypeError::Mismatch { .. }
+    ));
+}
+
+#[test]
+fn qec_logical_cx_surface_same_d() {
+    accepts_run(
+        "fn main(): Q<Bit> = run {
+           a <- surface_code<3>()
+           b <- surface_code<3>()
+           (a2, b2) <- logical_cx(a, b)
+           _ <- measure_logical_z(a2)
+           measure_logical_z(b2)
+         }",
+    );
+}
+
+#[test]
+fn qec_mixed_entrypoint_rejected() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               b <- repetition_code<3>()
+               q <- qubit()
+               _ <- measure(q)
+               measure_logical_z(b)
+             }"
+        ),
+        TypeError::MixedQecEntrypoint { .. }
+    ));
+}
+
+#[test]
+fn qec_oracle_nat_alias_still_works() {
+    accepts(
+        "type Oracle<n> = Circuit<n, n, _, Universal>
+fn f(o: Oracle<2>): Oracle<2> = o",
+    );
+}
+

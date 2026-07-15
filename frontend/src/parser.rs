@@ -27,11 +27,12 @@ fn var(name: &str, sp: SimpleSpan) -> Sp<Expr> {
     (Expr::Var(name.to_string()), sp)
 }
 
-/// A trailing operation applied to an atom: call, index, or method.
+/// A trailing operation applied to an atom: call, index, method, or type app.
 enum Post {
     Call(Vec<Sp<Expr>>, SimpleSpan),
     Index(Sp<Expr>, SimpleSpan),
     Method(String, Vec<Sp<Expr>>, SimpleSpan),
+    TypeApp(Vec<Sp<NatExpr>>, SimpleSpan),
 }
 
 fn apply_post(base: Sp<Expr>, post: Post) -> Sp<Expr> {
@@ -59,6 +60,17 @@ fn apply_post(base: Sp<Expr>, post: Post) -> Sp<Expr> {
             let head = app(var(&name, base_sp), base);
             let folded = args.into_iter().fold(head, app);
             (folded.0, span)
+        }
+        // `f<3>` — explicit Nat type application (e.g. `repetition_code<3>()`).
+        Post::TypeApp(args, sp) => {
+            let span = s2(base.1, sp);
+            (
+                Expr::TypeApp {
+                    callee: Box::new(base),
+                    args,
+                },
+                span,
+            )
         }
     }
 }
@@ -286,6 +298,23 @@ where
             .then_ignore(just(Token::RAngle))
             .map_with(|(((n, m), d), c), e| (Type::Circuit { n, m, d, c }, e.span()));
 
+        // `QecBlock<F, d>` — family is a type (tag or param); distance is a Nat.
+        let qec_block = just(Token::Ident("QecBlock".into()))
+            .ignore_then(just(Token::LAngle))
+            .ignore_then(ty.clone())
+            .then_ignore(comma.clone())
+            .then(nat.clone())
+            .then_ignore(just(Token::RAngle))
+            .map_with(|(family, distance), e| {
+                (
+                    Type::QecBlock {
+                        family: Box::new(family),
+                        distance,
+                    },
+                    e.span(),
+                )
+            });
+
         let tuple = ty
             .clone()
             .separated_by(just(Token::Comma).padded_by(nls.clone()))
@@ -304,7 +333,7 @@ where
             });
 
         // Order matters: specific keyword-like constructors before the generic `named`.
-        let atom = choice((qreg, qmonad, list, matrix, circuit, tuple, named)).boxed();
+        let atom = choice((qreg, qmonad, list, matrix, circuit, qec_block, tuple, named)).boxed();
 
         // Function arrows are right-associative and the loosest type operator.
         atom.clone()
@@ -533,7 +562,7 @@ where
         ))
         .boxed();
 
-        // ---- postfix: call / index / method ----
+        // ---- postfix: call / index / method / type app ----
         let call_op = args
             .clone()
             .delimited_by(just(Token::LParen), just(Token::RParen))
@@ -550,10 +579,17 @@ where
                     .delimited_by(just(Token::LParen), just(Token::RParen)),
             )
             .map_with(|(name, a), e| Post::Method(name, a, e.span()));
+        let type_app_op = nat
+            .clone()
+            .separated_by(comma.clone())
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LAngle), just(Token::RAngle))
+            .map_with(|a, e| Post::TypeApp(a, e.span()));
 
         let postfix = atom
             .foldl(
-                choice((call_op, index_op, method_op)).repeated(),
+                choice((call_op, index_op, method_op, type_app_op)).repeated(),
                 apply_post,
             )
             .boxed();
@@ -806,9 +842,28 @@ where
     // ── Declarations ──────────────────────────────────────────────────────────
     let nls = just(Token::Newline).repeated();
 
+    let kind = select! {
+        Token::Ident(n) if n == "Nat" => Kind::Nat,
+        Token::Ident(n) if n == "CodeFamily" => Kind::CodeFamily,
+    }
+    .map_with(|k, e| (k, e.span()));
+
+    let type_param = sp_ident
+        .then(just(Token::Colon).ignore_then(kind).or_not())
+        .map(|(name, kind)| TypeParam { name, kind });
+
+    let type_params = type_param
+        .separated_by(just(Token::Comma).padded_by(nls.clone()))
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LAngle), just(Token::RAngle))
+        .or_not()
+        .map(|p| p.unwrap_or_default());
+
     let fn_param = sp_ident.then_ignore(just(Token::Colon)).then(ty.clone());
     let fn_decl = just(Token::Fn)
         .ignore_then(sp_ident)
+        .then(type_params.clone())
         .then(
             fn_param
                 .separated_by(just(Token::Comma).padded_by(nls.clone()))
@@ -824,10 +879,11 @@ where
         .then_ignore(just(Token::Eq))
         .then_ignore(nls.clone())
         .then(expr.clone())
-        .map_with(|(((name, params), ret), body), e| {
+        .map_with(|((((name, type_params), params), ret), body), e| {
             (
                 Decl::Fn {
                     name,
+                    type_params,
                     params,
                     ret,
                     body,
@@ -838,14 +894,7 @@ where
 
     let type_alias = just(Token::Type)
         .ignore_then(sp_ident)
-        .then(
-            sp_ident
-                .separated_by(just(Token::Comma).padded_by(nls.clone()))
-                .at_least(1)
-                .collect::<Vec<_>>()
-                .delimited_by(just(Token::LAngle), just(Token::RAngle))
-                .or_not(),
-        )
+        .then(type_params)
         .then_ignore(nls.clone())
         .then_ignore(just(Token::Eq))
         .then_ignore(nls.clone())
@@ -854,7 +903,7 @@ where
             (
                 Decl::TypeAlias {
                     name,
-                    params: params.unwrap_or_default(),
+                    params,
                     ty,
                 },
                 e.span(),

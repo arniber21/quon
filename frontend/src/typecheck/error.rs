@@ -152,6 +152,20 @@ pub enum TypeError {
     /// self-recursion with an inferred decreasing measure; a cycle through two or more distinct
     /// functions is rejected rather than accepted without a termination witness.
     MutualRecursion { name: String, span: SimpleSpan },
+    /// A type argument has the wrong kind (e.g. a Nat where `CodeFamily` is required).
+    KindMismatch {
+        expected: &'static str,
+        found: &'static str,
+        span: SimpleSpan,
+    },
+    /// QEC constructor distance violates family rules (repetition `d >= 2`, surface odd `d >= 3`).
+    InvalidQecDistance {
+        family: &'static str,
+        distance: u64,
+        span: SimpleSpan,
+    },
+    /// An entrypoint mixes `QecBlock` with bare `Qubit`/`QReg` (ADR-0014).
+    MixedQecEntrypoint { span: SimpleSpan },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -191,6 +205,9 @@ impl TypeError {
             | TypeError::NonDependentArg { span, .. }
             | TypeError::IllFoundedRecursion { span, .. }
             | TypeError::MutualRecursion { span, .. }
+            | TypeError::KindMismatch { span, .. }
+            | TypeError::InvalidQecDistance { span, .. }
+            | TypeError::MixedQecEntrypoint { span }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -225,6 +242,9 @@ impl TypeError {
             TypeError::NonDependentArg { .. } => DiagnosticCode::DEPENDENT_NON_DEPENDENT,
             TypeError::IllFoundedRecursion { .. } => DiagnosticCode::RECURSION_ILL_FOUNDED,
             TypeError::MutualRecursion { .. } => DiagnosticCode::RECURSION_MUTUAL,
+            TypeError::KindMismatch { .. } => DiagnosticCode::TYPE_KIND_MISMATCH,
+            TypeError::InvalidQecDistance { .. } => DiagnosticCode::QEC_INVALID_DISTANCE,
+            TypeError::MixedQecEntrypoint { .. } => DiagnosticCode::QEC_MIXED_ENTRYPOINT,
             TypeError::Unsupported { .. } => DiagnosticCode::UNSUPPORTED_QUANTUM,
         }
     }
@@ -393,6 +413,23 @@ impl fmt::Display for TypeError {
                 f,
                 "`{name}` is part of a mutually-recursive cycle; only direct self-recursion with a \
                  decreasing measure is supported"
+            ),
+            TypeError::KindMismatch {
+                expected, found, ..
+            } => write!(
+                f,
+                "kind mismatch: expected `{expected}`, found `{found}`"
+            ),
+            TypeError::InvalidQecDistance {
+                family, distance, ..
+            } => write!(
+                f,
+                "invalid distance {distance} for {family} code; \
+                 repetition requires d ≥ 2, surface requires odd d ≥ 3"
+            ),
+            TypeError::MixedQecEntrypoint { .. } => write!(
+                f,
+                "entrypoint mixes QecBlock with bare Qubit/QReg; use one encoding style per program"
             ),
             TypeError::Unsupported { construct, .. } => write!(
                 f,

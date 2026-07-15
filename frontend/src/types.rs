@@ -5,6 +5,25 @@ use crate::ast::{CliffordClass, Name};
 use quon_core::DepthExpr;
 use std::fmt;
 
+/// Closed v1 code-family tags, or a rigid kinded parameter `F: CodeFamily`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodeFamilyTy {
+    Repetition,
+    Surface,
+    /// Rigid type parameter bound by `F: CodeFamily`.
+    Var(Name),
+}
+
+impl fmt::Display for CodeFamilyTy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CodeFamilyTy::Repetition => f.write_str("Repetition"),
+            CodeFamilyTy::Surface => f.write_str("Surface"),
+            CodeFamilyTy::Var(name) => f.write_str(name),
+        }
+    }
+}
+
 /// Fully resolved Quon type (post kind-checking).
 ///
 /// `Var` is a *rigid* type-level name (a quantified variable in a builtin scheme,
@@ -36,6 +55,11 @@ pub enum Ty {
     },
     Q(Box<Ty>),
     Matrix(DepthExpr, DepthExpr, Box<Ty>),
+    /// One logical qubit encoded under family `F` at distance `d` (ADR-0014).
+    QecBlock {
+        family: CodeFamilyTy,
+        distance: DepthExpr,
+    },
     /// Rigid type-level variable (e.g. a quantified `A` in a prelude scheme).
     Var(Name),
     /// Flexible unification variable, keyed into the checker's substitution.
@@ -45,8 +69,8 @@ pub enum Ty {
 impl Ty {
     /// Whether a value of this type is a **linear resource** — one that must be consumed
     /// exactly once and lives in the linear context `Δ` (SPEC §3.4). These are the quantum
-    /// values: a `Qubit`, a `QReg<n>`, a `Circuit{..}` value, and any aggregate (`Tuple`,
-    /// `List`) that carries one.
+    /// values: a `Qubit`, a `QReg<n>`, a `Circuit{..}` value, a `QecBlock<F,d>`, and any
+    /// aggregate (`Tuple`, `List`) that carries one.
     ///
     /// Note what is *excluded*: a `Ty::Linear(a, b)` (a `-o` function) is a reusable
     /// function value — the linearity is a promise about its *argument*, not about the
@@ -54,7 +78,7 @@ impl Ty {
     /// is an unrestricted monadic computation. Both stay in the unrestricted context `Γ`.
     pub fn is_linear_resource(&self) -> bool {
         match self {
-            Ty::Qubit | Ty::QReg(_) | Ty::Circuit { .. } => true,
+            Ty::Qubit | Ty::QReg(_) | Ty::Circuit { .. } | Ty::QecBlock { .. } => true,
             Ty::List(t) => t.is_linear_resource(),
             Ty::Tuple(ts) => ts.iter().any(Ty::is_linear_resource),
             _ => false,
@@ -69,6 +93,45 @@ impl Ty {
     /// Convenience constructor for `List<τ>`.
     pub fn list(t: Ty) -> Ty {
         Ty::List(Box::new(t))
+    }
+
+    /// Whether this type mentions a `QecBlock` (directly or under `Q` / aggregates / arrows).
+    pub fn mentions_qec_block(&self) -> bool {
+        match self {
+            Ty::QecBlock { .. } => true,
+            Ty::Q(t) | Ty::List(t) | Ty::Matrix(_, _, t) => t.mentions_qec_block(),
+            Ty::Tuple(ts) => ts.iter().any(Ty::mentions_qec_block),
+            Ty::Fn(a, b) | Ty::Linear(a, b) => a.mentions_qec_block() || b.mentions_qec_block(),
+            Ty::Circuit { .. }
+            | Ty::Qubit
+            | Ty::QReg(_)
+            | Ty::Bit
+            | Ty::Bool
+            | Ty::Int
+            | Ty::Float
+            | Ty::Unit
+            | Ty::Var(_)
+            | Ty::Meta(_) => false,
+        }
+    }
+
+    /// Whether this type mentions a bare `Qubit` or `QReg` (not under `QecBlock`).
+    pub fn mentions_bare_qubit(&self) -> bool {
+        match self {
+            Ty::Qubit | Ty::QReg(_) => true,
+            Ty::Q(t) | Ty::List(t) | Ty::Matrix(_, _, t) => t.mentions_bare_qubit(),
+            Ty::Tuple(ts) => ts.iter().any(Ty::mentions_bare_qubit),
+            Ty::Fn(a, b) | Ty::Linear(a, b) => a.mentions_bare_qubit() || b.mentions_bare_qubit(),
+            Ty::QecBlock { .. }
+            | Ty::Circuit { .. }
+            | Ty::Bit
+            | Ty::Bool
+            | Ty::Int
+            | Ty::Float
+            | Ty::Unit
+            | Ty::Var(_)
+            | Ty::Meta(_) => false,
+        }
     }
 }
 
@@ -102,6 +165,7 @@ impl fmt::Display for Ty {
             Ty::Circuit { n, m, d, c } => write!(f, "Circuit<{n}, {m}, {d}, {c:?}>"),
             Ty::Q(t) => write!(f, "Q<{t}>"),
             Ty::Matrix(n, m, t) => write!(f, "Matrix<{n}, {m}, {t}>"),
+            Ty::QecBlock { family, distance } => write!(f, "QecBlock<{family}, {distance}>"),
             Ty::Var(name) => f.write_str(name),
             Ty::Meta(id) => write!(f, "?{id}"),
         }

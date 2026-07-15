@@ -184,6 +184,7 @@ pub fn build_symbol_index(decls: &[Sp<Decl>], src: &str) -> SymbolIndex {
         match decl {
             Decl::Fn {
                 name,
+                type_params,
                 params,
                 ret: _,
                 body,
@@ -193,6 +194,9 @@ pub fn build_symbol_index(decls: &[Sp<Decl>], src: &str) -> SymbolIndex {
                 let docs = extract_leading_docs(b.src, decl_span.start);
                 b.insert(name.0.clone(), SymbolKind::Function, name.1, docs);
                 b.stack.push(*decl_span);
+                for p in type_params {
+                    b.insert_plain(p.name.0.clone(), SymbolKind::TypeParam, p.name.1);
+                }
                 for (p, _) in params {
                     b.insert_plain(p.0.clone(), SymbolKind::Parameter, p.1);
                 }
@@ -209,7 +213,7 @@ pub fn build_symbol_index(decls: &[Sp<Decl>], src: &str) -> SymbolIndex {
                 b.insert(name.0.clone(), SymbolKind::TypeAlias, name.1, docs);
                 b.stack.push(*decl_span);
                 for p in params {
-                    b.insert_plain(p.0.clone(), SymbolKind::TypeParam, p.1);
+                    b.insert_plain(p.name.0.clone(), SymbolKind::TypeParam, p.name.1);
                 }
                 b.stack.pop();
             }
@@ -289,6 +293,7 @@ fn walk_expr(expr: &Sp<Expr>, b: &mut Builder<'_>) {
             walk_expr(a, b);
             walk_expr(br, b);
         }
+        Expr::TypeApp { callee, .. } => walk_expr(callee, b),
         Expr::BinOp { lhs, rhs, .. } => {
             walk_expr(lhs, b);
             walk_expr(rhs, b);

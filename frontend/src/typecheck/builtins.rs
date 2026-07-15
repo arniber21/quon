@@ -11,7 +11,8 @@
 //! `(A -> B) -> List<A> -> List<B>` (the SPEC writes it tupled only for readability).
 
 use super::unify::Table;
-use crate::types::Ty;
+use crate::types::{CodeFamilyTy, Ty};
+use quon_core::DepthExpr;
 
 /// A polymorphic type, closed over the rigid variables in `vars`.
 #[derive(Debug, Clone)]
@@ -56,6 +57,10 @@ fn subst_vars(ty: &Ty, mapping: &[(&str, Ty)]) -> Ty {
             Box::new(subst_vars(a, mapping)),
             Box::new(subst_vars(b, mapping)),
         ),
+        Ty::QecBlock { family, distance } => Ty::QecBlock {
+            family: family.clone(),
+            distance: distance.clone(),
+        },
         other => other.clone(),
     }
 }
@@ -75,6 +80,12 @@ fn tuple(ts: Vec<Ty>) -> Ty {
 }
 fn q(t: Ty) -> Ty {
     Ty::Q(Box::new(t))
+}
+fn qec(family: CodeFamilyTy, d: &str) -> Ty {
+    Ty::QecBlock {
+        family,
+        distance: DepthExpr::Var(d.to_string()),
+    }
 }
 /// Right-fold a curried function type: `curry([T1, T2], R) = T1 -> T2 -> R`.
 fn curry(args: Vec<Ty>, ret: Ty) -> Ty {
@@ -140,6 +151,37 @@ pub fn lookup(name: &str) -> Option<Scheme> {
         // so the call passes `Unit` (see `fn_type`). Register allocation `qreg(n)` is
         // size-dependent and handled in the checker, not here.
         "qubit" | "init_one" | "init_plus" => Scheme::mono(func(Ty::Unit, q(Ty::Qubit))),
+
+        // ── QEC builtins (issue #247, ADR-0014) ───────────────────────────────
+        // Constructors and polymorphic ops are special-cased in the checker
+        // (`repetition_code<d>()`, `memory_round`, …). Schemes here exist for
+        // completion/hover and are not the primary typing path.
+        "memory_round" => Scheme {
+            vars: &[],
+            body: {
+                let block = qec(CodeFamilyTy::Var("F".into()), "d");
+                func(block.clone(), q(block))
+            },
+        },
+        "measure_logical_z" | "measure_logical_x" => Scheme {
+            vars: &[],
+            body: func(qec(CodeFamilyTy::Var("F".into()), "d"), q(Ty::Bit)),
+        },
+        "logical_cx" => Scheme {
+            vars: &[],
+            body: {
+                let block = qec(CodeFamilyTy::Surface, "d");
+                curry(
+                    vec![block.clone(), block.clone()],
+                    q(tuple(vec![block.clone(), block])),
+                )
+            },
+        },
+        "repetition_code" | "surface_code" | "surface_code_x" => Scheme {
+            vars: &[],
+            // Placeholder; real type comes from `TypeApp` specialization.
+            body: func(Ty::Unit, q(qec(CodeFamilyTy::Repetition, "d"))),
+        },
 
         // ── §5.11 Physics constants ─────────────────────────────────────────
         "PI" | "TAU" | "E" => Scheme::mono(Ty::Float),

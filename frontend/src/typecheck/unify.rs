@@ -115,6 +115,17 @@ impl Table {
                 Ok(())
             }
 
+            (
+                Ty::QecBlock {
+                    family: f1,
+                    distance: d1,
+                },
+                Ty::QecBlock {
+                    family: f2,
+                    distance: d2,
+                },
+            ) if f1 == f2 && d1.equiv(d2) => Ok(()),
+
             _ => Err(TypeError::Mismatch {
                 expected: self.zonk(&a),
                 found: self.zonk(&b),

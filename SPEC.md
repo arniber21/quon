@@ -121,7 +121,17 @@ Kind k ::=
   | Type          -- the kind of value types
   | Nat           -- the kind of type-level natural numbers
   | Class         -- the kind of Clifford classification labels
+  | CodeFamily    -- closed code-family tags for QEC (`Repetition`, `Surface`)
 ```
+
+Kinded type parameters may appear on `fn` and `type` declarations:
+
+```
+fn memory_rounds<F: CodeFamily, d: Nat>(b: QecBlock<F, d>, rounds: Int): Q<QecBlock<F, d>> = ...
+type Encoded<F: CodeFamily, d: Nat> = QecBlock<F, d>
+```
+
+Bare parameters default to kind `Nat` (`type Oracle<n> = ...`). v1 `CodeFamily` inhabitants are the closed builtin set `Repetition` and `Surface`; user code may be generic over `F` but cannot declare new families.
 
 ### 3.2 Type Grammar
 
@@ -138,6 +148,7 @@ Type τ ::=
   | Circuit<n, m, d, C>           -- unitary circuit morphism
   | Q<τ>                           -- quantum monad
   | Matrix<n, m, τ>               -- n×m matrix of type τ
+  | QecBlock<F, d>                 -- linear encoded logical qubit (F : CodeFamily, d : Nat)
 
 Nat n ::=
   | 0 | 1 | 2 | ...               -- numeric literals
@@ -832,6 +843,21 @@ fn phase_kickback(theta: Float): Circuit<2, 2, 3, Universal> = circuit {
 ```
 
 User-defined gates participate in all optimization passes. If a user-defined gate is provably equivalent to a known primitive (verified by ZX rewriting), it is substituted during optimization.
+
+### 5.13 QEC Builtins
+
+`QecBlock<F, d>` is a linear resource in the `Q` monad (ADR-0014). A single entrypoint may use QEC builtins or bare `Qubit`/`QReg` ops, not both.
+
+| Builtin | Type | Notes |
+|---|---|---|
+| `repetition_code<d>()` | `Q<QecBlock<Repetition, d>>` | Z-basis init; requires `d ≥ 2` |
+| `surface_code<d>()` | `Q<QecBlock<Surface, d>>` | Z-basis init; requires odd `d ≥ 3` |
+| `surface_code_x<d>()` | `Q<QecBlock<Surface, d>>` | X-basis init; same distance rule |
+| `memory_round(b)` | `QecBlock<F, d> → Q<QecBlock<F, d>>` | One syndrome-extraction round |
+| `measure_logical_z(b)` / `measure_logical_x(b)` | `QecBlock<F, d> → Q<Bit>` | Consumes the block |
+| `logical_cx(a, b)` | surface + same `d` only | Returns `Q<(QecBlock, QecBlock)>`; lowering may stub |
+
+Kinded aliases remain valid with Nat-default parameters (`type Oracle<n> = ...`) and with explicit kinds (`type Encoded<F: CodeFamily, d: Nat> = QecBlock<F, d>`).
 
 ---
 

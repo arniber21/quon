@@ -3,7 +3,7 @@
 
 mod support;
 
-use frontend::ast::{Decl, Expr, Stmt, Type};
+use frontend::ast::{Decl, Expr, Kind, NatExpr, Stmt, Type, TypeParam};
 use frontend::lexer::lex;
 use frontend::parser::parse;
 use frontend::pretty::pretty;
@@ -231,3 +231,73 @@ fn parse_error_carries_span() {
         "expected an error at byte {close_paren}, got {errs:?}"
     );
 }
+
+#[test]
+fn parses_kinded_type_params_and_qec_block() {
+    let decls = parse_stripped(
+        "type Encoded<F: CodeFamily, d: Nat> = QecBlock<F, d>\n\
+         fn rounds<F: CodeFamily, d: Nat>(b: QecBlock<F, d>): Q<QecBlock<F, d>> = b",
+    );
+    match &decls[0].0 {
+        Decl::TypeAlias { params, ty, .. } => {
+            assert_eq!(params.len(), 2);
+            assert_eq!(params[0].name.0, "F");
+            assert!(matches!(
+                params[0].kind,
+                Some((Kind::CodeFamily, _))
+            ));
+            assert_eq!(params[1].name.0, "d");
+            assert!(matches!(params[1].kind, Some((Kind::Nat, _))));
+            assert!(matches!(
+                ty.0,
+                Type::QecBlock { .. }
+            ));
+        }
+        other => panic!("expected type alias, got {other:?}"),
+    }
+    match &decls[1].0 {
+        Decl::Fn { type_params, .. } => {
+            assert_eq!(type_params.len(), 2);
+            assert!(matches!(
+                type_params[0],
+                TypeParam {
+                    kind: Some((Kind::CodeFamily, _)),
+                    ..
+                }
+            ));
+        }
+        other => panic!("expected fn, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_type_app_on_ctor() {
+    let e = body("repetition_code<3>()");
+    match e {
+        Expr::App(f, x) => {
+            assert!(matches!(x.0, Expr::Unit));
+            assert!(matches!(
+                f.0,
+                Expr::TypeApp {
+                    args: ref a,
+                    ..
+                } if matches!(a[0].0, NatExpr::Lit(3))
+            ));
+        }
+        other => panic!("expected App(TypeApp, Unit), got {other:?}"),
+    }
+}
+
+#[test]
+fn nat_only_alias_params_still_parse() {
+    let decls = parse_stripped("type Oracle<n> = Circuit<n, n, _, Universal>");
+    match &decls[0].0 {
+        Decl::TypeAlias { params, .. } => {
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].name.0, "n");
+            assert!(params[0].kind.is_none());
+        }
+        other => panic!("expected type alias, got {other:?}"),
+    }
+}
+
