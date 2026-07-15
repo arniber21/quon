@@ -269,7 +269,7 @@ Units: lengths in µm, times in µs, fidelities as probabilities in [0, 1].
 | `native_gates` | array of string | Gate names executable natively, e.g. `["cz", "rz_local", "ry_global", "measure_z"]` | Lowering must decompose to this set |
 | `timing` | object | Operation durations (§8.5) | Schedule makespan, decoherence-weighted cost |
 | `fidelity` | object | Operation fidelities + coherence time (§8.5) | Deferred fidelity estimate (future; not #110 — see §11) |
-| `error_model` | object, optional | Explicit physical error probabilities for QEC (ADR-0017; §8.5) | Resource-report `error_budget` (`--emit-resource-report`); `--emit-qec-experiment` (#255). Hard-fail when those emits are requested and the object is absent — never derived as `1 − fidelity` |
+| `error_model` | object, optional | Explicit physical error probabilities for QEC (ADR-0017; §8.5) | Resource-report `error_budget` (`--emit-resource-report`); `--emit-qec-experiment` (#255). Hard-fail when those emits are requested and the object is absent — never derived as `1 − fidelity`. Experiment JSON schema: [`qec_experiment_schema.md`](./qec_experiment_schema.md). |
 | `cost_model` | object | Linear cost weights (§9) | Scheduler objective, resource report |
 
 ### 8.2 Zone
@@ -642,6 +642,13 @@ Stable `code_family` labels: `surface_code_like`, `repetition_code_toy`,
 Regression goldens: `cargo test -p quon_na --test report_snapshots` (update
 with `INSTA_UPDATE=1`). Compaction (#108) may change schedule numbers; snapshot
 refresh is intentional then.
+
+## 12. QEC experiment artifacts (`--emit-qec-experiment`)
+
+Dual-emit of versioned semantic `*.qec.json` plus a sibling structure-level
+`.stim` circuit from one `quon_qec` IR pass (ADR-0018). Stim contains
+detectors/observables only — physical noise is applied in Python from the JSON
+`error_model` (ADR-0024). Field reference: [`qec_experiment_schema.md`](./qec_experiment_schema.md).
 
 ## References
 

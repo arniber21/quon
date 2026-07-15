@@ -196,6 +196,16 @@ impl CodeFamily {
             CodeFamily::HighRateQldpcLike { .. } | CodeFamily::AbstractBlockCode { .. } => None,
         }
     }
+
+    /// Stable wire/report label (`repetition_code_toy`, …).
+    pub fn as_report_str(&self) -> &'static str {
+        match self {
+            CodeFamily::SurfaceCodeLike { .. } => "surface_code_like",
+            CodeFamily::RepetitionCodeToy { .. } => "repetition_code_toy",
+            CodeFamily::HighRateQldpcLike { .. } => "high_rate_qldpc_like",
+            CodeFamily::AbstractBlockCode { .. } => "abstract_block_code",
+        }
+    }
 }
 
 #[cfg(test)]

@@ -194,12 +194,7 @@ fn classify_bottleneck(report: &ResourceReport) -> BottleneckKind {
 }
 
 fn code_family_label(family: &CodeFamily) -> &'static str {
-    match family {
-        CodeFamily::SurfaceCodeLike { .. } => "surface_code_like",
-        CodeFamily::RepetitionCodeToy { .. } => "repetition_code_toy",
-        CodeFamily::HighRateQldpcLike { .. } => "high_rate_qldpc_like",
-        CodeFamily::AbstractBlockCode { .. } => "abstract_block_code",
-    }
+    family.as_report_str()
 }
 
 fn same_code_family(a: &CodeFamily, b: &CodeFamily) -> bool {

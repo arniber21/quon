@@ -161,6 +161,8 @@ ci-rust: setup-python
       echo "==> $script"
       .venv/bin/python "$script"
     done
+    echo "==> python/test_qec_stim_smoke.py (ADR-0022)"
+    .venv/bin/python -m unittest python/test_qec_stim_smoke.py
 
 # quonfmt · quonlint · LSP smoke on CI corpus
 ci-tooling: _tooling-build

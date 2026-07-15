@@ -7,13 +7,14 @@ edition = "2024"
 # Opt-in Flux refinement-type checking. Off by default so the stable
 # workspace build never compiles `flux-rs`; enabled by `cargo flux -p backend
 # --features flux` (nightly) in the Flux CI workflow.
-flux = ["dep:flux-rs"]
+flux = ["dep:flux-rs", "quon_qec/flux"]
 
 [dependencies]
 serde      = { workspace = true }
 serde_json = { workspace = true }
 thiserror  = { workspace = true }
 quon_core  = { path = "../quon_core" }
+quon_qec   = { path = "../quon_qec" }
 flux-rs    = { workspace = true, optional = true }
 
 [dev-dependencies]

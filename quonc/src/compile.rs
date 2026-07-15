@@ -103,6 +103,8 @@ pub struct CompileReport {
     pub na_logical_qubits: Option<u64>,
     /// True when the entrypoint used QEC builtins (ADR-0021 auto `--verify-na`).
     pub qec_backed: bool,
+    /// QEC workload IR when the compile took the hybrid path (ADR-0016 / #255).
+    pub qec_workload: Option<quon_qec::QecWorkload>,
     pub snapshot: MetricsSnapshot,
 }
 
@@ -135,6 +137,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
                 resource_report: artifacts.resource_report,
                 na_logical_qubits: artifacts.na_logical_qubits,
                 qec_backed: artifacts.qec_backed,
+                qec_workload: artifacts.qec_workload,
                 snapshot: MetricsSnapshot::ok(
                     program,
                     target_info,
@@ -155,6 +158,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
                 resource_report: None,
                 na_logical_qubits: None,
                 qec_backed: false,
+                qec_workload: None,
                 snapshot: MetricsSnapshot {
                     schema_version: quon_core::SCHEMA_VERSION,
                     program,
@@ -182,6 +186,7 @@ struct CompileArtifacts {
     resource_report: Option<ResourceReport>,
     na_logical_qubits: Option<u64>,
     qec_backed: bool,
+    qec_workload: Option<quon_qec::QecWorkload>,
     circuit_metrics: CircuitMetrics,
 }
 
@@ -268,6 +273,7 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 resource_report: Some(artifacts.resource_report),
                 na_logical_qubits: Some(artifacts.logical_qubits),
                 qec_backed,
+                qec_workload: qec_backed.then_some(workload),
                 circuit_metrics,
             })
         }
@@ -315,6 +321,7 @@ fn compile_fixed(
         resource_report: None,
         na_logical_qubits: None,
         qec_backed: false,
+        qec_workload: None,
         circuit_metrics,
     })
 }
