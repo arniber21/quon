@@ -4,11 +4,13 @@
 //! The `.stim` file is geometry/detectors/observables only — no physical noise
 //! channels (ADR-0024). Python annotates noise from the JSON `error_model`.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::expand::{
-    ExpandedBlock, ExpandedWorkload, PhysicalAtomId, RoundKind, RoundTerminal,
+    ExpandedBlock, ExpandedWorkload, PhysicalAtomId, PhysicalCnot, RoundKind, RoundTerminal,
 };
 use crate::family::SourceFamily;
 use crate::workload::LogicalBasis;
@@ -21,8 +23,9 @@ pub const QEC_EXPERIMENT_KIND: &str = "qec_experiment";
 
 /// Snapshot of target physical error rates embedded in experiment JSON.
 ///
-/// Field names match [`backend::NeutralAtomErrorModelSnapshot`] / target wire
-/// form (ADR-0017). Required when emitting an experiment — never invented.
+/// Canonical serde DTO shared with the neutral-atom target wire form
+/// (ADR-0017). Backend re-exports this as `NeutralAtomErrorModelSnapshot`.
+/// Required when emitting an experiment — never invented.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ErrorModelSnapshot {
@@ -32,6 +35,23 @@ pub struct ErrorModelSnapshot {
     pub movement: f64,
     pub transfer: f64,
     pub idle_per_us: f64,
+}
+
+/// Atom role within a code block (layout order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AtomRole {
+    Data,
+    Check,
+}
+
+impl AtomRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Data => "data",
+            Self::Check => "check",
+        }
+    }
 }
 
 /// One stabilizer check in the expanded layout.
@@ -93,7 +113,7 @@ pub struct MeasurementScheduleEntry {
     pub measured_atoms: Vec<u32>,
     /// Measurement basis when applicable (`"x"` / `"z"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub basis: Option<String>,
+    pub basis: Option<LogicalBasis>,
 }
 
 /// Logical observable (product of physical Pauli measurements).
@@ -102,17 +122,16 @@ pub struct MeasurementScheduleEntry {
 pub struct LogicalObservable {
     pub id: u32,
     pub logical_id: u32,
-    pub basis: String,
+    pub basis: LogicalBasis,
     pub atoms: Vec<u32>,
 }
 
-/// Atom role within a code block (layout order).
+/// Atom ↔ site mapping within a code block (layout order).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AtomSiteMapping {
     pub atom: u32,
-    /// `"data"` or `"check"`.
-    pub role: String,
+    pub role: AtomRole,
     pub logical_id: u32,
     pub index_in_block: u32,
 }
@@ -180,6 +199,30 @@ pub enum ExperimentError {
     Serialize(String),
     #[error("stabilizer data atom {atom} missing from final logical measurement record")]
     MissingDataMeasurement { atom: u32 },
+    #[error(
+        "repetition stabilizer layout invalid: check index {check_index} needs data atoms \
+         [{left_index}] and [{right_index}] but only {data_len} data atoms are present"
+    )]
+    InvalidStabilizerLayout {
+        check_index: usize,
+        left_index: usize,
+        right_index: usize,
+        data_len: usize,
+    },
+    #[error(
+        "QEC na_refs barrier_cycle: got {got} Wait barrier cycle(s), expected \
+         {expected} memory_round(s); refusing unchecked Wait mapping"
+    )]
+    BarrierCycleMismatch { got: usize, expected: usize },
+    #[error(
+        "Stim structure emit requires Z measure-logical basis for repetition-code \
+         memory (ZZ detectors); got `{basis}`"
+    )]
+    UnsupportedMeasureBasis { basis: &'static str },
+    #[error("measure-logical round is missing a uniform measurement basis")]
+    MissingMeasureBasis,
+    #[error("measure-logical terminals disagree on measurement basis")]
+    InconsistentMeasureBasis,
 }
 
 /// Build semantic experiment JSON + structure Stim from one expanded IR.
@@ -229,9 +272,9 @@ pub fn build_experiment(
         });
     }
 
-    let check_graph = check_graph_from_blocks(&expanded.blocks);
+    let check_graph = check_graph_from_blocks(&expanded.blocks)?;
     let measurement_schedule = measurement_schedule_from_expanded(expanded);
-    let logical_observables = logical_observables_from_blocks(&expanded.blocks);
+    let logical_observables = logical_observables_from_expanded(expanded)?;
     let atom_site_map = atom_site_map_from_blocks(&expanded.blocks);
 
     Ok(QecExperiment {
@@ -271,18 +314,30 @@ pub fn na_refs_from_expanded(expanded: &ExpandedWorkload) -> Vec<NaScheduleRef> 
 
 /// Attach durable Wait barrier cycles (in order) onto memory-round `na_refs`.
 ///
-/// `barrier_cycles` is the list of schedule layer cycle indices of Wait
-/// barriers after memory rounds, in program order.
-pub fn attach_barrier_cycles(na_refs: &mut [NaScheduleRef], barrier_cycles: &[u32]) {
+/// Fails closed unless `barrier_cycles.len()` equals the number of
+/// `memory_round` entries in `na_refs`.
+pub fn attach_barrier_cycles(
+    na_refs: &mut [NaScheduleRef],
+    barrier_cycles: &[u32],
+) -> Result<(), ExperimentError> {
+    let expected = na_refs
+        .iter()
+        .filter(|r| r.kind == ExperimentRoundKind::MemoryRound)
+        .count();
+    if barrier_cycles.len() != expected {
+        return Err(ExperimentError::BarrierCycleMismatch {
+            got: barrier_cycles.len(),
+            expected,
+        });
+    }
     let mut bi = 0usize;
     for r in na_refs.iter_mut() {
         if r.kind == ExperimentRoundKind::MemoryRound {
-            if let Some(&cycle) = barrier_cycles.get(bi) {
-                r.barrier_cycle = Some(cycle);
-            }
+            r.barrier_cycle = Some(barrier_cycles[bi]);
             bi += 1;
         }
     }
+    Ok(())
 }
 
 /// Emit a structure-only Stim circuit for repetition-code memory (no noise).
@@ -290,6 +345,9 @@ pub fn attach_barrier_cycles(na_refs: &mut [NaScheduleRef], barrier_cycles: &[u3
 /// Layout matches Kelly-style alternating `D C D C … D` with CNOT(data→check)
 /// syndrome extraction. Detectors compare consecutive check measurements;
 /// final data measurements close the last detectors and form the Z observable.
+///
+/// Measure-logical basis must be Z (emits `MZ`); non-Z hard-fails because
+/// final ZZ-detector closure assumes Z data measurements.
 pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
     if expanded.blocks.len() != 1 {
         return Err(ExperimentError::UnsupportedLayout {
@@ -314,6 +372,12 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         .rounds
         .iter()
         .find(|r| r.kind == RoundKind::MeasureLogical);
+    let measure_basis = measure_logical_basis(measure_logical)?;
+    if measure_basis != LogicalBasis::Z {
+        return Err(ExperimentError::UnsupportedMeasureBasis {
+            basis: measure_basis.as_str(),
+        });
+    }
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -328,7 +392,7 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     }
 
     // Prepare |0…0⟩
-    out.push_str("R");
+    out.push('R');
     for atom in &block.atoms {
         out.push_str(&format!(" {}", atom.0));
     }
@@ -337,10 +401,11 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     // rec[] stack after each MR of all checks: newest is last check.
     // After round k (1-based), we have k * n_checks check measurements.
     for (round_i, round) in memory_rounds.iter().enumerate() {
-        // Entangling CNOTs (control data → target check)
-        if !round.entangling.is_empty() {
+        // Non-overlapping CX layers in expand order (Stim forbids overlapping
+        // targets/controls in one CX instruction).
+        for layer in layer_nonoverlapping_cnots(&round.entangling) {
             out.push_str("CX");
-            for cnot in &round.entangling {
+            for cnot in layer {
                 out.push_str(&format!(" {} {}", cnot.control.0, cnot.target.0));
             }
             out.push_str("\nTICK\n");
@@ -360,9 +425,7 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
             // Within this MR, check c is rec[-(n_checks - c)]
             let cur = -(n_checks as i32 - c as i32);
             if round_i == 0 {
-                out.push_str(&format!(
-                    "DETECTOR({c}, {round_i}) rec[{cur}]\n"
-                ));
+                out.push_str(&format!("DETECTOR({c}, {round_i}) rec[{cur}]\n"));
             } else {
                 // Previous round's same check is n_checks measurements earlier.
                 let prev = cur - n_checks as i32;
@@ -374,7 +437,7 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         out.push_str("TICK\n");
     }
 
-    // Final logical Z measurement on data atoms.
+    // Final logical measurement on data atoms (basis from measure-logical).
     let data_atoms: Vec<PhysicalAtomId> = if let Some(mz) = measure_logical {
         mz.terminal
             .iter()
@@ -387,7 +450,11 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         block.data_atoms.clone()
     };
 
-    out.push_str("M");
+    let measure_op = match measure_basis {
+        LogicalBasis::Z => "MZ",
+        LogicalBasis::X => "MX",
+    };
+    out.push_str(measure_op);
     for atom in &data_atoms {
         out.push_str(&format!(" {}", atom.0));
     }
@@ -400,7 +467,7 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     let d = data_atoms.len() as i32;
     if !memory_rounds.is_empty() && n_checks > 0 {
         let final_round = memory_rounds.len();
-        for (c, stab) in check_graph_stabilizers(block).into_iter().enumerate() {
+        for (c, stab) in check_graph_stabilizers(block)?.into_iter().enumerate() {
             let check_rec = -(d + n_checks as i32 - c as i32);
             // Data atom indices in the final M record (layout order of data_atoms).
             let mut parts = format!("DETECTOR({c}, {final_round}) rec[{check_rec}]");
@@ -417,7 +484,7 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
         }
     }
 
-    // Logical Z observable = product of all data Z measurements.
+    // Logical observable = product of data measurements in the measure basis.
     out.push_str("OBSERVABLE_INCLUDE(0)");
     for i in 0..data_atoms.len() {
         let rec = -(d - i as i32);
@@ -449,7 +516,34 @@ pub fn sibling_stim_path(json_path: &std::path::Path) -> std::path::PathBuf {
     json_path.with_file_name(format!("{stem}.stim"))
 }
 
-fn check_graph_from_blocks(blocks: &[ExpandedBlock]) -> CheckGraph {
+/// Greedy non-overlapping CX layers preserving expand order.
+///
+/// Stim applies every pair in one `CX` instruction simultaneously, so controls
+/// and targets within a layer must be disjoint.
+pub fn layer_nonoverlapping_cnots(cnots: &[PhysicalCnot]) -> Vec<Vec<&PhysicalCnot>> {
+    let mut remaining: Vec<&PhysicalCnot> = cnots.iter().collect();
+    let mut layers = Vec::new();
+    while !remaining.is_empty() {
+        let mut layer = Vec::new();
+        let mut used = HashSet::new();
+        let mut next_remaining = Vec::new();
+        for cnot in remaining {
+            if used.contains(&cnot.control.0) || used.contains(&cnot.target.0) {
+                next_remaining.push(cnot);
+            } else {
+                used.insert(cnot.control.0);
+                used.insert(cnot.target.0);
+                layer.push(cnot);
+            }
+        }
+        debug_assert!(!layer.is_empty(), "progress on non-empty remaining");
+        layers.push(layer);
+        remaining = next_remaining;
+    }
+    layers
+}
+
+fn check_graph_from_blocks(blocks: &[ExpandedBlock]) -> Result<CheckGraph, ExperimentError> {
     let mut atoms = Vec::new();
     let mut data_atoms = Vec::new();
     let mut check_atoms = Vec::new();
@@ -458,26 +552,41 @@ fn check_graph_from_blocks(blocks: &[ExpandedBlock]) -> CheckGraph {
         atoms.extend(block.atoms.iter().map(|a| a.0));
         data_atoms.extend(block.data_atoms.iter().map(|a| a.0));
         check_atoms.extend(block.check_atoms.iter().map(|a| a.0));
-        stabilizers.extend(check_graph_stabilizers(block));
+        stabilizers.extend(check_graph_stabilizers(block)?);
     }
-    CheckGraph {
+    Ok(CheckGraph {
         atoms,
         data_atoms,
         check_atoms,
         stabilizers,
-    }
+    })
 }
 
-fn check_graph_stabilizers(block: &ExpandedBlock) -> Vec<StabilizerCheck> {
+fn check_graph_stabilizers(block: &ExpandedBlock) -> Result<Vec<StabilizerCheck>, ExperimentError> {
     let mut out = Vec::with_capacity(block.check_atoms.len());
     for i in 0..block.check_atoms.len() {
+        let left = block.data_atoms.get(i).ok_or(ExperimentError::InvalidStabilizerLayout {
+            check_index: i,
+            left_index: i,
+            right_index: i + 1,
+            data_len: block.data_atoms.len(),
+        })?;
+        let right = block
+            .data_atoms
+            .get(i + 1)
+            .ok_or(ExperimentError::InvalidStabilizerLayout {
+                check_index: i,
+                left_index: i,
+                right_index: i + 1,
+                data_len: block.data_atoms.len(),
+            })?;
         out.push(StabilizerCheck {
             logical_id: block.logical_id.0,
             check_atom: block.check_atoms[i].0,
-            data_atoms: vec![block.data_atoms[i].0, block.data_atoms[i + 1].0],
+            data_atoms: vec![left.0, right.0],
         });
     }
-    out
+    Ok(out)
 }
 
 fn measurement_schedule_from_expanded(expanded: &ExpandedWorkload) -> Vec<MeasurementScheduleEntry> {
@@ -498,7 +607,7 @@ fn measurement_schedule_from_expanded(expanded: &ExpandedWorkload) -> Vec<Measur
                         } = term
                         {
                             atoms.push(atom.0);
-                            basis = Some(b.as_str().to_string());
+                            basis = Some(*b);
                         }
                     }
                     (atoms, basis)
@@ -515,24 +624,47 @@ fn measurement_schedule_from_expanded(expanded: &ExpandedWorkload) -> Vec<Measur
         .collect()
 }
 
-fn logical_observables_from_blocks(blocks: &[ExpandedBlock]) -> Vec<LogicalObservable> {
-    blocks
+fn logical_observables_from_expanded(
+    expanded: &ExpandedWorkload,
+) -> Result<Vec<LogicalObservable>, ExperimentError> {
+    let measure_basis = measure_logical_basis(
+        expanded
+            .rounds
+            .iter()
+            .find(|r| r.kind == RoundKind::MeasureLogical),
+    )?;
+    Ok(expanded
+        .blocks
         .iter()
         .enumerate()
-        .map(|(i, block)| {
-            // Repetition Z-memory: logical Z is the product of data Z operators.
-            let basis = match block.init_basis {
-                LogicalBasis::Z => "z",
-                LogicalBasis::X => "x",
-            };
-            LogicalObservable {
-                id: i as u32,
-                logical_id: block.logical_id.0,
-                basis: basis.to_string(),
-                atoms: block.data_atoms.iter().map(|a| a.0).collect(),
-            }
+        .map(|(i, block)| LogicalObservable {
+            id: i as u32,
+            logical_id: block.logical_id.0,
+            basis: measure_basis,
+            atoms: block.data_atoms.iter().map(|a| a.0).collect(),
         })
-        .collect()
+        .collect())
+}
+
+fn measure_logical_basis(
+    measure_logical: Option<&crate::expand::PhysicalRound>,
+) -> Result<LogicalBasis, ExperimentError> {
+    let Some(round) = measure_logical else {
+        return Err(ExperimentError::MissingMeasureBasis);
+    };
+    let mut basis = None;
+    for term in &round.terminal {
+        if let RoundTerminal::Measure { basis: b, .. } = term {
+            match basis {
+                None => basis = Some(*b),
+                Some(prev) if prev != *b => {
+                    return Err(ExperimentError::InconsistentMeasureBasis);
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    basis.ok_or(ExperimentError::MissingMeasureBasis)
 }
 
 fn atom_site_map_from_blocks(blocks: &[ExpandedBlock]) -> Vec<AtomSiteMapping> {
@@ -540,13 +672,13 @@ fn atom_site_map_from_blocks(blocks: &[ExpandedBlock]) -> Vec<AtomSiteMapping> {
     for block in blocks {
         for (index_in_block, atom) in block.atoms.iter().enumerate() {
             let role = if index_in_block % 2 == 0 {
-                "data"
+                AtomRole::Data
             } else {
-                "check"
+                AtomRole::Check
             };
             out.push(AtomSiteMapping {
                 atom: atom.0,
-                role: role.to_string(),
+                role,
                 logical_id: block.logical_id.0,
                 index_in_block: index_in_block as u32,
             });
@@ -588,6 +720,21 @@ mod tests {
         expand_workload(&b.finish()).expect("expand")
     }
 
+    fn repetition_d3_measure_x() -> ExpandedWorkload {
+        let mut b = WorkloadBuilder::new();
+        b.construct(
+            SourceFamily::Repetition,
+            3,
+            LogicalBasis::Z,
+            LogicalQubitId(0),
+        )
+        .expect("construct");
+        b.memory_round(LogicalQubitId(0)).expect("r1");
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::X)
+            .expect("mx");
+        expand_workload(&b.finish()).expect("expand")
+    }
+
     #[test]
     fn experiment_dto_round_trips_and_embeds_error_model() {
         let expanded = repetition_d3_two_rounds();
@@ -612,15 +759,17 @@ mod tests {
         assert_eq!(exp.check_graph.check_atoms, vec![1, 3]);
         assert_eq!(exp.check_graph.data_atoms, vec![0, 2, 4]);
         assert_eq!(exp.check_graph.stabilizers.len(), 2);
-        assert_eq!(
-            exp.check_graph.stabilizers[0].data_atoms,
-            vec![0, 2]
-        );
+        assert_eq!(exp.check_graph.stabilizers[0].data_atoms, vec![0, 2]);
         assert_eq!(exp.logical_observables[0].atoms, vec![0, 2, 4]);
+        assert_eq!(exp.logical_observables[0].basis, LogicalBasis::Z);
+        assert_eq!(exp.atom_site_map[0].role, AtomRole::Data);
+        assert_eq!(exp.atom_site_map[1].role, AtomRole::Check);
         assert_eq!(exp.na_refs.len(), 4);
         assert_eq!(exp.na_refs[1].kind, ExperimentRoundKind::MemoryRound);
 
         let json = experiment_to_json(&exp).expect("json");
+        assert!(json.contains("\"basis\": \"z\""), "{json}");
+        assert!(json.contains("\"role\": \"data\""), "{json}");
         let back: QecExperiment = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, exp);
     }
@@ -648,6 +797,65 @@ mod tests {
     }
 
     #[test]
+    fn nested_dto_rejects_unknown_fields() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "StabilizerCheck",
+                r#"{"logical_id":0,"check_atom":1,"data_atoms":[0,2],"bonus":1}"#,
+            ),
+            (
+                "MeasurementScheduleEntry",
+                r#"{"round_index":0,"kind":"construct","logical_id":0,"measured_atoms":[],"extra":true}"#,
+            ),
+            (
+                "LogicalObservable",
+                r#"{"id":0,"logical_id":0,"basis":"z","atoms":[0],"noise":1}"#,
+            ),
+            (
+                "AtomSiteMapping",
+                r#"{"atom":0,"role":"data","logical_id":0,"index_in_block":0,"zone":1}"#,
+            ),
+            (
+                "NaScheduleRef",
+                r#"{"round_index":0,"kind":"memory_round","logical_id":0,"barrier_cycle":3,"hint":0}"#,
+            ),
+            (
+                "CheckGraph",
+                r#"{"atoms":[],"data_atoms":[],"check_atoms":[],"stabilizers":[],"layout":1}"#,
+            ),
+        ];
+        for (name, json) in cases {
+            let err = match *name {
+                "StabilizerCheck" => serde_json::from_str::<StabilizerCheck>(json)
+                    .expect_err("unknown")
+                    .to_string(),
+                "MeasurementScheduleEntry" => {
+                    serde_json::from_str::<MeasurementScheduleEntry>(json)
+                        .expect_err("unknown")
+                        .to_string()
+                }
+                "LogicalObservable" => serde_json::from_str::<LogicalObservable>(json)
+                    .expect_err("unknown")
+                    .to_string(),
+                "AtomSiteMapping" => serde_json::from_str::<AtomSiteMapping>(json)
+                    .expect_err("unknown")
+                    .to_string(),
+                "NaScheduleRef" => serde_json::from_str::<NaScheduleRef>(json)
+                    .expect_err("unknown")
+                    .to_string(),
+                "CheckGraph" => serde_json::from_str::<CheckGraph>(json)
+                    .expect_err("unknown")
+                    .to_string(),
+                _ => unreachable!(),
+            };
+            assert!(
+                err.contains("unknown field"),
+                "{name} should reject unknown fields: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn error_model_snapshot_rejects_unknown_fields() {
         let err = serde_json::from_str::<ErrorModelSnapshot>(
             r#"{"rydberg":0.1,"measurement":0.1,"reset":0.1,"movement":0.1,"transfer":0.1,"idle_per_us":0.1,"bonus":1}"#,
@@ -662,11 +870,17 @@ mod tests {
         let stim = emit_stim_structure(&expanded).expect("stim");
 
         assert!(stim.contains("QUBIT_COORDS"), "{stim}");
-        assert!(stim.contains("CX 0 1 2 1 2 3 4 3"), "{stim}");
+        // Non-overlapping CX layers in expand order (not one packed line).
+        assert!(stim.contains("CX 0 1 2 3\nTICK"), "{stim}");
+        assert!(stim.contains("CX 2 1 4 3\nTICK"), "{stim}");
+        assert!(
+            !stim.contains("CX 0 1 2 1 2 3 4 3"),
+            "must not pack overlapping CX:\n{stim}"
+        );
         assert!(stim.contains("MR 1 3"), "{stim}");
         assert!(stim.contains("DETECTOR"), "{stim}");
         assert!(stim.contains("OBSERVABLE_INCLUDE(0)"), "{stim}");
-        assert!(stim.contains("M 0 2 4"), "{stim}");
+        assert!(stim.contains("MZ 0 2 4"), "{stim}");
 
         // Structure only: no Stim noise channels (ADR-0024).
         for line in stim.lines() {
@@ -694,6 +908,32 @@ mod tests {
         assert!(stim.contains("DETECTOR(0, 0)"), "{stim}");
         assert!(stim.contains("DETECTOR(0, 1)"), "{stim}");
         assert!(stim.contains("DETECTOR(0, 2)"), "{stim}");
+    }
+
+    #[test]
+    fn stim_hard_fails_non_z_measure_logical() {
+        let expanded = repetition_d3_measure_x();
+        let err = emit_stim_structure(&expanded).expect_err("non-Z");
+        assert!(
+            matches!(err, ExperimentError::UnsupportedMeasureBasis { basis: "x" }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn observables_use_measure_basis_not_init_basis() {
+        let expanded = repetition_d3_measure_x();
+        // JSON build still records measure basis even though Stim hard-fails.
+        let exp = build_experiment(
+            &expanded,
+            example_error_model(),
+            "x.stim",
+            na_refs_from_expanded(&expanded),
+        )
+        .expect("build");
+        assert_eq!(exp.logical_observables[0].basis, LogicalBasis::X);
+        // init was Z
+        assert_eq!(expanded.blocks[0].init_basis, LogicalBasis::Z);
     }
 
     #[test]
@@ -729,10 +969,83 @@ mod tests {
     fn attach_barrier_cycles_fills_memory_rounds() {
         let expanded = repetition_d3_two_rounds();
         let mut refs = na_refs_from_expanded(&expanded);
-        attach_barrier_cycles(&mut refs, &[7, 15]);
+        attach_barrier_cycles(&mut refs, &[7, 15]).expect("match");
         assert_eq!(refs[1].barrier_cycle, Some(7));
         assert_eq!(refs[2].barrier_cycle, Some(15));
         assert!(refs[0].barrier_cycle.is_none());
         assert!(refs[3].barrier_cycle.is_none());
     }
+
+    #[test]
+    fn attach_barrier_cycles_fails_closed_on_count_mismatch() {
+        let expanded = repetition_d3_two_rounds();
+        let mut refs = na_refs_from_expanded(&expanded);
+        let err = attach_barrier_cycles(&mut refs, &[7]).expect_err("mismatch");
+        assert_eq!(
+            err,
+            ExperimentError::BarrierCycleMismatch {
+                got: 1,
+                expected: 2
+            }
+        );
+        let err = attach_barrier_cycles(&mut refs, &[1, 2, 3]).expect_err("too many");
+        assert_eq!(
+            err,
+            ExperimentError::BarrierCycleMismatch {
+                got: 3,
+                expected: 2
+            }
+        );
+    }
+
+    #[test]
+    fn check_graph_stabilizers_fail_on_short_data() {
+        let mut expanded = repetition_d3_two_rounds();
+        expanded.blocks[0].data_atoms.pop(); // 3 → 2 data, still 2 checks
+        let err = check_graph_stabilizers(&expanded.blocks[0]).expect_err("short");
+        assert!(
+            matches!(
+                err,
+                ExperimentError::InvalidStabilizerLayout {
+                    check_index: 1,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn cx_layers_are_non_overlapping_in_expand_order() {
+        let expanded = repetition_d3_two_rounds();
+        let memory = expanded
+            .rounds
+            .iter()
+            .find(|r| r.kind == RoundKind::MemoryRound)
+            .expect("memory");
+        let layers = layer_nonoverlapping_cnots(&memory.entangling);
+        assert_eq!(layers.len(), 2);
+        assert_eq!(
+            layers[0]
+                .iter()
+                .map(|c| (c.control.0, c.target.0))
+                .collect::<Vec<_>>(),
+            vec![(0, 1), (2, 3)]
+        );
+        assert_eq!(
+            layers[1]
+                .iter()
+                .map(|c| (c.control.0, c.target.0))
+                .collect::<Vec<_>>(),
+            vec![(2, 1), (4, 3)]
+        );
+        for layer in &layers {
+            let mut used = HashSet::new();
+            for cnot in layer {
+                assert!(used.insert(cnot.control.0));
+                assert!(used.insert(cnot.target.0));
+            }
+        }
+    }
+
 }

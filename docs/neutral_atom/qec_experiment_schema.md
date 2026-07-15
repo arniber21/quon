@@ -39,18 +39,28 @@ without a target `error_model` is a hard compiler failure (never `1 − fidelity
 ### `measurement_schedule[]`
 
 - `round_index`, `kind` (`construct` / `memory_round` / `measure_logical`)
-- `logical_id`, `measured_atoms`, optional `basis` (`"x"` / `"z"`)
+- `logical_id`, `measured_atoms`, optional `basis` (`"x"` / `"z"` — serde enum)
+
+### `atom_site_map[]`
+
+- `atom`, `role` (`"data"` / `"check"` — serde enum), `logical_id`, `index_in_block`
+
+### `logical_observables[]`
+
+- `id`, `logical_id`, `basis` (`"x"` / `"z"` from **measure-logical**, not init), `atoms`
 
 ### `na_refs[]`
 
 Always includes round structure from the expanded IR. When the NA schedule from
-the same compile is available, memory-round entries may also set
-`barrier_cycle` to the durable Wait cycle after that round. Optional
-`cycle_start` / `cycle_end` are reserved for richer layer ranges.
+the same compile is available, memory-round entries set `barrier_cycle` to the
+durable Wait cycle identified via `round_barrier_cuts` — fail-closed unless the
+Wait count equals `#memory_rounds`. Optional `cycle_start` / `cycle_end` are
+reserved for richer layer ranges.
 
 ### `error_model`
 
-Same fields as the neutral-atom target wire form: `rydberg`, `measurement`,
+Same type as the neutral-atom target snapshot (`quon_qec::ErrorModelSnapshot` /
+`backend::NeutralAtomErrorModelSnapshot` alias): `rydberg`, `measurement`,
 `reset`, `movement`, `transfer`, `idle_per_us` (probabilities in `[0, 1]`).
 
 ## Sibling `.stim` (structure only)
@@ -58,12 +68,13 @@ Same fields as the neutral-atom target wire form: `rydberg`, `measurement`,
 Generated from the same `ExpandedWorkload` — never by re-parsing `quantum.na`.
 Contains:
 
-- `QUBIT_COORDS`, `R`, `CX`, `MR` / `M`, `TICK`
-- `DETECTOR` (consecutive syndromes + final data closure)
-- `OBSERVABLE_INCLUDE` (logical Z = product of data Z measurements)
+- `QUBIT_COORDS`, `R`, layered non-overlapping `CX`+`TICK` (expand order), `MR` / `MZ` (or `MX`), `TICK`
+- `DETECTOR` (consecutive syndromes + final data closure; Z measure-logical only)
+- `OBSERVABLE_INCLUDE` (product of data measurements in the measure basis)
 
 **No** Stim noise channels (`DEPOLARIZE*`, `X_ERROR`, …). The compiler emits
-Stim text without linking Stim C++.
+Stim text without linking Stim C++. Python validates parse / detectors /
+noiseless sampling via `python/test_qec_stim_smoke.py` (ADR-0022).
 
 ## Example
 

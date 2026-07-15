@@ -202,10 +202,10 @@ pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, Expan
     Ok(ExpandedWorkload { blocks, rounds })
 }
 
-fn find_layout<'a>(
-    layouts: &'a [ExpandedBlock],
+fn find_layout(
+    layouts: &[ExpandedBlock],
     id: LogicalQubitId,
-) -> Result<&'a ExpandedBlock, ExpandError> {
+) -> Result<&ExpandedBlock, ExpandError> {
     layouts
         .iter()
         .find(|b| b.logical_id == id)

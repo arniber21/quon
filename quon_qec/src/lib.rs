@@ -15,11 +15,11 @@ pub use expand::{
     RoundKind, RoundTerminal, expand_workload,
 };
 pub use experiment::{
-    AtomSiteMapping, CheckGraph, ErrorModelSnapshot, ExperimentError, ExperimentRoundKind,
+    AtomRole, AtomSiteMapping, CheckGraph, ErrorModelSnapshot, ExperimentError, ExperimentRoundKind,
     LogicalObservable, MeasurementScheduleEntry, NaScheduleRef, QEC_EXPERIMENT_KIND,
     QEC_EXPERIMENT_SCHEMA_VERSION, QecExperiment, StabilizerCheck, attach_barrier_cycles,
-    build_experiment, dual_emit, emit_stim_structure, experiment_to_json, na_refs_from_expanded,
-    sibling_stim_path,
+    build_experiment, dual_emit, emit_stim_structure, experiment_to_json, layer_nonoverlapping_cnots,
+    na_refs_from_expanded, sibling_stim_path,
 };
 pub use family::{
     CodeFamily, NetRate, QecError, SourceFamily, atoms_per_logical, ceil_div, repetition_n,

@@ -152,6 +152,7 @@ dependencies = [
  "petgraph",
  "proptest",
  "quon_core",
+ "quon_qec",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

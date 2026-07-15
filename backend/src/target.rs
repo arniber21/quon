@@ -437,18 +437,9 @@ pub struct NeutralAtomErrorModel {
 
 /// Stable serde DTO of [`NeutralAtomErrorModel`] for experiment JSON snapshots (#255).
 ///
-/// Field names match the target wire form. Prefer this over serializing the
-/// domain type directly.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NeutralAtomErrorModelSnapshot {
-    pub rydberg: f64,
-    pub measurement: f64,
-    pub reset: f64,
-    pub movement: f64,
-    pub transfer: f64,
-    pub idle_per_us: f64,
-}
+/// Alias of [`quon_qec::ErrorModelSnapshot`] so target wire form and experiment
+/// JSON share one unchecked-duplicate-free type (ADR-0017 / #255).
+pub type NeutralAtomErrorModelSnapshot = quon_qec::ErrorModelSnapshot;
 
 impl NeutralAtomErrorModel {
     /// Snapshot physical rates for experiment JSON emit (#255).
@@ -471,7 +462,7 @@ impl TryFrom<NeutralAtomErrorModelSnapshot> for NeutralAtomErrorModel {
     /// target-descriptor load).
     fn try_from(s: NeutralAtomErrorModelSnapshot) -> Result<Self, Self::Error> {
         fn probability(field: &str, value: f64) -> Result<f64, crate::error::BackendError> {
-            if value.is_finite() && value >= 0.0 && value <= 1.0 {
+            if value.is_finite() && (0.0..=1.0).contains(&value) {
                 Ok(value)
             } else {
                 Err(crate::error::BackendError::InvalidTargetConfig(format!(

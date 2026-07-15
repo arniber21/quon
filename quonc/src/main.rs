@@ -10,14 +10,15 @@ use quon_core::{
     save_snapshot,
 };
 use quon_na::{
-    PlacementStrategy, PlacerMode, attach_qec_error_budget, require_target_error_model,
-    resource_report_to_json, resource_report_to_markdown,
+    NeutralAtomAction, PlacementStrategy, PlacerMode, attach_qec_error_budget,
+    require_target_error_model, resource_report_to_json, resource_report_to_markdown,
+    round_barrier_cuts,
 };
 
 use backend::{BackendTarget, TargetKind};
 use quon_qec::{
-    ErrorModelSnapshot, attach_barrier_cycles, dual_emit, expand_workload, experiment_to_json,
-    na_refs_from_expanded, sibling_stim_path,
+    attach_barrier_cycles, dual_emit, expand_workload, experiment_to_json, na_refs_from_expanded,
+    sibling_stim_path,
 };
 use quonc::compile::{
     CompileRequest, build_na_schedule_view, compile, schedule_to_json, schedule_to_mlir,
@@ -691,16 +692,9 @@ fn emit_qec_experiment_artifacts(
         ),
     };
     // ADR-0017: hard-fail when error_model is missing (never invent rates).
+    // Snapshot type is unified with quon_qec::ErrorModelSnapshot (backend alias).
     let model = require_target_error_model(na).map_err(|e| anyhow!("{e}"))?;
-    let snap = model.error_model_snapshot();
-    let error_model = ErrorModelSnapshot {
-        rydberg: snap.rydberg,
-        measurement: snap.measurement,
-        reset: snap.reset,
-        movement: snap.movement,
-        transfer: snap.transfer,
-        idle_per_us: snap.idle_per_us,
-    };
+    let error_model = model.error_model_snapshot();
 
     // Re-expand from the same in-memory workload IR (never re-parse quantum.na).
     let expanded = expand_workload(workload).map_err(|e| anyhow!("QEC expand for experiment: {e}"))?;
@@ -713,17 +707,8 @@ fn emit_qec_experiment_artifacts(
 
     let mut na_refs = na_refs_from_expanded(&expanded);
     if let Some(layers) = &report.na_schedule {
-        let barriers: Vec<u32> = layers
-            .iter()
-            .filter(|layer| {
-                layer
-                    .actions
-                    .iter()
-                    .any(|a| matches!(a, quon_na::NeutralAtomAction::Wait { .. }))
-            })
-            .map(|layer| layer.cycle)
-            .collect();
-        attach_barrier_cycles(&mut na_refs, &barriers);
+        let barriers = memory_round_barrier_cycles(layers, expanded.memory_round_count())?;
+        attach_barrier_cycles(&mut na_refs, &barriers).map_err(|e| anyhow!("{e}"))?;
     }
 
     let (experiment, stim) = dual_emit(&expanded, error_model, &stim_basename, na_refs)
@@ -733,23 +718,73 @@ fn emit_qec_experiment_artifacts(
     if let Some(parent) = json_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    if let Some(parent) = stim_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
     let mut json_body = json;
     if !json_body.ends_with('\n') {
         json_body.push('\n');
-    }
-    std::fs::write(json_path, json_body)
-        .with_context(|| format!("write QEC experiment JSON {}", json_path.display()))?;
-
-    if let Some(parent) = stim_path.parent() {
-        std::fs::create_dir_all(parent)?;
     }
     let mut stim_body = stim;
     if !stim_body.ends_with('\n') {
         stim_body.push('\n');
     }
-    std::fs::write(&stim_path, stim_body)
-        .with_context(|| format!("write QEC Stim circuit {}", stim_path.display()))?;
 
+    // Atomic dual write: Stim first, then JSON; clean up Stim if JSON fails.
+    write_atomic(&stim_path, &stim_body)
+        .with_context(|| format!("write QEC Stim circuit {}", stim_path.display()))?;
+    if let Err(e) = write_atomic(json_path, &json_body)
+        .with_context(|| format!("write QEC experiment JSON {}", json_path.display()))
+    {
+        let _ = std::fs::remove_file(&stim_path);
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// Durable Wait barrier cycles from [`round_barrier_cuts`], fail-closed on count.
+fn memory_round_barrier_cycles(
+    layers: &[quon_na::ScheduleLayer],
+    expected_memory_rounds: usize,
+) -> Result<Vec<u32>> {
+    let cuts = round_barrier_cuts(layers);
+    let mut cycles = Vec::new();
+    for &(idx, _) in &cuts {
+        let layer = layers.get(idx as usize).ok_or_else(|| {
+            anyhow!("round_barrier_cuts index {idx} out of range ({} layers)", layers.len())
+        })?;
+        let is_wait = layer
+            .actions
+            .iter()
+            .any(|a| matches!(a, NeutralAtomAction::Wait { .. }));
+        if is_wait {
+            cycles.push(layer.cycle);
+        }
+    }
+    if cycles.len() != expected_memory_rounds {
+        bail!(
+            "QEC na_refs barrier_cycle: found {} durable Wait barrier(s) via \
+             round_barrier_cuts, expected {} memory_round(s); refusing unchecked Wait mapping",
+            cycles.len(),
+            expected_memory_rounds
+        );
+    }
+    Ok(cycles)
+}
+
+fn write_atomic(path: &std::path::Path, contents: &str) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("artifact");
+    let tmp = parent.join(format!(".{file_name}.tmp"));
+    std::fs::write(&tmp, contents)
+        .with_context(|| format!("write temp {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
