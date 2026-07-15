@@ -75,16 +75,45 @@ _Avoid_: T-gate count, non-Clifford count, magic-state count
 **ZX-graph**: An auxiliary graph representation of a `quantum.circ` circuit used for non-local algebraic simplification. Nodes are Z- or X-spiders with phase angles; edges are wires or Hadamard boxes. Built on `petgraph::StableGraph`.
 _Avoid_: ZX-diagram, spider graph
 
+### QEC (source language)
+
+**QecBlock**: A source-level linear quantum resource of type `QecBlock<F, d>` — one logical qubit encoded under code family `F` at distance `d`, optionally prepared in a logical Pauli basis at construction. Distinct from a bare `Qubit`/`QReg`; QEC programs opt into it explicitly rather than annotating ordinary qubits with error-correction properties.
+_Avoid_: QEC qubit, encoded qubit, logical qubit (for the source type)
+
+**QEC workload IR**: The MLIR-free data structure collected from QEC builtins inside a `Q` / `run { }` program (constructors, memory rounds, logical ops, measurements) — family, distance, logical ids, rounds, and operation order. Owned by the shared QEC layer and consumed by neutral-atom scheduling / experiment emit. Not a source-language type or a second monad; QEC programs stay in `Q<τ>` with `QecBlock` as the linear resource.
+_Avoid_: QecWorkload (as a source type), QEC circuit, fault-tolerant circuit
+
+**Code family**: A discrete type-level tag naming an error-correcting code kind used as the `F` parameter of `QecBlock`. v1 inhabitants are the closed builtin set `Repetition` and `Surface`; new families require a compiler change. Not a `Nat`; not interchangeable with distance.
+_Avoid_: code type, QEC family enum (for the source concept)
+
+**Kinded type parameter**: A type or `Nat` parameter annotated with a kind in a function or type declaration (e.g. `F: CodeFamily`, `d: Nat`). Distinct from today's Nat-only alias parameters; user functions may be generic over both `CodeFamily` and `Nat` kinds.
+_Avoid_: type variable (unqualified), template parameter, monomorphization parameter
+
+**Memory round**: One syndrome-extraction cycle on a `QecBlock` — entangle checks, measure ancillas, reset — returning the same block for further rounds or logical measurement. A QEC builtin in `Q`, not a bare physical `measure` on data atoms. Expands to a scheduled round with a barrier: NA planners may optimize inside the round, but must not reorder or compact across round boundaries.
+_Avoid_: syndrome round (as the source name), stabilizer round (unqualified)
+
+**Logical measurement**: A QEC builtin that consumes a `QecBlock` and returns a classical `Bit` for a chosen logical Pauli (v1: `measure_logical_x`, `measure_logical_z`). Distinct from measuring an individual physical atom in the schedule.
+_Avoid_: logical readout, block measurement
+
+**Physical error model**: Per-target calibrated (or assumed) physical error parameters for neutral-atom QEC reporting and experiment emit — Rydberg, measurement, reset, movement, transfer, and idle — distinct from gate `fidelity` fields used by non-QEC cost hooks. Absent when QEC error artifacts are requested is a hard compiler failure, not a defaulted guess.
+_Avoid_: noise model (for the NA QEC fields), fidelity (for these parameters)
+
+**QEC experiment artifact**: The paired compiler outputs for external QEC evaluation — versioned semantic experiment JSON plus a generated Stim circuit — both derived from the same QEC workload IR. The JSON carries Quon/QEC metadata and schedule references; the Stim circuit is what Sinter runs. Distinct from the compiler resource report; sampled Sinter results are not folded back into compiler artifacts.
+_Avoid_: qec.json alone (as the full artifact), schedule JSON (as the experiment), fused QEC report
+
+**Lattice-surgery CX**: The v1 lowering of `logical_cx` between two same-distance surface-code blocks — a fixed-layout three-patch merge/split gadget (control, transitional ancilla, target) with recorded Pauli-frame byproducts. Not a general patch router; not a bare physical transversal CX.
+_Avoid_: transversal CX (for this op), lattice surgery (unqualified as the whole compiler)
+
 ### Neutral-atom backend
 
-**Logical qubit**: A backend-only, IR-level identifier assigned to a `quantum.dynamic` qubit after lowering, used to track its expansion into a code block of atoms. Has no representation in Quon source syntax — a user cannot annotate a source-level `Qubit` with error-correction properties. Distinct from the source-level `Qubit`, which is checked for linearity by the frontend independently of any backend expansion.
+**Logical qubit**: A backend/IR-level identifier for one encoded logical qubit after QEC lowering, used to track its expansion into atoms. Distinct from the source-level `QecBlock` (the typed resource) and from bare `Qubit`.
 _Avoid_: QEC qubit
 
-**Atom**: A single physical site occupant in the neutral-atom architecture-aware schedule — the physical unit that a logical qubit's code block expands into. Exists only in the neutral-atom backend (`quon_na`), below the frontend's linear type system.
+**Atom**: A single physical site occupant in the neutral-atom architecture-aware schedule — the physical unit that a code block expands into. Exists only in the neutral-atom backend (`quon_na`), below the frontend's linear type system.
 _Avoid_: physical qubit
 
-**Code block**: A group of atoms jointly implementing one or more logical qubits under a given error-correcting code family. A backend-only concept produced during neutral-atom lowering, never visible at the source-language level.
-_Avoid_: code patch, logical block
+**Code block**: The backend expansion of a source `QecBlock` into a group of atoms jointly implementing one or more logical qubits under a given code family. Produced during neutral-atom/QEC lowering; not a source-language type.
+_Avoid_: code patch, logical block, QecBlock (for the backend expansion)
 
 **AOD movement**: The neutral-atom movement model where atoms move in row/column-coupled groups (as driven by acousto-optic deflectors), not freely and independently. The movement constraint that placement-routing scheduling in `quon_na` is built against — deliberately not a free-grid Manhattan-distance simplification, to stay faithful to the reproduced literature.
 _Avoid_: grid movement, Manhattan movement
