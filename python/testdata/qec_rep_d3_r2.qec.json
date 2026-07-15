@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "kind": "qec_experiment",
+  "family": "repetition",
+  "code_family": "repetition_code_toy",
+  "distance": 3,
+  "rounds": 2,
+  "logical_ids": [
+    0
+  ],
+  "check_graph": {
+    "atoms": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "data_atoms": [
+      0,
+      2,
+      4
+    ],
+    "check_atoms": [
+      1,
+      3
+    ],
+    "stabilizers": [
+      {
+        "logical_id": 0,
+        "check_atom": 1,
+        "data_atoms": [
+          0,
+          2
+        ]
+      },
+      {
+        "logical_id": 0,
+        "check_atom": 3,
+        "data_atoms": [
+          2,
+          4
+        ]
+      }
+    ]
+  },
+  "measurement_schedule": [
+    {
+      "round_index": 0,
+      "kind": "construct",
+      "logical_id": 0,
+      "measured_atoms": []
+    },
+    {
+      "round_index": 1,
+      "kind": "memory_round",
+      "logical_id": 0,
+      "measured_atoms": [
+        1,
+        3
+      ],
+      "basis": "z"
+    },
+    {
+      "round_index": 2,
+      "kind": "memory_round",
+      "logical_id": 0,
+      "measured_atoms": [
+        1,
+        3
+      ],
+      "basis": "z"
+    },
+    {
+      "round_index": 3,
+      "kind": "measure_logical",
+      "logical_id": 0,
+      "measured_atoms": [
+        0,
+        2,
+        4
+      ],
+      "basis": "z"
+    }
+  ],
+  "logical_observables": [
+    {
+      "id": 0,
+      "logical_id": 0,
+      "basis": "z",
+      "atoms": [
+        0,
+        2,
+        4
+      ]
+    }
+  ],
+  "atom_site_map": [
+    {
+      "atom": 0,
+      "role": "data",
+      "logical_id": 0,
+      "index_in_block": 0
+    },
+    {
+      "atom": 1,
+      "role": "check",
+      "logical_id": 0,
+      "index_in_block": 1
+    },
+    {
+      "atom": 2,
+      "role": "data",
+      "logical_id": 0,
+      "index_in_block": 2
+    },
+    {
+      "atom": 3,
+      "role": "check",
+      "logical_id": 0,
+      "index_in_block": 3
+    },
+    {
+      "atom": 4,
+      "role": "data",
+      "logical_id": 0,
+      "index_in_block": 4
+    }
+  ],
+  "error_model": {
+    "rydberg": 0.002,
+    "measurement": 0.003,
+    "reset": 0.004,
+    "movement": 0.0005,
+    "transfer": 0.0007,
+    "idle_per_us": 2e-09
+  },
+  "na_refs": [
+    {
+      "round_index": 0,
+      "kind": "construct",
+      "logical_id": 0
+    },
+    {
+      "round_index": 1,
+      "kind": "memory_round",
+      "logical_id": 0,
+      "barrier_cycle": 14
+    },
+    {
+      "round_index": 2,
+      "kind": "memory_round",
+      "logical_id": 0,
+      "barrier_cycle": 35
+    },
+    {
+      "round_index": 3,
+      "kind": "measure_logical",
+      "logical_id": 0
+    }
+  ],
+  "stim_file": "qec_rep_d3_r2.stim"
+}

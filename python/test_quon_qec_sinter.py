@@ -26,7 +26,17 @@ try:
 except ImportError:
     HAS_STIM_STACK = False
 
+# Fail hard under CI if the Stim stack is missing (do not skip green).
+if not HAS_STIM_STACK and os.environ.get("CI"):
+    raise ImportError(
+        "stim/sinter/pymatching required in CI for #253 harness tests "
+        "(python/requirements.txt / just setup-python)"
+    )
+
 import quon_qec_sinter as harness  # noqa: E402
+
+TESTDATA = Path(__file__).resolve().parent / "testdata"
+PINNED_REP_D3_R2_JSON = TESTDATA / "qec_rep_d3_r2.qec.json"
 
 # Structure-only circuit matching quon_qec emit_stim_structure for d=3, 1 round.
 MINIMAL_REP_STIM = """
@@ -51,6 +61,18 @@ DETECTOR(1, 1) rec[-4] rec[-2] rec[-1]
 OBSERVABLE_INCLUDE(0) rec[-3] rec[-2] rec[-1]
 """
 
+# Higher-noise model for a non-trivial fixed-seed golden (not the CI smoke rates).
+GOLDEN_ERROR_MODEL = {
+    "rydberg": 0.05,
+    "measurement": 0.05,
+    "reset": 0.05,
+    "movement": 0.02,
+    "transfer": 0.02,
+    "idle_per_us": 1e-4,
+}
+# Golden logical_failures for MINIMAL_REP_STIM + GOLDEN_ERROR_MODEL, shots=32, seed=7.
+GOLDEN_MINIMAL_LOGICAL_FAILURES = 4
+
 ERROR_MODEL = {
     "rydberg": 0.01,
     "measurement": 0.02,
@@ -61,7 +83,14 @@ ERROR_MODEL = {
 }
 
 
-def _write_experiment(dir_path: Path, *, stim_text: str = MINIMAL_REP_STIM) -> Path:
+def _write_experiment(
+    dir_path: Path,
+    *,
+    stim_text: str = MINIMAL_REP_STIM,
+    error_model: dict | None = None,
+    distance: int = 3,
+    rounds: int = 1,
+) -> Path:
     stim_name = "rep_d3.stim"
     json_path = dir_path / "rep_d3.qec.json"
     (dir_path / stim_name).write_text(stim_text)
@@ -70,8 +99,8 @@ def _write_experiment(dir_path: Path, *, stim_text: str = MINIMAL_REP_STIM) -> P
         "kind": "qec_experiment",
         "family": "repetition",
         "code_family": "repetition_code_toy",
-        "distance": 3,
-        "rounds": 1,
+        "distance": distance,
+        "rounds": rounds,
         "logical_ids": [0],
         "check_graph": {
             "atoms": [0, 1, 2, 3, 4],
@@ -82,7 +111,7 @@ def _write_experiment(dir_path: Path, *, stim_text: str = MINIMAL_REP_STIM) -> P
         "measurement_schedule": [],
         "logical_observables": [],
         "atom_site_map": [],
-        "error_model": dict(ERROR_MODEL),
+        "error_model": dict(error_model or ERROR_MODEL),
         "na_refs": [],
         "stim_file": stim_name,
     }
@@ -143,6 +172,36 @@ class LoadExperimentTests(unittest.TestCase):
             with self.assertRaises(harness.ExperimentLoadError):
                 harness.load_experiment(json_path)
 
+    def test_rejects_invalid_distance_rounds_types(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for key, bad in (("distance", 0), ("distance", 1.5), ("rounds", "2"), ("rounds", True)):
+                json_path = _write_experiment(root)
+                doc = json.loads(json_path.read_text())
+                doc[key] = bad
+                json_path.write_text(json.dumps(doc))
+                with self.assertRaises(harness.ExperimentLoadError):
+                    harness.load_experiment(json_path)
+
+    def test_rejects_non_finite_or_out_of_range_error_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for bad in (-0.1, 1.1, float("nan"), float("inf"), "0.01"):
+                em = dict(ERROR_MODEL)
+                em["rydberg"] = bad
+                json_path = _write_experiment(root, error_model=em)
+                with self.assertRaises(harness.HarnessError):
+                    harness.load_experiment(json_path)
+
+    def test_rejects_stim_illegal_rydberg_at_load(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            em = dict(ERROR_MODEL)
+            em["rydberg"] = 0.99  # > 15/16, still in [0,1]
+            json_path = _write_experiment(Path(tmp), error_model=em)
+            with self.assertRaises(harness.HarnessError) as ctx:
+                harness.load_experiment(json_path)
+            self.assertIn("Stim-illegal", str(ctx.exception))
+
 
 @unittest.skipUnless(HAS_STIM_STACK, "requires stim/sinter/pymatching (python/requirements.txt)")
 class AnnotateNoiseTests(unittest.TestCase):
@@ -192,9 +251,86 @@ class AnnotateNoiseTests(unittest.TestCase):
                 {"DEPOLARIZE1", "DEPOLARIZE2", "X_ERROR", "Z_ERROR", "Y_ERROR"},
             )
 
+    def test_measurement_noise_x_for_mz_z_for_mx(self) -> None:
+        import stim as stim_mod
+
+        mz = stim_mod.Circuit("R 0\nMZ 0")
+        mx = stim_mod.Circuit("R 0\nMX 0")
+        em = {k: 0.0 for k in ERROR_MODEL}
+        em["measurement"] = 0.1
+        mz_noisy = harness.annotate_noise(mz, em)
+        mx_noisy = harness.annotate_noise(mx, em)
+        mz_names = [inst.name for inst in mz_noisy.flattened()]
+        mx_names = [inst.name for inst in mx_noisy.flattened()]
+        self.assertIn("X_ERROR", mz_names)
+        self.assertNotIn("Z_ERROR", mz_names)
+        self.assertIn("Z_ERROR", mx_names)
+        self.assertNotIn("X_ERROR", mx_names)
+
+    def test_flattens_repeat_blocks(self) -> None:
+        import stim as stim_mod
+
+        circuit = stim_mod.Circuit(
+            """
+            R 0 1
+            TICK
+            REPEAT 2 {
+              CX 0 1
+              TICK
+            }
+            MZ 0 1
+            """
+        )
+        em = {k: 0.0 for k in ERROR_MODEL}
+        em["rydberg"] = 0.01
+        em["movement"] = 0.02
+        # Must not raise AttributeError on CircuitRepeatBlock.
+        noisy = harness.annotate_noise(circuit, em)
+        cx_count = sum(1 for inst in noisy.flattened() if inst.name == "CX")
+        depol2 = sum(1 for inst in noisy.flattened() if inst.name == "DEPOLARIZE2")
+        self.assertEqual(cx_count, 2)
+        self.assertEqual(depol2, 2)
+
+    def test_composes_movement_and_idle_into_one_depolarize1_per_tick(self) -> None:
+        import stim as stim_mod
+
+        circuit = stim_mod.Circuit("R 0\nTICK\nMZ 0")
+        em = {k: 0.0 for k in ERROR_MODEL}
+        em["movement"] = 0.1
+        em["idle_per_us"] = 0.1
+        noisy = harness.annotate_noise(circuit, em, tick_us=1.0)
+        ops = list(noisy.flattened())
+        # Find TICK then exactly one DEPOLARIZE1 before MZ / measurement noise.
+        tick_idx = next(i for i, op in enumerate(ops) if op.name == "TICK")
+        following = [op.name for op in ops[tick_idx + 1 :]]
+        depol_count = following.count("DEPOLARIZE1")
+        self.assertEqual(depol_count, 1)
+        # Composed p = 1 - (1-0.1)*(1-0.1) = 0.19
+        depol = next(op for op in ops[tick_idx + 1 :] if op.name == "DEPOLARIZE1")
+        self.assertAlmostEqual(depol.gate_args_copy()[0], 0.19)
+
 
 @unittest.skipUnless(HAS_STIM_STACK, "requires stim/sinter/pymatching (python/requirements.txt)")
-class SampleAndCsvTests(unittest.TestCase):
+class ScaleAndSampleTests(unittest.TestCase):
+    def test_scale_clamps_to_stim_maxima_not_one(self) -> None:
+        scaled = harness.scale_error_model(ERROR_MODEL, 1000.0)
+        self.assertLessEqual(scaled["rydberg"], harness.STIM_DEPOLARIZE2_MAX)
+        self.assertEqual(scaled["rydberg"], harness.STIM_DEPOLARIZE2_MAX)
+        self.assertLessEqual(scaled["movement"], harness.STIM_DEPOLARIZE1_MAX)
+        self.assertEqual(scaled["movement"], harness.STIM_DEPOLARIZE1_MAX)
+        self.assertLessEqual(scaled["transfer"], harness.STIM_DEPOLARIZE1_MAX)
+        self.assertNotEqual(scaled["rydberg"], 1.0)
+        self.assertNotEqual(scaled["movement"], 1.0)
+
+    def test_large_scale_does_not_crash_dem(self) -> None:
+        import stim as stim_mod
+
+        scaled = harness.scale_error_model(ERROR_MODEL, 1000.0)
+        noisy = harness.annotate_noise(stim_mod.Circuit(MINIMAL_REP_STIM), scaled)
+        # Must build DEM without ValueError.
+        sample = harness.sample_logical_failures(noisy, shots=8, seed=7)
+        self.assertEqual(sample.shots, 8)
+
     def test_sample_is_deterministic_with_fixed_seed(self) -> None:
         import stim as stim_mod
 
@@ -205,6 +341,33 @@ class SampleAndCsvTests(unittest.TestCase):
         self.assertEqual(a.shots, 32)
         self.assertAlmostEqual(a.logical_failure_rate, a.logical_failures / 32)
 
+    def test_golden_logical_failures_pinned_noisy_circuit(self) -> None:
+        import stim as stim_mod
+
+        noisy = harness.annotate_noise(
+            stim_mod.Circuit(MINIMAL_REP_STIM), GOLDEN_ERROR_MODEL
+        )
+        sample = harness.sample_logical_failures(noisy, shots=32, seed=7)
+        self.assertEqual(sample.logical_failures, GOLDEN_MINIMAL_LOGICAL_FAILURES)
+
+    def test_main_catches_value_error_as_exit_one(self) -> None:
+        # Force a HarnessError path via invalid tick_us through CLI.
+        rc = harness.main(
+            [
+                str(PINNED_REP_D3_R2_JSON),
+                "--shots",
+                "8",
+                "--seed",
+                "7",
+                "--tick-us",
+                "0",
+            ]
+        )
+        self.assertEqual(rc, 1)
+
+
+@unittest.skipUnless(HAS_STIM_STACK, "requires stim/sinter/pymatching (python/requirements.txt)")
+class SampleAndCsvTests(unittest.TestCase):
     def test_csv_row_columns(self) -> None:
         row = harness.ResultRow(
             distance=3,
@@ -246,6 +409,22 @@ class SampleAndCsvTests(unittest.TestCase):
             self.assertIn("logical_failures", text)
             self.assertNotIn("threshold", text.lower())
 
+    def test_pinned_rounds2_emit_integration(self) -> None:
+        """Real #255 dual-emit shape (d=3, rounds=2) must load and sample."""
+        self.assertTrue(PINNED_REP_D3_R2_JSON.is_file(), PINNED_REP_D3_R2_JSON)
+        rows = harness.run_experiments(
+            [PINNED_REP_D3_R2_JSON],
+            shots_list=[32],
+            seed=7,
+            error_scales=[1.0],
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].distance, 3)
+        self.assertEqual(rows[0].rounds, 2)
+        self.assertEqual(rows[0].shots, 32)
+        # Deterministic golden for pinned emit + target error_model + seed 7.
+        self.assertEqual(rows[0].logical_failures, 0)
+
 
 @unittest.skipUnless(HAS_STIM_STACK, "requires stim/sinter/pymatching (python/requirements.txt)")
 class HelpAndCliTests(unittest.TestCase):
@@ -258,6 +437,10 @@ class HelpAndCliTests(unittest.TestCase):
         self.assertIn("--scale-errors", help_text)
         self.assertIn("Local larger runs", help_text)
         self.assertIn("not a threshold claim", help_text.lower())
+        self.assertIn("tick-us", help_text.lower())
+        self.assertIn("proxy", help_text.lower())
+        self.assertIn("3/4", help_text)
+        self.assertIn("15/16", help_text)
         self.assertNotIn("below the threshold", help_text.lower())
 
 

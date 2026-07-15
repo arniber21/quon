@@ -21,10 +21,11 @@ Sampled logical failure rates are not threshold claims.
 import argparse
 import csv
 import json
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence, TextIO
+from typing import Any, Mapping, Sequence, TextIO
 
 # ---------------------------------------------------------------------------
 # Optional deps — actionable install hint (mirrors quon_aer style)
@@ -65,8 +66,26 @@ def _require_stim_stack():
 
 
 # Coarse idle duration assumed per Stim TICK when mapping idle_per_us.
-# Structure-level `.stim` has no schedule µs; this is a documented proxy only.
+# Structure-level `.stim` has no schedule µs; --tick-us is a documented proxy
+# only — not wall-clock schedule time from the NA planner.
 DEFAULT_TICK_US = 1.0
+
+# Stim-legal probability maxima for noise channels used by annotate_noise.
+# Never clamp depolarizing rates to 1.0 (illegal for DEM construction).
+STIM_DEPOLARIZE1_MAX = 3.0 / 4.0
+STIM_DEPOLARIZE2_MAX = 15.0 / 16.0
+STIM_PAULI_ERROR_MAX = 1.0
+
+# Per error_model key → Stim channel cap used by scale_error_model / validation.
+# idle_per_us is a per-µs rate; the converted DEPOLARIZE1 is capped separately.
+ERROR_MODEL_STIM_MAX: dict[str, float] = {
+    "rydberg": STIM_DEPOLARIZE2_MAX,  # → DEPOLARIZE2
+    "measurement": STIM_PAULI_ERROR_MAX,  # → X_ERROR / Z_ERROR
+    "reset": STIM_PAULI_ERROR_MAX,  # → X_ERROR
+    "movement": STIM_DEPOLARIZE1_MAX,  # → DEPOLARIZE1 (composed with idle)
+    "transfer": STIM_DEPOLARIZE1_MAX,  # → DEPOLARIZE1
+    "idle_per_us": STIM_PAULI_ERROR_MAX,  # rate; converted p capped at DEPOLARIZE1
+}
 
 CSV_COLUMNS = [
     "distance",
@@ -131,6 +150,46 @@ def sibling_stim_path(json_path: Path, stim_file: str | None = None) -> Path:
     return json_path.with_name(f"{stem}.stim")
 
 
+def _require_positive_int(doc: Mapping[str, Any], key: str, path: Path) -> int:
+    if key not in doc:
+        raise ExperimentLoadError(f"{path}: missing required field {key!r}")
+    value = doc[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ExperimentLoadError(
+            f"{path}: {key} must be a positive integer (got {value!r})"
+        )
+    if value < 1:
+        raise ExperimentLoadError(f"{path}: {key} must be >= 1 (got {value})")
+    return value
+
+
+def _require_probability(value: Any, *, key: str, path: Path) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ExperimentLoadError(
+            f"{path}: error_model[{key!r}] must be a number (got {value!r})"
+        )
+    p = float(value)
+    if not math.isfinite(p):
+        raise ExperimentLoadError(
+            f"{path}: error_model[{key!r}] must be finite (got {p!r})"
+        )
+    if p < 0.0 or p > 1.0:
+        raise ExperimentLoadError(
+            f"{path}: error_model[{key!r}] must be in [0, 1] (got {p})"
+        )
+    return p
+
+
+def _validate_stim_channel_probability(p: float, *, channel: str, maximum: float) -> None:
+    """Reject probabilities Stim cannot accept for the named channel."""
+    if not math.isfinite(p) or p < 0.0 or p > maximum:
+        raise HarnessError(
+            f"Stim-illegal {channel} probability {p}: must be in [0, {maximum}] "
+            f"(DEPOLARIZE1 max {STIM_DEPOLARIZE1_MAX}, "
+            f"DEPOLARIZE2 max {STIM_DEPOLARIZE2_MAX})"
+        )
+
+
 def load_experiment(json_path: str | Path):
     """Load `*.qec.json` and its sibling structure-only `.stim` circuit.
 
@@ -154,12 +213,28 @@ def load_experiment(json_path: str | Path):
         raise ExperimentLoadError(
             f"{path}: unsupported schema_version {doc.get('schema_version')!r}"
         )
+
+    distance = _require_positive_int(doc, "distance", path)
+    rounds = _require_positive_int(doc, "rounds", path)
+    doc["distance"] = distance
+    doc["rounds"] = rounds
+
     error_model = doc.get("error_model")
     if not isinstance(error_model, dict):
         raise ExperimentLoadError(f"{path}: missing error_model object")
+    validated: dict[str, float] = {}
     for key in ERROR_MODEL_KEYS:
         if key not in error_model:
             raise ExperimentLoadError(f"{path}: error_model missing {key!r}")
+        validated[key] = _require_probability(error_model[key], key=key, path=path)
+        # Direct Stim-channel keys: reject rates above Stim-legal maxima early.
+        if key in ("rydberg", "movement", "transfer", "measurement", "reset"):
+            _validate_stim_channel_probability(
+                validated[key],
+                channel=key,
+                maximum=ERROR_MODEL_STIM_MAX[key],
+            )
+    doc["error_model"] = validated
 
     stim_path = sibling_stim_path(path, doc.get("stim_file"))
     if not stim_path.is_file():
@@ -183,12 +258,24 @@ def load_experiment(json_path: str | Path):
 
 
 def _idle_probability(idle_per_us: float, tick_us: float = DEFAULT_TICK_US) -> float:
-    """Map per-µs idle rate to a single-TICK DEPOLARIZE1 probability."""
+    """Map per-µs idle rate to a single-TICK DEPOLARIZE1 probability.
+
+    ``tick_us`` is a harness proxy (see ``--tick-us``); structure `.stim` has
+    no schedule microseconds from the NA planner.
+    """
     if idle_per_us <= 0.0 or tick_us <= 0.0:
         return 0.0
-    # 1 - (1-p)^t, clamped so Stim accepts the probability.
+    # 1 - (1-p)^t, clamped to Stim-legal DEPOLARIZE1 maximum.
     p = 1.0 - (1.0 - idle_per_us) ** tick_us
-    return min(0.5, max(0.0, p))
+    return min(STIM_DEPOLARIZE1_MAX, max(0.0, p))
+
+
+def _compose_depolarize1(p_a: float, p_b: float) -> float:
+    """Compose two independent DEPOLARIZE1 probabilities into one channel."""
+    if p_a <= 0.0 and p_b <= 0.0:
+        return 0.0
+    p = 1.0 - (1.0 - max(0.0, p_a)) * (1.0 - max(0.0, p_b))
+    return min(STIM_DEPOLARIZE1_MAX, max(0.0, p))
 
 
 def annotate_noise(circuit, error_model: dict[str, float], *, tick_us: float = DEFAULT_TICK_US):
@@ -197,13 +284,14 @@ def annotate_noise(circuit, error_model: dict[str, float], *, tick_us: float = D
     Mapping (structure-level `.stim` has no schedule µs — proxies are documented):
 
     - `rydberg`     → DEPOLARIZE2 after each CX (two-qubit Rydberg gate)
-    - `measurement` → X_ERROR before M / MR / MX / MZ
+    - `measurement` → X_ERROR before M / MR / MZ; Z_ERROR before MX
     - `reset`       → X_ERROR after R and after MR
     - `transfer`    → DEPOLARIZE1 after R (load / zone transfer proxy)
-    - `movement`    → DEPOLARIZE1 after each TICK (between-layer motion proxy)
-    - `idle_per_us` → DEPOLARIZE1 after each TICK with p from ``tick_us``
+    - `movement` + `idle_per_us` → one composed DEPOLARIZE1 after each TICK
+      (``--tick-us`` converts idle_per_us; not NA schedule wall-clock)
 
     Zero rates omit the corresponding channel. Detectors/observables are preserved.
+    Top-level ``REPEAT`` blocks are flattened before annotation.
     """
     stim, _sinter, _np = _require_stim_stack()
     p_ryd = float(error_model["rydberg"])
@@ -212,20 +300,57 @@ def annotate_noise(circuit, error_model: dict[str, float], *, tick_us: float = D
     p_move = float(error_model["movement"])
     p_xfer = float(error_model["transfer"])
     p_idle = _idle_probability(float(error_model["idle_per_us"]), tick_us=tick_us)
+    p_tick = _compose_depolarize1(p_move, p_idle)
+
+    # Fail closed before DEM construction if any channel is Stim-illegal.
+    _validate_stim_channel_probability(
+        p_ryd, channel="DEPOLARIZE2(rydberg)", maximum=STIM_DEPOLARIZE2_MAX
+    )
+    _validate_stim_channel_probability(
+        p_xfer, channel="DEPOLARIZE1(transfer)", maximum=STIM_DEPOLARIZE1_MAX
+    )
+    _validate_stim_channel_probability(
+        p_tick, channel="DEPOLARIZE1(movement+idle)", maximum=STIM_DEPOLARIZE1_MAX
+    )
+    _validate_stim_channel_probability(
+        p_meas, channel="measurement", maximum=STIM_PAULI_ERROR_MAX
+    )
+    _validate_stim_channel_probability(
+        p_reset, channel="reset", maximum=STIM_PAULI_ERROR_MAX
+    )
 
     out = stim.Circuit()
+    flat = circuit.flattened() if hasattr(circuit, "flattened") else circuit
     all_qubits = list(range(circuit.num_qubits))
 
-    for inst in circuit:
-        name = inst.name
+    for inst in flat:
+        name = getattr(inst, "name", None)
+        if name is None:
+            # Should not appear after flattened(); recurse defensively.
+            body = inst.body_copy() if hasattr(inst, "body_copy") else None
+            if body is not None:
+                annotated_body = annotate_noise(body, error_model, tick_us=tick_us)
+                repeat_count = int(getattr(inst, "repeat_count", 1))
+                for _ in range(repeat_count):
+                    out += annotated_body
+                continue
+            raise HarnessError(f"unsupported Stim instruction type: {type(inst)!r}")
+
         targets = [t.value for t in inst.targets_copy() if t.is_qubit_target]
 
-        if name in ("M", "MR", "MX", "MZ"):
+        if name in ("M", "MR", "MZ"):
             if p_meas > 0.0 and targets:
                 out.append("X_ERROR", targets, [p_meas])
             out.append(inst)
             if name == "MR" and p_reset > 0.0 and targets:
                 out.append("X_ERROR", targets, [p_reset])
+            continue
+
+        if name == "MX":
+            # X-basis measurement: Z errors flip the outcome.
+            if p_meas > 0.0 and targets:
+                out.append("Z_ERROR", targets, [p_meas])
+            out.append(inst)
             continue
 
         if name == "R":
@@ -244,11 +369,9 @@ def annotate_noise(circuit, error_model: dict[str, float], *, tick_us: float = D
 
         if name == "TICK":
             out.append(inst)
-            if all_qubits:
-                if p_move > 0.0:
-                    out.append("DEPOLARIZE1", all_qubits, [p_move])
-                if p_idle > 0.0:
-                    out.append("DEPOLARIZE1", all_qubits, [p_idle])
+            # One composed DEPOLARIZE1 for movement + idle (not two stacked channels).
+            if all_qubits and p_tick > 0.0:
+                out.append("DEPOLARIZE1", all_qubits, [p_tick])
             continue
 
         out.append(inst)
@@ -257,10 +380,18 @@ def annotate_noise(circuit, error_model: dict[str, float], *, tick_us: float = D
 
 
 def scale_error_model(error_model: dict[str, float], scale: float) -> dict[str, float]:
-    """Multiply every physical error parameter by ``scale`` (clamped to [0, 1])."""
+    """Multiply every physical error parameter by ``scale``.
+
+    Clamps each key to its Stim-legal channel maximum (DEPOLARIZE1 ≤ 3/4,
+    DEPOLARIZE2 ≤ 15/16, Pauli ≤ 1). Never clamps depolarizing rates to 1.0.
+    """
+    if not math.isfinite(scale) or scale < 0.0:
+        raise HarnessError(f"error scale must be a finite non-negative number (got {scale})")
     out: dict[str, float] = {}
     for key in ERROR_MODEL_KEYS:
-        out[key] = min(1.0, max(0.0, float(error_model[key]) * scale))
+        raw = float(error_model[key]) * scale
+        maximum = ERROR_MODEL_STIM_MAX[key]
+        out[key] = min(maximum, max(0.0, raw))
     return out
 
 
@@ -285,10 +416,17 @@ def sample_logical_failures(
     if shots < 1:
         raise HarnessError(f"shots must be >= 1 (got {shots})")
 
-    dem = noisy_circuit.detector_error_model(decompose_errors=True)
-    sampler = noisy_circuit.compile_detector_sampler(seed=seed)
-    dets, obs = sampler.sample(shots=shots, separate_observables=True)
-    predictions = sinter.predict_observables(dem=dem, dets=dets, decoder=decoder)
+    try:
+        dem = noisy_circuit.detector_error_model(decompose_errors=True)
+        sampler = noisy_circuit.compile_detector_sampler(seed=seed)
+        dets, obs = sampler.sample(shots=shots, separate_observables=True)
+        predictions = sinter.predict_observables(dem=dem, dets=dets, decoder=decoder)
+    except ValueError as exc:
+        raise HarnessError(f"Stim/Sinter sampling failed: {exc}") from exc
+    except Exception as exc:
+        # Keep DEM / decoder failures actionable rather than raw tracebacks.
+        raise HarnessError(f"Stim/Sinter sampling failed: {exc}") from exc
+
     failures = int(np.sum(np.any(predictions != obs, axis=1)))
     return SampleResult(shots=shots, logical_failures=failures)
 
@@ -330,6 +468,8 @@ def run_experiments(
     tick_us: float = DEFAULT_TICK_US,
 ) -> list[ResultRow]:
     """Load each experiment, annotate noise, sample, and collect CSV rows."""
+    if tick_us <= 0.0 or not math.isfinite(tick_us):
+        raise HarnessError(f"--tick-us must be a finite positive number (got {tick_us})")
     rows: list[ResultRow] = []
     for json_path in json_paths:
         experiment, structure = load_experiment(json_path)
@@ -395,6 +535,14 @@ Shot / physical-error sweeps
   --shots 16,256,1024 samples the same annotated circuit at multiple shot
   counts without re-emitting.
   --scale-errors 0.5,1,2 multiplies every error_model rate (still no re-emit).
+  Scaled rates are clamped to Stim-legal maxima (DEPOLARIZE1 ≤ 3/4,
+  DEPOLARIZE2 ≤ 15/16), never to 1.0 for depolarizing channels.
+
+--tick-us proxy
+  Structure-level `.stim` has no NA schedule microseconds. --tick-us is only
+  a coarse proxy converting idle_per_us → per-TICK DEPOLARIZE1; it is not
+  wall-clock schedule time from the planner. Movement and idle are composed
+  into a single DEPOLARIZE1 after each TICK.
 
 Local larger runs
   CI smoke uses tiny shots and a fixed seed, e.g.:
@@ -440,8 +588,8 @@ Local larger runs
         type=float,
         default=DEFAULT_TICK_US,
         help=(
-            f"assumed µs per Stim TICK when mapping idle_per_us "
-            f"(default: {DEFAULT_TICK_US})"
+            f"proxy µs per Stim TICK when mapping idle_per_us "
+            f"(default: {DEFAULT_TICK_US}; not NA schedule wall-clock)"
         ),
     )
     parser.add_argument(
@@ -466,6 +614,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             tick_us=args.tick_us,
         )
     except HarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        # Stim DEM / probability errors that escaped HarnessError wrapping.
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
