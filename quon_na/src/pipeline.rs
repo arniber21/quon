@@ -34,7 +34,8 @@ use melior::ir::Module;
 use crate::extract::{ExtractError, extract_interaction_graph};
 
 /// Which movement/placement backend to run after entangling-layer scheduling.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NaBackendKind {
     /// Zoned RAP / ZAC path (#107) — default for multi-zone targets.
     #[default]

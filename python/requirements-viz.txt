@@ -1,0 +1,4 @@
+# Neutral-atom schedule / graph visualization (issue #113).
+# Keep Aer verification deps in requirements.txt.
+matplotlib>=3.8
+graphviz>=0.20

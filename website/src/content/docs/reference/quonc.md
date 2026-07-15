@@ -12,6 +12,7 @@ quonc program.qn --emit-qasm > program.qasm
 quonc program.qn \
   --target targets/neutral_atom/generic_rna_v0.json \
   --emit-na-schedule schedule.json \
+  --emit-na-graph graph.dot \
   --emit-resource-report report.md
 ```
 
@@ -40,13 +41,36 @@ quonc program.qn --emit-qasm > program.qasm
 
 ### `--emit-na-schedule [PATH]`
 
-Emit neutral-atom schedule JSON. With no path, or with `-`, the schedule is
-written to standard output.
+Emit the neutral-atom schedule **visualization envelope** (JSON). This is a
+debug/tooling view (`kind: na_schedule_view`, `schema_version: 1`) with
+`meta`, `metrics`, `zones`, optional `layout`, and `layers`. Canonical schedule
+IR remains `--emit-na-mlir` (`quantum.na`). With no path, or with `-`, the JSON
+is written to standard output.
 
 ```bash
 quonc program.qn \
   --target targets/neutral_atom/generic_rna_v0.json \
   --emit-na-schedule schedule.json
+```
+
+Render cycle frames with matplotlib (PNG/SVG; no HTML):
+
+```bash
+pip install -r python/requirements-viz.txt
+python python/visualize_na_schedule.py schedule.json -o /tmp/na --format svg
+```
+
+### `--emit-na-graph [PATH]`
+
+Emit the interaction graph as Graphviz DOT. With no path, or with `-`, DOT is
+written to standard output.
+
+```bash
+quonc program.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-graph graph.dot
+
+python python/visualize_na_schedule.py --graph graph.dot -o /tmp/na --format svg
 ```
 
 ### `--emit-resource-report [PATH]`

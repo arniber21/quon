@@ -143,11 +143,17 @@ cargo run -p quonc -- test/verify/bernstein_vazirani.qn \
   --emit-qasm \
   --metrics
 
-# Emit a neutral-atom schedule and resource report.
+# Emit a neutral-atom schedule view, interaction-graph DOT, and resource report.
 cargo run -p quonc -- test/na/qaoa_graph.qn \
   --target targets/neutral_atom/generic_rna_v0.json \
-  --emit-na-schedule \
+  --emit-na-schedule schedule.json \
+  --emit-na-graph graph.dot \
   --emit-resource-report
+
+# Render schedule frames (matplotlib) and/or the graph (Graphviz).
+pip install -r python/requirements-viz.txt
+python python/visualize_na_schedule.py schedule.json --graph graph.dot \
+  -o /tmp/na-viz --format svg
 
 # Inspect the compiler pipeline.
 cargo run -p quonc -- --list-passes

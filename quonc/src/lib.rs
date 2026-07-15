@@ -9,6 +9,7 @@ pub mod na_target;
 pub mod watch;
 
 pub use compile::{
-    CompileReport, CompileRequest, compile, print_diagnostics, schedule_to_json, schedule_to_mlir,
+    CompileReport, CompileRequest, build_na_schedule_view, compile, print_diagnostics,
+    schedule_to_json, schedule_to_mlir,
 };
 pub use na_target::{NaBackendKind, parse_na_backend, parse_placer_mode};

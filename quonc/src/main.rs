@@ -14,7 +14,9 @@ use quon_na::{
 };
 
 use backend::{BackendTarget, TargetKind};
-use quonc::compile::{CompileRequest, compile, schedule_to_json, schedule_to_mlir};
+use quonc::compile::{
+    CompileRequest, build_na_schedule_view, compile, schedule_to_json, schedule_to_mlir,
+};
 use quonc::na_target::{NaBackendKind, parse_na_backend, parse_placer_mode};
 use quonc::watch::{print_watch_metrics, run_watch_loop};
 
@@ -28,9 +30,9 @@ Examples:
   quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
     --emit-na-mlir
 
-  # Neutral-atom debug artifacts: schedule JSON + resource report
+  # Neutral-atom debug artifacts: schedule JSON + interaction graph DOT
   quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
-    --emit-na-schedule --emit-resource-report
+    --emit-na-schedule --emit-na-graph --emit-resource-report
 
   # Debug IR after each pass
   quonc program.qn --dump-ir --verify-linear --emit-qasm
@@ -43,7 +45,9 @@ Notes:
   Neutral-atom targets extract an interaction graph, schedule entangling
   layers, run zoned RAP (default) or flat AOD movement, optionally compact,
   then lower to quantum.na MLIR (--emit-na-mlir, the canonical schedule IR).
-  Schedule JSON (--emit-na-schedule) is a debug/visualization view.
+  Schedule JSON (--emit-na-schedule) is a debug/visualization view
+  (layout + zones + metrics envelope for python/visualize_na_schedule.py).
+  --emit-na-graph writes Graphviz DOT for the interaction graph.
 ";
 
 #[derive(Parser, Debug)]
@@ -87,7 +91,7 @@ struct Cli {
     )]
     emit_na_mlir: Option<String>,
 
-    /// Emit neutral-atom schedule JSON, a debug/visualization view (`-` = stdout)
+    /// Emit neutral-atom schedule JSON envelope for visualization (`-` = stdout)
     #[arg(
         long,
         value_name = "PATH",
@@ -96,6 +100,16 @@ struct Cli {
         help_heading = "Emit"
     )]
     emit_na_schedule: Option<String>,
+
+    /// Emit interaction-graph Graphviz DOT (`-` = stdout)
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = "-",
+        help_heading = "Emit"
+    )]
+    emit_na_graph: Option<String>,
 
     /// Emit neutral-atom resource report (`-` = stdout; `.md` → Markdown, else JSON)
     #[arg(
@@ -395,7 +409,7 @@ fn run() -> Result<ExitCode> {
         return Ok(ExitCode::from(1));
     }
 
-    emit_artifacts(&cli, &report)?;
+    emit_artifacts(&cli, &request, &report)?;
 
     if cli.metrics {
         eprintln!("{}", format_metrics_line(&report.snapshot));
@@ -447,24 +461,25 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
     if cli.emit_qasm && is_na {
         bail!(
             "--emit-qasm requires a fixed (gate-model) target; \
-             use --emit-na-mlir (or --emit-na-schedule / --emit-resource-report) \
-             for neutral-atom targets"
+             use --emit-na-mlir (or --emit-na-schedule / --emit-na-graph / \
+             --emit-resource-report) for neutral-atom targets"
         );
     }
     if (cli.emit_na_mlir.is_some()
         || cli.emit_na_schedule.is_some()
+        || cli.emit_na_graph.is_some()
         || cli.emit_resource_report.is_some())
         && !is_na
     {
         bail!(
-            "--emit-na-mlir / --emit-na-schedule / --emit-resource-report require a \
-             neutral_atom_reconfigurable target (see targets/neutral_atom/)"
+            "--emit-na-mlir / --emit-na-schedule / --emit-na-graph / --emit-resource-report \
+             require a neutral_atom_reconfigurable target (see targets/neutral_atom/)"
         );
     }
     Ok(())
 }
 
-fn emit_artifacts(cli: &Cli, report: &quonc::CompileReport) -> Result<()> {
+fn emit_artifacts(cli: &Cli, request: &CompileRequest, report: &quonc::CompileReport) -> Result<()> {
     let mut emitted = false;
     // When OpenQASM already owns stdout, subsequent `-` emits go to stderr.
     let qasm_owns_stdout = cli.emit_qasm;
@@ -491,10 +506,8 @@ fn emit_artifacts(cli: &Cli, report: &quonc::CompileReport) -> Result<()> {
     let mlir_owns_stdout = cli.emit_na_mlir.as_ref().is_some_and(|p| p == "-");
 
     if let Some(path) = &cli.emit_na_schedule {
-        let layers = report.na_schedule.as_ref().ok_or_else(|| {
-            anyhow!("no NA schedule available (compile with a neutral-atom target)")
-        })?;
-        let json = schedule_to_json(layers)?;
+        let view = build_na_schedule_view(report, request)?;
+        let json = schedule_to_json(&view)?;
         write_output(
             path,
             &json,
@@ -502,6 +515,21 @@ fn emit_artifacts(cli: &Cli, report: &quonc::CompileReport) -> Result<()> {
         )?;
         emitted = true;
     }
+    let schedule_on_stdout = cli.emit_na_schedule.as_ref().is_some_and(|p| p == "-");
+
+    if let Some(path) = &cli.emit_na_graph {
+        let graph = report.na_graph.as_ref().ok_or_else(|| {
+            anyhow!("no interaction graph available (compile with a neutral-atom target)")
+        })?;
+        let dot = graph.to_dot();
+        write_output(
+            path,
+            &dot,
+            (qasm_owns_stdout || mlir_owns_stdout || schedule_on_stdout) && path == "-",
+        )?;
+        emitted = true;
+    }
+    let graph_on_stdout = cli.emit_na_graph.as_ref().is_some_and(|p| p == "-");
 
     if let Some(path) = &cli.emit_resource_report {
         let report_body = report.resource_report.as_ref().ok_or_else(|| {
@@ -511,14 +539,14 @@ fn emit_artifacts(cli: &Cli, report: &quonc::CompileReport) -> Result<()> {
             ReportFormat::Json => resource_report_to_json(report_body)?,
             ReportFormat::Markdown => resource_report_to_markdown(report_body),
         };
-        // If MLIR or schedule JSON already printed to stdout on `-`, send the
+        // If MLIR / schedule / graph already printed to stdout on `-`, send the
         // report to stderr so all artifacts remain recoverable without
         // interleaving values.
-        let schedule_on_stdout = cli.emit_na_schedule.as_ref().is_some_and(|p| p == "-");
         write_output(
             path,
             &text,
-            (qasm_owns_stdout || mlir_owns_stdout || schedule_on_stdout) && path == "-",
+            (qasm_owns_stdout || mlir_owns_stdout || schedule_on_stdout || graph_on_stdout)
+                && path == "-",
         )?;
         emitted = true;
     }
@@ -535,7 +563,8 @@ fn emit_artifacts(cli: &Cli, report: &quonc::CompileReport) -> Result<()> {
                 eprintln!(
                     "{dim}(compiled successfully for neutral-atom target `{id}`; \
                      pass --emit-na-mlir for quantum.na MLIR, or \
-                     --emit-na-schedule / --emit-resource-report for debug views){dim:#}"
+                     --emit-na-schedule / --emit-na-graph / --emit-resource-report \
+                     for debug views){dim:#}"
                 );
             }
             id => {
