@@ -43,8 +43,9 @@
 
 ## Schema and CI enforcement
 
-`quonc/tests/samples_catalog.rs` (via `just ci-samples`, part of
-`just test-ci`) enforces:
+`quonc/tests/samples_catalog.rs` (run by `cargo test --workspace` under
+`just ci-rust` / `just test-ci`, or standalone via `just ci-samples`)
+enforces:
 
 - `catalog.yaml` parses against the schema (unknown fields, missing
   required fields, or an invalid `ci`/`difficulty` value fail the build).
