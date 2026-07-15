@@ -8,11 +8,13 @@
 pub mod expand;
 pub mod experiment;
 pub mod family;
+pub mod lattice_surgery;
 pub mod workload;
 
 pub use expand::{
-    ExpandError, ExpandedBlock, ExpandedWorkload, PhysicalAtomId, PhysicalCnot, PhysicalRound,
-    RoundKind, RoundLocalOp, RoundTerminal, StabilizerDef, expand_workload,
+    ExpandError, ExpandedBlock, ExpandedWorkload, MergeBoundary, PauliFrameUpdate, PhysicalAtomId,
+    PhysicalCnot, PhysicalRound, RoundKind, RoundLocalOp, RoundTerminal, StabilizerDef,
+    expand_workload,
 };
 pub use experiment::{
     AtomRole, AtomSiteMapping, CheckGraph, ErrorModelSnapshot, ExperimentError, ExperimentRoundKind,

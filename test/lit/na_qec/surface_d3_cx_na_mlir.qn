@@ -1,0 +1,25 @@
+-- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-mlir - --quiet | %FileCheck %s
+--
+-- Surface d=3 logical CX → quantum.na (#250 / ADR-0019): three-patch lattice
+-- surgery (rough + smooth merge/split), durable Wait barriers, seam entangle /
+-- measure, ancilla measure, then logical data measures on control and target.
+
+fn surface_d3_cx(): Q<Bit> = run {
+        a <- surface_code<3>()
+        b <- surface_code<3>()
+        (a, b) <- logical_cx(a, b)
+        _ <- measure_logical_z(a)
+        measure_logical_z(b)
+}
+
+-- CHECK: "quantum.na.schedule"()
+-- CHECK: "quantum.na.local_gate"{{.*}}gate = "h"
+-- CHECK: "quantum.na.entangle"()
+-- CHECK: "quantum.na.measure"
+-- CHECK: "quantum.na.wait"
+-- CHECK: "quantum.na.entangle"()
+-- CHECK: "quantum.na.local_gate"{{.*}}gate = "h"
+-- CHECK: "quantum.na.wait"
+-- CHECK: "quantum.na.measure"{{.*}}atom = 0
+-- CHECK: "quantum.na.measure"{{.*}}atom = 17
+-- CHECK: target_id = "generic_reconfigurable_neutral_atom_v0"

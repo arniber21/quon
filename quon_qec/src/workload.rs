@@ -65,7 +65,7 @@ pub enum WorkloadOp {
         logical_id: LogicalQubitId,
         basis: LogicalBasis,
     },
-    /// Surface-only logical CX (may remain a stub until #248 expands it).
+    /// Surface-only logical CX (lattice-surgery expand in [`crate::lattice_surgery`]).
     LogicalCx {
         control: LogicalQubitId,
         target: LogicalQubitId,

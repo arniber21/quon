@@ -89,6 +89,12 @@ pub enum ExperimentRoundKind {
     Construct,
     MemoryRound,
     MeasureLogical,
+    MergeRough,
+    MergeSmooth,
+    SplitRough,
+    SplitSmooth,
+    MeasureAncilla,
+    FrameUpdate,
 }
 
 impl ExperimentRoundKind {
@@ -97,6 +103,12 @@ impl ExperimentRoundKind {
             RoundKind::Construct => Self::Construct,
             RoundKind::MemoryRound => Self::MemoryRound,
             RoundKind::MeasureLogical => Self::MeasureLogical,
+            RoundKind::Merge(crate::expand::MergeBoundary::Rough) => Self::MergeRough,
+            RoundKind::Merge(crate::expand::MergeBoundary::Smooth) => Self::MergeSmooth,
+            RoundKind::Split(crate::expand::MergeBoundary::Rough) => Self::SplitRough,
+            RoundKind::Split(crate::expand::MergeBoundary::Smooth) => Self::SplitSmooth,
+            RoundKind::MeasureAncilla => Self::MeasureAncilla,
+            RoundKind::FrameUpdate => Self::FrameUpdate,
         }
     }
 
@@ -105,7 +117,26 @@ impl ExperimentRoundKind {
             Self::Construct => "construct",
             Self::MemoryRound => "memory_round",
             Self::MeasureLogical => "measure_logical",
+            Self::MergeRough => "merge_rough",
+            Self::MergeSmooth => "merge_smooth",
+            Self::SplitRough => "split_rough",
+            Self::SplitSmooth => "split_smooth",
+            Self::MeasureAncilla => "measure_ancilla",
+            Self::FrameUpdate => "frame_update",
         }
+    }
+
+    /// Rounds that receive a durable Wait `barrier_cycle` in `na_refs`.
+    pub fn needs_barrier(self) -> bool {
+        matches!(
+            self,
+            Self::MemoryRound
+                | Self::MergeRough
+                | Self::MergeSmooth
+                | Self::SplitRough
+                | Self::SplitSmooth
+                | Self::MeasureAncilla
+        )
     }
 }
 
@@ -190,10 +221,15 @@ pub enum ExperimentError {
     #[error("QEC experiment emit requires a non-empty expanded workload")]
     EmptyWorkload,
     #[error(
-        "QEC experiment Stim emit currently supports a single code block; \
-         got {block_count} blocks (multi-block / lattice surgery is out of scope for #249)"
+        "QEC experiment Stim emit currently supports a single code block or a \
+         lattice-surgery CX gadget; got {block_count} blocks without surgery phases"
     )]
     UnsupportedLayout { block_count: usize },
+    #[error(
+        "QEC lattice-surgery experiment requires homogeneous surface distance; \
+         found mismatched blocks"
+    )]
+    InhomogeneousLatticeSurgery,
     #[error(
         "QEC experiment emit requires repetition or surface blocks; got family `{family}` \
          distance {distance}"
@@ -268,12 +304,20 @@ pub fn build_experiment(
     if expanded.blocks.is_empty() {
         return Err(ExperimentError::EmptyWorkload);
     }
-    // v1 metadata is homogeneous single-block; Stim also requires one block.
     let primary = &expanded.blocks[0];
     if expanded.blocks.len() != 1 {
-        return Err(ExperimentError::UnsupportedLayout {
-            block_count: expanded.blocks.len(),
-        });
+        if !expanded.has_lattice_surgery() {
+            return Err(ExperimentError::UnsupportedLayout {
+                block_count: expanded.blocks.len(),
+            });
+        }
+        if !expanded
+            .blocks
+            .iter()
+            .all(|b| b.family == SourceFamily::Surface && b.distance == primary.distance)
+        {
+            return Err(ExperimentError::InhomogeneousLatticeSurgery);
+        }
     }
     match primary.family {
         SourceFamily::Repetition | SourceFamily::Surface => {}
@@ -291,7 +335,13 @@ pub fn build_experiment(
         code_family: primary.code_family.as_report_str().to_string(),
         distance: primary.distance,
         rounds: expanded.memory_round_count() as u32,
-        logical_ids: expanded.blocks.iter().map(|b| b.logical_id.0).collect(),
+        logical_ids: expanded
+            .blocks
+            .iter()
+            // Skip transitional ancilla (highest id added by surgery) in the
+            // primary logical_ids list when surgery present? Keep all for map.
+            .map(|b| b.logical_id.0)
+            .collect(),
         check_graph,
         measurement_schedule,
         logical_observables,
@@ -319,18 +369,16 @@ pub fn na_refs_from_expanded(expanded: &ExpandedWorkload) -> Vec<NaScheduleRef> 
         .collect()
 }
 
-/// Attach durable Wait barrier cycles (in order) onto memory-round `na_refs`.
+/// Attach durable Wait barrier cycles (in order) onto barrier-bearing `na_refs`.
 ///
 /// Fails closed unless `barrier_cycles.len()` equals the number of
-/// `memory_round` entries in `na_refs`.
+/// barrier-bearing entries in `na_refs` (memory rounds and lattice-surgery
+/// merge/split/ancilla-measure phases).
 pub fn attach_barrier_cycles(
     na_refs: &mut [NaScheduleRef],
     barrier_cycles: &[u32],
 ) -> Result<(), ExperimentError> {
-    let expected = na_refs
-        .iter()
-        .filter(|r| r.kind == ExperimentRoundKind::MemoryRound)
-        .count();
+    let expected = na_refs.iter().filter(|r| r.kind.needs_barrier()).count();
     if barrier_cycles.len() != expected {
         return Err(ExperimentError::BarrierCycleMismatch {
             got: barrier_cycles.len(),
@@ -339,7 +387,7 @@ pub fn attach_barrier_cycles(
     }
     let mut bi = 0usize;
     for r in na_refs.iter_mut() {
-        if r.kind == ExperimentRoundKind::MemoryRound {
+        if r.kind.needs_barrier() {
             r.barrier_cycle = Some(barrier_cycles[bi]);
             bi += 1;
         }
@@ -347,19 +395,24 @@ pub fn attach_barrier_cycles(
     Ok(())
 }
 
-/// Emit a structure-only Stim circuit for a single-block memory experiment.
+/// Emit a structure-only Stim circuit.
 ///
-/// Repetition: Kelly alternating chain with CNOT(data→check); Z measure only.
-/// Surface: serial Z-then-X expand schedule (not Stim's interleaved 4-layer —
-/// do not claim Stim-equivalent FT distance). Supports Z-memory
-/// (`rotated_memory_z`-style detectors) and X-memory
-/// (`rotated_memory_x`-style: data H prep, first-round X detectors, MX close).
+/// Single-block memory: repetition/surface as before.
+/// Lattice-surgery CX: three-patch gadget with merge/split seam measurements
+/// and dual logical observables (ADR-0019).
 pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
+    if expanded.has_lattice_surgery() {
+        return emit_stim_lattice_surgery_cx(expanded);
+    }
     if expanded.blocks.len() != 1 {
         return Err(ExperimentError::UnsupportedLayout {
             block_count: expanded.blocks.len(),
         });
     }
+    emit_stim_single_block_memory(expanded)
+}
+
+fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
     let block = &expanded.blocks[0];
     match block.family {
         SourceFamily::Repetition | SourceFamily::Surface => {}
@@ -442,35 +495,7 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     };
 
     for (round_i, round) in memory_rounds.iter().enumerate() {
-        if round.z_cnot_count > round.entangling.len() {
-            return Err(ExperimentError::InvalidZCnotCount {
-                z_cnot_count: round.z_cnot_count,
-                entangling_len: round.entangling.len(),
-            });
-        }
-        emit_local_ops(&mut out, &round.local_before);
-        let z_count = round.z_cnot_count;
-        let (z_cnots, x_cnots) = round.entangling.split_at(z_count);
-        if !x_cnots.is_empty() && round.local_mid.is_empty() {
-            return Err(ExperimentError::MissingXCheckHadamards);
-        }
-        for layer in layer_nonoverlapping_cnots(z_cnots) {
-            out.push_str("CX");
-            for cnot in layer {
-                out.push_str(&format!(" {} {}", cnot.control.0, cnot.target.0));
-            }
-            out.push_str("\nTICK\n");
-        }
-        emit_local_ops(&mut out, &round.local_mid);
-        for layer in layer_nonoverlapping_cnots(x_cnots) {
-            out.push_str("CX");
-            for cnot in layer {
-                out.push_str(&format!(" {} {}", cnot.control.0, cnot.target.0));
-            }
-            out.push_str("\nTICK\n");
-        }
-        emit_local_ops(&mut out, &round.local_after);
-
+        emit_round_body(&mut out, round)?;
         out.push_str("MR");
         for term in &round.terminal {
             if let RoundTerminal::Measure { atom, .. } = term {
@@ -558,6 +583,221 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     out.push('\n');
 
     Ok(out)
+}
+
+/// Structure Stim for the three-patch lattice-surgery CX gadget.
+fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
+    if expanded.blocks.len() < 2 {
+        return Err(ExperimentError::UnsupportedLayout {
+            block_count: expanded.blocks.len(),
+        });
+    }
+    let distance = expanded.blocks[0].distance;
+    if !expanded
+        .blocks
+        .iter()
+        .all(|b| b.family == SourceFamily::Surface && b.distance == distance)
+    {
+        return Err(ExperimentError::InhomogeneousLatticeSurgery);
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "# Quon QEC experiment — lattice-surgery CX structure (no noise; ADR-0019/0024)\n\
+         # family=surface distance={} blocks={} (control|ancilla|target linear)\n\
+         # Note: simplified merge/split seam model; not Stim FT-distance claim.\n",
+        distance,
+        expanded.blocks.len(),
+    ));
+
+    for block in &expanded.blocks {
+        for (atom, &(x, y)) in block.atoms.iter().zip(block.coords.iter()) {
+            out.push_str(&format!("QUBIT_COORDS({x}, {y}) {}\n", atom.0));
+        }
+    }
+
+    // Reset all atoms once.
+    let mut all_atoms: Vec<u32> = expanded
+        .blocks
+        .iter()
+        .flat_map(|b| b.atoms.iter().map(|a| a.0))
+        .collect();
+    all_atoms.sort_unstable();
+    all_atoms.dedup();
+    out.push('R');
+    for id in &all_atoms {
+        out.push_str(&format!(" {id}"));
+    }
+    out.push_str("\nTICK\n");
+
+    let mut rec_count: i32 = 0;
+    let mut seam_detector_i = 0u32;
+    let mut measure_logical_rounds = Vec::new();
+
+    for round in &expanded.rounds {
+        match round.kind {
+            RoundKind::Construct => {
+                emit_local_ops(&mut out, &round.local_before);
+            }
+            RoundKind::Merge(_) | RoundKind::MemoryRound => {
+                emit_round_body(&mut out, round)?;
+                let measured: Vec<u32> = round
+                    .terminal
+                    .iter()
+                    .filter_map(|t| match t {
+                        RoundTerminal::Measure { atom, .. } => Some(atom.0),
+                        _ => None,
+                    })
+                    .collect();
+                if !measured.is_empty() {
+                    out.push_str("MR");
+                    for id in &measured {
+                        out.push_str(&format!(" {id}"));
+                    }
+                    out.push('\n');
+                    let n = measured.len() as i32;
+                    for c in 0..n {
+                        let cur = -(n - c);
+                        out.push_str(&format!(
+                            "DETECTOR({seam_detector_i}, 0) rec[{cur}]\n"
+                        ));
+                        seam_detector_i += 1;
+                    }
+                    rec_count += n;
+                    out.push_str("TICK\n");
+                }
+            }
+            RoundKind::Split(_) | RoundKind::FrameUpdate => {
+                // Barrier / frame metadata only — no physical Stim ops.
+            }
+            RoundKind::MeasureAncilla => {
+                let measured: Vec<u32> = round
+                    .terminal
+                    .iter()
+                    .filter_map(|t| match t {
+                        RoundTerminal::Measure { atom, .. } => Some(atom.0),
+                        _ => None,
+                    })
+                    .collect();
+                if !measured.is_empty() {
+                    out.push_str("MZ");
+                    for id in &measured {
+                        out.push_str(&format!(" {id}"));
+                    }
+                    out.push('\n');
+                    // Ancilla Z product → OBSERVABLE bookkeeping via detectors.
+                    let n = measured.len() as i32;
+                    out.push_str(&format!("DETECTOR({seam_detector_i}, 1)"));
+                    for c in 0..n {
+                        let cur = -(n - c);
+                        out.push_str(&format!(" rec[{cur}]"));
+                    }
+                    out.push('\n');
+                    seam_detector_i += 1;
+                    rec_count += n;
+                    out.push_str("TICK\n");
+                }
+            }
+            RoundKind::MeasureLogical => {
+                measure_logical_rounds.push(round);
+            }
+        }
+    }
+
+    // Final logical Z measurements on remaining (non-ancilla) blocks.
+    let mut obs_id = 0u32;
+    for round in measure_logical_rounds {
+        let data_atoms: Vec<u32> = round
+            .terminal
+            .iter()
+            .filter_map(|t| match t {
+                RoundTerminal::Measure { atom, .. } => Some(atom.0),
+                _ => None,
+            })
+            .collect();
+        if data_atoms.is_empty() {
+            continue;
+        }
+        out.push_str("MZ");
+        for id in &data_atoms {
+            out.push_str(&format!(" {id}"));
+        }
+        out.push('\n');
+        let block = expanded
+            .blocks
+            .iter()
+            .find(|b| b.logical_id == round.logical_id)
+            .ok_or(ExperimentError::UnsupportedLayout {
+                block_count: expanded.blocks.len(),
+            })?;
+        let obs_atoms = logical_observable_atoms(block, LogicalBasis::Z);
+        let d = data_atoms.len() as i32;
+        out.push_str(&format!("OBSERVABLE_INCLUDE({obs_id})"));
+        for atom in &obs_atoms {
+            let pos = data_atoms
+                .iter()
+                .position(|a| a == atom)
+                .ok_or(ExperimentError::MissingDataMeasurement { atom: *atom })?;
+            let rec = -(d - pos as i32);
+            out.push_str(&format!(" rec[{rec}]"));
+        }
+        out.push('\n');
+        obs_id += 1;
+        let _ = rec_count; // bookkeeping kept for future detector windows
+    }
+
+    if obs_id == 0 {
+        // Fallback: emit observables from first two surface blocks' Z logicals
+        // without a final measure (structure-only hook for Sinter harness).
+        for (i, block) in expanded
+            .blocks
+            .iter()
+            .filter(|b| b.init_basis != LogicalBasis::X || b.logical_id.0 < 2)
+            .take(2)
+            .enumerate()
+        {
+            let obs_atoms = logical_observable_atoms(block, LogicalBasis::Z);
+            out.push_str(&format!("# OBSERVABLE_INCLUDE({i}) atoms"));
+            for a in &obs_atoms {
+                out.push_str(&format!(" {a}"));
+            }
+            out.push('\n');
+        }
+    }
+
+    Ok(out)
+}
+
+fn emit_round_body(out: &mut String, round: &crate::expand::PhysicalRound) -> Result<(), ExperimentError> {
+    if round.z_cnot_count > round.entangling.len() {
+        return Err(ExperimentError::InvalidZCnotCount {
+            z_cnot_count: round.z_cnot_count,
+            entangling_len: round.entangling.len(),
+        });
+    }
+    emit_local_ops(out, &round.local_before);
+    let z_count = round.z_cnot_count;
+    let (z_cnots, x_cnots) = round.entangling.split_at(z_count);
+    if !x_cnots.is_empty() && round.local_mid.is_empty() {
+        return Err(ExperimentError::MissingXCheckHadamards);
+    }
+    for layer in layer_nonoverlapping_cnots(z_cnots) {
+        out.push_str("CX");
+        for cnot in layer {
+            out.push_str(&format!(" {} {}", cnot.control.0, cnot.target.0));
+        }
+        out.push_str("\nTICK\n");
+    }
+    emit_local_ops(out, &round.local_mid);
+    for layer in layer_nonoverlapping_cnots(x_cnots) {
+        out.push_str("CX");
+        for cnot in layer {
+            out.push_str(&format!(" {} {}", cnot.control.0, cnot.target.0));
+        }
+        out.push_str("\nTICK\n");
+    }
+    emit_local_ops(out, &round.local_after);
+    Ok(())
 }
 
 fn emit_local_ops(out: &mut String, ops: &[crate::expand::RoundLocalOp]) {
@@ -685,8 +925,13 @@ fn measurement_schedule_from_expanded(expanded: &ExpandedWorkload) -> Vec<Measur
         .enumerate()
         .map(|(i, round)| {
             let (measured_atoms, basis) = match round.kind {
-                RoundKind::Construct => (Vec::new(), None),
-                RoundKind::MemoryRound | RoundKind::MeasureLogical => {
+                RoundKind::Construct | RoundKind::Split(_) | RoundKind::FrameUpdate => {
+                    (Vec::new(), None)
+                }
+                RoundKind::MemoryRound
+                | RoundKind::MeasureLogical
+                | RoundKind::Merge(_)
+                | RoundKind::MeasureAncilla => {
                     let mut atoms = Vec::new();
                     let mut basis = None;
                     for term in &round.terminal {
@@ -716,12 +961,56 @@ fn measurement_schedule_from_expanded(expanded: &ExpandedWorkload) -> Vec<Measur
 fn logical_observables_from_expanded(
     expanded: &ExpandedWorkload,
 ) -> Result<Vec<LogicalObservable>, ExperimentError> {
-    let measure_basis = measure_logical_basis(
-        expanded
-            .rounds
-            .iter()
-            .find(|r| r.kind == RoundKind::MeasureLogical),
-    )?;
+    // Prefer explicit measure-logical rounds; for CX gadgets emit one Z
+    // observable per non-ancilla surface block (control + target).
+    let measure_rounds: Vec<_> = expanded
+        .rounds
+        .iter()
+        .filter(|r| r.kind == RoundKind::MeasureLogical)
+        .collect();
+    if !measure_rounds.is_empty() {
+        let mut out = Vec::new();
+        for (i, round) in measure_rounds.iter().enumerate() {
+            let basis = measure_logical_basis(Some(round))?;
+            let block = expanded
+                .blocks
+                .iter()
+                .find(|b| b.logical_id == round.logical_id)
+                .ok_or(ExperimentError::UnsupportedLayout {
+                    block_count: expanded.blocks.len(),
+                })?;
+            out.push(LogicalObservable {
+                id: i as u32,
+                logical_id: block.logical_id.0,
+                basis,
+                atoms: logical_observable_atoms(block, basis),
+            });
+        }
+        return Ok(out);
+    }
+
+    if expanded.has_lattice_surgery() {
+        // Control + target only (skip X-init transitional ancilla).
+        let mut out = Vec::new();
+        for block in &expanded.blocks {
+            if block.init_basis == LogicalBasis::X && block.logical_id.0 >= 2 {
+                continue;
+            }
+            // Ancilla is X-init; user blocks are typically Z-init.
+            if block.init_basis == LogicalBasis::X {
+                continue;
+            }
+            out.push(LogicalObservable {
+                id: out.len() as u32,
+                logical_id: block.logical_id.0,
+                basis: LogicalBasis::Z,
+                atoms: logical_observable_atoms(block, LogicalBasis::Z),
+            });
+        }
+        return Ok(out);
+    }
+
+    let measure_basis = measure_logical_basis(None)?;
     Ok(expanded
         .blocks
         .iter()
@@ -1279,4 +1568,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn lattice_surgery_cx_d3_dual_emit_json_and_stim() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .expect("c");
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
+            .expect("t");
+        b.logical_cx(LogicalQubitId(0), LogicalQubitId(1))
+            .expect("cx");
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .expect("mz0");
+        b.measure_logical(LogicalQubitId(1), LogicalBasis::Z)
+            .expect("mz1");
+        let expanded = expand_workload(&b.finish()).expect("expand");
+        assert!(expanded.has_lattice_surgery());
+
+        let (exp, stim) = dual_emit(
+            &expanded,
+            example_error_model(),
+            "cx_d3.stim",
+            na_refs_from_expanded(&expanded),
+        )
+        .expect("dual");
+
+        assert_eq!(exp.family, "surface");
+        assert_eq!(exp.distance, 3);
+        assert!(exp.logical_ids.contains(&0));
+        assert!(exp.logical_ids.contains(&1));
+        assert!(
+            exp.na_refs
+                .iter()
+                .any(|r| r.kind == ExperimentRoundKind::MergeRough),
+            "expected merge_rough na_ref"
+        );
+        assert!(
+            exp.na_refs
+                .iter()
+                .any(|r| r.kind == ExperimentRoundKind::FrameUpdate),
+            "expected frame_update na_ref"
+        );
+        assert!(exp.logical_observables.len() >= 2, "{:?}", exp.logical_observables);
+
+        assert!(stim.contains("lattice-surgery CX"), "{stim}");
+        assert!(stim.contains("DETECTOR"), "{stim}");
+        assert!(stim.contains("OBSERVABLE_INCLUDE(0)"), "{stim}");
+        assert!(stim.contains("OBSERVABLE_INCLUDE(1)"), "{stim}");
+        assert!(stim.contains("CX "), "{stim}");
+        assert!(!stim.contains("DEPOLARIZE"), "{stim}");
+        assert!(!stim.contains("X_ERROR"), "{stim}");
+    }
 }

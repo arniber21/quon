@@ -707,7 +707,7 @@ fn emit_qec_experiment_artifacts(
 
     let mut na_refs = na_refs_from_expanded(&expanded);
     if let Some(layers) = &report.na_schedule {
-        let barriers = memory_round_barrier_cycles(layers, expanded.memory_round_count())?;
+        let barriers = memory_round_barrier_cycles(layers, expanded.barrier_round_count())?;
         attach_barrier_cycles(&mut na_refs, &barriers).map_err(|e| anyhow!("{e}"))?;
     }
 
@@ -766,7 +766,7 @@ fn memory_round_barrier_cycles(
     if cycles.len() != expected_memory_rounds {
         bail!(
             "QEC na_refs barrier_cycle: found {} durable Wait barrier(s) via \
-             round_barrier_cuts, expected {} memory_round(s); refusing unchecked Wait mapping",
+             round_barrier_cuts, expected {} barrier round(s); refusing unchecked Wait mapping",
             cycles.len(),
             expected_memory_rounds
         );
