@@ -7,10 +7,8 @@ expression: md
 ## Qubit resources
 | Metric | Value |
 | --- | ---: |
-| Logical qubits | 12 |
-| Physical atoms | 288 |
-| Atoms per logical | 24 |
-| Code family | high_rate_qldpc_like |
+| Logical qubits | 0 |
+| Physical atoms | 0 |
 
 ## Schedule metrics
 | Metric | Value |
@@ -29,7 +27,18 @@ expression: md
 | Wait time (µs) | 4 |
 | Total time (µs) | 30 |
 
+## Physical error budget
+| Category | Contribution (rate × count) |
+| --- | ---: |
+| Rydberg | 0.004 |
+| Measurement | 0.003 |
+| Reset | 0.004 |
+| Movement | 0.0005 |
+| Transfer | 0.0007 |
+| Idle | 0.000000008 |
+
 ## Notes
 - Field names align with TUM RAP Table I / Enola headline metrics.
 - `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
 - Non-QEC reports omit atoms-per-logical and code-family rows.
+- Physical error budget lines are schedule-count × rate contributions only — not logical error rates or thresholds.

@@ -63,12 +63,12 @@
     "coherence_time_us": 1500000.0
   },
   "error_model": {
-    "rydberg": 0.005,
-    "measurement": 0.01,
-    "reset": 0.01,
-    "movement": 0.001,
-    "transfer": 0.001,
-    "idle_per_us": 1e-9
+    "rydberg": 0.002,
+    "measurement": 0.003,
+    "reset": 0.004,
+    "movement": 0.0005,
+    "transfer": 0.0007,
+    "idle_per_us": 2e-9
   },
   "cost_model": {
     "rydberg_stage_weight": 1.0,

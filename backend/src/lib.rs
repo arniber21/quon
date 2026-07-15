@@ -4,6 +4,10 @@
 //! [`TargetKind`]. The current gate-model compiler uses [`FixedTarget`]; the
 //! neutral-atom backend loads [`NeutralAtomTarget`] descriptors through the
 //! same [`json::load`] entry point.
+//!
+//! Neutral-atom QEC physical error rates live in optional
+//! [`NeutralAtomErrorModel`] (ADR-0017): sibling to fidelity, never
+//! `1 - fidelity`, validated on descriptor load.
 
 pub mod decompose;
 pub mod descriptor;
@@ -20,7 +24,8 @@ pub use error::BackendError;
 pub use target::{
     AodMovement, AodMovementModel, AodSpeedModel, AodSpeedModelKind, BackendTarget,
     ConnectivityGraph, FixedTarget, GateOp, NativeGate, NeutralAtomCostModel,
-    NeutralAtomErrorModel, NeutralAtomFidelity, NeutralAtomGrid, NeutralAtomTarget,
+    NeutralAtomErrorModel, NeutralAtomErrorModelSnapshot, NeutralAtomFidelity, NeutralAtomGrid,
+    NeutralAtomTarget,
     NeutralAtomTiming, NeutralAtomZone, NoiseModel, RydbergInteraction, TargetKind, UNREACHABLE,
     ZoneKind,
 };

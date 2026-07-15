@@ -411,10 +411,10 @@ fn neutral_atom_from_descriptor(
                 d.fidelity.coherence_time_us,
             )?,
         },
-        error_model: match d.error_model {
-            None => None,
-            Some(m) => Some(error_model_from_descriptor(m)?),
-        },
+        error_model: d
+            .error_model
+            .map(error_model_from_descriptor)
+            .transpose()?,
         cost_model: NeutralAtomCostModel {
             rydberg_stage_weight: non_negative_f64(
                 "cost_model.rydberg_stage_weight",
@@ -653,4 +653,59 @@ fn probability(field: &str, value: f64) -> Result<f64, BackendError> {
 
 fn invalid_config<T>(message: impl Into<String>) -> Result<T, BackendError> {
     Err(BackendError::InvalidTargetConfig(message.into()))
+}
+
+#[cfg(test)]
+mod error_model_validation_tests {
+    use super::*;
+
+    fn valid_descriptor() -> NeutralAtomErrorModelDescriptor {
+        NeutralAtomErrorModelDescriptor {
+            rydberg: 0.002,
+            measurement: 0.003,
+            reset: 0.004,
+            movement: 0.0005,
+            transfer: 0.0007,
+            idle_per_us: 2e-9,
+        }
+    }
+
+    #[test]
+    fn accepts_placeholder_rates() {
+        let model = match error_model_from_descriptor(valid_descriptor()) {
+            Ok(m) => m,
+            Err(e) => panic!("valid descriptor rejected: {e}"),
+        };
+        assert_eq!(model.rydberg, 0.002);
+    }
+
+    #[test]
+    fn rejects_nan() {
+        let mut d = valid_descriptor();
+        d.transfer = f64::NAN;
+        let err = match error_model_from_descriptor(d) {
+            Ok(_) => panic!("NaN should fail"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, BackendError::InvalidTargetConfig(_)),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("error_model.transfer"));
+    }
+
+    #[test]
+    fn rejects_infinity() {
+        let mut d = valid_descriptor();
+        d.idle_per_us = f64::INFINITY;
+        let err = match error_model_from_descriptor(d) {
+            Ok(_) => panic!("Inf should fail"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, BackendError::InvalidTargetConfig(_)),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("error_model.idle_per_us"));
+    }
 }
