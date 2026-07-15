@@ -8,18 +8,20 @@
 pub mod expand;
 pub mod experiment;
 pub mod family;
+pub mod lattice_surgery;
 pub mod workload;
 
 pub use expand::{
-    ExpandError, ExpandedBlock, ExpandedWorkload, PhysicalAtomId, PhysicalCnot, PhysicalRound,
-    RoundKind, RoundLocalOp, RoundTerminal, StabilizerDef, expand_workload,
+    ExpandError, ExpandedBlock, ExpandedWorkload, MergeBoundary, PauliFrameUpdate, PhysicalAtomId,
+    PhysicalCnot, PhysicalRound, RoundKind, RoundLocalOp, RoundTerminal, StabilizerDef,
+    expand_workload,
 };
 pub use experiment::{
     AtomRole, AtomSiteMapping, CheckGraph, ErrorModelSnapshot, ExperimentError, ExperimentRoundKind,
-    LogicalObservable, MeasurementScheduleEntry, NaScheduleRef, QEC_EXPERIMENT_KIND,
-    QEC_EXPERIMENT_SCHEMA_VERSION, QecExperiment, StabilizerCheck, attach_barrier_cycles,
-    build_experiment, dual_emit, emit_stim_structure, experiment_to_json, layer_nonoverlapping_cnots,
-    na_refs_from_expanded, sibling_stim_path,
+    FrameUpdateEntry, LogicalObservable, MeasurementScheduleEntry, NaScheduleRef,
+    QEC_EXPERIMENT_KIND, QEC_EXPERIMENT_SCHEMA_VERSION, QecExperiment, StabilizerCheck,
+    attach_barrier_cycles, build_experiment, dual_emit, emit_stim_structure, experiment_to_json,
+    layer_nonoverlapping_cnots, na_refs_from_expanded, sibling_stim_path,
 };
 pub use family::{
     CodeFamily, NetRate, QecError, SourceFamily, atoms_per_logical, ceil_div, repetition_n,

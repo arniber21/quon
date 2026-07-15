@@ -19,8 +19,10 @@
 //! rounds use a **serial Z-then-X** phase split (Z CXs → mid H → X CXs →
 //! after H → measure/reset) for hybrid NA scheduling. That is *not* Stim's
 //! interleaved 4-layer schedule — do not claim Stim-equivalent fault-tolerant
-//! distance from this expansion alone. Lattice surgery / `logical_cx` remains
-//! out of scope (#250).
+//! distance from this expansion alone.
+//!
+//! `logical_cx` expands via fixed-layout three-patch lattice surgery
+//! ([`crate::lattice_surgery`], ADR-0019 / #250).
 //!
 //! `surface_code_x` / X-init constructs emit data Hadamards (logical |+⟩ prep)
 //! on the construct round before memory rounds.
@@ -62,6 +64,40 @@ pub enum RoundTerminal {
     },
 }
 
+/// Smooth (XX) vs rough (ZZ) merge boundary in lattice surgery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MergeBoundary {
+    /// Joint ZZ measurement along the shared rough edge.
+    Rough,
+    /// Joint XX measurement along the shared smooth edge.
+    Smooth,
+}
+
+impl MergeBoundary {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rough => "rough",
+            Self::Smooth => "smooth",
+        }
+    }
+}
+
+/// Pauli frame byproduct recorded after lattice-surgery measurements.
+///
+/// `x` / `z` name the Pauli to apply on [`Self::logical_id`] when the parity of
+/// [`Self::condition_atoms`] measurement records is odd (−1). They are **not**
+/// unconditional correction flags.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PauliFrameUpdate {
+    pub logical_id: LogicalQubitId,
+    pub x: bool,
+    pub z: bool,
+    /// Which merge/measure phase produced this byproduct (`rough_merge`, …).
+    pub source: &'static str,
+    /// Measurement atoms whose record parity conditions this update (odd → apply).
+    pub condition_atoms: Vec<PhysicalAtomId>,
+}
+
 /// Why this physical round exists in the expanded schedule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RoundKind {
@@ -71,6 +107,42 @@ pub enum RoundKind {
     MemoryRound,
     /// Final logical Pauli measurement (consumes the block).
     MeasureLogical,
+    /// Lattice-surgery merge (joint stabilizers across a patch seam).
+    Merge(MergeBoundary),
+    /// Lattice-surgery split (barrier; patches resume separately).
+    Split(MergeBoundary),
+    /// Measure transitional ancilla after CX gadget (byproduct source).
+    MeasureAncilla,
+    /// Record Pauli frame byproducts (no physical gates).
+    FrameUpdate,
+}
+
+impl RoundKind {
+    /// Rounds that get a durable Wait barrier in the hybrid NA schedule.
+    pub fn needs_round_barrier(self) -> bool {
+        matches!(
+            self,
+            Self::MemoryRound
+                | Self::Merge(_)
+                | Self::Split(_)
+                | Self::MeasureAncilla
+                | Self::FrameUpdate
+        )
+    }
+
+    pub fn as_experiment_str(self) -> &'static str {
+        match self {
+            Self::Construct => "construct",
+            Self::MemoryRound => "memory_round",
+            Self::MeasureLogical => "measure_logical",
+            Self::Merge(MergeBoundary::Rough) => "merge_rough",
+            Self::Merge(MergeBoundary::Smooth) => "merge_smooth",
+            Self::Split(MergeBoundary::Rough) => "split_rough",
+            Self::Split(MergeBoundary::Smooth) => "split_smooth",
+            Self::MeasureAncilla => "measure_ancilla",
+            Self::FrameUpdate => "frame_update",
+        }
+    }
 }
 
 /// One schedulable unit: optional locals, entangling CNOTs, terminals.
@@ -96,6 +168,28 @@ pub struct PhysicalRound {
     pub local_mid: Vec<RoundLocalOp>,
     pub local_after: Vec<RoundLocalOp>,
     pub terminal: Vec<RoundTerminal>,
+    /// Second patch involved in a merge/split (lattice surgery).
+    pub partner_logical_id: Option<LogicalQubitId>,
+    /// Pauli frame byproducts (populated on [`RoundKind::FrameUpdate`]).
+    pub frame_updates: Vec<PauliFrameUpdate>,
+}
+
+impl PhysicalRound {
+    /// Empty physical content for construct / split / frame-update rounds.
+    pub fn bare(kind: RoundKind, logical_id: LogicalQubitId) -> Self {
+        Self {
+            kind,
+            logical_id,
+            local_before: Vec::new(),
+            entangling: Vec::new(),
+            z_cnot_count: 0,
+            local_mid: Vec::new(),
+            local_after: Vec::new(),
+            terminal: Vec::new(),
+            partner_logical_id: None,
+            frame_updates: Vec::new(),
+        }
+    }
 }
 
 /// One stabilizer generator in an expanded block.
@@ -144,6 +238,24 @@ impl ExpandedWorkload {
             .filter(|r| r.kind == RoundKind::MemoryRound)
             .count()
     }
+
+    /// Rounds that emit a durable Wait barrier in the hybrid NA schedule.
+    pub fn barrier_round_count(&self) -> usize {
+        self.rounds
+            .iter()
+            .filter(|r| r.kind.needs_round_barrier())
+            .count()
+    }
+
+    /// Whether this expansion includes lattice-surgery CX phases.
+    pub fn has_lattice_surgery(&self) -> bool {
+        self.rounds.iter().any(|r| {
+            matches!(
+                r.kind,
+                RoundKind::Merge(_) | RoundKind::Split(_) | RoundKind::MeasureAncilla
+            )
+        })
+    }
 }
 
 /// Failures expanding a [`QecWorkload`] into physical rounds.
@@ -153,8 +265,15 @@ pub enum ExpandError {
     Qec(#[from] QecError),
     #[error("unknown logical qubit id {0} in workload op")]
     UnknownLogicalId(u32),
-    #[error("logical_cx expansion is out of scope for #249 (see #250)")]
-    LogicalCxUnsupported,
+    #[error("logical_cx requires surface-code blocks; logical {id} is `{family}`")]
+    LogicalCxNotSurface { id: u32, family: &'static str },
+    #[error(
+        "logical_cx requires equal distances; control distance {control_distance}, target distance {target_distance}"
+    )]
+    LogicalCxDistanceMismatch {
+        control_distance: u32,
+        target_distance: u32,
+    },
     #[error("expanded atom id overflow")]
     AtomIdOverflow,
     #[error(
@@ -182,18 +301,17 @@ pub enum ExpandError {
         z_cnot_count: usize,
         entangling_len: usize,
     },
+    #[error("surface patch data count mismatch for distance {distance}")]
+    InvalidPatchData { distance: u32 },
 }
 
 /// Expand a validated [`QecWorkload`] into per-round physical CNOT / measure / reset.
 pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, ExpandError> {
     let mut next_atom = 0u32;
-    let mut blocks = Vec::with_capacity(workload.blocks.len());
     let mut layouts: Vec<ExpandedBlock> = Vec::with_capacity(workload.blocks.len());
 
     for meta in &workload.blocks {
-        let layout = expand_block_layout(meta, &mut next_atom)?;
-        blocks.push(layout.clone());
-        layouts.push(layout);
+        layouts.push(expand_block_layout(meta, &mut next_atom)?);
     }
 
     let mut rounds = Vec::new();
@@ -234,6 +352,8 @@ pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, Expan
                     local_mid: Vec::new(),
                     local_after: Vec::new(),
                     terminal: Vec::new(),
+                    partner_logical_id: None,
+                    frame_updates: Vec::new(),
                 });
             }
             WorkloadOp::MemoryRound { logical_id } => {
@@ -249,13 +369,22 @@ pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, Expan
                 let layout = find_layout(&layouts, *logical_id)?;
                 rounds.push(measure_logical_round(layout, *basis));
             }
-            WorkloadOp::LogicalCx { .. } => {
-                return Err(ExpandError::LogicalCxUnsupported);
+            WorkloadOp::LogicalCx { control, target } => {
+                crate::lattice_surgery::expand_logical_cx(
+                    *control,
+                    *target,
+                    &mut layouts,
+                    &mut next_atom,
+                    &mut rounds,
+                )?;
             }
         }
     }
 
-    Ok(ExpandedWorkload { blocks, rounds })
+    Ok(ExpandedWorkload {
+        blocks: layouts,
+        rounds,
+    })
 }
 
 fn find_layout(
@@ -322,6 +451,16 @@ fn expand_repetition_layout(
         coords,
         stabilizers,
     })
+}
+
+/// Rotated surface layout: `d²` data + `d² − 1` checks (Stim-faithful geometry).
+///
+/// Public for [`crate::lattice_surgery`] transitional ancilla allocation.
+pub(crate) fn expand_surface_layout_for_surgery(
+    meta: &WorkloadBlock,
+    next_atom: &mut u32,
+) -> Result<ExpandedBlock, ExpandError> {
+    expand_surface_layout(meta, next_atom)
 }
 
 /// Rotated surface layout: `d²` data + `d² − 1` checks (Stim-faithful geometry).
@@ -488,10 +627,14 @@ fn repetition_memory_round(layout: &ExpandedBlock) -> Result<PhysicalRound, Expa
         local_mid: Vec::new(),
         local_after: Vec::new(),
         terminal,
+        partner_logical_id: None,
+        frame_updates: Vec::new(),
     })
 }
 
-fn surface_memory_round(layout: &ExpandedBlock) -> PhysicalRound {
+/// Full surface stabilizer extraction (Z-then-X). Used for memory rounds and
+/// post-merge split restore rounds (kind overridden by the caller).
+pub(crate) fn surface_memory_round(layout: &ExpandedBlock) -> PhysicalRound {
     // Z-then-X phases: overlapping X/Z CX in one block does not implement
     // simultaneous stabilizer extraction (Stim needs its 4-layer schedule or
     // a serial Z-then-X split). We take the serial split for all odd d.
@@ -545,6 +688,8 @@ fn surface_memory_round(layout: &ExpandedBlock) -> PhysicalRound {
         local_mid: x_h.clone(),
         local_after: x_h,
         terminal,
+        partner_logical_id: None,
+        frame_updates: Vec::new(),
     }
 }
 
@@ -563,6 +708,8 @@ fn measure_logical_round(layout: &ExpandedBlock, basis: LogicalBasis) -> Physica
         local_mid: Vec::new(),
         local_after: Vec::new(),
         terminal,
+        partner_logical_id: None,
+        frame_updates: Vec::new(),
     }
 }
 
@@ -993,6 +1140,8 @@ mod tests {
             local_mid: Vec::new(),
             local_after: Vec::new(),
             terminal: Vec::new(),
+            partner_logical_id: None,
+            frame_updates: Vec::new(),
         };
         let err = validate_round_z_cnot(&round).expect_err("over");
         assert!(matches!(
@@ -1133,46 +1282,161 @@ mod tests {
         assert_eq!(expanded.blocks[0].stabilizers.len(), 24);
     }
 
+    fn surface_d3_cx_workload_with_memory() -> QecWorkload {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .expect("c");
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
+            .expect("t");
+        b.memory_round(LogicalQubitId(0)).expect("mr0");
+        b.memory_round(LogicalQubitId(1)).expect("mr1");
+        b.logical_cx(LogicalQubitId(0), LogicalQubitId(1))
+            .expect("cx");
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .expect("mz0");
+        b.measure_logical(LogicalQubitId(1), LogicalBasis::Z)
+            .expect("mz1");
+        b.finish()
+    }
+
     #[test]
-    fn logical_cx_is_rejected() {
-        let workload = QecWorkload {
-            blocks: vec![
-                WorkloadBlock {
-                    logical_id: LogicalQubitId(0),
-                    family: SourceFamily::Surface,
-                    distance: 3,
-                    init_basis: LogicalBasis::Z,
-                    code_family: CodeFamily::SurfaceCodeLike { distance: 3 },
-                },
-                WorkloadBlock {
-                    logical_id: LogicalQubitId(1),
-                    family: SourceFamily::Surface,
-                    distance: 3,
-                    init_basis: LogicalBasis::Z,
-                    code_family: CodeFamily::SurfaceCodeLike { distance: 3 },
-                },
-            ],
-            ops: vec![
-                WorkloadOp::Construct {
-                    family: SourceFamily::Surface,
-                    distance: 3,
-                    basis: LogicalBasis::Z,
-                    logical_id: LogicalQubitId(0),
-                },
-                WorkloadOp::Construct {
-                    family: SourceFamily::Surface,
-                    distance: 3,
-                    basis: LogicalBasis::Z,
-                    logical_id: LogicalQubitId(1),
-                },
-                WorkloadOp::LogicalCx {
-                    control: LogicalQubitId(0),
-                    target: LogicalQubitId(1),
-                },
-            ],
-        };
-        let err = expand_workload(&workload).expect_err("logical_cx");
-        assert!(matches!(err, ExpandError::LogicalCxUnsupported));
+    fn logical_cx_d3_expands_to_merge_split_phases() {
+        let expanded = expand_workload(&surface_d3_cx_workload_with_memory()).expect("expand");
+
+        assert!(expanded.has_lattice_surgery());
+        // control + target + ancilla
+        assert_eq!(expanded.blocks.len(), 3);
+        // 17 + 17 + 17 data/check + 2*3 seam atoms attached to ancilla
+        assert_eq!(expanded.physical_atom_count(), 17 + 17 + 17 + 6);
+        assert!(expanded.memory_round_count() >= 2);
+
+        let kinds: Vec<_> = expanded.rounds.iter().map(|r| r.kind).collect();
+        assert!(
+            kinds.contains(&RoundKind::Merge(MergeBoundary::Rough)),
+            "missing rough merge: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&RoundKind::Merge(MergeBoundary::Smooth)),
+            "missing smooth merge: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&RoundKind::Split(MergeBoundary::Rough)),
+            "missing rough split: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&RoundKind::Split(MergeBoundary::Smooth)),
+            "missing smooth split: {kinds:?}"
+        );
+        assert!(kinds.contains(&RoundKind::MeasureAncilla));
+        assert!(kinds.contains(&RoundKind::FrameUpdate));
+
+        let rough = expanded
+            .rounds
+            .iter()
+            .find(|r| r.kind == RoundKind::Merge(MergeBoundary::Rough))
+            .expect("rough");
+        assert_eq!(rough.entangling.len(), 6); // d=3 pairs × 2 CNOTs
+        assert_eq!(rough.z_cnot_count, 6);
+        assert!(!rough.terminal.is_empty());
+
+        let smooth = expanded
+            .rounds
+            .iter()
+            .find(|r| r.kind == RoundKind::Merge(MergeBoundary::Smooth))
+            .expect("smooth");
+        assert_eq!(smooth.entangling.len(), 6);
+        assert_eq!(smooth.z_cnot_count, 0);
+        assert!(!smooth.local_mid.is_empty());
+
+        // Split rounds re-measure the seam (not Wait-only placeholders).
+        let splits: Vec<_> = expanded
+            .rounds
+            .iter()
+            .filter(|r| matches!(r.kind, RoundKind::Split(_)))
+            .collect();
+        assert_eq!(splits.len(), 2, "expected rough+smooth split, got {}", splits.len());
+        for s in &splits {
+            assert!(
+                !s.entangling.is_empty() && !s.terminal.is_empty(),
+                "split must emit seam re-measurements: {s:?}"
+            );
+        }
+
+        let frame = expanded
+            .rounds
+            .iter()
+            .find(|r| r.kind == RoundKind::FrameUpdate)
+            .expect("frame");
+        assert!(!frame.frame_updates.is_empty());
+        for upd in &frame.frame_updates {
+            assert!(
+                !upd.condition_atoms.is_empty(),
+                "byproduct must be outcome-conditioned: {upd:?}"
+            );
+        }
+
+        let mz_anc = expanded
+            .rounds
+            .iter()
+            .find(|r| r.kind == RoundKind::MeasureAncilla)
+            .expect("ancilla mz");
+        assert_eq!(
+            mz_anc.terminal.len(),
+            3,
+            "ancilla logical Z is top-row (d atoms), not all data"
+        );
+
+        // L-shaped: control left of ancilla (L/R rough seam); target below ancilla
+        // (top/bottom smooth seam).
+        let c = &expanded.blocks[0];
+        let t = &expanded.blocks[1];
+        let a = expanded
+            .blocks
+            .iter()
+            .find(|b| b.logical_id == LogicalQubitId(2))
+            .expect("ancilla");
+        let c_max_x = c.coords.iter().map(|(x, _)| *x).max().unwrap();
+        let a_min_x = a
+            .coords
+            .iter()
+            .take(a.data_atoms.len())
+            .map(|(x, _)| *x)
+            .min()
+            .unwrap();
+        let a_max_y = a
+            .coords
+            .iter()
+            .take(a.data_atoms.len())
+            .map(|(_, y)| *y)
+            .max()
+            .unwrap();
+        let t_min_y = t.coords.iter().map(|(_, y)| *y).min().unwrap();
+        let t_min_x = t.coords.iter().map(|(x, _)| *x).min().unwrap();
+        assert!(c_max_x < a_min_x, "control|ancilla L/R seam: {c_max_x} < {a_min_x}");
+        assert!(a_max_y < t_min_y, "ancilla/target top/bottom seam: {a_max_y} < {t_min_y}");
+        assert!(
+            (t_min_x - a_min_x).abs() <= 2,
+            "target should sit under ancilla (aligned x), got a_min_x={a_min_x} t_min_x={t_min_x}"
+        );
+
+        // Seam checks must carry StabilizerDefs (no orphan check atoms).
+        let seam_checks: Vec<_> = a
+            .check_atoms
+            .iter()
+            .filter(|c| !a.stabilizers.iter().any(|s| s.check == **c))
+            .collect();
+        assert!(
+            seam_checks.is_empty(),
+            "orphan seam checks without StabilizerDef: {seam_checks:?}"
+        );
+        assert!(
+            a.stabilizers.iter().any(|s| s.basis == LogicalBasis::Z && s.data.len() == 2),
+            "missing rough ZZ seam stabilizer"
+        );
+        assert!(
+            a.stabilizers.iter().any(|s| s.basis == LogicalBasis::X && s.data.len() == 2),
+            "missing smooth XX seam stabilizer"
+        );
     }
 
     #[test]

@@ -375,3 +375,142 @@ fn error_model_snapshot_matches_backend_alias() {
         serde_json::from_value(backend_json).expect("round-trip");
     assert_eq!(back, snap);
 }
+
+#[test]
+fn surface_d3_cx_emits_qec_json_and_sibling_stim() {
+    let source = workspace_path("../examples/na_qec/surface_d3_cx.qn");
+    let dir = std::env::temp_dir().join(format!(
+        "quon-qec-250-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("tmpdir");
+    let json_path = dir.join("surface_d3_cx.qec.json");
+    let stim_path = dir.join("surface_d3_cx.stim");
+
+    let output = quonc()
+        .arg(&source)
+        .arg("--target")
+        .arg(na_target())
+        .arg("--emit-qec-experiment")
+        .arg(&json_path)
+        .arg("--quiet")
+        .output()
+        .expect("spawn");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(json_path.is_file(), "missing {}", json_path.display());
+    assert!(stim_path.is_file(), "missing sibling {}", stim_path.display());
+
+    let json_text = std::fs::read_to_string(&json_path).expect("read json");
+    let doc: Value =
+        serde_json::from_str(&json_text).unwrap_or_else(|e| panic!("parse JSON: {e}\n{json_text}"));
+
+    assert_eq!(doc["schema_version"], 1);
+    assert_eq!(doc["kind"], "qec_experiment");
+    assert_eq!(doc["family"], "surface");
+    assert_eq!(doc["distance"], 3);
+    let logical_ids = doc["logical_ids"].as_array().expect("logical_ids");
+    assert!(logical_ids.len() >= 2, "{logical_ids:?}");
+
+    let na_refs = doc["na_refs"].as_array().expect("na_refs");
+    assert!(
+        na_refs.iter().any(|r| r["kind"] == "merge_rough"),
+        "missing merge_rough: {na_refs:?}"
+    );
+    assert!(
+        na_refs.iter().any(|r| r["kind"] == "merge_smooth"),
+        "missing merge_smooth: {na_refs:?}"
+    );
+    assert!(
+        na_refs.iter().any(|r| r["kind"] == "frame_update"),
+        "missing frame_update: {na_refs:?}"
+    );
+
+    let barrier_refs: Vec<_> = na_refs
+        .iter()
+        .filter(|r| {
+            matches!(
+                r["kind"].as_str(),
+                Some("merge_rough")
+                    | Some("merge_smooth")
+                    | Some("split_rough")
+                    | Some("split_smooth")
+                    | Some("measure_ancilla")
+                    | Some("memory_round")
+            )
+        })
+        .collect();
+    assert!(!barrier_refs.is_empty());
+    for r in &barrier_refs {
+        assert!(
+            r.get("barrier_cycle").and_then(|v| v.as_u64()).is_some(),
+            "barrier round missing barrier_cycle: {r}"
+        );
+    }
+
+    let stim = std::fs::read_to_string(&stim_path).expect("read stim");
+    assert!(stim.contains("lattice-surgery CX"), "{stim}");
+    assert!(stim.contains("L-shaped"), "{stim}");
+    assert!(stim.contains("OBSERVABLE_INCLUDE(0)"), "{stim}");
+    assert!(stim.contains("OBSERVABLE_INCLUDE(1)"), "{stim}");
+    assert!(stim.contains("CX "), "{stim}");
+    assert!(
+        doc["measurement_schedule"]
+            .as_array()
+            .expect("sched")
+            .iter()
+            .any(|e| e["kind"] == "frame_update"
+                && e["frame_updates"]
+                    .as_array()
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false)),
+        "frame_updates missing from measurement_schedule: {json_text}"
+    );
+    assert!(
+        !stim.contains("DEPOLARIZE") && !stim.contains("X_ERROR"),
+        "structure-only Stim must omit noise:\n{stim}"
+    );
+
+    let smoke = python()
+        .arg("-c")
+        .arg(format!(
+            r#"
+import stim
+c = stim.Circuit.from_file({stim_path:?})
+assert c.num_observables >= 2, c.num_observables
+dets, obs = c.compile_detector_sampler(seed=0).sample(shots=32, separate_observables=True)
+if dets.size:
+    assert not dets.any(), f"noiseless detector fired: {{dets.sum()}}"
+assert not obs.any(), f"noiseless |00> observables not zero: {{obs.sum()}}"
+obs1 = [l for l in str(c).splitlines() if l.startswith("OBSERVABLE_INCLUDE(1)")]
+assert obs1 and obs1[0].count("rec[") > 3, obs1
+print(f"ok detectors={{c.num_detectors}} observables={{c.num_observables}}")
+"#
+        ))
+        .output();
+    match smoke {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("ModuleNotFoundError") || stderr.contains("No module named 'stim'") {
+                eprintln!("skip stim smoke: stim not installed ({stderr})");
+            } else {
+                panic!(
+                    "stim smoke failed: status={} stderr={} stdout={}",
+                    out.status,
+                    stderr,
+                    String::from_utf8_lossy(&out.stdout)
+                );
+            }
+        }
+        Err(e) => eprintln!("skip stim smoke: python unavailable ({e})"),
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+

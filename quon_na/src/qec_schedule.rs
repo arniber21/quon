@@ -10,12 +10,12 @@
 
 use quon_qec::{
     ExpandedBlock, ExpandedWorkload, PhysicalAtomId, PhysicalCnot, PhysicalRound, QecWorkload,
-    RoundKind, RoundTerminal, expand_workload,
+    RoundTerminal, expand_workload,
 };
 
 use crate::compaction::{
     CompactionError, CompactionOptions, ScheduleDependency, ScheduleDependencyKind,
-    compact_schedule, infer_atom_dependencies,
+    compact_schedule, feed_forward_dependencies, infer_atom_dependencies,
 };
 use crate::entangling_schedule::schedule_entangling_layers;
 use crate::graph::{
@@ -84,7 +84,7 @@ fn schedule_expanded(
             combined_interactions.extend(round_interactions);
         }
 
-        if round.kind == RoundKind::MemoryRound {
+        if round.kind.needs_round_barrier() {
             let wait_cycle = round_layers
                 .last()
                 .map(|l| l.cycle.saturating_add(1))
@@ -124,8 +124,11 @@ fn schedule_expanded(
 
     if opts.compact && !req.layers.is_empty() {
         let mut deps = infer_atom_dependencies(&req.layers);
+        // Lattice-surgery measure → subsequent phase FeedForward edges
+        // (ADR-0019 byproducts / measurement deps; not invented AtomHazard).
+        deps.extend(lattice_surgery_feedforward_deps(&req.layers));
         let cuts = round_barrier_cuts(&req.layers);
-        if cuts.is_empty() && expanded.memory_round_count() > 0 {
+        if cuts.is_empty() && expanded.barrier_round_count() > 0 {
             return Err(NaPipelineError::Compaction(CompactionError::Conflict(
                 "QEC hybrid schedule missing durable round-barrier cuts".into(),
             )));
@@ -448,6 +451,44 @@ pub fn round_barrier_cuts(layers: &[ScheduleLayer]) -> Vec<(u32, u32)> {
         }
     }
     cuts
+}
+
+/// Explicit FeedForward edges from each Measure layer to the next entangle /
+/// measure layer after the following Wait (lattice-surgery measurement deps).
+fn lattice_surgery_feedforward_deps(layers: &[ScheduleLayer]) -> Vec<ScheduleDependency> {
+    let mut deps = Vec::new();
+    for (i, layer) in layers.iter().enumerate() {
+        let has_measure = layer
+            .actions
+            .iter()
+            .any(|a| matches!(a, NeutralAtomAction::Measure { .. }));
+        if !has_measure {
+            continue;
+        }
+        // Find next Wait after this measure, then next active layer after Wait.
+        let Some(wait_idx) = layers.iter().enumerate().skip(i + 1).find_map(|(j, l)| {
+            l.actions
+                .iter()
+                .any(|a| matches!(a, NeutralAtomAction::Wait { .. }))
+                .then_some(j)
+        }) else {
+            continue;
+        };
+        if let Some((after, _)) = layers.iter().enumerate().skip(wait_idx + 1).find(|(_, l)| {
+            l.actions.iter().any(|a| {
+                matches!(
+                    a,
+                    NeutralAtomAction::Entangle2 { .. }
+                        | NeutralAtomAction::EntangleN { .. }
+                        | NeutralAtomAction::Measure { .. }
+                        | NeutralAtomAction::LocalGate { .. }
+                )
+            })
+        }) {
+            deps.extend(feed_forward_dependencies(i as u32, &[after as u32]));
+        }
+    }
+    deps
 }
 
 fn code_blocks_from_expanded(expanded: &ExpandedWorkload) -> Vec<CodeBlock> {
@@ -934,5 +975,96 @@ mod tests {
                 panic!("verify compact={compact}: {e}");
             });
         }
+    }
+
+    fn surface_d3_cx_workload() -> QecWorkload {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
+            .unwrap();
+        b.memory_round(LogicalQubitId(0)).unwrap();
+        b.memory_round(LogicalQubitId(1)).unwrap();
+        b.logical_cx(LogicalQubitId(0), LogicalQubitId(1)).unwrap();
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .unwrap();
+        b.measure_logical(LogicalQubitId(1), LogicalBasis::Z)
+            .unwrap();
+        b.finish()
+    }
+
+    #[test]
+    fn surface_d3_logical_cx_schedules_with_barriers_and_feedforward() {
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            compact: true,
+            dump_ir: false,
+            ..Default::default()
+        };
+        let artifacts =
+            run_from_qec_workload(&surface_d3_cx_workload(), &na, opts).expect("schedule cx");
+
+        assert!(artifacts.resource_report.physical_atoms >= 51);
+        assert_eq!(artifacts.logical_qubits, 3); // control + target + ancilla
+
+        let wait_count = artifacts
+            .layers
+            .iter()
+            .filter(|l| {
+                l.actions
+                    .iter()
+                    .any(|a| matches!(a, NeutralAtomAction::Wait { .. }))
+            })
+            .count();
+        // rough merge, rough split, smooth merge, smooth split, measure ancilla
+        assert!(
+            wait_count >= 5,
+            "expected ≥5 Wait barriers for surgery phases, got {wait_count}"
+        );
+
+        let has_entangle = artifacts.layers.iter().any(|l| {
+            l.actions
+                .iter()
+                .any(|a| matches!(a, NeutralAtomAction::Entangle2 { .. }))
+        });
+        let has_measure = artifacts.layers.iter().any(|l| {
+            l.actions
+                .iter()
+                .any(|a| matches!(a, NeutralAtomAction::Measure { .. }))
+        });
+        assert!(has_entangle && has_measure);
+
+        let cuts = round_barrier_cuts(&artifacts.layers);
+        assert!(
+            !cuts.is_empty(),
+            "lattice-surgery schedule must expose barrier cuts"
+        );
+    }
+
+    #[cfg(feature = "mlir")]
+    #[test]
+    fn surface_d3_logical_cx_lowers_to_verifiable_quantum_na() {
+        use crate::dialect::{self as qna, schedule_module};
+        use crate::lower::{ScheduleLowerParams, lower_schedule};
+        use melior::ir::BlockLike;
+
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            compact: true,
+            dump_ir: false,
+            ..Default::default()
+        };
+        let artifacts =
+            run_from_qec_workload(&surface_d3_cx_workload(), &na, opts).expect("schedule");
+        let params =
+            ScheduleLowerParams::from_target("generic_reconfigurable_neutral_atom_v0", &na);
+        let spec = lower_schedule(&artifacts.request, &params).expect("lower");
+        let context = melior::Context::new();
+        let module = schedule_module(&context, &spec).unwrap_or_else(|e| match e {
+            qna::BuildError::Verify(err) => panic!("verify: {err}"),
+            other => panic!("build: {other}"),
+        });
+        let schedule = module.body().first_operation().expect("schedule op");
+        qna::verify(&schedule).expect("verify na");
     }
 }
