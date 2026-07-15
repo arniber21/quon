@@ -19,7 +19,8 @@ pub use descriptor::TargetDescriptor;
 pub use error::BackendError;
 pub use target::{
     AodMovement, AodMovementModel, AodSpeedModel, AodSpeedModelKind, BackendTarget,
-    ConnectivityGraph, FixedTarget, GateOp, NativeGate, NeutralAtomCostModel, NeutralAtomFidelity,
-    NeutralAtomGrid, NeutralAtomTarget, NeutralAtomTiming, NeutralAtomZone, NoiseModel,
-    RydbergInteraction, TargetKind, UNREACHABLE, ZoneKind,
+    ConnectivityGraph, FixedTarget, GateOp, NativeGate, NeutralAtomCostModel,
+    NeutralAtomErrorModel, NeutralAtomFidelity, NeutralAtomGrid, NeutralAtomTarget,
+    NeutralAtomTiming, NeutralAtomZone, NoiseModel, RydbergInteraction, TargetKind, UNREACHABLE,
+    ZoneKind,
 };
