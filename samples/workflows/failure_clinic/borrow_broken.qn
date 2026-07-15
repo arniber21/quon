@@ -1,0 +1,14 @@
+-- Failure clinic: borrow escape, broken (#188). A borrowed ancilla must be
+-- cleaned up (measured, `reset`, or `discard`ed) inside its `borrow` block --
+-- returning it lets it escape the scope it was allocated in. See
+-- ./borrow_fixed.qn for the fix and ./README.md for the exact diagnostic.
+
+fn main(): Q<Qubit> = run {
+    borrow anc: Qubit in {
+        H @0
+        return anc
+        -- BUG: `anc` is a borrowed ancilla; returning it from the `borrow`
+        -- block lets it escape, with no cleanup and no guarantee the caller
+        -- treats it as scratch space rather than a real qubit.
+    }
+}

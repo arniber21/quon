@@ -1,0 +1,22 @@
+-- Edit -> verify loop (#188): the smallest possible vehicle for the loop
+-- itself, not an algorithm lesson -- for entanglement pedagogy see
+-- `samples/learning/hello_bell.qn` and `samples/algorithms/ghz_state.qn`
+-- instead. `prepared_qubit` is deliberately boring: one gate, no
+-- entanglement, so a single edit has an immediately Aer-checkable effect.
+--
+-- The loop (see ./README.md for the full copy-paste sequence):
+--   1. edit `prepared_qubit` below
+--   2. quonc --emit-qasm this file   (typecheck + lower + emit)
+--   3. python verify_edit_verify_loop.py   (Aer confirms the new distribution)
+--
+-- As checked in, `I @0` prepares a fixed |0>, so the expected distribution is
+-- {"0": 1.0}. Swap `I @0` for `X @0` and both the QASM and the Aer-verified
+-- distribution flip to {"1": 1.0} -- see the README for that second run.
+
+fn prepared_qubit(): Circuit<1, 1, 1, Clifford> = circuit { I @0 }
+
+fn main(): Q<List<Bit>> = run {
+    q <- prepared_qubit() @ qreg(1)
+    measure_all(q)
+    -- Expected: "0" with probability 1.0 (see the README's Aer check).
+}

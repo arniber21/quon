@@ -1,0 +1,16 @@
+-- Failure clinic: linearity, fixed (#188). Same Bell pair, measuring each
+-- qubit exactly once. See ./linearity_broken.qn for the bug this fixes and
+-- ./README.md for the diagnostic it made go away.
+
+fn bell_pair(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1)
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- bell_pair() @ qreg(2)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    return (b0, b1)
+    -- Expected on Aer: "00" and "11" only, each roughly half the time --
+    -- same claim as `test/verify/bell.qn`, since this is the same circuit.
+}

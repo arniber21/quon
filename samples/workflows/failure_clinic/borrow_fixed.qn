@@ -1,0 +1,13 @@
+-- Failure clinic: borrow escape, fixed (#188). Same ancilla, cleaned up
+-- (`discard`ed) inside the `borrow` block instead of returned. See
+-- ./borrow_broken.qn for the bug this fixes and ./README.md for why quonc
+-- still exits non-zero here -- for an unrelated, pre-existing reason.
+
+fn main(): Q<Unit> = run {
+    borrow anc: Qubit in {
+        anc1 <- H @ anc
+        discard(anc1)
+        -- Fixed: the ancilla is cleaned up before the block ends, so it
+        -- never appears in the block's result and can't escape.
+    }
+}
