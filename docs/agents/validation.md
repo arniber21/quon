@@ -15,6 +15,8 @@ Static analysis and refinement-type checks for the Quon workspace.
 | `just ci-rust` | What the `ci.yml` `rust` job runs (sets `QUON_REQUIRE_LIT`) |
 | `just ci-tooling` | What the `ci.yml` `tooling` job runs |
 | `just tooling-full` | Broader local fmt/lint corpus (not CI) |
+| `just qec-benchmarks-smoke` | #254 CI one-cell QEC ablation + nested Sinter (`--mode smoke`) |
+| `just qec-benchmarks-full` | #254 local-only full ablation grid (`--mode full`) |
 | `just ci-docs-assert` | `./scripts/assert-validation-docs.sh` |
 | `just ci-website` | Starlight `pnpm build` under `website/` |
 
@@ -26,7 +28,7 @@ This table is an adapter of the **Justfile** recipes invoked by `.github/workflo
 
 | Workflow | Trigger | What runs |
 | -------- | ------- | --------- |
-| [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `just ci-rust`: fmt, clippy, release build (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` with `QUON_REQUIRE_LIT` so [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) hard-fails without lit/FileCheck/oracles, then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`. |
+| [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `just ci-rust`: fmt, clippy, release build (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` with `QUON_REQUIRE_LIT` so [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) hard-fails without lit/FileCheck/oracles, then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`, then QEC Python smokes (`test_qec_stim_smoke`, `test_quon_qec_sinter`, `test_quon_qec_benchmarks` / #254). |
 | [ci.yml](../../.github/workflows/ci.yml) `docs` | every push and PR | `just ci-docs-assert` + `just ci-website` |
 | [ci.yml](../../.github/workflows/ci.yml) `tooling` | every push and PR | `just ci-tooling`: `quonfmt --check`, `quonlint`, `quon_lsp` smoke on CI corpus |
 | [release.yml](../../.github/workflows/release.yml) | tags `v*` (+ manual dry-run) | `devbox run release` — static MLIR/LLVM + release-built static libz3; link audit; upload `quon-{version}-{arch}-{os}.tar.gz` to GitHub Releases |
