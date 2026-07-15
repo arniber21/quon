@@ -1,0 +1,27 @@
+{
+  "evidence_kind": "analytic",
+  "evidence_disclaimer": "Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).",
+  "rydberg_stages": 1,
+  "rearrangement_steps": 1,
+  "rearrangement_time_us": 336,
+  "trap_transfers": 4,
+  "transfer_time_us": 60,
+  "entangle2_count": 1,
+  "entangle_n_count": 0,
+  "measurement_rounds": 0,
+  "reset_rounds": 0,
+  "wait_time_us": 0,
+  "total_time_us": 367,
+  "logical_qubits": 2,
+  "physical_atoms": 2,
+  "estimated_cycles": 4,
+  "bottleneck": "rearrangement",
+  "error_budget": {
+    "rydberg": 0.002,
+    "measurement": 0.0,
+    "reset": 0.0,
+    "movement": 0.0005,
+    "transfer": 0.0028,
+    "idle": 0.0
+  }
+}
