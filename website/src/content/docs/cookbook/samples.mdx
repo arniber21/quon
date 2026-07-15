@@ -1,0 +1,44 @@
+---
+title: More samples
+description: The full samples/ corpus — a catalog of narrative demos beyond this cookbook.
+sidebar:
+  order: 10
+---
+
+import catalog from '../../../../../samples/catalog.yaml?raw';
+
+This cookbook's eight pages are a fixed, hand-curated tour of the compiler's
+own end-to-end fixtures. The repository also carries a growing
+**[`samples/`](https://github.com/arniber21/quon/tree/main/samples) corpus** —
+narrative demos organized by taxonomy (learning, algorithms, workflows,
+visualization, applications, research, and neutral-atom pedagogy) and
+indexed by a machine-readable catalog, [ADR-0025](https://github.com/arniber21/quon/blob/main/docs/adr/0025-samples-corpus-layout.md).
+
+Start with [`samples/README.md`](https://github.com/arniber21/quon/blob/main/samples/README.md)
+for the taxonomy and pack-ownership table, or browse the catalog directly:
+
+- [`samples/catalog.yaml`](https://github.com/arniber21/quon/blob/main/samples/catalog.yaml) — every sample's id, path, tags, difficulty, `quonc` args, artifacts, and CI mode
+- [`samples/CONTRIBUTING.md`](https://github.com/arniber21/quon/blob/main/samples/CONTRIBUTING.md) — how to add a sample and register it in the catalog
+
+## Taxonomy
+
+| Category | What it's for | Pack owner |
+| --- | --- | --- |
+| [`learning/`](https://github.com/arniber21/quon/tree/main/samples/learning) | One concept per file, narrated for newcomers | — |
+| [`algorithms/`](https://github.com/arniber21/quon/tree/main/samples/algorithms) | Named algorithms / canonical constructions | — |
+| [`workflows/`](https://github.com/arniber21/quon/tree/main/samples/workflows) | Edit → verify loops, pass dumps, failure clinics | #188 |
+| [`visualization/`](https://github.com/arniber21/quon/tree/main/samples/visualization) | Schedule/graph goldens, "what you should see" | #189 |
+| [`applications/`](https://github.com/arniber21/quon/tree/main/samples/applications) | Real-world use-case framing | — |
+| [`research/`](https://github.com/arniber21/quon/tree/main/samples/research) | Literate notebooks + `.py` smoke twins | #190 |
+| [`neutral-atom/`](https://github.com/arniber21/quon/tree/main/samples/neutral-atom) | NA pedagogy: zoned vs. flat, RAP placer | #192 |
+
+## Current catalog
+
+<pre><code>{catalog}</code></pre>
+
+## CI
+
+Every entry's `path` is checked to exist, the schema is validated, and every
+`ci: smoke` entry is compiled with the real `quonc` binary — see
+[`quonc/tests/samples_catalog.rs`](https://github.com/arniber21/quon/blob/main/quonc/tests/samples_catalog.rs)
+(`just ci-samples`, part of `just test-ci`).

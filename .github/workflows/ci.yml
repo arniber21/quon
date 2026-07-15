@@ -35,6 +35,9 @@ jobs:
       - name: CI rust gates (Justfile)
         run: devbox run -- just ci-rust
 
+      - name: Sample corpus catalog lint (Justfile, ADR-0025 / #185)
+        run: devbox run -- just ci-samples
+
   docs:
     name: docs site build (website/)
     runs-on: ubuntu-latest

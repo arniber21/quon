@@ -129,8 +129,9 @@ setup-python:
 test-fast:
     cargo test --workspace {{WORKSPACE_EXCLUDE}}
 
-# Local CI parity: rust + tooling + validation-doc assert (not website build).
-test-ci: ci-rust ci-tooling ci-docs-assert
+# Local CI parity: rust + tooling + validation-doc assert + samples catalog
+# (not website build).
+test-ci: ci-rust ci-tooling ci-docs-assert ci-samples
 
 # ---------------------------------------------------------------------------
 # CI job recipes (Actions calls these via `devbox run -- just …`)
@@ -207,6 +208,14 @@ tooling-full: _tooling-build
 # Assert agent validation docs match Justfile / CI reality (#203).
 ci-docs-assert:
     ./scripts/assert-validation-docs.sh
+
+# Sample corpus catalog lint: schema, path existence, category coverage,
+# required README sections, and a real `quonc` typecheck for every
+# `ci: smoke` entry in samples/catalog.yaml (ADR-0025 / #185). Builds its
+# own debug `quonc` via `cargo test`'s CARGO_BIN_EXE_quonc — independent of
+# the release build `ci-rust` produces.
+ci-samples:
+    cargo test -p quonc --test samples_catalog
 
 # Starlight site build under website/.
 ci-website:
