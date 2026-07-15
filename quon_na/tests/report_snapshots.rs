@@ -1,5 +1,9 @@
 //! Insta regression snapshots for `ResourceReport` JSON and Markdown emitters.
 //!
+//! These goldens pin the **analytic** compiler artifact (ADR-0020). Sampled
+//! Sinter CSV fields (`logical_failures`, …) must never appear here.
+//! Surface-code hybrid snapshots land with #249 (not available yet).
+//!
 //! Update goldens after intentional metric changes:
 //! ```bash
 //! INSTA_UPDATE=1 cargo test -p quon_na --test report_snapshots --no-default-features
@@ -11,11 +15,13 @@ use backend::NeutralAtomErrorModel;
 use quon_na::{
     AodTrapRef, AtomId, AtomMove, BottleneckKind, CodeBlockId, CodeFamily, LogicalQubitId,
     MeasurementBasis, MovementGroup, NaScheduleOptions, NetRate, NeutralAtomAction,
-    ResourceReport, ScheduleLayer, SiteId, TransferDirection, TrapTransfer, build_resource_report,
+    RESOURCE_REPORT_EVIDENCE_DISCLAIMER, RESOURCE_REPORT_EVIDENCE_KIND, ResourceReport,
+    ScheduleLayer, SiteId, TransferDirection, TrapTransfer, build_resource_report,
     expand_code_block, resource_report_to_json, resource_report_to_markdown,
     run_from_qec_workload,
 };
 use quon_qec::{LogicalBasis, SourceFamily, WorkloadBuilder};
+use serde_json::Value;
 
 fn atom(id: u32) -> AtomId {
     AtomId(id)
@@ -93,12 +99,112 @@ fn toy_move_entangle_measure_layers() -> Vec<ScheduleLayer> {
     ]
 }
 
+/// Keys that belong only to the Python/Sinter sampled CSV (ADR-0020).
+const FORBIDDEN_SAMPLED_KEYS: &[&str] = &[
+    "logical_failures",
+    "logical_failure_rate",
+    "shots",
+    "sinter",
+    "p_logical",
+    "pL",
+];
+
+/// Positive threshold *claims* — anti-threshold disclaimer text may still say "threshold".
+const FORBIDDEN_THRESHOLD_CLAIMS: &[&str] = &[
+    "below the threshold",
+    "below threshold",
+    "above the threshold",
+    "above threshold",
+    "at the threshold",
+    "at threshold",
+];
+
+const NOTES_ANALYTIC_BULLET: &str = "- Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).";
+const NOTES_BUDGET_BULLET: &str = "- Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.";
+
+fn assert_no_threshold_claims(text: &str) {
+    let lower = text.to_ascii_lowercase();
+    for claim in FORBIDDEN_THRESHOLD_CLAIMS {
+        assert!(
+            !lower.contains(claim),
+            "must not make threshold claim `{claim}` (ADR-0020)"
+        );
+    }
+}
+
+fn assert_analytic_only_json(json: &str) {
+    let value: Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(e) => panic!("resource report JSON parse failed: {e}"),
+    };
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => panic!("resource report JSON must be an object"),
+    };
+    assert_eq!(
+        obj.get("evidence_kind").and_then(|v| v.as_str()),
+        Some(RESOURCE_REPORT_EVIDENCE_KIND),
+        "JSON ResourceReport must label evidence_kind=analytic (ADR-0020)"
+    );
+    assert_eq!(
+        obj.get("evidence_disclaimer").and_then(|v| v.as_str()),
+        Some(RESOURCE_REPORT_EVIDENCE_DISCLAIMER),
+        "JSON ResourceReport must carry the ADR-0020 evidence disclaimer"
+    );
+    for key in FORBIDDEN_SAMPLED_KEYS {
+        assert!(
+            !obj.contains_key(*key),
+            "ResourceReport must not contain sampled/Sinter field `{key}` (ADR-0020)"
+        );
+    }
+    let text = json.to_ascii_lowercase();
+    assert!(
+        !text.contains("logical_failure"),
+        "ResourceReport JSON must not mention logical_failure* (ADR-0020)"
+    );
+    // Disclaimer may contain the word "threshold"; ban positive claims only.
+    assert_no_threshold_claims(json);
+}
+
+fn assert_markdown_notes(md: &str, expect_budget_note: bool) {
+    assert!(
+        md.contains("# Neutral-atom analytic resource report"),
+        "Markdown H1 must label the report as analytic"
+    );
+    assert!(
+        md.contains(NOTES_ANALYTIC_BULLET),
+        "Markdown must include the exact analytic Notes bullet (ADR-0020)"
+    );
+    if expect_budget_note {
+        assert!(
+            md.contains(NOTES_BUDGET_BULLET),
+            "Markdown with error_budget must include the exact budget Notes bullet"
+        );
+    } else {
+        assert!(
+            !md.contains("Physical error budget lines"),
+            "Markdown without error_budget must omit the budget Notes bullet"
+        );
+    }
+    assert_no_threshold_claims(md);
+    assert!(
+        !md.contains("logical_failures"),
+        "Markdown must not include Sinter logical_failures"
+    );
+}
+
 fn assert_json_md(name: &str, report: &ResourceReport) {
     let json = match resource_report_to_json(report) {
         Ok(s) => s,
         Err(e) => panic!("json emit failed: {e}"),
     };
+    assert_analytic_only_json(&json);
     let md = resource_report_to_markdown(report);
+    assert_markdown_notes(&md, report.error_budget.is_some());
+    assert!(
+        md.contains("analytic"),
+        "Markdown must label the report as analytic (ADR-0020)"
+    );
     insta::assert_snapshot!(format!("{name}_json"), json);
     insta::assert_snapshot!(format!("{name}_md"), md);
 }
@@ -143,6 +249,8 @@ fn qec_repetition_d3() {
 
 #[test]
 fn qec_repetition_d3_hybrid_schedule_report() {
+    // Analytic hybrid QEC path (schedule + QEC metadata + error_budget).
+    // Surface-code hybrid snapshot: deferred until #249 lands.
     let path = std::path::Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../targets/neutral_atom/generic_rna_v0.json"
@@ -175,9 +283,42 @@ fn qec_repetition_d3_hybrid_schedule_report() {
     )
     .expect("schedule");
     let report = &artifacts.resource_report;
+
+    // Pin analytic QEC fields required for the hybrid path (#246 / ADR-0020).
+    assert_eq!(report.logical_qubits, 1);
+    assert_eq!(report.physical_atoms, 5);
+    assert_eq!(report.atoms_per_logical, Some(5));
     assert_eq!(report.distance, Some(3));
     assert_eq!(report.memory_rounds, Some(2));
     assert_eq!(report.code_family.as_deref(), Some("repetition_code_toy"));
+    assert_eq!(report.evidence_kind, RESOURCE_REPORT_EVIDENCE_KIND);
+    assert!(report.estimated_cycles > 0);
+    assert_ne!(report.bottleneck, BottleneckKind::None);
+    let budget = report
+        .error_budget
+        .expect("hybrid QEC report attaches analytic error_budget");
+    assert!(budget.rydberg > 0.0);
+    assert!(budget.measurement > 0.0);
+    assert!(budget.reset > 0.0);
+    assert!(budget.movement > 0.0);
+    assert!(budget.transfer > 0.0);
+
+    let md = resource_report_to_markdown(report);
+    assert!(md.contains("| Distance | 3 |"));
+    assert!(md.contains("| Memory rounds | 2 |"));
+    assert!(md.contains("## Physical error budget"));
+    assert!(md.contains("| Measurement | 0.009 |"));
+    assert!(!md.contains("0.009000000000000001"));
+    // Exact Notes bullets — not a vacuous "contains not && threshold".
+    assert_markdown_notes(&md, true);
+
+    let json = match resource_report_to_json(report) {
+        Ok(s) => s,
+        Err(e) => panic!("json: {e}"),
+    };
+    assert!(!json.contains("0.009000000000000001"));
+    assert!(json.contains("\"measurement\": 0.009"));
+
     assert_json_md("qec_repetition_d3_hybrid", report);
 }
 
@@ -273,7 +414,9 @@ fn markdown_headline_matches_json_for_qldpc() {
     let md = resource_report_to_markdown(&report);
     assert!(json.contains("\"logical_qubits\": 12"));
     assert!(json.contains("\"physical_atoms\": 288"));
+    assert!(json.contains("\"evidence_kind\": \"analytic\""));
     assert!(md.contains("| Logical qubits | 12 |"));
     assert!(md.contains("| Physical atoms | 288 |"));
     assert!(md.contains("| Atoms per logical | 24 |"));
+    assert!(md.contains("# Neutral-atom analytic resource report"));
 }

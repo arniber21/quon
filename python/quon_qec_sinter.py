@@ -88,6 +88,7 @@ ERROR_MODEL_STIM_MAX: dict[str, float] = {
 }
 
 CSV_COLUMNS = [
+    "evidence_kind",
     "distance",
     "rounds",
     "shots",
@@ -100,6 +101,14 @@ CSV_COLUMNS = [
     "logical_failures",
     "logical_failure_rate",
 ]
+
+# Kept on every CSV row so the artifact itself is labeled sampled (ADR-0020).
+CSV_EVIDENCE_KIND = "sampled"
+CSV_EVIDENCE_BANNER = (
+    "# evidence_kind: sampled\n"
+    "# Sampled Stim/Sinter logical failures — not fused with ResourceReport; "
+    "not a threshold claim (ADR-0020).\n"
+)
 
 ERROR_MODEL_KEYS = (
     "rydberg",
@@ -438,10 +447,12 @@ def sample_logical_failures(
 
 def write_csv(out: TextIO, rows: Sequence[ResultRow]) -> None:
     """Write result rows. Does not claim thresholds (ADR-0020)."""
+    out.write(CSV_EVIDENCE_BANNER)
     writer = csv.DictWriter(out, fieldnames=CSV_COLUMNS)
     writer.writeheader()
     for row in rows:
         record = {
+            "evidence_kind": CSV_EVIDENCE_KIND,
             "distance": row.distance,
             "rounds": row.rounds,
             "shots": row.shots,
@@ -520,10 +531,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Sample logical failures for Quon QEC experiment artifacts "
             "(`*.qec.json` + sibling structure `.stim`) via Stim/Sinter.\n"
             "Noise is annotated in Python from JSON error_model (ADR-0024).\n"
-            "Output CSV is a sampled artifact only — not a threshold claim "
-            "(ADR-0020)."
+            "Output CSV is a sampled artifact only — separate from the compiler "
+            "analytic ResourceReport (--emit-resource-report); not a threshold "
+            "claim (ADR-0020)."
         ),
         epilog="""
+Analytic vs sampled (ADR-0020)
+  quonc --emit-resource-report writes analytic schedule / error-budget metrics.
+  This harness writes a sampled Sinter CSV (logical_failures, …). Keep them as
+  separate files — there is no merged summary generator. Analytic ≠ sampled;
+  neither artifact is a threshold claim.
+
 Distance / round sweeps
   Distance and memory-round count are baked into the structure `.stim` by
   quonc. To sweep those axes, re-invoke quonc --emit-qec-experiment for each

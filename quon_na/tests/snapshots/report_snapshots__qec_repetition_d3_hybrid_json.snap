@@ -3,6 +3,8 @@ source: quon_na/tests/report_snapshots.rs
 expression: json
 ---
 {
+  "evidence_kind": "analytic",
+  "evidence_disclaimer": "Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).",
   "rydberg_stages": 6,
   "rearrangement_steps": 8,
   "rearrangement_time_us": 1060,
@@ -24,7 +26,7 @@ expression: json
   "bottleneck": "rearrangement",
   "error_budget": {
     "rydberg": 0.012,
-    "measurement": 0.009000000000000001,
+    "measurement": 0.009,
     "reset": 0.008,
     "movement": 0.004,
     "transfer": 0.0182,

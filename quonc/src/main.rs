@@ -129,7 +129,7 @@ struct Cli {
     )]
     emit_na_graph: Option<String>,
 
-    /// Emit neutral-atom resource report (`-` = stdout; `.md` → Markdown, else JSON)
+    /// Emit analytic NA resource report (`-` = stdout; `.md` → Markdown, else JSON; not Sinter CSV — ADR-0020)
     #[arg(
         long,
         value_name = "PATH",

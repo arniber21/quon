@@ -2,7 +2,7 @@
 source: quon_na/tests/report_snapshots.rs
 expression: md
 ---
-# Neutral-atom resource report
+# Neutral-atom analytic resource report
 
 ## Qubit resources
 | Metric | Value |
@@ -38,7 +38,8 @@ expression: md
 | Idle | 8e-9 |
 
 ## Notes
+- Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).
 - Field names align with TUM RAP Table I / Enola headline metrics.
 - `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
 - Non-QEC reports omit atoms-per-logical and code-family rows.
-- Physical error budget lines are schedule-count × rate contributions only — not logical error rates or thresholds.
+- Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.

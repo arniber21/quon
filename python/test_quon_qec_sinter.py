@@ -366,9 +366,10 @@ class ScaleAndSampleTests(unittest.TestCase):
         self.assertEqual(rc, 1)
 
 
-@unittest.skipUnless(HAS_STIM_STACK, "requires stim/sinter/pymatching (python/requirements.txt)")
-class SampleAndCsvTests(unittest.TestCase):
-    def test_csv_row_columns(self) -> None:
+class CsvEmitTests(unittest.TestCase):
+    """CSV labeling does not need Stim — keep ungated for local AFK agents."""
+
+    def test_csv_row_columns_and_sampled_label(self) -> None:
         row = harness.ResultRow(
             distance=3,
             rounds=1,
@@ -379,10 +380,19 @@ class SampleAndCsvTests(unittest.TestCase):
         )
         buf = io.StringIO()
         harness.write_csv(buf, [row])
-        buf.seek(0)
-        reader = csv.DictReader(buf)
+        text = buf.getvalue()
+        self.assertTrue(
+            text.startswith("# evidence_kind: sampled\n"),
+            "CSV artifact must open with sampled evidence banner",
+        )
+        self.assertIn("not a threshold claim", text.lower())
+        self.assertNotIn("below the threshold", text.lower())
+        # Skip `#` comment banner lines before the CSV header.
+        data_lines = [ln for ln in text.splitlines() if not ln.startswith("#")]
+        reader = csv.DictReader(io.StringIO("\n".join(data_lines) + "\n"))
         self.assertEqual(list(reader.fieldnames or []), harness.CSV_COLUMNS)
         got = next(reader)
+        self.assertEqual(got["evidence_kind"], "sampled")
         self.assertEqual(got["distance"], "3")
         self.assertEqual(got["rounds"], "1")
         self.assertEqual(got["shots"], "32")
@@ -390,6 +400,9 @@ class SampleAndCsvTests(unittest.TestCase):
         self.assertEqual(got["logical_failures"], "2")
         self.assertEqual(got["logical_failure_rate"], str(2 / 32))
 
+
+@unittest.skipUnless(HAS_STIM_STACK, "requires stim/sinter/pymatching (python/requirements.txt)")
+class SampleAndCsvTests(unittest.TestCase):
     def test_run_experiment_end_to_end_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             json_path = _write_experiment(Path(tmp))
@@ -407,7 +420,12 @@ class SampleAndCsvTests(unittest.TestCase):
                 harness.write_csv(f, rows)
             text = out.read_text()
             self.assertIn("logical_failures", text)
-            self.assertNotIn("threshold", text.lower())
+            self.assertIn("evidence_kind", text)
+            self.assertIn("sampled", text.lower())
+            # Anti-threshold disclaimer is allowed; positive claims are not.
+            self.assertIn("not a threshold claim", text.lower())
+            self.assertNotIn("below the threshold", text.lower())
+            self.assertNotIn("below threshold", text.lower())
 
     def test_pinned_rounds2_emit_integration(self) -> None:
         """Real #255 dual-emit shape (d=3, rounds=2) must load and sample."""
@@ -437,6 +455,10 @@ class HelpAndCliTests(unittest.TestCase):
         self.assertIn("--scale-errors", help_text)
         self.assertIn("Local larger runs", help_text)
         self.assertIn("not a threshold claim", help_text.lower())
+        self.assertIn("Analytic vs sampled", help_text)
+        self.assertIn("ResourceReport", help_text)
+        self.assertIn("--emit-resource-report", help_text)
+        self.assertIn("no merged summary", help_text.lower())
         self.assertIn("tick-us", help_text.lower())
         self.assertIn("proxy", help_text.lower())
         self.assertIn("3/4", help_text)
