@@ -20,6 +20,13 @@
         "out",
         "dev"
       ]
+    },
+    "zlib": {
+      "version": "latest",
+      "outputs": [
+        "out",
+        "dev"
+      ]
     }
   },
   "shell": {

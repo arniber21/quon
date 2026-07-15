@@ -63,4 +63,18 @@ if [ -n "$_z3_prefix" ]; then
   fi
 fi
 
+# zlib for manylinux wheels (numpy) imported by the nix python: the wheel's
+# C extension NEEDs libz.so.1, which the nix loader won't find in /usr/lib.
+# zlib's .pc file points at the *static* output, so resolve the shared lib
+# through the merged devbox profile instead (export the resolved store dir,
+# not the profile dir — see the leaf-name warning above).
+if [ "$(uname -s)" != Darwin ]; then
+  _profile_zlib="${DEVBOX_PROJECT_ROOT:-$PWD}/.devbox/nix/profile/default/lib/libz.so.1"
+  if [ -e "$_profile_zlib" ]; then
+    _zlib_libdir="$(dirname "$(readlink -f "$_profile_zlib")")"
+    export LD_LIBRARY_PATH="$_zlib_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
+  unset _profile_zlib _zlib_libdir
+fi
+
 unset _z3_prefix _z3_bin _z3_libdir
