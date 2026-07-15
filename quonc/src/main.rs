@@ -184,8 +184,10 @@ struct Cli {
     verify_linear: bool,
 
     /// Verify `quantum.na` schedule legality (occupancy, Rydberg, AOD, measure/reset
-    /// ordering, QEC round Wait barriers). Auto-runs for QEC-backed emits
-    /// (ADR-0021); physical NA requires this flag. Also accepts standalone `.mlir`.
+    /// ordering, Wait hard schedule barriers). Feed-forward / correction ordering
+    /// is compaction-only (out of scope for #256). Auto-runs for any QEC-backed
+    /// NA compile (ADR-0021); physical NA requires this flag. Also accepts
+    /// standalone `.mlir`.
     #[arg(long, help_heading = "Neutral atom", action = ArgAction::SetTrue)]
     verify_na: bool,
 
@@ -542,6 +544,13 @@ fn emit_artifacts(cli: &Cli, request: &CompileRequest, report: &quonc::CompileRe
             anyhow!("no quantum.na schedule available (compile with a neutral-atom target)")
         })?;
         let mlir = schedule_to_mlir(spec)?;
+        // Prefer verifying the emitted text so dump drift cannot slip past the
+        // in-memory `verify_schedule_spec` path (ADR-0021 nit).
+        if cli.verify_na || report.qec_backed {
+            quon_na::verify_mlir_text(&mlir).map_err(|e| {
+                anyhow!("emitted quantum.na failed verification: {e}")
+            })?;
+        }
         write_output(path, &mlir, qasm_owns_stdout && path == "-")?;
         emitted = true;
     }

@@ -582,7 +582,86 @@ fn verifier_rejects_measure_and_entangle_same_cycle() {
 }
 
 #[test]
-fn verifier_rejects_reset_before_measure_same_atom() {
+fn verifier_rejects_entangle_then_measure_same_cycle() {
+    // Order-independent: Use before Measure in the same cycle must still fail.
+    let mut spec = valid_spec();
+    spec.layers = vec![LayerSpec {
+        cycle: 0,
+        actions: vec![
+            ActionSpec::Entangle {
+                pairs: vec![pair(atom(0, 0.0, 0.0), atom(1, 6.0, 0.0))],
+                duration_us: 1,
+            },
+            ActionSpec::Measure {
+                atom: 0,
+                basis: "z".to_string(),
+                duration_us: 10,
+            },
+        ],
+    }];
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::MeasureUseSameCycle { cycle: 0, atom: 0 })
+    );
+}
+
+#[test]
+fn verifier_rejects_entangle_then_reset_same_cycle() {
+    // Order-independent: Use before Reset in the same cycle must still fail.
+    let mut spec = valid_spec();
+    spec.layers = vec![LayerSpec {
+        cycle: 0,
+        actions: vec![
+            ActionSpec::Entangle {
+                pairs: vec![pair(atom(0, 0.0, 0.0), atom(1, 6.0, 0.0))],
+                duration_us: 1,
+            },
+            ActionSpec::Reset {
+                atom: 0,
+                duration_us: 10,
+            },
+        ],
+    }];
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::ResetUseSameCycle { cycle: 0, atom: 0 })
+    );
+}
+
+#[test]
+fn verifier_rejects_double_measure_without_reset() {
+    let mut spec = valid_spec();
+    spec.layers = vec![
+        LayerSpec {
+            cycle: 0,
+            actions: vec![ActionSpec::Measure {
+                atom: 0,
+                basis: "z".to_string(),
+                duration_us: 10,
+            }],
+        },
+        LayerSpec {
+            cycle: 1,
+            actions: vec![ActionSpec::Measure {
+                atom: 0,
+                basis: "z".to_string(),
+                duration_us: 10,
+            }],
+        },
+    ];
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::DoubleMeasureWithoutReset {
+            atom: 0,
+            first_cycle: 0,
+            second_cycle: 1,
+        })
+    );
+}
+
+#[test]
+fn verifier_accepts_reset_then_later_measure() {
+    // Reset then a later-cycle measure starts a new round — allowed.
     let mut spec = valid_spec();
     spec.layers = vec![
         LayerSpec {
@@ -601,7 +680,12 @@ fn verifier_rejects_reset_before_measure_same_atom() {
             }],
         },
     ];
-    // Reset then later measure is a new round — allowed. Same-cycle reset→measure:
+    assert_eq!(verify_spec(&spec), Ok(()));
+}
+
+#[test]
+fn verifier_rejects_same_cycle_reset_before_measure() {
+    let mut spec = valid_spec();
     spec.layers = vec![LayerSpec {
         cycle: 0,
         actions: vec![

@@ -1,8 +1,9 @@
 // Negative: layer after Wait must have a strictly later cycle (#256 / ADR-0021).
+// Any quantum.na.wait is a hard schedule barrier.
 //
 // RUN: not %quonc %s --verify-na 2>&1 | FileCheck %s
 // CHECK: quantum.na verification failed
-// CHECK: round-barrier Wait
+// CHECK: Wait schedule barrier
 // CHECK: strictly later cycle
 
 module {

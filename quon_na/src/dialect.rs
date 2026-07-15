@@ -368,7 +368,7 @@ pub enum VerifyError {
     )]
     NonMonotonicCycles { previous_cycle: u32, cycle: u32 },
     #[error(
-        "cycle {after_cycle}: layer after round-barrier Wait at cycle {wait_cycle} must have a strictly later cycle (QEC round dependency)"
+        "cycle {after_cycle}: layer after Wait schedule barrier at cycle {wait_cycle} must have a strictly later cycle (any quantum.na.wait is a hard schedule barrier)"
     )]
     RoundBarrierCycleOrder { wait_cycle: u32, after_cycle: u32 },
     #[error(
@@ -384,11 +384,19 @@ pub enum VerifyError {
         reuse_cycle: u32,
     },
     #[error(
+        "cycle {second_cycle}: atom {atom} is measured again after measure at cycle {first_cycle} without an intervening reset (measurement ordering)"
+    )]
+    DoubleMeasureWithoutReset {
+        atom: u32,
+        first_cycle: u32,
+        second_cycle: u32,
+    },
+    #[error(
         "cycle {cycle}: atom {atom} is reset and entangled or moved in the same cycle (reset ordering)"
     )]
     ResetUseSameCycle { cycle: u32, atom: u32 },
     #[error(
-        "cycle {reset_cycle}: atom {atom} is reset before its measure at cycle {measure_cycle} (reset ordering)"
+        "cycle {reset_cycle}: atom {atom} is reset before its measure at cycle {measure_cycle} in the same cycle (reset ordering)"
     )]
     ResetBeforeMeasure {
         atom: u32,
@@ -401,6 +409,8 @@ pub enum VerifyError {
     MissingSchedule,
     #[error("failed to parse quantum.na MLIR module")]
     ParseFailed,
+    #[error("failed to build quantum.na schedule for verification: {0}")]
+    BuildFailed(String),
 }
 
 #[derive(Debug, Error)]
@@ -472,7 +482,12 @@ pub fn verify_schedule_spec(spec: &ScheduleSpec) -> Result<(), VerifyError> {
     let module = match schedule_module(&context, spec) {
         Ok(module) => module,
         Err(BuildError::Verify(error)) => return Err(error),
-        Err(_) => return Err(VerifyError::ParseFailed),
+        Err(BuildError::Mlir(error)) => return Err(VerifyError::BuildFailed(error.to_string())),
+        Err(BuildError::MissingResult { op, index }) => {
+            return Err(VerifyError::BuildFailed(format!(
+                "operation builder produced no result #{index} for {op}"
+            )));
+        }
     };
     verify_module(&module)
 }
@@ -997,7 +1012,12 @@ fn verify_layer_region(
     Ok(facts)
 }
 
-/// Cross-layer measurement / reset / Wait round-barrier ordering (ADR-0021).
+/// Cross-layer measurement / reset / Wait schedule-barrier ordering (ADR-0021).
+///
+/// Same-cycle measure/reset ↔ use conflicts are **order-independent** (two-pass
+/// per cycle). Cross-cycle measure→reset→reuse is scanned in layer/event order.
+/// `ResetBeforeMeasure` only covers same-cycle reset preceding measure in event
+/// order (the only reachable case under non-decreasing cycles).
 fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
     let mut previous_cycle: Option<u32> = None;
     for layer in layers {
@@ -1012,6 +1032,8 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
         previous_cycle = Some(layer.cycle);
     }
 
+    // Any `quantum.na.wait` is a hard schedule barrier: the next layer must
+    // advance the cycle (matches QEC round cuts and physical Wait emitters).
     for (i, layer) in layers.iter().enumerate() {
         if !layer.has_wait {
             continue;
@@ -1026,6 +1048,43 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
         }
     }
 
+    // Pass 1: per cycle, any Use conflicts with measure/reset of the same atom
+    // regardless of op order within that cycle (including across same-cycle layers).
+    let mut cycle_atoms: BTreeMap<u32, (BTreeSet<u32>, BTreeSet<u32>, BTreeSet<u32>)> =
+        BTreeMap::new();
+    for layer in layers {
+        let entry = cycle_atoms
+            .entry(layer.cycle)
+            .or_insert_with(|| (BTreeSet::new(), BTreeSet::new(), BTreeSet::new()));
+        for event in &layer.events {
+            match *event {
+                AtomEvent::Measure(atom) => {
+                    entry.0.insert(atom);
+                }
+                AtomEvent::Reset(atom) => {
+                    entry.1.insert(atom);
+                }
+                AtomEvent::Use(atom) => {
+                    entry.2.insert(atom);
+                }
+            }
+        }
+    }
+    for (cycle, (measured, reset, used)) in &cycle_atoms {
+        for &atom in measured.intersection(used) {
+            return Err(VerifyError::MeasureUseSameCycle {
+                cycle: *cycle,
+                atom,
+            });
+        }
+        for &atom in reset.intersection(used) {
+            return Err(VerifyError::ResetUseSameCycle {
+                cycle: *cycle,
+                atom,
+            });
+        }
+    }
+
     #[derive(Clone, Copy)]
     enum AtomPhase {
         /// Measured and not yet reset.
@@ -1034,21 +1093,25 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
         Reset { cycle: u32 },
     }
 
+    // Pass 2: cross-cycle measure/reset state machine (event order).
     let mut phase: BTreeMap<u32, AtomPhase> = BTreeMap::new();
-    let mut measured_this_cycle: BTreeSet<u32> = BTreeSet::new();
-    let mut reset_this_cycle: BTreeSet<u32> = BTreeSet::new();
-    let mut last_cycle: Option<u32> = None;
-
     for layer in layers {
-        if last_cycle != Some(layer.cycle) {
-            measured_this_cycle.clear();
-            reset_this_cycle.clear();
-            last_cycle = Some(layer.cycle);
-        }
-
         for event in &layer.events {
             match *event {
                 AtomEvent::Measure(atom) => {
+                    if let Some(AtomPhase::Measured {
+                        cycle: first_cycle,
+                    }) = phase.get(&atom).copied()
+                    {
+                        return Err(VerifyError::DoubleMeasureWithoutReset {
+                            atom,
+                            first_cycle,
+                            second_cycle: layer.cycle,
+                        });
+                    }
+                    // Invariant: with non-decreasing cycles, reset→measure with
+                    // measure_cycle < reset_cycle cannot occur. The only live
+                    // ResetBeforeMeasure case is same-cycle reset preceding measure.
                     if let Some(AtomPhase::Reset {
                         cycle: reset_cycle,
                     }) = phase.get(&atom).copied()
@@ -1061,57 +1124,30 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
                         });
                     }
                     phase.insert(atom, AtomPhase::Measured { cycle: layer.cycle });
-                    measured_this_cycle.insert(atom);
                 }
                 AtomEvent::Reset(atom) => {
-                    if let Some(AtomPhase::Measured {
-                        cycle: measure_cycle,
-                    }) = phase.get(&atom).copied()
-                        && layer.cycle < measure_cycle
-                    {
-                        return Err(VerifyError::ResetBeforeMeasure {
-                            atom,
-                            reset_cycle: layer.cycle,
-                            measure_cycle,
-                        });
-                    }
                     phase.insert(atom, AtomPhase::Reset { cycle: layer.cycle });
-                    reset_this_cycle.insert(atom);
-                    measured_this_cycle.remove(&atom);
                 }
                 AtomEvent::Use(atom) => {
-                    if measured_this_cycle.contains(&atom) {
-                        return Err(VerifyError::MeasureUseSameCycle {
-                            cycle: layer.cycle,
-                            atom,
-                        });
-                    }
-                    if reset_this_cycle.contains(&atom) {
-                        return Err(VerifyError::ResetUseSameCycle {
-                            cycle: layer.cycle,
-                            atom,
-                        });
-                    }
+                    // Same-cycle measure/reset ↔ use already rejected in pass 1.
                     match phase.get(&atom).copied() {
                         Some(AtomPhase::Measured {
                             cycle: measure_cycle,
-                        }) => {
+                        }) if layer.cycle > measure_cycle => {
                             return Err(VerifyError::MeasureReuseWithoutReset {
                                 atom,
                                 measure_cycle,
                                 reuse_cycle: layer.cycle,
                             });
                         }
-                        Some(AtomPhase::Reset { cycle: reset_cycle }) => {
-                            if layer.cycle <= reset_cycle {
-                                return Err(VerifyError::ResetUseSameCycle {
-                                    cycle: layer.cycle,
-                                    atom,
-                                });
-                            }
+                        Some(AtomPhase::Reset { cycle: reset_cycle })
+                            if layer.cycle > reset_cycle =>
+                        {
                             phase.remove(&atom);
                         }
-                        None => {}
+                        Some(AtomPhase::Measured { .. })
+                        | Some(AtomPhase::Reset { .. })
+                        | None => {}
                     }
                 }
             }
