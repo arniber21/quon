@@ -81,6 +81,11 @@ cargo run -p quonc -- test/na/bell.qn \
   --emit-resource-report
 ```
 
+For the strongest end-to-end path — a typed surface-code program compiled into a
+verified neutral-atom schedule, QEC experiment JSON, structure Stim, and an
+analytic resource report from one command — see the
+[neutral-atom FT compiler demo](https://quon.arnabg.me/guides/na-ft-demo/).
+
 ## Install and Build
 
 ### Recommended contributor setup
