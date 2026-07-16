@@ -106,6 +106,19 @@ pub struct ResourceReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_rounds: Option<u64>,
 
+    /// Logical T gate count (magic-state-consuming, issue #283).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t_count: Option<u64>,
+    /// Logical T† gate count (issue #283).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tdag_count: Option<u64>,
+    /// Logical CCZ gate count (issue #283).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ccz_count: Option<u64>,
+    /// Total magic-state demand (T + Tdag + CCZ, issue #283).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magic_state_demand: Option<u64>,
+
     /// Number of schedule layers (`layers.len()`).
     #[serde(default)]
     pub estimated_cycles: u64,
@@ -159,6 +172,10 @@ impl Default for ResourceReport {
             code_family: None,
             distance: None,
             memory_rounds: None,
+            t_count: None,
+            tdag_count: None,
+            ccz_count: None,
+            magic_state_demand: None,
             estimated_cycles: 0,
             bottleneck: BottleneckKind::None,
             aware_search_completed_layers: None,
