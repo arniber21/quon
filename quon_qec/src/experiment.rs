@@ -387,9 +387,6 @@ pub fn na_refs_from_expanded(expanded: &ExpandedWorkload) -> Vec<NaScheduleRef> 
 /// Fails closed unless `barrier_cycles.len()` equals the number of
 /// barrier-bearing entries in `na_refs` (memory rounds and lattice-surgery
 /// merge/split/ancilla-measure phases).
-// `trusted`: `barrier_cycles[bi]` is bounded by the fail-closed count check
-// above the loop — a counting invariant flux cannot express without specs.
-#[cfg_attr(feature = "flux", flux_rs::trusted)]
 pub fn attach_barrier_cycles(
     na_refs: &mut [NaScheduleRef],
     barrier_cycles: &[u32],
@@ -401,11 +398,19 @@ pub fn attach_barrier_cycles(
             expected,
         });
     }
-    let mut bi = 0usize;
+    // Iterate `barrier_cycles` via an iterator so each access is total (no
+    // manual index arithmetic). The count check above guarantees the iterator
+    // yields exactly once per barrier-bearing entry, so `next()` is always
+    // `Some` inside the loop. Unreachable `None` is a silent no-op (the
+    // barrier_cycle stays `None`) rather than a panic.
+    let mut cycles = barrier_cycles.iter();
     for r in na_refs.iter_mut() {
         if r.kind.needs_barrier() {
-            r.barrier_cycle = Some(barrier_cycles[bi]);
-            bi += 1;
+            // `cycles.next()` is always `Some` here (count checked above),
+            // but the `if let` keeps the code total — no panic on exhaustion.
+            if let Some(&c) = cycles.next() {
+                r.barrier_cycle = Some(c);
+            }
         }
     }
     Ok(())
@@ -428,9 +433,12 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
     emit_stim_single_block_memory(expanded)
 }
 
-// `trusted`: the `.enumerate().filter().map()` chain below ICEs flux-infer
-// (projections.rs "impossible case reached"); this function carries no flux
-// specs, so skipping its body loses nothing.
+// `trusted` (flux-infer ICE): the `.iter().filter().collect()` and
+// `.iter().find()` iterator-closure chains in this body trigger an internal
+// compiler error in flux-infer (projections.rs "impossible case reached").
+// This function carries no flux specs, so skipping its body loses nothing.
+// See docs/adr/0026-flux-infer-iterator-closure-ice.md for details.
+// Remove `trusted` once flux-infer handles closure-based iterator adapters.
 #[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
     let block = &expanded.blocks[0];
@@ -615,8 +623,12 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
 /// Merge / ancilla outcomes feed [`OBSERVABLE_INCLUDE`] via frame byproducts —
 /// they are **not** bare `DETECTOR`s. `DETECTOR`s are emitted only for explicit
 /// `memory_round` Z-stabilizer comparisons under codespace prep.
-// `trusted`: iterator-closure chains in this body ICE flux-infer the same way
-// as `emit_stim_single_block_memory` above; no flux specs here either.
+// `trusted` (flux-infer ICE): iterator-closure chains in this body (`.iter()`,
+// `.find()`, `.filter()`, `.map()`) trigger the same flux-infer internal
+// compiler error as `emit_stim_single_block_memory` above (projections.rs
+// "impossible case reached"). No flux specs here either.
+// See docs/adr/0026-flux-infer-iterator-closure-ice.md for details.
+// Remove `trusted` once flux-infer handles closure-based iterator adapters.
 #[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
     if expanded.blocks.len() < 2 {
