@@ -224,6 +224,24 @@ fn provenance_discrepancies(prov: &Provenance, exp: &SampledExperiment) -> Vec<S
             prov.rounds, exp.rounds
         ));
     }
+    // M2 fix: cross-check logical structure — the artifact's logical_ids
+    // should appear in the sampled experiment's logical_observables. The
+    // Python harness names observables like "obs0:L0:z", so we check that
+    // each logical id (as "L{id}") appears as a substring in at least one
+    // observable name.
+    for &id in &prov.logical_ids {
+        let expected_name = format!("L{id}");
+        if !exp
+            .logical_observables
+            .iter()
+            .any(|o| o.contains(&expected_name))
+        {
+            out.push(format!(
+                "logical_observable: artifact expects `{expected_name}` but sampled observables are {:?}",
+                exp.logical_observables
+            ));
+        }
+    }
     out
 }
 
@@ -252,14 +270,22 @@ pub fn fuse(
         return Err(ValidationError::NoSampledExperiments);
     }
 
-    // Prefer the experiment whose fingerprint matches; else fall back to the
-    // first and report the discrepancy against it.
-    let chosen = sampled
-        .experiments
-        .iter()
-        .find(|e| e.experiment_sha256 == provenance.experiment_sha256)
-        .unwrap_or(&sampled.experiments[0]);
-    let discrepancies = provenance_discrepancies(&provenance, chosen);
+    // Check provenance for EVERY experiment in the sampled document (M1 fix:
+    // multi-experiment documents must be fully validated, not just first/match).
+    let mut all_discrepancies = Vec::new();
+    for (i, exp) in sampled.experiments.iter().enumerate() {
+        let disc = provenance_discrepancies(&provenance, exp);
+        if !disc.is_empty() {
+            for d in disc {
+                all_discrepancies.push(if sampled.experiments.len() > 1 {
+                    format!("experiment[{i}]: {d}")
+                } else {
+                    d
+                });
+            }
+        }
+    }
+    let discrepancies = all_discrepancies;
 
     let mismatch_warnings = if discrepancies.is_empty() {
         Vec::new()
@@ -395,9 +421,10 @@ pub fn validation_report_to_markdown(report: &ValidationReport) -> String {
                 exp.logical_observables.join(", ")
             }
         ));
-        out.push_str(
-            "| Shots | Error scale | Logical failures | Failure rate | 95% CI (Wilson) |\n",
-        );
+        out.push_str(&format!(
+            "| Shots | Error scale | Logical failures | Failure rate | {:.0}% CI (Wilson) |\n",
+            report.sampled.confidence_level * 100.0
+        ));
         out.push_str("| ---: | ---: | ---: | ---: | :--- |\n");
         for r in &exp.results {
             out.push_str(&format!(
