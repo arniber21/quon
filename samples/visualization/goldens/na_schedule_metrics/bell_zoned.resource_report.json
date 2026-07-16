@@ -16,6 +16,8 @@
   "physical_atoms": 2,
   "estimated_cycles": 4,
   "bottleneck": "rearrangement",
+  "aware_search_completed_layers": 0,
+  "aware_search_fell_back_layers": 0,
   "error_budget": {
     "rydberg": 0.002,
     "measurement": 0.0,

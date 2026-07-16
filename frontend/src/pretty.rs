@@ -100,7 +100,7 @@ fn ty_str(t: &Type) -> String {
         ),
         Type::QecBlock { family, distance } => {
             format!("QecBlock<{}, {}>", ty_str(&family.0), nat_str(&distance.0))
-        },
+        }
         Type::Fn(a, b) => format!("({}) -> ({})", ty_str(&a.0), ty_str(&b.0)),
         Type::Linear(a, b) => format!("({}) -o ({})", ty_str(&a.0), ty_str(&b.0)),
         Type::Tuple(ts) => {

@@ -1,5 +1,5 @@
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anstyle::{AnsiColor, Color, Style};
@@ -452,10 +452,7 @@ fn run() -> Result<ExitCode> {
 
     emit_artifacts(&cli, &request, &report)?;
 
-    if report.na_schedule_spec.is_some()
-        && (cli.verify_na || report.qec_backed)
-        && !cli.quiet
-    {
+    if report.na_schedule_spec.is_some() && (cli.verify_na || report.qec_backed) && !cli.quiet {
         let dim = dim_style();
         let kind = if report.qec_backed {
             "QEC auto"
@@ -549,7 +546,11 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
     Ok(())
 }
 
-fn emit_artifacts(cli: &Cli, request: &CompileRequest, report: &quonc::CompileReport) -> Result<()> {
+fn emit_artifacts(
+    cli: &Cli,
+    request: &CompileRequest,
+    report: &quonc::CompileReport,
+) -> Result<()> {
     let mut emitted = false;
     // When OpenQASM already owns stdout, subsequent `-` emits go to stderr.
     let qasm_owns_stdout = cli.emit_qasm;
@@ -573,9 +574,8 @@ fn emit_artifacts(cli: &Cli, request: &CompileRequest, report: &quonc::CompileRe
         // Prefer verifying the emitted text so dump drift cannot slip past the
         // in-memory `verify_schedule_spec` path (ADR-0021 nit).
         if cli.verify_na || report.qec_backed {
-            quon_na::verify_mlir_text(&mlir).map_err(|e| {
-                anyhow!("emitted quantum.na failed verification: {e}")
-            })?;
+            quon_na::verify_mlir_text(&mlir)
+                .map_err(|e| anyhow!("emitted quantum.na failed verification: {e}"))?;
         }
         write_output(path, &mlir, qasm_owns_stdout && path == "-")?;
         emitted = true;
@@ -676,7 +676,7 @@ fn emit_artifacts(cli: &Cli, request: &CompileRequest, report: &quonc::CompileRe
 fn emit_qec_experiment_artifacts(
     request: &CompileRequest,
     report: &quonc::CompileReport,
-    json_path: &PathBuf,
+    json_path: &Path,
 ) -> Result<()> {
     let workload = report.qec_workload.as_ref().ok_or_else(|| {
         anyhow!(
@@ -697,7 +697,8 @@ fn emit_qec_experiment_artifacts(
     let error_model = model.error_model_snapshot();
 
     // Re-expand from the same in-memory workload IR (never re-parse quantum.na).
-    let expanded = expand_workload(workload).map_err(|e| anyhow!("QEC expand for experiment: {e}"))?;
+    let expanded =
+        expand_workload(workload).map_err(|e| anyhow!("QEC expand for experiment: {e}"))?;
     let stim_path = sibling_stim_path(json_path);
     let stim_basename = stim_path
         .file_name()
@@ -711,8 +712,8 @@ fn emit_qec_experiment_artifacts(
         attach_barrier_cycles(&mut na_refs, &barriers).map_err(|e| anyhow!("{e}"))?;
     }
 
-    let (experiment, stim) = dual_emit(&expanded, error_model, &stim_basename, na_refs)
-        .map_err(|e| anyhow!("{e}"))?;
+    let (experiment, stim) =
+        dual_emit(&expanded, error_model, &stim_basename, na_refs).map_err(|e| anyhow!("{e}"))?;
     let json = experiment_to_json(&experiment).map_err(|e| anyhow!("{e}"))?;
 
     if let Some(parent) = json_path.parent() {
@@ -753,7 +754,10 @@ fn memory_round_barrier_cycles(
     let mut cycles = Vec::new();
     for &(idx, _) in &cuts {
         let layer = layers.get(idx as usize).ok_or_else(|| {
-            anyhow!("round_barrier_cuts index {idx} out of range ({} layers)", layers.len())
+            anyhow!(
+                "round_barrier_cuts index {idx} out of range ({} layers)",
+                layers.len()
+            )
         })?;
         let is_wait = layer
             .actions
@@ -781,8 +785,7 @@ fn write_atomic(path: &std::path::Path, contents: &str) -> Result<()> {
         .and_then(|s| s.to_str())
         .unwrap_or("artifact");
     let tmp = parent.join(format!(".{file_name}.tmp"));
-    std::fs::write(&tmp, contents)
-        .with_context(|| format!("write temp {}", tmp.display()))?;
+    std::fs::write(&tmp, contents).with_context(|| format!("write temp {}", tmp.display()))?;
     std::fs::rename(&tmp, path)
         .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
@@ -951,8 +954,8 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
 }
 
 fn verify_na_mlir_file(path: &PathBuf, quiet: bool) -> Result<ExitCode> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     match quon_na::verify_mlir_text(&text) {
         Ok(()) => {
             if !quiet {

@@ -30,7 +30,9 @@ fn quonc() -> Command {
 }
 
 fn workspace_path(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(rel)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(rel)
 }
 
 fn golden(rel: &str) -> String {
@@ -123,11 +125,24 @@ const NA_TARGET: &str = "targets/neutral_atom/generic_rna_v0.json";
 fn dense_swap_mismatch_goldens_match_regeneration() {
     assert_stdout_golden(
         "dense_swap_mismatch/qaoa_manila.qasm",
-        &["--target", IBM_TARGET, "--emit-qasm", "-q", "test/verify/qaoa.qn"],
+        &[
+            "--target",
+            IBM_TARGET,
+            "--emit-qasm",
+            "-q",
+            "test/verify/qaoa.qn",
+        ],
     );
     assert_metrics_golden(
         "dense_swap_mismatch/metrics.json",
-        &["--target", IBM_TARGET, "--metrics-json", "-", "-q", "test/verify/qaoa.qn"],
+        &[
+            "--target",
+            IBM_TARGET,
+            "--metrics-json",
+            "-",
+            "-q",
+            "test/verify/qaoa.qn",
+        ],
     );
 
     // The showcase's specific claim (#135 review-relevant honesty check):
@@ -276,7 +291,10 @@ fn na_interaction_graph_golden_matches_regeneration() {
     // node or edge if the golden itself were ever mis-refreshed; anchor on
     // the actual node/edge counts, not just diff equality.
     let dot = golden("na_interaction_graph/qaoa_graph.dot");
-    let node_count = dot.lines().filter(|l| l.contains("[label=") && !l.contains(" -- ")).count();
+    let node_count = dot
+        .lines()
+        .filter(|l| l.contains("[label=") && !l.contains(" -- "))
+        .count();
     let edge_count = dot.lines().filter(|l| l.contains(" -- ")).count();
     assert_eq!(
         node_count, 4,
@@ -325,11 +343,24 @@ fn na_schedule_metrics_goldens_match_regeneration() {
 fn noise_aware_target_overlay_goldens_match_regeneration() {
     assert_stdout_golden(
         "noise_target_overlay/ising_manila.qasm",
-        &["--target", IBM_TARGET, "--emit-qasm", "-q", "test/verify/ising.qn"],
+        &[
+            "--target",
+            IBM_TARGET,
+            "--emit-qasm",
+            "-q",
+            "test/verify/ising.qn",
+        ],
     );
     assert_metrics_golden(
         "noise_target_overlay/metrics.json",
-        &["--target", IBM_TARGET, "--metrics-json", "-", "-q", "test/verify/ising.qn"],
+        &[
+            "--target",
+            IBM_TARGET,
+            "--metrics-json",
+            "-",
+            "-q",
+            "test/verify/ising.qn",
+        ],
     );
 
     // The showcase's claim: this circuit maps with zero SWAPs (deliberately
@@ -410,7 +441,10 @@ fn every_golden_file_on_disk_is_declared_in_catalog() {
 
     let mut on_disk = Vec::new();
     collect_files(&goldens_root, &mut on_disk);
-    assert!(!on_disk.is_empty(), "expected at least one viz golden on disk");
+    assert!(
+        !on_disk.is_empty(),
+        "expected at least one viz golden on disk"
+    );
 
     for path in &on_disk {
         let rel = path
@@ -427,8 +461,8 @@ fn every_golden_file_on_disk_is_declared_in_catalog() {
 }
 
 fn collect_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-    let entries = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
     for entry in entries {
         let entry = entry.unwrap_or_else(|e| panic!("dir entry: {e}"));
         let path = entry.path();

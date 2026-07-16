@@ -90,8 +90,14 @@ _GOLDEN_ERROR_MODEL = {
     "transfer": 0.02,
     "idle_per_us": 1e-4,
 }
-# Golden for MINIMAL_REP_STIM + _GOLDEN_ERROR_MODEL, shots=32, seed=7.
-GOLDEN_SMOKE_LOGICAL_FAILURES = 4
+# Band for MINIMAL_REP_STIM + _GOLDEN_ERROR_MODEL, shots=32, seed=7. The exact
+# fixed-seed count is architecture-sensitive (stim's vectorized sampling varies
+# with SIMD width: 4 on arm64, 2 on x86_64 CI), so pin a band — nonzero proves
+# the scaled error model injects noise; well under half the shots proves the
+# decoder beats chance. Same-machine determinism is asserted separately in
+# test_noisy_sample_is_deterministic.
+GOLDEN_SMOKE_FAILURES_MIN = 1
+GOLDEN_SMOKE_FAILURES_MAX = 8
 
 TESTDATA = Path(__file__).resolve().parent / "testdata"
 PINNED_REP_D3_R2_JSON = TESTDATA / "qec_rep_d3_r2.qec.json"
@@ -237,7 +243,10 @@ class SinterHarnessSmokeTests(unittest.TestCase):
             rows = harness.run_experiments(
                 [json_path], shots_list=[32], seed=7, error_scales=[1.0]
             )
-            self.assertEqual(rows[0].logical_failures, GOLDEN_SMOKE_LOGICAL_FAILURES)
+            self.assertGreaterEqual(
+                rows[0].logical_failures, GOLDEN_SMOKE_FAILURES_MIN
+            )
+            self.assertLessEqual(rows[0].logical_failures, GOLDEN_SMOKE_FAILURES_MAX)
 
     def test_pinned_rounds2_dual_emit_smoke(self) -> None:
         """CI exercises the real #255 rounds=2 dual-emit pair."""

@@ -109,11 +109,11 @@ pub use zoned::{
 };
 
 #[cfg(feature = "mlir")]
+pub use dialect::VerifyError;
+#[cfg(feature = "mlir")]
 pub use dialect::{
     ScheduleSpec, dump_schedule_text, verify, verify_mlir_text, verify_module, verify_schedule_spec,
 };
-#[cfg(feature = "mlir")]
-pub use dialect::VerifyError;
 #[cfg(feature = "mlir")]
 pub use extract::{ExtractError, extract_interaction_graph, extract_interaction_graph_with_gamma};
 #[cfg(feature = "mlir")]

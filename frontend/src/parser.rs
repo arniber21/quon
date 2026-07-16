@@ -899,16 +899,7 @@ where
         .then_ignore(just(Token::Eq))
         .then_ignore(nls.clone())
         .then(ty.clone())
-        .map_with(|((name, params), ty), e| {
-            (
-                Decl::TypeAlias {
-                    name,
-                    params,
-                    ty,
-                },
-                e.span(),
-            )
-        });
+        .map_with(|((name, params), ty), e| (Decl::TypeAlias { name, params, ty }, e.span()));
 
     let decl = choice((fn_decl, type_alias));
 

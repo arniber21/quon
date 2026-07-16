@@ -242,16 +242,10 @@ fn parses_kinded_type_params_and_qec_block() {
         Decl::TypeAlias { params, ty, .. } => {
             assert_eq!(params.len(), 2);
             assert_eq!(params[0].name.0, "F");
-            assert!(matches!(
-                params[0].kind,
-                Some((Kind::CodeFamily, _))
-            ));
+            assert!(matches!(params[0].kind, Some((Kind::CodeFamily, _))));
             assert_eq!(params[1].name.0, "d");
             assert!(matches!(params[1].kind, Some((Kind::Nat, _))));
-            assert!(matches!(
-                ty.0,
-                Type::QecBlock { .. }
-            ));
+            assert!(matches!(ty.0, Type::QecBlock { .. }));
         }
         other => panic!("expected type alias, got {other:?}"),
     }
@@ -300,4 +294,3 @@ fn nat_only_alias_params_still_parse() {
         other => panic!("expected type alias, got {other:?}"),
     }
 }
-

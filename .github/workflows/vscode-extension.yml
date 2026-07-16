@@ -90,9 +90,12 @@ jobs:
           path: extensions/vscode-quon/dist/*.vsix
           if-no-files-found: error
 
+      # devbox run: the init_hook exports LD_LIBRARY_PATH for the nix libz3 the
+      # release quon_lsp is dynamically linked against; outside devbox the LSP
+      # binary fails to load and every request times out. devbox chdirs to the
+      # config dir, so cd back into the extension inside the command.
       - name: Extension smoke
-        working-directory: extensions/vscode-quon
-        run: xvfb-run -a npm test
+        run: devbox run -- bash -c 'cd extensions/vscode-quon && xvfb-run -a npm test'
         env:
           QUON_LSP_PATH: ${{ github.workspace }}/target/release/quon_lsp
           QUON_FMT_PATH: ${{ github.workspace }}/target/release/quonfmt

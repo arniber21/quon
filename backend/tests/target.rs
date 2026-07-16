@@ -31,7 +31,9 @@ fn neutral_sample_value() -> serde_json::Value {
     serde_json::from_str(&neutral_sample_json()).expect("parse neutral atom sample")
 }
 
-fn with_error_model_mutated(mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) -> String {
+fn with_error_model_mutated(
+    mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) -> String {
     let mut value = neutral_sample_value();
     let model = value
         .get_mut("error_model")
@@ -445,11 +447,9 @@ fn generic_neutral_atom_target_loads_correctly() {
 #[test]
 fn neutral_atom_error_model_is_optional() {
     let mut value = neutral_sample_value();
-    value
-        .as_object_mut()
-        .expect("object")
-        .remove("error_model");
-    let target = json::from_str(&value.to_string()).expect("target without error_model should load");
+    value.as_object_mut().expect("object").remove("error_model");
+    let target =
+        json::from_str(&value.to_string()).expect("target without error_model should load");
     let na = target
         .neutral_atom_target()
         .expect("expected neutral atom target");
@@ -475,10 +475,7 @@ fn neutral_atom_error_model_rejects_unknown_fields() {
         m.insert("typo_rate".into(), serde_json::json!(0.1));
     });
     let err = json::from_str(&src).unwrap_err();
-    assert!(
-        matches!(err, BackendError::Json(_)),
-        "got {err:?}"
-    );
+    assert!(matches!(err, BackendError::Json(_)), "got {err:?}");
     assert!(err.to_string().contains("typo_rate") || err.to_string().contains("unknown field"));
 }
 
@@ -488,10 +485,7 @@ fn neutral_atom_error_model_rejects_incomplete_object() {
         m.remove("reset");
     });
     let err = json::from_str(&src).unwrap_err();
-    assert!(
-        matches!(err, BackendError::Json(_)),
-        "got {err:?}"
-    );
+    assert!(matches!(err, BackendError::Json(_)), "got {err:?}");
     assert!(
         err.to_string().contains("reset") || err.to_string().contains("missing field"),
         "got {err}"

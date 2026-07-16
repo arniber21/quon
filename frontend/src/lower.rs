@@ -694,8 +694,7 @@ impl<'c> LoweringCtx<'c> {
                             )?);
                             let results = collect_results(op, 1)?;
                             if let Some(result) = results.first() {
-                                self.qec_logical_ids
-                                    .insert(value_key(result), logical_id);
+                                self.qec_logical_ids.insert(value_key(result), logical_id);
                             }
                             return Ok(results);
                         }

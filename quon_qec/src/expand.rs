@@ -30,9 +30,7 @@
 use thiserror::Error;
 
 use crate::family::{CodeFamily, QecError, SourceFamily, repetition_n, surface_n};
-use crate::workload::{
-    LogicalBasis, LogicalQubitId, QecWorkload, WorkloadBlock, WorkloadOp,
-};
+use crate::workload::{LogicalBasis, LogicalQubitId, QecWorkload, WorkloadBlock, WorkloadOp};
 
 /// Dense physical atom id within an expanded layout (0-based globally).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -479,8 +477,7 @@ fn expand_surface_layout(
             data_coord.push(((2 * c + 1, 2 * r + 1), (r * d + c) as u32));
         }
     }
-    let data_at: std::collections::HashMap<(i32, i32), u32> =
-        data_coord.iter().copied().collect();
+    let data_at: std::collections::HashMap<(i32, i32), u32> = data_coord.iter().copied().collect();
 
     // Plaquette centers on even×even sites; smooth (top/bottom) X, rough (L/R) Z.
     let mut plaquettes: Vec<((i32, i32), LogicalBasis, Vec<u32>)> = Vec::new();
@@ -1090,15 +1087,13 @@ mod tests {
             .find(|r| r.kind == RoundKind::MeasureLogical)
             .expect("mz");
         assert_eq!(mz.terminal.len(), 9);
-        assert!(
-            mz.terminal.iter().all(|t| matches!(
-                t,
-                RoundTerminal::Measure {
-                    basis: LogicalBasis::Z,
-                    ..
-                }
-            ))
-        );
+        assert!(mz.terminal.iter().all(|t| matches!(
+            t,
+            RoundTerminal::Measure {
+                basis: LogicalBasis::Z,
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -1193,10 +1188,7 @@ mod tests {
                         syn ^= rows[i].0[k] & rows[j].1[k];
                         syn ^= rows[i].1[k] & rows[j].0[k];
                     }
-                    assert_eq!(
-                        syn, 0,
-                        "d={d}: stabilizers {i} and {j} must commute"
-                    );
+                    assert_eq!(syn, 0, "d={d}: stabilizers {i} and {j} must commute");
                 }
             }
 
@@ -1224,9 +1216,7 @@ mod tests {
             for r in 0..d_usize {
                 lx[r * d_usize] = 1; // left column
             }
-            for c in 0..d_usize {
-                lz[c] = 1; // top row
-            }
+            lz[..d_usize].fill(1); // top row
             let mut syn = 0u8;
             for k in 0..n_data {
                 syn ^= lx[k] & lz[k];
@@ -1243,21 +1233,21 @@ mod tests {
         let mut rank = 0;
         let mut row_i = 0;
         for col in 0..cols {
-            let mut pivot = None;
-            for r in row_i..rows.len() {
-                if rows[r][col] == 1 {
-                    pivot = Some(r);
-                    break;
-                }
-            }
+            let pivot = rows
+                .iter()
+                .enumerate()
+                .skip(row_i)
+                .find(|(_, row)| row[col] == 1)
+                .map(|(r, _)| r);
             let Some(pivot) = pivot else {
                 continue;
             };
             rows.swap(row_i, pivot);
-            for r in 0..rows.len() {
-                if r != row_i && rows[r][col] == 1 {
-                    for c in 0..cols {
-                        rows[r][c] ^= rows[row_i][c];
+            let pivot_row = rows[row_i].clone();
+            for (r, row) in rows.iter_mut().enumerate() {
+                if r != row_i && row[col] == 1 {
+                    for (dst, src) in row.iter_mut().zip(&pivot_row) {
+                        *dst ^= *src;
                     }
                 }
             }
@@ -1354,7 +1344,12 @@ mod tests {
             .iter()
             .filter(|r| matches!(r.kind, RoundKind::Split(_)))
             .collect();
-        assert_eq!(splits.len(), 2, "expected rough+smooth split, got {}", splits.len());
+        assert_eq!(
+            splits.len(),
+            2,
+            "expected rough+smooth split, got {}",
+            splits.len()
+        );
         for s in &splits {
             assert!(
                 !s.entangling.is_empty() && !s.terminal.is_empty(),
@@ -1412,8 +1407,14 @@ mod tests {
             .unwrap();
         let t_min_y = t.coords.iter().map(|(_, y)| *y).min().unwrap();
         let t_min_x = t.coords.iter().map(|(x, _)| *x).min().unwrap();
-        assert!(c_max_x < a_min_x, "control|ancilla L/R seam: {c_max_x} < {a_min_x}");
-        assert!(a_max_y < t_min_y, "ancilla/target top/bottom seam: {a_max_y} < {t_min_y}");
+        assert!(
+            c_max_x < a_min_x,
+            "control|ancilla L/R seam: {c_max_x} < {a_min_x}"
+        );
+        assert!(
+            a_max_y < t_min_y,
+            "ancilla/target top/bottom seam: {a_max_y} < {t_min_y}"
+        );
         assert!(
             (t_min_x - a_min_x).abs() <= 2,
             "target should sit under ancilla (aligned x), got a_min_x={a_min_x} t_min_x={t_min_x}"
@@ -1430,11 +1431,15 @@ mod tests {
             "orphan seam checks without StabilizerDef: {seam_checks:?}"
         );
         assert!(
-            a.stabilizers.iter().any(|s| s.basis == LogicalBasis::Z && s.data.len() == 2),
+            a.stabilizers
+                .iter()
+                .any(|s| s.basis == LogicalBasis::Z && s.data.len() == 2),
             "missing rough ZZ seam stabilizer"
         );
         assert!(
-            a.stabilizers.iter().any(|s| s.basis == LogicalBasis::X && s.data.len() == 2),
+            a.stabilizers
+                .iter()
+                .any(|s| s.basis == LogicalBasis::X && s.data.len() == 2),
             "missing smooth XX seam stabilizer"
         );
     }

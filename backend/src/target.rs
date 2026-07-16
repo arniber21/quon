@@ -461,8 +461,11 @@ impl TryFrom<NeutralAtomErrorModelSnapshot> for NeutralAtomErrorModel {
     /// Validate snapshot rates into the domain model (same `[0, 1]` rule as
     /// target-descriptor load).
     fn try_from(s: NeutralAtomErrorModelSnapshot) -> Result<Self, Self::Error> {
+        // Plain comparisons instead of `(0.0..=1.0).contains(..)`: flux cannot
+        // see through `RangeInclusive::new` and rejects the call as MightPanic.
+        #[allow(clippy::manual_range_contains)]
         fn probability(field: &str, value: f64) -> Result<f64, crate::error::BackendError> {
-            if value.is_finite() && (0.0..=1.0).contains(&value) {
+            if value.is_finite() && 0.0 <= value && value <= 1.0 {
                 Ok(value)
             } else {
                 Err(crate::error::BackendError::InvalidTargetConfig(format!(

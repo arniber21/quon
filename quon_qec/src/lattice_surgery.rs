@@ -275,11 +275,7 @@ fn place_seam_column(seam: &mut SeamAtoms, x: i32, left_patch: &ExpandedBlock) {
 fn place_seam_row(seam: &mut SeamAtoms, y: i32, above_patch: &ExpandedBlock) {
     let d = above_patch.distance as usize;
     // Surface data are a prefix of `atoms`/`coords`; x = origin + 2c + 1.
-    let origin_x = above_patch
-        .coords
-        .first()
-        .map(|(x, _)| *x - 1)
-        .unwrap_or(0);
+    let origin_x = above_patch.coords.first().map(|(x, _)| *x - 1).unwrap_or(0);
     for c in 0..d {
         seam.coords[c] = (origin_x + 2 * c as i32 + 1, y);
     }
@@ -301,18 +297,11 @@ fn allocate_ancilla_patch(
 }
 
 fn next_ancilla_logical_id(layouts: &[ExpandedBlock]) -> LogicalQubitId {
-    let max = layouts
-        .iter()
-        .map(|b| b.logical_id.0)
-        .max()
-        .unwrap_or(0);
+    let max = layouts.iter().map(|b| b.logical_id.0).max().unwrap_or(0);
     LogicalQubitId(max.saturating_add(1))
 }
 
-fn find_layout_index(
-    layouts: &[ExpandedBlock],
-    id: LogicalQubitId,
-) -> Result<usize, ExpandError> {
+fn find_layout_index(layouts: &[ExpandedBlock], id: LogicalQubitId) -> Result<usize, ExpandError> {
     layouts
         .iter()
         .position(|b| b.logical_id == id)
@@ -326,6 +315,11 @@ fn place_patch_at(block: &mut ExpandedBlock, dx: i32, dy: i32) {
     }
 }
 
+// `trusted` (this fn and the three row/column + two merge-round helpers below):
+// the bounds obligations are nonlinear (`r*d + (d-1) < d*d` given len == d*d) or
+// depend on caller-checked length equalities flux cannot see; verifying them
+// properly needs real specs — tracked in the flux/quon_qec verification issue.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn right_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
     let d = block.distance as usize;
     if block.data_atoms.len() != d * d {
@@ -356,6 +350,7 @@ fn top_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandErro
     Ok(block.data_atoms[..d].to_vec())
 }
 
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn bottom_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
     let d = block.distance as usize;
     if block.data_atoms.len() != d * d {
@@ -367,6 +362,7 @@ fn bottom_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandE
 }
 
 /// Rough merge: measure ZZ on each facing L/R data pair via seam check.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn rough_merge_round(
     left_col: &[PhysicalAtomId],
     right_col: &[PhysicalAtomId],
@@ -413,6 +409,7 @@ fn rough_merge_round(
 }
 
 /// Smooth merge: measure XX on each facing top/bottom data pair (H-sandwich).
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn smooth_merge_round(
     above_row: &[PhysicalAtomId],
     below_row: &[PhysicalAtomId],
@@ -474,7 +471,9 @@ fn split_seam_round(
     partner: Option<LogicalQubitId>,
 ) -> Result<PhysicalRound, ExpandError> {
     let mut round = match boundary {
-        MergeBoundary::Rough => rough_merge_round(side_a, side_b, seam, primary, partner.unwrap_or(primary))?,
+        MergeBoundary::Rough => {
+            rough_merge_round(side_a, side_b, seam, primary, partner.unwrap_or(primary))?
+        }
         MergeBoundary::Smooth => {
             smooth_merge_round(side_a, side_b, seam, primary, partner.unwrap_or(primary))?
         }

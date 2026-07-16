@@ -176,6 +176,16 @@ fn schedule_expanded(
     })
 }
 
+/// Layers, interactions, and the optional trailing segment produced for one round.
+type RoundScheduleParts = (
+    Vec<ScheduleLayer>,
+    Vec<Interaction>,
+    Option<InteractionSegment>,
+);
+
+/// Layers, interactions, and interaction ids produced for one CNOT phase.
+type CnotScheduleParts = (Vec<ScheduleLayer>, Vec<Interaction>, Vec<InteractionId>);
+
 /// Place→move (or zoned) *inside* one physical round with Z-then-X phases, then
 /// append locals / terminals.
 ///
@@ -188,14 +198,7 @@ fn schedule_round(
     opts: NaScheduleOptions,
     next_interaction_id: &mut u32,
     shared_layout: &mut Option<NeutralAtomLayout>,
-) -> Result<
-    (
-        Vec<ScheduleLayer>,
-        Vec<Interaction>,
-        Option<InteractionSegment>,
-    ),
-    NaPipelineError,
-> {
+) -> Result<RoundScheduleParts, NaPipelineError> {
     if round.z_cnot_count > round.entangling.len() {
         return Err(NaPipelineError::InvalidZCnotCount {
             z_cnot_count: round.z_cnot_count,
@@ -262,7 +265,7 @@ fn schedule_cnot_phase(
     opts: NaScheduleOptions,
     next_interaction_id: &mut u32,
     shared_layout: &mut Option<NeutralAtomLayout>,
-) -> Result<(Vec<ScheduleLayer>, Vec<Interaction>, Vec<InteractionId>), NaPipelineError> {
+) -> Result<CnotScheduleParts, NaPipelineError> {
     let (round_interactions, round_ids) = cnots_to_interactions(cnots, next_interaction_id)?;
     let segment = InteractionSegment {
         kind: SegmentKind::CommutationGroup,
@@ -316,11 +319,11 @@ fn append_local_gate_layers(layers: &mut Vec<ScheduleLayer>, ops: &[quon_qec::Ro
     if hs.is_empty() {
         return;
     }
-    let cycle = layers.last().map(|l| l.cycle.saturating_add(1)).unwrap_or(0);
-    layers.push(ScheduleLayer {
-        cycle,
-        actions: hs,
-    });
+    let cycle = layers
+        .last()
+        .map(|l| l.cycle.saturating_add(1))
+        .unwrap_or(0);
+    layers.push(ScheduleLayer { cycle, actions: hs });
 }
 
 fn append_terminal_layers(layers: &mut Vec<ScheduleLayer>, terminal: &[RoundTerminal]) {
@@ -346,7 +349,10 @@ fn append_terminal_layers(layers: &mut Vec<ScheduleLayer>, terminal: &[RoundTerm
         })
         .collect();
 
-    let mut cycle = layers.last().map(|l| l.cycle.saturating_add(1)).unwrap_or(0);
+    let mut cycle = layers
+        .last()
+        .map(|l| l.cycle.saturating_add(1))
+        .unwrap_or(0);
     if !measures.is_empty() {
         layers.push(ScheduleLayer {
             cycle,
@@ -619,8 +625,7 @@ mod tests {
             dump_ir: false,
             ..Default::default()
         };
-        let artifacts =
-            run_from_qec_workload(&surface_d3_workload(), &na, opts).expect("schedule");
+        let artifacts = run_from_qec_workload(&surface_d3_workload(), &na, opts).expect("schedule");
 
         // Within the first memory round (before first Wait): find the phase order.
         let wait_idx = artifacts
@@ -757,8 +762,7 @@ mod tests {
             dump_ir: false,
             ..Default::default()
         };
-        let artifacts =
-            run_from_qec_workload(&surface_d3_workload(), &na, opts).expect("schedule");
+        let artifacts = run_from_qec_workload(&surface_d3_workload(), &na, opts).expect("schedule");
         let report = &artifacts.resource_report;
 
         assert_eq!(report.logical_qubits, 1);
@@ -806,7 +810,10 @@ mod tests {
         )
         .expect("uncompacted");
         let cuts = round_barrier_cuts(&uncompacted.layers);
-        assert!(!cuts.is_empty(), "hybrid schedule must expose Wait/round cuts");
+        assert!(
+            !cuts.is_empty(),
+            "hybrid schedule must expose Wait/round cuts"
+        );
         let wait_idxs: Vec<u32> = uncompacted
             .layers
             .iter()
@@ -828,9 +835,8 @@ mod tests {
 
         // Causal compact: same three layers, with vs without Wait cuts.
         let vertices: Vec<LogicalQubitId> = (0..4).map(LogicalQubitId).collect();
-        let graph =
-            InteractionGraph::from_interactions(vertices, vec![], vec![], DEFAULT_GAMMA)
-                .expect("graph");
+        let graph = InteractionGraph::from_interactions(vertices, vec![], vec![], DEFAULT_GAMMA)
+            .expect("graph");
         let synthetic = GraphScheduleRequest {
             graph,
             layers: vec![
@@ -956,10 +962,9 @@ mod tests {
                 dump_ir: false,
                 ..Default::default()
             };
-            let artifacts =
-                run_from_qec_workload(&d3_workload(), &na, opts).unwrap_or_else(|e| {
-                    panic!("schedule compact={compact}: {e}");
-                });
+            let artifacts = run_from_qec_workload(&d3_workload(), &na, opts).unwrap_or_else(|e| {
+                panic!("schedule compact={compact}: {e}");
+            });
             let params =
                 ScheduleLowerParams::from_target("generic_reconfigurable_neutral_atom_v0", &na);
             let spec = lower_schedule(&artifacts.request, &params).unwrap_or_else(|e| {

@@ -288,7 +288,10 @@ mod tests {
     fn source_family_wire_strings() {
         assert_eq!(SourceFamily::Repetition.as_str(), "repetition");
         assert_eq!(SourceFamily::Surface.as_str(), "surface");
-        assert_eq!(SourceFamily::parse("repetition"), Some(SourceFamily::Repetition));
+        assert_eq!(
+            SourceFamily::parse("repetition"),
+            Some(SourceFamily::Repetition)
+        );
         assert_eq!(SourceFamily::parse("surface"), Some(SourceFamily::Surface));
         assert_eq!(SourceFamily::parse("repetition_code_toy"), None);
     }

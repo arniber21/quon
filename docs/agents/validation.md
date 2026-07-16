@@ -10,6 +10,7 @@ Static analysis and refinement-type checks for the Quon workspace.
 | ------- | ------- |
 | `just doctor` | Readiness matrix (LLVM/`MLIR_SYS_220_PREFIX`, z3, `.venv`+Qiskit, lit, FileCheck, `quonc`). Required rows fail; optional WARN. `just doctor --strict` fails on WARN too. |
 | `just setup-python` | Create `.venv`, install `python/requirements.txt` + `lit` |
+| `.venv/bin/python -m pytest python -q` | Local one-shot run of the Python harness tests (same unittest suites `just ci-rust` runs one-by-one via `python -m unittest`; `pytest` comes from `python/requirements.txt`). The two quonc-integration tests want a fresh `target/release/quonc` (or `QUONC=target/debug/quonc`) |
 | `just test-fast` | `cargo test --workspace --exclude flux_verify` (lit soft-skips if tools missing; no Aer) |
 | `just test-ci` | Local CI parity: `ci-rust` + `ci-tooling` + `ci-docs-assert` (not the website build) |
 | `just ci-rust` | What the `ci.yml` `rust` job runs (sets `QUON_REQUIRE_LIT`); its `cargo test --workspace` step already includes the sample corpus catalog lint (`quonc/tests/samples_catalog.rs`, ADR-0025 / #185) as an ordinary workspace test crate |
@@ -30,7 +31,7 @@ This table is an adapter of the **Justfile** recipes invoked by `.github/workflo
 
 | Workflow | Trigger | What runs |
 | -------- | ------- | --------- |
-| [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `just ci-rust`: fmt, clippy, release build (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` with `QUON_REQUIRE_LIT` so [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) hard-fails without lit/FileCheck/oracles, and [`quonc/tests/samples_catalog.rs`](../../quonc/tests/samples_catalog.rs) lints `samples/catalog.yaml` and typechecks every `ci: smoke` entry with the debug `quonc` this same `cargo test` builds (ADR-0025 / #185); then a dedicated `cargo test --release -p quonc --test rap_table_i -- --include-ignored` step (RAP Table I regression dump, #111 — `#[ignore]`d because routing-aware search is slow in debug, same `--include-ignored` pattern as the LSP smoke test); then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`, then QEC Python smokes (`test_qec_stim_smoke`, `test_quon_qec_sinter`, `test_quon_qec_benchmarks` / #254). |
+| [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `just ci-rust`: fmt, clippy, release build (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` with `QUON_REQUIRE_LIT` so [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) hard-fails without lit/FileCheck/oracles, and [`quonc/tests/samples_catalog.rs`](../../quonc/tests/samples_catalog.rs) lints `samples/catalog.yaml` and typechecks every `ci: smoke` entry with the debug `quonc` this same `cargo test` builds (ADR-0025 / #185) — the RAP Table I preflight test (#111) runs here too, while the full `rap_table_i --include-ignored` metrics dump is **local-only** (`just rap-table-i`): its routing-aware A* peaks ~17.5 GB RSS and OOMs GitHub's 16 GB hosted runners; then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`, then QEC Python smokes (`test_qec_stim_smoke`, `test_quon_qec_sinter`, `test_quon_qec_benchmarks` / #254). |
 | [ci.yml](../../.github/workflows/ci.yml) `docs` | every push and PR | `just ci-docs-assert` + `just ci-website` |
 | [ci.yml](../../.github/workflows/ci.yml) `tooling` | every push and PR | `just ci-tooling`: `quonfmt --check`, `quonlint`, `quon_lsp` smoke on CI corpus |
 | [release.yml](../../.github/workflows/release.yml) | tags `v*` (+ manual dry-run) | `devbox run release` — static MLIR/LLVM + release-built static libz3; link audit; upload `quon-{version}-{arch}-{os}.tar.gz` to GitHub Releases |
@@ -41,7 +42,7 @@ This table is an adapter of the **Justfile** recipes invoked by `.github/workflo
 
 Local `lit test/lit/ -v` remains useful for verbose FileCheck output. CI and `just test-ci` require the suite via `QUON_REQUIRE_LIT`; bare `cargo test` / `just test-fast` still soft-skip when tools are missing.
 
-**ADR/docs drift:** borrow cleanup semantics vs ADR-0003 are tracked in [#180](https://github.com/arniber21/quon/issues/180) — do not “fix” borrow docs from this validation matrix.
+**ADR/docs drift:** borrow cleanup semantics vs ADR-0003 were tracked in [#180](https://github.com/arniber21/quon/issues/180) (now closed) — check that issue's resolution before touching borrow docs from this validation matrix.
 
 ## Tooling gates (quonfmt · quonlint · LSP)
 

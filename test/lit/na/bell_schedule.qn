@@ -15,9 +15,9 @@ fn bell_na(): Q<(Bit, Bit)> = run {
         return (b0, b1)
 }
 
+-- CHECK: "schema_version"
 -- CHECK: "kind"
 -- CHECK: "na_schedule_view"
--- CHECK: "schema_version"
 -- CHECK: "layers"
 -- CHECK: "cycle"
 -- CHECK: "Entangle2"

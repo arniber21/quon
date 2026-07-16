@@ -151,8 +151,6 @@ ci-rust: setup-python
     export PATH="$PWD/.venv/bin:$PATH"
     export QUON_REQUIRE_LIT=1
     cargo test --workspace {{WORKSPACE_EXCLUDE}}
-    echo "==> RAP Table I dump (#111, --release --include-ignored)"
-    cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture
     export QUONC=target/release/quonc
     for script in \
       test/verify/bell.py \
@@ -177,6 +175,14 @@ ci-rust: setup-python
     .venv/bin/python -m unittest python/test_quon_qec_sinter.py
     echo "==> python/test_quon_qec_benchmarks.py (#254 / ADR-0023)"
     .venv/bin/python -m unittest python/test_quon_qec_benchmarks.py
+
+# RAP Table I dump (#111, --release --include-ignored). Local-only: the
+# routing-aware A* search peaks ~17.5 GB RSS, which OOMs GitHub's 16 GB hosted
+# runners (systemd-oomd SIGTERM, exit 143). The cheap preflight variant of this
+# test runs un-ignored in the ordinary workspace suite, so CI still pins the
+# gate/layer counts — only the slow metrics dump is local.
+rap-table-i:
+    cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture
 
 # quonfmt · quonlint · LSP smoke on CI corpus
 ci-tooling: _tooling-build

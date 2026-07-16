@@ -25,9 +25,14 @@ fn na_target() -> PathBuf {
 }
 
 fn temp_json_path(label: &str) -> PathBuf {
+    // Tests in this binary run as parallel threads of one process, and several call
+    // `emit_na_schedule` concurrently — the pid alone is shared, and the delete-after-use
+    // below would race another thread's write/read. A per-call counter keeps paths unique.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     std::env::temp_dir().join(format!(
-        "quon-na-showcase-192-{label}-{}.json",
-        std::process::id()
+        "quon-na-showcase-192-{label}-{}-{}.json",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ))
 }
 
@@ -49,8 +54,7 @@ fn emit_na_schedule(source: &PathBuf, extra_args: &[&str]) -> (std::process::Out
     let json = if output.status.success() {
         let text = std::fs::read_to_string(&report_path)
             .unwrap_or_else(|e| panic!("read schedule {}: {e}", report_path.display()));
-        serde_json::from_str(&text)
-            .unwrap_or_else(|e| panic!("parse schedule JSON: {e}\n{text}"))
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse schedule JSON: {e}\n{text}"))
     } else {
         Value::Null
     };
@@ -143,18 +147,29 @@ fn placer_headline_numbers_match_readme() {
     let qaoa = workspace_path("../test/na/qaoa_graph.qn");
     let ising = workspace_path("../test/na/ising.qn");
 
-    let (_, qaoa_agnostic) =
-        emit_na_schedule(&qaoa, &["--na-backend", "zoned", "--na-placer", "routing-agnostic"]);
-    let (_, qaoa_aware) =
-        emit_na_schedule(&qaoa, &["--na-backend", "zoned", "--na-placer", "routing-aware"]);
-    let (_, ising_agnostic) =
-        emit_na_schedule(&ising, &["--na-backend", "zoned", "--na-placer", "routing-agnostic"]);
-    let (_, ising_aware) =
-        emit_na_schedule(&ising, &["--na-backend", "zoned", "--na-placer", "routing-aware"]);
+    let (_, qaoa_agnostic) = emit_na_schedule(
+        &qaoa,
+        &["--na-backend", "zoned", "--na-placer", "routing-agnostic"],
+    );
+    let (_, qaoa_aware) = emit_na_schedule(
+        &qaoa,
+        &["--na-backend", "zoned", "--na-placer", "routing-aware"],
+    );
+    let (_, ising_agnostic) = emit_na_schedule(
+        &ising,
+        &["--na-backend", "zoned", "--na-placer", "routing-agnostic"],
+    );
+    let (_, ising_aware) = emit_na_schedule(
+        &ising,
+        &["--na-backend", "zoned", "--na-placer", "routing-aware"],
+    );
 
     let m = &qaoa_agnostic["metrics"];
     assert_eq!(m["estimated_cycles"], 34, "qaoa agnostic: {qaoa_agnostic}");
-    assert_eq!(m["rearrangement_steps"], 8, "qaoa agnostic: {qaoa_agnostic}");
+    assert_eq!(
+        m["rearrangement_steps"], 8,
+        "qaoa agnostic: {qaoa_agnostic}"
+    );
     assert_eq!(m["trap_transfers"], 22, "qaoa agnostic: {qaoa_agnostic}");
     assert_eq!(m["total_time_us"], 1640, "qaoa agnostic: {qaoa_agnostic}");
 
@@ -166,12 +181,30 @@ fn placer_headline_numbers_match_readme() {
 
     let agnostic_m = &ising_agnostic["metrics"];
     let aware_m = &ising_aware["metrics"];
-    assert_eq!(agnostic_m["estimated_cycles"], 37, "ising agnostic: {ising_agnostic}");
-    assert_eq!(agnostic_m["rearrangement_steps"], 9, "ising agnostic: {ising_agnostic}");
-    assert_eq!(agnostic_m["trap_transfers"], 20, "ising agnostic: {ising_agnostic}");
-    assert_eq!(agnostic_m["total_time_us"], 2206, "ising agnostic: {ising_agnostic}");
-    assert_eq!(aware_m["estimated_cycles"], 37, "ising aware: {ising_aware}");
-    assert_eq!(aware_m["rearrangement_steps"], 9, "ising aware: {ising_aware}");
+    assert_eq!(
+        agnostic_m["estimated_cycles"], 37,
+        "ising agnostic: {ising_agnostic}"
+    );
+    assert_eq!(
+        agnostic_m["rearrangement_steps"], 9,
+        "ising agnostic: {ising_agnostic}"
+    );
+    assert_eq!(
+        agnostic_m["trap_transfers"], 20,
+        "ising agnostic: {ising_agnostic}"
+    );
+    assert_eq!(
+        agnostic_m["total_time_us"], 2206,
+        "ising agnostic: {ising_agnostic}"
+    );
+    assert_eq!(
+        aware_m["estimated_cycles"], 37,
+        "ising aware: {ising_aware}"
+    );
+    assert_eq!(
+        aware_m["rearrangement_steps"], 9,
+        "ising aware: {ising_aware}"
+    );
     assert_eq!(aware_m["trap_transfers"], 20, "ising aware: {ising_aware}");
     assert_eq!(aware_m["total_time_us"], 2245, "ising aware: {ising_aware}");
 

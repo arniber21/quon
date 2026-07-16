@@ -1,4 +1,4 @@
-use frontend::ast::Decl;
+use frontend::ast::{Decl, Kind, TypeParam};
 use frontend::lexer::Sp;
 
 use crate::doc::Doc;
@@ -24,6 +24,7 @@ fn print_decl(d: &Decl, ctx: &mut Context<'_>) -> Doc {
     match d {
         Decl::Fn {
             name,
+            type_params,
             params,
             ret,
             body,
@@ -45,6 +46,7 @@ fn print_decl(d: &Decl, ctx: &mut Context<'_>) -> Doc {
             ]));
             Doc::group(Doc::concat([
                 Doc::text(format!("fn {}", name.0)),
+                type_params_doc(type_params),
                 params_doc,
                 Doc::text(": "),
                 ty::print_ty(ret, ctx),
@@ -52,27 +54,30 @@ fn print_decl(d: &Decl, ctx: &mut Context<'_>) -> Doc {
                 expr::print_expr(body, ctx, expr::Prec::Top),
             ]))
         }
-        Decl::TypeAlias { name, params, ty } => {
-            let head = if params.is_empty() {
-                format!("type {}", name.0)
-            } else {
-                format!(
-                    "type {}<{}>",
-                    name.0,
-                    params
-                        .iter()
-                        .map(|p| p.0.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            };
-            Doc::group(Doc::concat([
-                Doc::text(head),
-                Doc::text(" = "),
-                ty::print_ty(ty, ctx),
-            ]))
-        }
+        Decl::TypeAlias { name, params, ty } => Doc::group(Doc::concat([
+            Doc::text(format!("type {}", name.0)),
+            type_params_doc(params),
+            Doc::text(" = "),
+            ty::print_ty(ty, ctx),
+        ])),
     }
+}
+
+/// `<F: CodeFamily, d: Nat>` (or nothing when empty). A bare param (`kind: None`)
+/// stays bare — `Kind::Nat` is the parser default, so re-printing is idempotent.
+fn type_params_doc(params: &[TypeParam]) -> Doc {
+    if params.is_empty() {
+        return Doc::nil();
+    }
+    let docs: Vec<Doc> = params
+        .iter()
+        .map(|p| match &p.kind {
+            None => Doc::text(p.name.0.clone()),
+            Some((Kind::Nat, _)) => Doc::text(format!("{}: Nat", p.name.0)),
+            Some((Kind::CodeFamily, _)) => Doc::text(format!("{}: CodeFamily", p.name.0)),
+        })
+        .collect();
+    Doc::concat([Doc::text("<"), comma_sep(docs), Doc::text(">")])
 }
 
 fn comma_sep(items: Vec<Doc>) -> Doc {

@@ -30,10 +30,7 @@ fn python() -> Command {
 #[test]
 fn repetition_d3_emits_qec_json_and_sibling_stim() {
     let source = workspace_path("../examples/na_qec/repetition_d3_memory.qn");
-    let dir = std::env::temp_dir().join(format!(
-        "quon-qec-255-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("quon-qec-255-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmpdir");
     let json_path = dir.join("repetition_d3.qec.json");
@@ -55,7 +52,11 @@ fn repetition_d3_emits_qec_json_and_sibling_stim() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(json_path.is_file(), "missing {}", json_path.display());
-    assert!(stim_path.is_file(), "missing sibling {}", stim_path.display());
+    assert!(
+        stim_path.is_file(),
+        "missing sibling {}",
+        stim_path.display()
+    );
 
     let json_text = std::fs::read_to_string(&json_path).expect("read json");
     let doc: Value =
@@ -71,7 +72,10 @@ fn repetition_d3_emits_qec_json_and_sibling_stim() {
     assert_eq!(doc["stim_file"], "repetition_d3.stim");
     assert!(doc["error_model"]["rydberg"].as_f64().unwrap() > 0.0);
     assert_eq!(doc["check_graph"]["check_atoms"], serde_json::json!([1, 3]));
-    assert_eq!(doc["check_graph"]["data_atoms"], serde_json::json!([0, 2, 4]));
+    assert_eq!(
+        doc["check_graph"]["data_atoms"],
+        serde_json::json!([0, 2, 4])
+    );
     assert!(doc["na_refs"].as_array().unwrap().len() >= 4);
 
     // na_refs barrier_cycle set on memory rounds and matches count.
@@ -108,7 +112,10 @@ fn repetition_d3_emits_qec_json_and_sibling_stim() {
     let loaded: quon_qec::QecExperiment =
         serde_json::from_value(doc).expect("strict DTO load of emitted JSON");
     assert_eq!(loaded.distance, 3);
-    assert_eq!(loaded.logical_observables[0].basis, quon_qec::LogicalBasis::Z);
+    assert_eq!(
+        loaded.logical_observables[0].basis,
+        quon_qec::LogicalBasis::Z
+    );
 
     let stim = std::fs::read_to_string(&stim_path).expect("read stim");
     assert!(stim.contains("DETECTOR"), "{stim}");
@@ -166,10 +173,7 @@ print(f"ok detectors={{c.num_detectors}} observables={{c.num_observables}}")
 #[test]
 fn surface_d3_emits_qec_json_and_sibling_stim() {
     let source = workspace_path("../examples/na_qec/surface_d3_memory.qn");
-    let dir = std::env::temp_dir().join(format!(
-        "quon-qec-249-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("quon-qec-249-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmpdir");
     let json_path = dir.join("surface_d3.qec.json");
@@ -191,7 +195,11 @@ fn surface_d3_emits_qec_json_and_sibling_stim() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(json_path.is_file(), "missing {}", json_path.display());
-    assert!(stim_path.is_file(), "missing sibling {}", stim_path.display());
+    assert!(
+        stim_path.is_file(),
+        "missing sibling {}",
+        stim_path.display()
+    );
 
     let json_text = std::fs::read_to_string(&json_path).expect("read json");
     let doc: Value =
@@ -202,11 +210,16 @@ fn surface_d3_emits_qec_json_and_sibling_stim() {
     assert_eq!(doc["distance"], 3);
     assert_eq!(doc["rounds"], 2);
     assert_eq!(doc["check_graph"]["atoms"].as_array().unwrap().len(), 17);
-    assert_eq!(doc["check_graph"]["check_atoms"].as_array().unwrap().len(), 8);
-    assert_eq!(doc["logical_observables"][0]["atoms"], serde_json::json!([0, 1, 2]));
+    assert_eq!(
+        doc["check_graph"]["check_atoms"].as_array().unwrap().len(),
+        8
+    );
+    assert_eq!(
+        doc["logical_observables"][0]["atoms"],
+        serde_json::json!([0, 1, 2])
+    );
 
-    let loaded: quon_qec::QecExperiment =
-        serde_json::from_value(doc).expect("strict DTO load");
+    let loaded: quon_qec::QecExperiment = serde_json::from_value(doc).expect("strict DTO load");
     assert_eq!(loaded.family, "surface");
     assert_eq!(
         loaded
@@ -270,19 +283,15 @@ print(f"ok detectors={{c.num_detectors}} observables={{c.num_observables}}")
 #[test]
 fn emit_qec_experiment_fails_without_error_model() {
     let source = workspace_path("../examples/na_qec/repetition_d3_memory.qn");
-    let mut target: Value = serde_json::from_str(
-        &std::fs::read_to_string(na_target()).expect("read target"),
-    )
-    .expect("parse target");
+    let mut target: Value =
+        serde_json::from_str(&std::fs::read_to_string(na_target()).expect("read target"))
+            .expect("parse target");
     target
         .as_object_mut()
         .expect("object")
         .remove("error_model");
 
-    let dir = std::env::temp_dir().join(format!(
-        "quon-qec-255-no-em-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("quon-qec-255-no-em-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmpdir");
     let target_path = dir.join("no_error_model.json");
@@ -318,10 +327,7 @@ fn emit_qec_experiment_fails_without_error_model() {
 #[test]
 fn emit_qec_experiment_fails_for_non_qec_program() {
     let source = workspace_path("../test/na/bell.qn");
-    let dir = std::env::temp_dir().join(format!(
-        "quon-qec-255-non-qec-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("quon-qec-255-non-qec-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmpdir");
     let json_path = dir.join("bell.qec.json");
@@ -379,10 +385,7 @@ fn error_model_snapshot_matches_backend_alias() {
 #[test]
 fn surface_d3_cx_emits_qec_json_and_sibling_stim() {
     let source = workspace_path("../examples/na_qec/surface_d3_cx.qn");
-    let dir = std::env::temp_dir().join(format!(
-        "quon-qec-250-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("quon-qec-250-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("tmpdir");
     let json_path = dir.join("surface_d3_cx.qec.json");
@@ -404,7 +407,11 @@ fn surface_d3_cx_emits_qec_json_and_sibling_stim() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(json_path.is_file(), "missing {}", json_path.display());
-    assert!(stim_path.is_file(), "missing sibling {}", stim_path.display());
+    assert!(
+        stim_path.is_file(),
+        "missing sibling {}",
+        stim_path.display()
+    );
 
     let json_text = std::fs::read_to_string(&json_path).expect("read json");
     let doc: Value =
@@ -513,4 +520,3 @@ print(f"ok detectors={{c.num_detectors}} observables={{c.num_observables}}")
 
     let _ = std::fs::remove_dir_all(&dir);
 }
-

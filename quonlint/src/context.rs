@@ -186,6 +186,8 @@ pub fn walk_expr(
             walk_expr(ctx, b, visit);
         }
         Expr::Adjoint(e) | Expr::Controlled(e) | Expr::Ascribe(e, _) => walk_expr(ctx, e, visit),
+        // Type-level args are `NatExpr`s, not expressions — only the callee is walkable.
+        Expr::TypeApp { callee, .. } => walk_expr(ctx, callee, visit),
         Expr::GateApp { gate, qubits } => {
             walk_expr(ctx, gate, visit);
             walk_expr(ctx, qubits, visit);
