@@ -301,15 +301,16 @@ fn default_transfer_policy_is_quon_reuse() {
         "Quon reuse: return_home=false ⇒ 2 xfers/atom"
     );
     // B6: only return_home selects 2- vs 4-xfer; no transfers_per_moved_atom field.
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/movement.rs");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/movement/mod.rs");
     let src = fs::read_to_string(&path).expect("read");
     assert!(
         !src.contains("transfers_per_moved_atom"),
         "dead transfers_per_moved_atom must stay deleted"
     );
     assert!(
-        src.contains("Only [`MovementParams::return_home`] selects the 2- vs 4-transfer policy")
-            || src.contains("only `return_home` selects")
+        src.contains(
+            "Only [`types::MovementParams::return_home`] selects the 2- vs 4-transfer policy"
+        ) || src.contains("only `return_home` selects")
             || src.contains("This flag alone selects the 2- vs 4-transfer policy"),
         "docs must state return_home selects transfer policy"
     );
@@ -317,8 +318,8 @@ fn default_transfer_policy_is_quon_reuse() {
 
 #[test]
 fn docs_do_not_claim_enola_duals() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/movement.rs");
-    let src = fs::read_to_string(&path).expect("read movement.rs");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/movement/mod.rs");
+    let src = fs::read_to_string(&path).expect("read movement/mod.rs");
     assert!(
         !src.contains("implements Enola Sec. 5 sortIS dual selection"),
         "forbidden Enola dual-selection claim"

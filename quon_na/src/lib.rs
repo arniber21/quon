@@ -40,6 +40,7 @@ pub mod dialect;
 pub mod entangling_schedule;
 #[cfg(feature = "mlir")]
 pub mod extract;
+pub mod geometry;
 pub mod graph;
 pub mod layout;
 #[cfg(feature = "mlir")]
