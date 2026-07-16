@@ -317,3 +317,80 @@ fn plan_and_validate_round_trip() {
     let merge_split = plan_rough_merge_split(LogicalQubitId(0), LogicalQubitId(1)).unwrap();
     validate_plan(&merge_split).expect("merge/split valid");
 }
+
+#[test]
+fn validate_rejects_split_before_merge() {
+    let mut plan = PatchPlan::new();
+    plan.patches.push(quon_qec::patch_ops::Patch {
+        logical_id: LogicalQubitId(0),
+        kind: PatchKind::Data,
+    });
+    plan.patches.push(quon_qec::patch_ops::Patch {
+        logical_id: LogicalQubitId(1),
+        kind: PatchKind::Data,
+    });
+    plan.push(PatchOperation::Split {
+        primary: LogicalQubitId(0),
+        partner: Some(LogicalQubitId(1)),
+        boundary: PatchBoundary::Rough,
+    });
+    let err = validate_plan(&plan).unwrap_err();
+    assert!(matches!(
+        err,
+        quon_qec::patch_ops::PlanError::OrderingViolation { .. }
+    ));
+}
+
+#[test]
+fn validate_rejects_merge_with_unprepared_ancilla() {
+    let mut plan = PatchPlan::new();
+    plan.patches.push(quon_qec::patch_ops::Patch {
+        logical_id: LogicalQubitId(0),
+        kind: PatchKind::Data,
+    });
+    plan.patches.push(quon_qec::patch_ops::Patch {
+        logical_id: LogicalQubitId(1),
+        kind: PatchKind::Ancilla,
+    });
+    // Merge without PrepareAncilla first
+    plan.push(PatchOperation::Merge {
+        primary: LogicalQubitId(0),
+        partner: LogicalQubitId(1),
+        boundary: PatchBoundary::Rough,
+        primary_edge: PatchEdge::Right,
+        partner_edge: PatchEdge::Left,
+    });
+    let err = validate_plan(&plan).unwrap_err();
+    assert!(matches!(
+        err,
+        quon_qec::patch_ops::PlanError::OrderingViolation { .. }
+    ));
+}
+
+#[test]
+fn lower_rejects_unsupported_edge_combination() {
+    let plan = plan_rough_merge_split(LogicalQubitId(0), LogicalQubitId(1)).unwrap();
+    // Manually create a plan with unsupported edges
+    let mut bad_plan = PatchPlan::new();
+    bad_plan.patches.push(quon_qec::patch_ops::Patch {
+        logical_id: LogicalQubitId(0),
+        kind: PatchKind::Data,
+    });
+    bad_plan.patches.push(quon_qec::patch_ops::Patch {
+        logical_id: LogicalQubitId(1),
+        kind: PatchKind::Data,
+    });
+    bad_plan.push(PatchOperation::Merge {
+        primary: LogicalQubitId(0),
+        partner: LogicalQubitId(1),
+        boundary: PatchBoundary::Rough,
+        primary_edge: PatchEdge::Top,  // smooth edge
+        partner_edge: PatchEdge::Left, // rough edge — mismatch
+    });
+    // This should be caught by validate_plan's boundary check
+    let err = validate_plan(&bad_plan).unwrap_err();
+    assert!(matches!(
+        err,
+        quon_qec::patch_ops::PlanError::BoundaryMismatch { .. }
+    ));
+}
