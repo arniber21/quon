@@ -3,6 +3,10 @@
 //! Compiles each benchmark with quonc and checks that the resource report
 //! contains the expected comparable metrics. The non-Clifford placeholder
 //! is skipped until #283 lands.
+//!
+//! These tests are `#[ignore]` because they shell out to `quonc` (MLIR
+//! compilation is slow). Run them via `cargo test -- --include-ignored`
+//! or the tooling CI job, matching the LSP smoke test pattern.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -52,6 +56,7 @@ fn check_metric(report: &str, field: &str) -> u64 {
 }
 
 #[test]
+#[ignore = "benchmark smoke tests require quonc subprocess; run with --include-ignored"]
 fn benchmark_surface_d3_memory_compiles() {
     let report = compile_benchmark("samples/neutral-atom/benchmarks/surface_d3_memory.qn");
     assert!(check_metric(&report, "rydberg_stages") > 0);
@@ -60,6 +65,7 @@ fn benchmark_surface_d3_memory_compiles() {
 }
 
 #[test]
+#[ignore = "benchmark smoke tests require quonc subprocess; run with --include-ignored"]
 fn benchmark_surface_d3_measure_compiles() {
     let report = compile_benchmark("samples/neutral-atom/benchmarks/surface_d3_measure.qn");
     assert!(check_metric(&report, "rydberg_stages") > 0);
@@ -67,6 +73,7 @@ fn benchmark_surface_d3_measure_compiles() {
 }
 
 #[test]
+#[ignore = "benchmark smoke tests require quonc subprocess; run with --include-ignored"]
 fn benchmark_surface_d3_cx_compiles() {
     let report = compile_benchmark("samples/neutral-atom/benchmarks/surface_d3_cx.qn");
     assert!(check_metric(&report, "rydberg_stages") > 0);
@@ -74,6 +81,7 @@ fn benchmark_surface_d3_cx_compiles() {
 }
 
 #[test]
+#[ignore = "benchmark smoke tests require quonc subprocess; run with --include-ignored"]
 fn benchmark_surface_d3_ghz_compiles() {
     let report = compile_benchmark("samples/neutral-atom/benchmarks/surface_d3_ghz.qn");
     assert!(check_metric(&report, "rydberg_stages") > 0);
@@ -81,6 +89,7 @@ fn benchmark_surface_d3_ghz_compiles() {
 }
 
 #[test]
+#[ignore = "benchmark smoke tests require quonc subprocess; run with --include-ignored"]
 fn benchmark_cx_has_more_rydberg_stages_than_memory() {
     let memory = compile_benchmark("samples/neutral-atom/benchmarks/surface_d3_memory.qn");
     let cx = compile_benchmark("samples/neutral-atom/benchmarks/surface_d3_cx.qn");
@@ -93,6 +102,7 @@ fn benchmark_cx_has_more_rydberg_stages_than_memory() {
 }
 
 #[test]
+#[ignore = "benchmark smoke tests require quonc subprocess; run with --include-ignored"]
 fn benchmark_ghz_has_more_stages_than_cx() {
     let cx = compile_benchmark("samples/neutral-atom/benchmarks/surface_d3_cx.qn");
     let ghz = compile_benchmark("samples/neutral-atom/benchmarks/surface_d3_ghz.qn");
