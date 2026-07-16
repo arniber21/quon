@@ -81,6 +81,12 @@ cargo run -p quonc -- test/na/bell.qn \
   --emit-resource-report
 ```
 
+For the QEC-aware neutral-atom path, see the
+[neutral-atom FT compiler demo](website/src/content/docs/guides/neutral-atom-ft-demo.md).
+It compiles a typed surface-code logical CX into verified `quantum.na` schedule
+IR, QEC experiment JSON, a sibling Stim artifact, and an analytic resource
+report.
+
 ## Install and Build
 
 ### Recommended contributor setup
