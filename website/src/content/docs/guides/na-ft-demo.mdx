@@ -57,12 +57,16 @@ The linear typechecker threads each `QecBlock<Surface, 3>` value through the
 memory rounds, `logical_cx`, and measurements — the same static resource
 discipline the fixed gate-model path uses, applied to logical patches.
 
-## 2. Emitted schedule / IR
+## 2. Emitted schedule / IR excerpt
 
 The neutral-atom schedule view (`--emit-na-schedule`) is a large document — 272
 cycle layers of trap transfers, rearrangement, Rydberg entangling stages, and
 measurement rounds. Its `meta` + `metrics` envelope is the compact summary
-(canonical schedule IR is `quantum.na`, available via `--emit-na-mlir`):
+(canonical schedule IR is `quantum.na`, available via `--emit-na-mlir`). The
+`metrics` object below is a **hand-picked subset** — the real report also
+carries timing keys (`rearrangement_time_us`, `transfer_time_us`,
+`total_time_us`, …), `reset_rounds`, `evidence_disclaimer`, and a nested
+`error_budget` (see §3), all elided here with `...`:
 
 ```json
 {
@@ -88,7 +92,9 @@ measurement rounds. Its `meta` + `metrics` envelope is the compact summary
     "code_family": "surface_code_like",
     "distance": 3,
     "memory_rounds": 2
+    // ... timing (*_time_us), reset_rounds, evidence_disclaimer, error_budget
   }
+  // ... "zones", "layout", and 272 "layers" elided
 }
 ```
 
@@ -166,6 +172,11 @@ schedule cross-references (`na_refs`), and the target error model:
   "distance": 3,
   "rounds": 2,
   "logical_ids": [0, 1, 2],
+  // ... "check_graph", "measurement_schedule", "atom_site_map" elided
+  "logical_observables": [
+    {"id": 0, "logical_id": 0, "basis": "z", "atoms": [0, 1, 2]}
+    // ... one more observable for logical_id 1 (target patch)
+  ],
   "error_model": {
     "rydberg": 0.002,
     "measurement": 0.003,
@@ -174,7 +185,8 @@ schedule cross-references (`na_refs`), and the target error model:
     "transfer": 0.0007,
     "idle_per_us": 2e-09
   },
-  "stim_file": "demo.stim"
+  "na_refs": [ /* schedule cross-references, excerpted in the next block */ ],
+  "stim_file": "na-ft-demo.stim"
 }
 ```
 
@@ -185,8 +197,10 @@ schedule, including the lattice-surgery merge/split rounds with their
 ```json
 [
   {"round_index": 0, "kind": "construct", "logical_id": 0},
+  // ... round_index 1 elided (non-contiguous excerpt)
   {"round_index": 2, "kind": "memory_round", "logical_id": 0, "barrier_cycle": 84},
   {"round_index": 3, "kind": "memory_round", "logical_id": 1, "barrier_cycle": 166}
+  // ... merge/split/frame_update and measure_logical refs elided
 ]
 ```
 
