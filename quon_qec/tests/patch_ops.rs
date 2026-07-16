@@ -369,7 +369,6 @@ fn validate_rejects_merge_with_unprepared_ancilla() {
 
 #[test]
 fn lower_rejects_unsupported_edge_combination() {
-    let plan = plan_rough_merge_split(LogicalQubitId(0), LogicalQubitId(1)).unwrap();
     // Manually create a plan with unsupported edges
     let mut bad_plan = PatchPlan::new();
     bad_plan.patches.push(quon_qec::patch_ops::Patch {

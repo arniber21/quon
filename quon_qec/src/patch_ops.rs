@@ -439,7 +439,7 @@ pub fn validate_plan(plan: &PatchPlan) -> Result<(), PlanError> {
                 }
                 // Ordering: split must have a matching merge before it.
                 let has_match = seen_merges.iter().any(|(mp, mq, mb)| {
-                    *mp == *primary && partner.map_or(true, |par| *mq == par) && *mb == *boundary
+                    *mp == *primary && partner.is_none_or(|par| *mq == par) && *mb == *boundary
                 });
                 if !has_match {
                     return Err(PlanError::OrderingViolation {
