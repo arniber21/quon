@@ -70,8 +70,13 @@ GOLDEN_ERROR_MODEL = {
     "transfer": 0.02,
     "idle_per_us": 1e-4,
 }
-# Golden logical_failures for MINIMAL_REP_STIM + GOLDEN_ERROR_MODEL, shots=32, seed=7.
-GOLDEN_MINIMAL_LOGICAL_FAILURES = 4
+# Band for MINIMAL_REP_STIM + GOLDEN_ERROR_MODEL, shots=32, seed=7. The exact
+# fixed-seed count is architecture-sensitive (stim's vectorized sampling varies
+# with SIMD width: 4 on arm64, differs on x86_64 CI), so pin a band — nonzero
+# proves noise injection, well under half the shots proves decoding beats
+# chance. Same-machine determinism is asserted in the deterministic tests.
+GOLDEN_MINIMAL_FAILURES_MIN = 1
+GOLDEN_MINIMAL_FAILURES_MAX = 8
 
 ERROR_MODEL = {
     "rydberg": 0.01,
@@ -348,7 +353,8 @@ class ScaleAndSampleTests(unittest.TestCase):
             stim_mod.Circuit(MINIMAL_REP_STIM), GOLDEN_ERROR_MODEL
         )
         sample = harness.sample_logical_failures(noisy, shots=32, seed=7)
-        self.assertEqual(sample.logical_failures, GOLDEN_MINIMAL_LOGICAL_FAILURES)
+        self.assertGreaterEqual(sample.logical_failures, GOLDEN_MINIMAL_FAILURES_MIN)
+        self.assertLessEqual(sample.logical_failures, GOLDEN_MINIMAL_FAILURES_MAX)
 
     def test_main_catches_value_error_as_exit_one(self) -> None:
         # Force a HarnessError path via invalid tick_us through CLI.
