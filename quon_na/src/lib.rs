@@ -52,6 +52,7 @@ pub mod qec_schedule;
 pub mod report;
 pub mod schedule;
 pub mod schedule_entry;
+pub mod schedule_invariants;
 pub mod schedule_view;
 pub mod zoned;
 
@@ -98,6 +99,7 @@ pub use schedule::{
     ScheduleError, ScheduleLayer, TransferDirection, TrapTransfer,
 };
 pub use schedule_entry::{GraphScheduleRequest, ScheduleFromGraphError, schedule_from_graph};
+pub use schedule_invariants::{cycle_is_monotonic, wait_barrier_ok};
 pub use schedule_view::{
     NA_SCHEDULE_VIEW_KIND, NA_SCHEDULE_VIEW_VERSION, NaScheduleView, NaScheduleViewMeta,
     ScheduleViewZone,
