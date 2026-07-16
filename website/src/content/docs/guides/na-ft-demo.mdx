@@ -151,6 +151,8 @@ error-budget contributions (`rate × schedule count`) — not sampled results:
 | Category | Contribution (rate × count) |
 | --- | ---: |
 | Rydberg | 0.048 |
+| Measurement | 0.027 |
+| Reset | 0.024 |
 | Transfer | 0.168 |
 | Movement | 0.036 |
 | Idle | 1.6e-8 |
@@ -218,9 +220,11 @@ fuses them into a single claim (ADR-0020):
   injects noise and decodes. Run it on the emitted experiment:
 
   ```bash
-  devbox run -- python python/quon_qec_sinter.py /tmp/na-ft-demo.qec.json \
+  devbox run -- .venv/bin/python python/quon_qec_sinter.py /tmp/na-ft-demo.qec.json \
     --shots 10000 --seed 7 --csv /tmp/na-ft-demo.sinter.csv
   ```
+
+  (Requires `devbox run -- just setup-python` once to install Stim/Sinter into `.venv`.)
 
 Analytic estimates and sampled logical failure rates are **different kinds of
 evidence**, and **neither is a threshold claim**. Readers may place the files
