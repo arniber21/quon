@@ -450,6 +450,93 @@ class SampleAndCsvTests(unittest.TestCase):
         self.assertEqual(rows[0].logical_failures, 0)
 
 
+class WilsonAndFingerprintTests(unittest.TestCase):
+    """Deterministic helpers for the sampled-evidence JSON (no Stim needed)."""
+
+    def test_wilson_interval_zero_failures(self) -> None:
+        low, high = harness.wilson_interval(0, 32)
+        self.assertAlmostEqual(low, 0.0)
+        self.assertGreaterEqual(low, 0.0)
+        self.assertGreater(high, 0.0)
+        self.assertLessEqual(high, 1.0)
+
+    def test_wilson_interval_brackets_point_estimate(self) -> None:
+        low, high = harness.wilson_interval(4, 32)
+        p = 4 / 32
+        self.assertLessEqual(low, p)
+        self.assertGreaterEqual(high, p)
+        self.assertGreaterEqual(low, 0.0)
+        self.assertLessEqual(high, 1.0)
+
+    def test_wilson_interval_zero_shots(self) -> None:
+        self.assertEqual(harness.wilson_interval(0, 0), (0.0, 0.0))
+
+    def test_wilson_interval_rejects_bad_level(self) -> None:
+        with self.assertRaises(harness.HarnessError):
+            harness.wilson_interval(1, 8, level=1.5)
+
+    def test_experiment_sha256_matches_manual(self) -> None:
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = _write_experiment(Path(tmp))
+            expected = hashlib.sha256(json_path.read_bytes()).hexdigest()
+            self.assertEqual(harness.experiment_sha256(json_path), expected)
+
+
+@unittest.skipUnless(HAS_STIM_STACK, "requires stim/sinter/pymatching (python/requirements.txt)")
+class SampledDocumentTests(unittest.TestCase):
+    def test_build_sampled_document_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = _write_experiment(Path(tmp))
+            doc = harness.build_sampled_document(
+                [json_path],
+                shots_list=[16],
+                seed=7,
+                decoder="pymatching",
+                confidence_level=0.95,
+            )
+            self.assertEqual(doc["schema_version"], harness.SAMPLED_SCHEMA_VERSION)
+            self.assertEqual(doc["evidence_kind"], "sampled")
+            self.assertIn("not a threshold claim", doc["disclaimer"].lower())
+            self.assertEqual(doc["decoder"], "pymatching")
+            self.assertEqual(doc["seed"], 7)
+            self.assertEqual(doc["confidence_level"], 0.95)
+            self.assertEqual(len(doc["experiments"]), 1)
+            exp = doc["experiments"][0]
+            self.assertEqual(exp["distance"], 3)
+            self.assertEqual(exp["rounds"], 1)
+            self.assertEqual(exp["family"], "repetition")
+            self.assertEqual(exp["code_family"], "repetition_code_toy")
+            self.assertEqual(
+                exp["experiment_sha256"], harness.experiment_sha256(json_path)
+            )
+            self.assertEqual(len(exp["results"]), 1)
+            result = exp["results"][0]
+            self.assertEqual(result["shots"], 16)
+            self.assertEqual(result["error_scale"], 1.0)
+            self.assertIn("rydberg", result["noise_model"])
+            self.assertIn("logical_failures", result)
+            self.assertIn("logical_failure_rate", result)
+            ci = result["confidence_interval"]
+            self.assertEqual(ci["method"], "wilson")
+            self.assertEqual(ci["level"], 0.95)
+            self.assertLessEqual(ci["low"], ci["high"])
+
+    def test_cli_json_output_writes_document(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = _write_experiment(Path(tmp))
+            out = Path(tmp) / "sampled.json"
+            rc = harness.main(
+                [str(json_path), "--shots", "16", "--seed", "7", "--json", str(out)]
+            )
+            self.assertEqual(rc, 0)
+            self.assertTrue(out.is_file())
+            doc = json.loads(out.read_text())
+            self.assertEqual(doc["evidence_kind"], "sampled")
+            self.assertEqual(len(doc["experiments"]), 1)
+
+
 @unittest.skipUnless(HAS_STIM_STACK, "requires stim/sinter/pymatching (python/requirements.txt)")
 class HelpAndCliTests(unittest.TestCase):
     def test_help_documents_sweeps_and_local_runs(self) -> None:
