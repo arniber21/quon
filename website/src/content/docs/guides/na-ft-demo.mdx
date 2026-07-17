@@ -228,7 +228,10 @@ fuses them into a single claim (ADR-0020):
 
 Analytic estimates and sampled logical failure rates are **different kinds of
 evidence**, and **neither is a threshold claim**. Readers may place the files
-side by side; the compiler will not merge them.
+side by side. An optional third artifact —
+`quonc --emit-qec-validation` — can place labeled analytic and sampled sections
+in one validation report without mutating the primary `ResourceReport` DTO
+(ADR-0020 amendment #280); it is still not a threshold claim.
 
 ## Current limitations
 
@@ -237,9 +240,10 @@ This demo is deliberately scoped. What it does **not** do:
 - **No threshold claim.** Neither the analytic report nor any sampled Sinter
   run on this page asserts an error-correction threshold.
 - **Scoped lattice surgery.** The logical CX is a simplified Horsman-style
-  three-patch gadget at `d = 3` (ADR-0019). There is no general
-  lattice-surgery router or arbitrary patch placement, and the geometric seam
-  schedule alone is not a Stim-equivalent FT-distance claim.
+  three-patch gadget at `d = 3` (ADR-0019), lowered through a scoped
+  patch-operation planner with fixed L-shaped geometry. There is no general
+  patch router or arbitrary patch placement, and the geometric seam schedule
+  alone is not a Stim-equivalent FT-distance claim.
 - **Scoped surface-code schedule.** The end-to-end path is validated for the
   distance-3 surface code; other odd distances are expected to extend but are
   not part of this verified slice.

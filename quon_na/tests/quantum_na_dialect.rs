@@ -100,7 +100,7 @@ fn registration_is_idempotent_and_panic_free() {
     let context = context();
     qna::register_dialect(&context);
     assert!(context.allow_unregistered_dialects());
-    assert_eq!(qna::OPS.len(), 11);
+    assert_eq!(qna::OPS.len(), 12);
 }
 
 #[test]
@@ -844,6 +844,447 @@ fn verifier_rejects_malformed_move_payload() {
             ..
         })
     ));
+}
+
+// ===========================================================================
+// Issue #282: measure → reset → reuse verifier tests
+// ===========================================================================
+
+/// Build a minimal valid schedule with a measure→reset→reuse lifecycle for
+/// atom `a` across cycles 0, 1, 2, plus an entangle using the reused atom at
+/// cycle 3.
+fn reuse_schedule(atom_id: u32) -> ScheduleSpec {
+    ScheduleSpec {
+        target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
+        rydberg_range_um: 7.5,
+        min_rydberg_spacing_um: 18.75,
+        aod_min_separation_um: 2.0,
+        layers: vec![
+            LayerSpec {
+                cycle: 0,
+                actions: vec![ActionSpec::Measure {
+                    atom: atom_id,
+                    basis: "z".to_string(),
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 1,
+                actions: vec![ActionSpec::Reset {
+                    atom: atom_id,
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 2,
+                actions: vec![ActionSpec::Reuse {
+                    atom: atom_id,
+                    region: Some(0),
+                    duration_us: 5,
+                }],
+            },
+            LayerSpec {
+                cycle: 3,
+                actions: vec![ActionSpec::Entangle {
+                    pairs: vec![pair(atom(atom_id, 0.0, 0.0), atom(atom_id + 1, 6.0, 0.0))],
+                    duration_us: 1,
+                }],
+            },
+        ],
+    }
+}
+
+#[test]
+fn verifier_accepts_legal_reuse_after_measure_reset() {
+    // Criterion #5: legal reuse — measure at cycle 0, reset at cycle 1, reuse
+    // at cycle 2 (barrier completed across cycle boundaries), then entangle at
+    // cycle 3.
+    assert_eq!(verify_spec(&reuse_schedule(0)), Ok(()));
+}
+
+#[test]
+fn verifier_accepts_reuse_without_region_attribute() {
+    // `region` is optional; reuse without it must still verify if barriers hold.
+    let mut spec = reuse_schedule(0);
+    if let ActionSpec::Reuse { region, .. } = &mut spec.layers[2].actions[0] {
+        *region = None;
+    }
+    assert_eq!(verify_spec(&spec), Ok(()));
+}
+
+#[test]
+fn verifier_rejects_reuse_before_measure() {
+    // Criterion #5: reuse-before-measure — reuse an atom that was never
+    // measured.
+    let spec = ScheduleSpec {
+        target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
+        rydberg_range_um: 7.5,
+        min_rydberg_spacing_um: 18.75,
+        aod_min_separation_um: 2.0,
+        layers: vec![LayerSpec {
+            cycle: 0,
+            actions: vec![ActionSpec::Reuse {
+                atom: 0,
+                region: Some(0),
+                duration_us: 5,
+            }],
+        }],
+    };
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::ReuseBeforeMeasure {
+            atom: 0,
+            reuse_cycle: 0,
+        })
+    );
+}
+
+#[test]
+fn verifier_rejects_reuse_before_reset() {
+    // Criterion #5: reuse-before-reset — measure at cycle 0 but reuse at
+    // cycle 1 without an intervening reset.
+    let spec = ScheduleSpec {
+        target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
+        rydberg_range_um: 7.5,
+        min_rydberg_spacing_um: 18.75,
+        aod_min_separation_um: 2.0,
+        layers: vec![
+            LayerSpec {
+                cycle: 0,
+                actions: vec![ActionSpec::Measure {
+                    atom: 0,
+                    basis: "z".to_string(),
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 1,
+                actions: vec![ActionSpec::Reuse {
+                    atom: 0,
+                    region: Some(0),
+                    duration_us: 5,
+                }],
+            },
+        ],
+    };
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::ReuseBeforeReset {
+            atom: 0,
+            measure_cycle: 0,
+            reuse_cycle: 1,
+        })
+    );
+}
+
+#[test]
+fn verifier_rejects_reuse_same_cycle_as_reset() {
+    // Reset barrier has not completed across a cycle boundary — same-cycle
+    // reset+reuse must fail as ReuseBeforeReset.
+    let spec = ScheduleSpec {
+        target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
+        rydberg_range_um: 7.5,
+        min_rydberg_spacing_um: 18.75,
+        aod_min_separation_um: 2.0,
+        layers: vec![
+            LayerSpec {
+                cycle: 0,
+                actions: vec![ActionSpec::Measure {
+                    atom: 0,
+                    basis: "z".to_string(),
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 1,
+                actions: vec![
+                    ActionSpec::Reset {
+                        atom: 0,
+                        duration_us: 10,
+                    },
+                    ActionSpec::Reuse {
+                        atom: 0,
+                        region: Some(0),
+                        duration_us: 5,
+                    },
+                ],
+            },
+        ],
+    };
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::ReuseBeforeReset {
+            atom: 0,
+            measure_cycle: 0,
+            reuse_cycle: 1,
+        })
+    );
+}
+
+#[test]
+fn verifier_rejects_reuse_after_reset_without_measure() {
+    // Reset an atom that was never measured, then reuse it — there is no
+    // completed measurement barrier to reuse against.
+    let spec = ScheduleSpec {
+        target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
+        rydberg_range_um: 7.5,
+        min_rydberg_spacing_um: 18.75,
+        aod_min_separation_um: 2.0,
+        layers: vec![
+            LayerSpec {
+                cycle: 0,
+                actions: vec![ActionSpec::Reset {
+                    atom: 0,
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 1,
+                actions: vec![ActionSpec::Reuse {
+                    atom: 0,
+                    region: Some(0),
+                    duration_us: 5,
+                }],
+            },
+        ],
+    };
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::ReuseBeforeMeasure {
+            atom: 0,
+            reuse_cycle: 1,
+        })
+    );
+}
+
+#[test]
+fn verifier_rejects_stale_measurement_dependency() {
+    // Criterion #5: stale-measurement-dependency — measure→reset→reuse at
+    // cycles 0/1/2, then a second reuse at cycle 3 without a fresh
+    // measure→reset pair.
+    let spec = ScheduleSpec {
+        target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
+        rydberg_range_um: 7.5,
+        min_rydberg_spacing_um: 18.75,
+        aod_min_separation_um: 2.0,
+        layers: vec![
+            LayerSpec {
+                cycle: 0,
+                actions: vec![ActionSpec::Measure {
+                    atom: 0,
+                    basis: "z".to_string(),
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 1,
+                actions: vec![ActionSpec::Reset {
+                    atom: 0,
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 2,
+                actions: vec![ActionSpec::Reuse {
+                    atom: 0,
+                    region: Some(0),
+                    duration_us: 5,
+                }],
+            },
+            // Second reuse without fresh measure/reset → stale dependency.
+            LayerSpec {
+                cycle: 3,
+                actions: vec![ActionSpec::Reuse {
+                    atom: 0,
+                    region: Some(0),
+                    duration_us: 5,
+                }],
+            },
+        ],
+    };
+    assert_eq!(
+        verify_spec(&spec),
+        Err(VerifyError::StaleMeasurementDependency {
+            atom: 0,
+            previous_reuse_cycle: 2,
+            reuse_cycle: 3,
+        })
+    );
+}
+
+#[test]
+fn verifier_accepts_second_reuse_after_fresh_measure_reset() {
+    // After reuse, a fresh measure→reset→reuse cycle is legal.
+    let spec = ScheduleSpec {
+        target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
+        rydberg_range_um: 7.5,
+        min_rydberg_spacing_um: 18.75,
+        aod_min_separation_um: 2.0,
+        layers: vec![
+            // First lifecycle.
+            LayerSpec {
+                cycle: 0,
+                actions: vec![ActionSpec::Measure {
+                    atom: 0,
+                    basis: "z".to_string(),
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 1,
+                actions: vec![ActionSpec::Reset {
+                    atom: 0,
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 2,
+                actions: vec![ActionSpec::Reuse {
+                    atom: 0,
+                    region: Some(0),
+                    duration_us: 5,
+                }],
+            },
+            // Second lifecycle: fresh measure→reset→reuse.
+            LayerSpec {
+                cycle: 3,
+                actions: vec![ActionSpec::Measure {
+                    atom: 0,
+                    basis: "z".to_string(),
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 4,
+                actions: vec![ActionSpec::Reset {
+                    atom: 0,
+                    duration_us: 10,
+                }],
+            },
+            LayerSpec {
+                cycle: 5,
+                actions: vec![ActionSpec::Reuse {
+                    atom: 0,
+                    region: Some(1),
+                    duration_us: 5,
+                }],
+            },
+            // Use the reused atom in a later entangle.
+            LayerSpec {
+                cycle: 6,
+                actions: vec![ActionSpec::Entangle {
+                    pairs: vec![pair(atom(0, 0.0, 0.0), atom(1, 6.0, 0.0))],
+                    duration_us: 1,
+                }],
+            },
+        ],
+    };
+    assert_eq!(verify_spec(&spec), Ok(()));
+}
+
+#[test]
+fn verifier_accepts_multi_round_reuse_with_distinct_regions() {
+    // Two ancilla regions reused across rounds — each with a full
+    // measure→reset→reuse lifecycle.
+    let spec = ScheduleSpec {
+        target_id: "generic_reconfigurable_neutral_atom_v0".to_string(),
+        rydberg_range_um: 7.5,
+        min_rydberg_spacing_um: 18.75,
+        aod_min_separation_um: 2.0,
+        layers: vec![
+            // Round 1: measure both ancillae.
+            LayerSpec {
+                cycle: 0,
+                actions: vec![
+                    ActionSpec::Measure {
+                        atom: 0,
+                        basis: "z".to_string(),
+                        duration_us: 10,
+                    },
+                    ActionSpec::Measure {
+                        atom: 1,
+                        basis: "z".to_string(),
+                        duration_us: 10,
+                    },
+                ],
+            },
+            // Reset both ancillae.
+            LayerSpec {
+                cycle: 1,
+                actions: vec![
+                    ActionSpec::Reset {
+                        atom: 0,
+                        duration_us: 10,
+                    },
+                    ActionSpec::Reset {
+                        atom: 1,
+                        duration_us: 10,
+                    },
+                ],
+            },
+            // Reuse both into their respective regions.
+            LayerSpec {
+                cycle: 2,
+                actions: vec![
+                    ActionSpec::Reuse {
+                        atom: 0,
+                        region: Some(0),
+                        duration_us: 5,
+                    },
+                    ActionSpec::Reuse {
+                        atom: 1,
+                        region: Some(1),
+                        duration_us: 5,
+                    },
+                ],
+            },
+            // Round 2: measure both again (fresh round).
+            LayerSpec {
+                cycle: 3,
+                actions: vec![
+                    ActionSpec::Measure {
+                        atom: 0,
+                        basis: "z".to_string(),
+                        duration_us: 10,
+                    },
+                    ActionSpec::Measure {
+                        atom: 1,
+                        basis: "z".to_string(),
+                        duration_us: 10,
+                    },
+                ],
+            },
+            LayerSpec {
+                cycle: 4,
+                actions: vec![
+                    ActionSpec::Reset {
+                        atom: 0,
+                        duration_us: 10,
+                    },
+                    ActionSpec::Reset {
+                        atom: 1,
+                        duration_us: 10,
+                    },
+                ],
+            },
+            LayerSpec {
+                cycle: 5,
+                actions: vec![
+                    ActionSpec::Reuse {
+                        atom: 0,
+                        region: Some(0),
+                        duration_us: 5,
+                    },
+                    ActionSpec::Reuse {
+                        atom: 1,
+                        region: Some(1),
+                        duration_us: 5,
+                    },
+                ],
+            },
+        ],
+    };
+    assert_eq!(verify_spec(&spec), Ok(()));
 }
 
 #[test]

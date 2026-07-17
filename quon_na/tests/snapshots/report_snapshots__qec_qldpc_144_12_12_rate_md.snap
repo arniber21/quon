@@ -29,8 +29,18 @@ expression: md
 | Wait time (µs) | 4 |
 | Total time (µs) | 30 |
 
+## Atom pressure & reuse
+| Metric | Value |
+| --- | ---: |
+| Peak atoms | 3 |
+| Measurement count (ops) | 1 |
+| Reset count (ops) | 1 |
+| Reuse count (ops) | 0 |
+| Reused ancilla count | 0 |
+
 ## Notes
 - Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).
 - Field names align with TUM RAP Table I / Enola headline metrics.
 - `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
 - Non-QEC reports omit atoms-per-logical and code-family rows.
+- `peak_atoms` counts distinct simultaneously-allocated atoms; qubit reuse (measure → reset → reuse of the same ancilla) lowers it versus a fresh-ancilla-per-round variant. `measurement_count` / `reset_count` are per-op tallies, distinct from the per-layer `measurement_rounds` / `reset_rounds`.

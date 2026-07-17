@@ -1,6 +1,6 @@
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use anstyle::{AnsiColor, Color, Style};
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -14,6 +14,7 @@ use quon_na::{
     require_target_error_model, resource_report_to_json, resource_report_to_markdown,
     round_barrier_cuts,
 };
+use sha2::{Digest, Sha256};
 
 use backend::{BackendTarget, TargetKind};
 use quon_qec::{
@@ -44,6 +45,13 @@ Examples:
   quonc examples/na_qec/repetition_d3_memory.qn \\
     --target targets/neutral_atom/generic_rna_v0.json \\
     --emit-qec-experiment /tmp/rep_d3.qec.json
+
+  # QEC validation: fuse analytic + Stim/Sinter sampled evidence (#280).
+  # Compiles, emits the QEC experiment, shells out to python/quon_qec_sinter.py,
+  # and writes /tmp/rep_d3.validation.json (+ .md) with separate sections.
+  quonc examples/na_qec/repetition_d3_memory.qn \\
+    --target targets/neutral_atom/generic_rna_v0.json \\
+    --emit-qec-validation /tmp/rep_d3.validation.json --validation-shots 256
 
   # Debug IR after each pass
   quonc program.qn --dump-ir --verify-linear --emit-qasm
@@ -142,6 +150,12 @@ struct Cli {
     /// Emit QEC experiment JSON + sibling structure-level `.stim` (ADR-0018)
     #[arg(long, value_name = "PATH", help_heading = "Emit")]
     emit_qec_experiment: Option<PathBuf>,
+
+    /// Emit a fused QEC validation report (`*.validation.json` + `.md`): compiles,
+    /// emits the QEC experiment, shells out to the Python Stim/Sinter harness, and
+    /// fuses analytic + sampled evidence into separate sections (#280 / ADR-0020)
+    #[arg(long, value_name = "PATH", help_heading = "Emit")]
+    emit_qec_validation: Option<PathBuf>,
 
     /// Force resource-report format (overrides PATH extension)
     #[arg(long, value_enum, value_name = "FMT", help_heading = "Emit")]
@@ -266,6 +280,51 @@ struct Cli {
     /// SABRE lookahead window size (SPEC §7.4). Fixed targets only.
     #[arg(long, default_value_t = 20, help_heading = "Target")]
     sabre_lookahead: usize,
+
+    // ── QEC validation (#280) ───────────────────────────────────────────
+    /// Sinter shots for `--emit-qec-validation`
+    #[arg(
+        long,
+        default_value_t = 64,
+        value_name = "N",
+        help_heading = "QEC validation"
+    )]
+    validation_shots: u64,
+
+    /// Stim detector-sampler seed for `--emit-qec-validation` (deterministic)
+    #[arg(
+        long,
+        default_value_t = 7,
+        value_name = "SEED",
+        help_heading = "QEC validation"
+    )]
+    validation_seed: i64,
+
+    /// Sinter decoder for `--emit-qec-validation`
+    #[arg(
+        long,
+        default_value = "pymatching",
+        value_name = "NAME",
+        help_heading = "QEC validation"
+    )]
+    validation_decoder: String,
+
+    /// Attach a pre-sampled evidence JSON (from `quon_qec_sinter.py --json`)
+    /// instead of shelling out to Python (`--emit-qec-validation`)
+    #[arg(long, value_name = "PATH", help_heading = "QEC validation")]
+    attach_sampled: Option<PathBuf>,
+
+    /// Warn (do not refuse) when sampled data provenance mismatches the artifact
+    #[arg(long, action = ArgAction::SetTrue, help_heading = "QEC validation")]
+    allow_sampled_mismatch: bool,
+
+    /// Python interpreter for the Stim/Sinter harness (default: repo `.venv` then `python3`)
+    #[arg(long, value_name = "PATH", help_heading = "QEC validation")]
+    python: Option<PathBuf>,
+
+    /// Path to `quon_qec_sinter.py` (default: search up from CWD for `python/`)
+    #[arg(long, value_name = "PATH", help_heading = "QEC validation")]
+    sinter_harness: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -520,13 +579,14 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
         || cli.emit_na_schedule.is_some()
         || cli.emit_na_graph.is_some()
         || cli.emit_resource_report.is_some()
-        || cli.emit_qec_experiment.is_some())
+        || cli.emit_qec_experiment.is_some()
+        || cli.emit_qec_validation.is_some())
         && !is_na
     {
         bail!(
             "--emit-na-mlir / --emit-na-schedule / --emit-na-graph / --emit-resource-report / \
-             --emit-qec-experiment require a neutral_atom_reconfigurable target \
-             (see targets/neutral_atom/)"
+             --emit-qec-experiment / --emit-qec-validation require a \
+             neutral_atom_reconfigurable target (see targets/neutral_atom/)"
         );
     }
     if cli.verify_na && !is_na {
@@ -541,6 +601,14 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
         bail!(
             "--emit-qec-experiment requires a filesystem PATH (writes JSON + sibling .stim); \
              stdout dual-emit is not supported"
+        );
+    }
+    if let Some(path) = &cli.emit_qec_validation
+        && path.as_os_str() == "-"
+    {
+        bail!(
+            "--emit-qec-validation requires a filesystem PATH (writes JSON report + sibling \
+             .md and separate QEC / sampled primaries); stdout is not supported"
         );
     }
     Ok(())
@@ -645,6 +713,11 @@ fn emit_artifacts(
         emitted = true;
     }
 
+    if let Some(validation_path) = &cli.emit_qec_validation {
+        emit_qec_validation(cli, request, report, validation_path)?;
+        emitted = true;
+    }
+
     if !emitted
         && cli.metrics_json.is_none()
         && cli.metrics_snapshot.is_none()
@@ -658,7 +731,8 @@ fn emit_artifacts(
                     "{dim}(compiled successfully for neutral-atom target `{id}`; \
                      pass --emit-na-mlir for quantum.na MLIR, or \
                      --emit-na-schedule / --emit-na-graph / --emit-resource-report / \
-                     --emit-qec-experiment for debug / QEC evaluation artifacts){dim:#}"
+                     --emit-qec-experiment / --emit-qec-validation for debug / QEC \
+                     evaluation artifacts){dim:#}"
                 );
             }
             id => {
@@ -678,6 +752,19 @@ fn emit_qec_experiment_artifacts(
     report: &quonc::CompileReport,
     json_path: &Path,
 ) -> Result<()> {
+    build_and_write_qec_experiment(request, report, json_path)?;
+    Ok(())
+}
+
+/// Dual-emit the QEC experiment pair and return the semantic experiment DTO.
+///
+/// Shared by `--emit-qec-experiment` and `--emit-qec-validation` (#280) so the
+/// dual-emit contract (ADR-0018) has a single source of truth.
+fn build_and_write_qec_experiment(
+    request: &CompileRequest,
+    report: &quonc::CompileReport,
+    json_path: &Path,
+) -> Result<quon_qec::QecExperiment> {
     let workload = report.qec_workload.as_ref().ok_or_else(|| {
         anyhow!(
             "--emit-qec-experiment requires a QEC-backed program (e.g. repetition_code / \
@@ -742,7 +829,229 @@ fn emit_qec_experiment_artifacts(
         return Err(e);
     }
 
+    Ok(experiment)
+}
+
+/// Compiler-driven QEC validation report (#280 / ADR-0020 amendment).
+///
+/// One user-facing entry point runs: compile (already done) → QEC experiment
+/// dual-emit → analytic resource report → Stim/Sinter sampling (Python) →
+/// provenance-checked fusion into a **separate** `*.validation.json` + `.md`.
+/// Primary artifacts (QEC pair, resource report, sampled JSON) are kept beside
+/// the report so evidence kinds stay separate (ADR-0020).
+fn emit_qec_validation(
+    cli: &Cli,
+    request: &CompileRequest,
+    report: &quonc::CompileReport,
+    validation_path: &Path,
+) -> Result<()> {
+    let base = validation_base(validation_path);
+    let qec_json_path = with_suffix(&base, ".qec.json");
+    let resource_report_path = with_suffix(&base, ".resource_report.json");
+    let sampled_path = with_suffix(&base, ".sampled.json");
+    let markdown_path = with_suffix(&base, ".validation.md");
+
+    // 1. QEC experiment dual-emit (analytic structure + sibling .stim).
+    let experiment = build_and_write_qec_experiment(request, report, &qec_json_path)?;
+    let qec_bytes = std::fs::read(&qec_json_path)
+        .with_context(|| format!("read QEC experiment {}", qec_json_path.display()))?;
+    let experiment_sha256 = sha256_hex_bytes(&qec_bytes);
+
+    // 2. Analytic resource report (attach physical error budget, ADR-0017).
+    let na = match &request.target.kind {
+        TargetKind::NeutralAtomReconfigurable(na) => na,
+        _ => bail!(
+            "--emit-qec-validation requires a neutral_atom_reconfigurable target \
+             (see targets/neutral_atom/)"
+        ),
+    };
+    let resource_report = report.resource_report.as_ref().ok_or_else(|| {
+        anyhow!("no resource report available (compile with a neutral-atom target)")
+    })?;
+    let model = require_target_error_model(na).map_err(|e| anyhow!("{e}"))?;
+    let resource_report = attach_qec_error_budget(resource_report.clone(), Some(model))
+        .map_err(|e| anyhow!("{e}"))?;
+    let rr_json = resource_report_to_json(&resource_report)?;
+    write_text_file(&resource_report_path, &rr_json)?;
+
+    // 3. Sampled evidence: attach a pre-sampled JSON or shell out to Python.
+    let sampled_text = if let Some(attach) = &cli.attach_sampled {
+        std::fs::read_to_string(attach)
+            .with_context(|| format!("read attached sampled JSON {}", attach.display()))?
+    } else {
+        run_sinter_harness(cli, &qec_json_path, &sampled_path)?;
+        std::fs::read_to_string(&sampled_path)
+            .with_context(|| format!("read sampled JSON {}", sampled_path.display()))?
+    };
+    let sampled: quonc::SampledEvidence = serde_json::from_str(&sampled_text)
+        .with_context(|| "parse sampled evidence JSON (quon_qec_sinter.py --json output)")?;
+
+    // 4. Fuse with provenance checking (refuse or warn on mismatch).
+    let provenance = quonc::Provenance::from_experiment(
+        &experiment,
+        request.source_path.display().to_string(),
+        request.target.id.clone(),
+        experiment_sha256,
+    );
+    let fused = quonc::fuse(
+        provenance,
+        resource_report,
+        sampled,
+        cli.allow_sampled_mismatch,
+    )
+    .map_err(|e| anyhow!("{e}"))?;
+
+    // 5. Write the separate JSON + Markdown validation artifacts.
+    let json = quonc::validation_report_to_json(&fused)?;
+    write_text_file(validation_path, &json)?;
+    let md = quonc::validation_report_to_markdown(&fused);
+    write_text_file(&markdown_path, &md)?;
+
+    if !fused.mismatch_warnings.is_empty() {
+        let style = error_style();
+        eprintln!("{style}warning{style:#}: sampled data provenance mismatch (attached anyway):");
+        for w in &fused.mismatch_warnings {
+            eprintln!("  - {w}");
+        }
+    }
+
+    if !cli.quiet {
+        let ok = ok_style();
+        eprintln!(
+            "{ok}wrote QEC validation report{ok:#} → {} (+ .md; separate QEC / resource / sampled primaries)",
+            validation_path.display()
+        );
+    }
+
     Ok(())
+}
+
+/// Strip a trailing `.validation.json` / `.json` / `.validation` to a stem path.
+fn validation_base(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("report");
+    let stem = name
+        .strip_suffix(".validation.json")
+        .or_else(|| name.strip_suffix(".json"))
+        .or_else(|| name.strip_suffix(".validation"))
+        .unwrap_or(name);
+    path.with_file_name(stem)
+}
+
+/// Append `suffix` to the file name of `base` (e.g. `out` + `.qec.json`).
+fn with_suffix(base: &Path, suffix: &str) -> PathBuf {
+    let name = base
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("report");
+    base.with_file_name(format!("{name}{suffix}"))
+}
+
+fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn write_text_file(path: &Path, body: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut contents = body.to_string();
+    if !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    std::fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+/// Shell out to `python/quon_qec_sinter.py --json` to sample logical failures.
+fn run_sinter_harness(cli: &Cli, qec_json: &Path, out_json: &Path) -> Result<()> {
+    let repo_root = find_repo_root();
+    let python = resolve_python(cli, repo_root.as_deref());
+    let script = resolve_sinter_harness(cli, repo_root.as_deref())?;
+    if let Some(parent) = out_json.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let output = Command::new(&python)
+        .arg(&script)
+        .arg(qec_json)
+        .arg("--shots")
+        .arg(cli.validation_shots.to_string())
+        .arg("--seed")
+        .arg(cli.validation_seed.to_string())
+        .arg("--decoder")
+        .arg(&cli.validation_decoder)
+        .arg("--json")
+        .arg(out_json)
+        .output()
+        .with_context(|| format!("run Stim/Sinter harness via {}", python.display()))?;
+    if !output.status.success() {
+        bail!(
+            "Stim/Sinter harness failed ({}):\n{}\n(interpreter: {}, script: {})\n\
+             Install evaluation deps (pip install -r python/requirements.txt / just setup-python), \
+             or pass --python / --sinter-harness / --attach-sampled.",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            python.display(),
+            script.display(),
+        );
+    }
+    Ok(())
+}
+
+/// Walk up from the current directory for a repo containing the harness script.
+fn find_repo_root() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if dir.join("python/quon_qec_sinter.py").is_file() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// Resolve the Python interpreter: `--python` > `QUON_PYTHON` > repo `.venv` > `python3`.
+fn resolve_python(cli: &Cli, repo_root: Option<&Path>) -> PathBuf {
+    if let Some(p) = &cli.python {
+        return p.clone();
+    }
+    if let Ok(env) = std::env::var("QUON_PYTHON")
+        && !env.is_empty()
+    {
+        return PathBuf::from(env);
+    }
+    if let Some(root) = repo_root {
+        let venv = root.join(".venv/bin/python");
+        if venv.is_file() {
+            return venv;
+        }
+    }
+    PathBuf::from("python3")
+}
+
+/// Resolve the harness script: `--sinter-harness` > repo `python/quon_qec_sinter.py`.
+fn resolve_sinter_harness(cli: &Cli, repo_root: Option<&Path>) -> Result<PathBuf> {
+    if let Some(p) = &cli.sinter_harness {
+        if p.is_file() {
+            return Ok(p.clone());
+        }
+        bail!("--sinter-harness {} not found", p.display());
+    }
+    if let Some(root) = repo_root {
+        let script = root.join("python/quon_qec_sinter.py");
+        if script.is_file() {
+            return Ok(script);
+        }
+    }
+    bail!(
+        "could not locate python/quon_qec_sinter.py (searched up from CWD); \
+         pass --sinter-harness PATH, run from the repo root, or use --attach-sampled"
+    );
 }
 
 /// Durable Wait barrier cycles from [`round_barrier_cuts`], fail-closed on count.

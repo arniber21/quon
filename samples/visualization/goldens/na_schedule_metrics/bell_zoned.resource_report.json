@@ -25,5 +25,18 @@
     "movement": 0.0005,
     "transfer": 0.0028,
     "idle": 0.0
+  },
+  "temporal_atom_metrics": {
+    "peak_atoms": 2,
+    "allocated_atoms_series": [
+      2,
+      2,
+      2,
+      2
+    ],
+    "measurement_count": 0,
+    "reset_count": 0,
+    "reuse_count": 0,
+    "reused_ancilla_count": 0
   }
 }

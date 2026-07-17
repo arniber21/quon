@@ -1,0 +1,18 @@
+-- Benchmark: surface-code distance-3 GHZ-style prep-measure.
+-- Prepare three surface-code blocks, entangle them with logical CX
+-- (creating a GHZ-like logical state), then measure all three.
+-- Tests multi-block entanglement and prep-measure workloads.
+
+fn surface_d3_ghz_bench(): Q<Bit> = run {
+        a <- surface_code<3>()
+        b <- surface_code<3>()
+        c <- surface_code<3>()
+        a <- memory_round(a)
+        b <- memory_round(b)
+        c <- memory_round(c)
+        (a, b) <- logical_cx(a, b)
+        (b, c) <- logical_cx(b, c)
+        _ <- measure_logical_z(a)
+        _ <- measure_logical_z(b)
+        measure_logical_z(c)
+}

@@ -338,6 +338,15 @@ fn lower_action(
             atom: atom.0,
             duration_us: *duration_us,
         }),
+        NeutralAtomAction::Reuse {
+            atom,
+            region,
+            duration_us,
+        } => Ok(ActionSpec::Reuse {
+            atom: atom.0,
+            region: region.map(|r| r.0),
+            duration_us: *duration_us,
+        }),
         NeutralAtomAction::Wait { duration_us } => Ok(ActionSpec::Wait {
             duration_us: *duration_us,
         }),

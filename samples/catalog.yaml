@@ -304,3 +304,60 @@ entries:
       ["--target", "targets/neutral_atom/generic_rna_v0.json", "--verify-na"]
     artifacts: []
     ci: smoke
+
+  # ── Benchmark suite (#284) ──────────────────────────────────────────────
+  - id: neutral-atom/bench-surface-d3-memory
+    path: samples/neutral-atom/benchmarks/surface_d3_memory.qn
+    tags: [neutral-atom, qec, benchmark, surface-code, memory, pack-284]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--emit-resource-report",
+        "-",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/bench-surface-d3-measure
+    path: samples/neutral-atom/benchmarks/surface_d3_measure.qn
+    tags: [neutral-atom, qec, benchmark, surface-code, measurement, pack-284]
+    difficulty: intermediate
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--emit-resource-report",
+        "-",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/bench-surface-d3-cx
+    path: samples/neutral-atom/benchmarks/surface_d3_cx.qn
+    tags: [neutral-atom, qec, benchmark, surface-code, lattice-surgery, cx, pack-284]
+    difficulty: advanced
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--emit-resource-report",
+        "-",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/bench-surface-d3-ghz
+    path: samples/neutral-atom/benchmarks/surface_d3_ghz.qn
+    tags: [neutral-atom, qec, benchmark, surface-code, ghz, entanglement, pack-284]
+    difficulty: advanced
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--emit-resource-report",
+        "-",
+      ]
+    artifacts: []
+    ci: smoke

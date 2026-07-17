@@ -19,5 +19,13 @@ expression: json
   "logical_qubits": 0,
   "physical_atoms": 0,
   "estimated_cycles": 0,
-  "bottleneck": "none"
+  "bottleneck": "none",
+  "temporal_atom_metrics": {
+    "peak_atoms": 0,
+    "allocated_atoms_series": [],
+    "measurement_count": 0,
+    "reset_count": 0,
+    "reuse_count": 0,
+    "reused_ancilla_count": 0
+  }
 }

@@ -27,5 +27,17 @@ expression: json
     "movement": 0.0005,
     "transfer": 0.0007,
     "idle": 8e-9
+  },
+  "temporal_atom_metrics": {
+    "peak_atoms": 3,
+    "allocated_atoms_series": [
+      2,
+      2,
+      3
+    ],
+    "measurement_count": 1,
+    "reset_count": 1,
+    "reuse_count": 0,
+    "reused_ancilla_count": 0
   }
 }

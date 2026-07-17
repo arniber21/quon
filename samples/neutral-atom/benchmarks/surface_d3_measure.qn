@@ -1,0 +1,9 @@
+-- Benchmark: surface-code distance-3 logical measurement.
+-- Construct a surface code, run one memory round, then measure logical X.
+-- Tests the logical measurement path (not just memory).
+
+fn surface_d3_measure_bench(): Q<Bit> = run {
+        b <- surface_code<3>()
+        b <- memory_round(b)
+        measure_logical_x(b)
+}

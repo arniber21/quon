@@ -16,15 +16,23 @@ logical failures with Stim + Sinter/pymatching decoding.
 
 Compiler resource reports and this CSV are separate artifacts (ADR-0020).
 Sampled logical failure rates are not threshold claims.
+
+`--json PATH` writes a structured sampled-evidence document (shots, decoder,
+noise assumptions, logical observable names, error counts/rates, Wilson
+confidence interval, and a provenance fingerprint). `quonc
+--emit-qec-validation` consumes it to fuse a *separate* `*.validation.json`
+report with clearly labeled analytic and sampled sections (#280 / ADR-0020).
 """
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any, Mapping, Sequence, TextIO
 
 # ---------------------------------------------------------------------------
@@ -465,6 +473,151 @@ def write_csv(out: TextIO, rows: Sequence[ResultRow]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Structured sampled-evidence JSON (#280)
+#
+# The compiler-driven validation/report-fusion path (`quonc
+# --emit-qec-validation`) consumes this document and fuses it beside the
+# analytic ResourceReport into a *separate* `*.validation.json` artifact. The
+# fields below label the artifact `sampled` and carry a provenance fingerprint
+# (experiment_sha256 + family/distance/rounds) so the compiler can refuse or
+# warn when sampled data is attached to an incompatible compiler artifact.
+#
+# This is validation evidence, not a threshold claim (ADR-0020).
+# ---------------------------------------------------------------------------
+
+SAMPLED_SCHEMA_VERSION = 1
+SAMPLED_EVIDENCE_KIND = "sampled"
+SAMPLED_DISCLAIMER = (
+    "Sampled Stim/Sinter logical failures — validation evidence, not a "
+    "threshold claim (ADR-0020)."
+)
+DEFAULT_CI_LEVEL = 0.95
+
+
+def experiment_sha256(json_path: str | Path) -> str:
+    """SHA-256 of the raw `*.qec.json` bytes (provenance fingerprint)."""
+    return hashlib.sha256(Path(json_path).read_bytes()).hexdigest()
+
+
+def wilson_interval(
+    failures: int, shots: int, level: float = DEFAULT_CI_LEVEL
+) -> tuple[float, float]:
+    """Wilson score interval for a binomial logical-failure rate.
+
+    Returns ``(low, high)`` clamped to ``[0, 1]``. Deterministic (no sampling);
+    ``level`` is the two-sided confidence level (default 0.95).
+    """
+    if shots <= 0:
+        return (0.0, 0.0)
+    if not (0.0 < level < 1.0):
+        raise HarnessError(f"confidence level must be in (0, 1) (got {level})")
+    z = NormalDist().inv_cdf(1.0 - (1.0 - level) / 2.0)
+    n = float(shots)
+    p = failures / n
+    denom = 1.0 + z * z / n
+    center = (p + z * z / (2.0 * n)) / denom
+    margin = (z / denom) * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n))
+    low = max(0.0, center - margin)
+    high = min(1.0, center + margin)
+    return (low, high)
+
+
+def _logical_observable_names(doc: Mapping[str, Any]) -> list[str]:
+    """Stable observable names for the sampled section (id/logical/basis)."""
+    names: list[str] = []
+    observables = doc.get("logical_observables")
+    if isinstance(observables, Sequence):
+        for obs in observables:
+            if not isinstance(obs, Mapping):
+                continue
+            obs_id = obs.get("id")
+            logical_id = obs.get("logical_id")
+            basis = obs.get("basis", "z")
+            names.append(f"obs{obs_id}:L{logical_id}:{basis}")
+    return names
+
+
+def build_sampled_document(
+    json_paths: Sequence[str | Path],
+    *,
+    shots_list: Sequence[int],
+    seed: int,
+    error_scales: Sequence[float] = (1.0,),
+    decoder: str = "pymatching",
+    tick_us: float = DEFAULT_TICK_US,
+    confidence_level: float = DEFAULT_CI_LEVEL,
+) -> dict[str, Any]:
+    """Sample each experiment and build a labeled sampled-evidence document.
+
+    The returned dict is the wire form consumed by `quonc --emit-qec-validation`
+    (mirrored by the Rust `SampledEvidence` DTO). It is a `sampled` artifact —
+    separate from the analytic ResourceReport and not a threshold claim.
+    """
+    if tick_us <= 0.0 or not math.isfinite(tick_us):
+        raise HarnessError(f"--tick-us must be a finite positive number (got {tick_us})")
+    if not (0.0 < confidence_level < 1.0):
+        raise HarnessError(
+            f"--ci-level must be in (0, 1) (got {confidence_level})"
+        )
+
+    experiments: list[dict[str, Any]] = []
+    for json_path in json_paths:
+        doc, structure = load_experiment(json_path)
+        base_model = {k: float(doc["error_model"][k]) for k in ERROR_MODEL_KEYS}
+        distance = int(doc["distance"])
+        rounds = int(doc["rounds"])
+        results: list[dict[str, Any]] = []
+        for scale in error_scales:
+            model = scale_error_model(base_model, scale)
+            noisy = annotate_noise(structure, model, tick_us=tick_us)
+            for shots in shots_list:
+                sample = sample_logical_failures(
+                    noisy, shots=shots, seed=seed, decoder=decoder
+                )
+                low, high = wilson_interval(
+                    sample.logical_failures, sample.shots, confidence_level
+                )
+                results.append(
+                    {
+                        "shots": sample.shots,
+                        "error_scale": scale,
+                        "noise_model": {k: model[k] for k in ERROR_MODEL_KEYS},
+                        "logical_failures": sample.logical_failures,
+                        "logical_failure_rate": sample.logical_failure_rate,
+                        "confidence_interval": {
+                            "low": low,
+                            "high": high,
+                            "level": confidence_level,
+                            "method": "wilson",
+                        },
+                    }
+                )
+        experiments.append(
+            {
+                "experiment": str(json_path),
+                "experiment_sha256": experiment_sha256(json_path),
+                "family": str(doc.get("family", "")),
+                "code_family": str(doc.get("code_family", "")),
+                "distance": distance,
+                "rounds": rounds,
+                "logical_observables": _logical_observable_names(doc),
+                "results": results,
+            }
+        )
+
+    return {
+        "schema_version": SAMPLED_SCHEMA_VERSION,
+        "evidence_kind": SAMPLED_EVIDENCE_KIND,
+        "disclaimer": SAMPLED_DISCLAIMER,
+        "decoder": decoder,
+        "seed": seed,
+        "tick_us": tick_us,
+        "confidence_level": confidence_level,
+        "experiments": experiments,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -562,6 +715,14 @@ Shot / physical-error sweeps
   wall-clock schedule time from the planner. Movement and idle are composed
   into a single DEPOLARIZE1 after each TICK.
 
+Compiler-driven validation (#280)
+  Prefer `quonc --emit-qec-validation` for a user-facing, compiler-driven fused
+  report. That path shells out to this harness with --json to obtain the
+  sampled-evidence document, then writes a separate *.validation.json with
+  labeled analytic + sampled sections. Standalone JSON:
+    python python/quon_qec_sinter.py /tmp/rep_d3.qec.json \\
+      --shots 64 --seed 7 --json /tmp/rep_d3.sampled.json
+
 Local larger runs
   CI smoke uses tiny shots and a fixed seed, e.g.:
     python python/quon_qec_sinter.py /tmp/rep_d3.qec.json --shots 32 --seed 7
@@ -616,21 +777,57 @@ Local larger runs
         default=None,
         help="write CSV to this path (default: stdout)",
     )
+    parser.add_argument(
+        "--json",
+        type=str,
+        default=None,
+        help=(
+            "write a structured sampled-evidence JSON document to this path "
+            "(`-` = stdout). Consumed by `quonc --emit-qec-validation` for "
+            "compiler-driven report fusion (#280). Suppresses the default CSV "
+            "stdout dump unless --csv is also given."
+        ),
+    )
+    parser.add_argument(
+        "--ci-level",
+        type=float,
+        default=DEFAULT_CI_LEVEL,
+        help=(
+            f"two-sided confidence level for the Wilson interval on the "
+            f"sampled logical failure rate (default: {DEFAULT_CI_LEVEL}; "
+            "--json only)"
+        ),
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    sampled_doc: dict[str, Any] | None = None
+    rows: list[ResultRow] | None = None
     try:
-        rows = run_experiments(
-            args.experiments,
-            shots_list=args.shots,
-            seed=args.seed,
-            error_scales=args.scale_errors,
-            decoder=args.decoder,
-            tick_us=args.tick_us,
-        )
+        if args.json is not None:
+            sampled_doc = build_sampled_document(
+                args.experiments,
+                shots_list=args.shots,
+                seed=args.seed,
+                error_scales=args.scale_errors,
+                decoder=args.decoder,
+                tick_us=args.tick_us,
+                confidence_level=args.ci_level,
+            )
+        # Sample for CSV when CSV is requested, or when --json was not given
+        # (preserve the default stdout-CSV behavior for existing callers).
+        if args.csv is not None or args.json is None:
+            rows = run_experiments(
+                args.experiments,
+                shots_list=args.shots,
+                seed=args.seed,
+                error_scales=args.scale_errors,
+                decoder=args.decoder,
+                tick_us=args.tick_us,
+            )
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -639,11 +836,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if args.csv:
-        with open(args.csv, "w", newline="") as f:
-            write_csv(f, rows)
-    else:
-        write_csv(sys.stdout, rows)
+    if sampled_doc is not None:
+        text = json.dumps(sampled_doc, indent=2) + "\n"
+        if args.json == "-":
+            sys.stdout.write(text)
+        else:
+            with open(args.json, "w") as f:
+                f.write(text)
+
+    if rows is not None:
+        if args.csv:
+            with open(args.csv, "w", newline="") as f:
+                write_csv(f, rows)
+        elif args.json is None:
+            write_csv(sys.stdout, rows)
     return 0
 
 

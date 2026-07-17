@@ -11,6 +11,12 @@ keep it separate from the compiler analytic `ResourceReport`
 (`--emit-resource-report`); do not fuse them or treat either as a threshold
 claim (ADR-0020 / #246).
 
+For a compiler-driven path that runs compilation, dual-emit, Sinter sampling,
+and provenance-checked fusion from one entry point, see
+`quonc --emit-qec-validation` and `docs/neutral_atom/qec_validation_report.md`
+(#280). That fused report keeps the analytic and sampled evidence in separate
+labeled sections (ADR-0020 amendment); it does not mutate this schema.
+
 ## `*.qec.json` fields (`schema_version: 1`, `kind: "qec_experiment"`)
 
 | Field | Type | Meaning |
