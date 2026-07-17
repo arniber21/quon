@@ -1,0 +1,14 @@
+-- Benchmark: non-Clifford logical T (PLACEHOLDER).
+--
+-- This benchmark is a placeholder until logical non-Clifford operations
+-- (magic-state-consuming T/Tdag/CCZ) are implemented (issue #283).
+-- It is skipped in CI smoke tests and not included in the catalog until
+-- #283 lands.
+--
+-- Expected form after #283:
+-- fn surface_d3_t_bench(): Q<Bit> = run {
+--         a <- surface_code<3>()
+--         a <- memory_round(a)
+--         a <- logical_t(a)
+--         measure_logical_z(a)
+-- }

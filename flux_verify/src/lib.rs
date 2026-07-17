@@ -73,4 +73,21 @@ mod smoke {
         assert!(program.qubit(2).is_none());
         assert!(program.bit(2).is_none());
     }
+
+    /// The `quantum.na` schedule scalar invariants (#115) — cycle monotonicity
+    /// and Wait barrier ordering — carry Flux refinement specs verified by
+    /// `cargo flux -p quon_na --no-default-features --features flux`. These
+    /// calls pin the same kernels the dialect verifier uses.
+    #[test]
+    fn quon_na_schedule_scalar_invariants_hold() {
+        use quon_na::{cycle_is_monotonic, wait_barrier_ok};
+        // Cycle monotonicity: non-decreasing cycles.
+        assert!(cycle_is_monotonic(0, 0));
+        assert!(cycle_is_monotonic(0, 1));
+        assert!(!cycle_is_monotonic(1, 0));
+        // Wait barrier: strictly later cycle after a Wait.
+        assert!(wait_barrier_ok(0, 1));
+        assert!(!wait_barrier_ok(5, 5));
+        assert!(!wait_barrier_ok(5, 4));
+    }
 }

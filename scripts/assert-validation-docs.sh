@@ -6,6 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VALIDATION="$ROOT/docs/agents/validation.md"
 CODE_QUALITY="$ROOT/docs/agents/code-quality.md"
+README="$ROOT/README.md"
+NA_FT_DEMO="$ROOT/website/src/content/docs/guides/na-ft-demo.mdx"
 FAILED=0
 
 fail() {
@@ -66,6 +68,28 @@ if ! grep -qF 'frontend/src/typecheck/mod.rs' "$CODE_QUALITY"; then
 fi
 if ! grep -qF 'just test-ci' "$CODE_QUALITY"; then
   fail "code-quality.md must mention just test-ci as the pre-PR gate"
+fi
+
+# Neutral-atom FT compiler demo page (#279) must exist and stay linked from the
+# README so cold-outreach reviewers can find the end-to-end path.
+if [[ ! -f "$NA_FT_DEMO" ]]; then
+  fail "missing neutral-atom FT demo page: website/src/content/docs/guides/na-ft-demo.mdx (#279)"
+else
+  for needle in \
+    'surface_d3_cx.qn' \
+    '--emit-qec-experiment' \
+    '--emit-resource-report' \
+    'devbox run' \
+    'analytic' \
+    'sampled'
+  do
+    if ! grep -qF -e "$needle" "$NA_FT_DEMO"; then
+      fail "na-ft-demo.mdx missing required anchor: $needle"
+    fi
+  done
+fi
+if ! grep -qF '/guides/na-ft-demo' "$README"; then
+  fail "README must link the neutral-atom FT demo page (/guides/na-ft-demo) (#279)"
 fi
 
 if [[ "$FAILED" -ne 0 ]]; then

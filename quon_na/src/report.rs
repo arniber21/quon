@@ -50,6 +50,116 @@ impl BottleneckKind {
     }
 }
 
+/// Temporal atom-pressure metrics for a neutral-atom schedule (issue #282).
+///
+/// These make peak-atom pressure and qubit-lifecycle reuse visible so a
+/// mid-circuit-measurement / reset / reuse workload (e.g. QEC ancilla reused
+/// across rounds) can be compared against a no-reuse variant.
+///
+/// # Allocation model
+///
+/// An atom is "allocated" from the first cycle it appears in any action and
+/// stays allocated for the rest of the schedule (there is no free event within
+/// a schedule — a physical trap holds its atom). Qubit **reuse** shows up as
+/// *fewer distinct atom ids*: a schedule that measures→resets→reuses the same
+/// ancilla across rounds allocates fewer atoms than a no-reuse variant that
+/// consumes a fresh ancilla each round. `allocated_atoms_series[c]` is the
+/// count of distinct atoms seen in cycles `0..=c` (monotonic non-decreasing);
+/// `peak_atoms` is its maximum (the last value).
+///
+/// `measurement_count` / `reset_count` are **per-op** tallies (distinct from
+/// [`ResourceReport::measurement_rounds`] / `reset_rounds`, which count layers).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemporalAtomMetrics {
+    /// Maximum number of simultaneously allocated atoms over the schedule.
+    pub peak_atoms: u64,
+    /// Distinct allocated-atom count at the end of each cycle (monotonic).
+    pub allocated_atoms_series: Vec<u64>,
+    /// Total `Measure` actions (per-op, not per-layer rounds).
+    pub measurement_count: u64,
+    /// Total `Reset` actions (per-op, not per-layer rounds).
+    pub reset_count: u64,
+    /// Total `Reuse` actions (explicit ancilla reclaim events).
+    pub reuse_count: u64,
+    /// Distinct atoms that were reclaimed by at least one `Reuse` event.
+    pub reused_ancilla_count: u64,
+}
+
+impl TemporalAtomMetrics {
+    /// Aggregate temporal atom metrics from schedule layers.
+    pub fn from_layers(layers: &[ScheduleLayer]) -> Self {
+        use crate::layout::AtomId;
+        use std::collections::BTreeSet;
+
+        let mut seen: BTreeSet<AtomId> = BTreeSet::new();
+        let mut reused: BTreeSet<AtomId> = BTreeSet::new();
+        let mut series = Vec::with_capacity(layers.len());
+        let mut measurement_count = 0u64;
+        let mut reset_count = 0u64;
+        let mut reuse_count = 0u64;
+
+        for layer in layers {
+            for action in &layer.actions {
+                accumulate_action_atoms(action, &mut seen);
+                match action {
+                    NeutralAtomAction::Measure { .. } => measurement_count += 1,
+                    NeutralAtomAction::Reset { .. } => reset_count += 1,
+                    NeutralAtomAction::Reuse { atom, .. } => {
+                        reuse_count += 1;
+                        reused.insert(*atom);
+                    }
+                    _ => {}
+                }
+            }
+            series.push(seen.len() as u64);
+        }
+
+        let peak_atoms = series.iter().copied().max().unwrap_or(0);
+        Self {
+            peak_atoms,
+            allocated_atoms_series: series,
+            measurement_count,
+            reset_count,
+            reuse_count,
+            reused_ancilla_count: reused.len() as u64,
+        }
+    }
+}
+
+/// Insert every atom id an action touches into `seen`.
+fn accumulate_action_atoms(
+    action: &NeutralAtomAction,
+    seen: &mut std::collections::BTreeSet<crate::layout::AtomId>,
+) {
+    match action {
+        NeutralAtomAction::Move(group) => {
+            for m in &group.moves {
+                seen.insert(m.atom);
+            }
+        }
+        NeutralAtomAction::Transfer(t) => {
+            seen.insert(t.atom);
+        }
+        NeutralAtomAction::Entangle2 { atoms, .. } => {
+            seen.insert(atoms[0]);
+            seen.insert(atoms[1]);
+        }
+        NeutralAtomAction::EntangleN { atoms, .. } => {
+            for &a in atoms {
+                seen.insert(a);
+            }
+        }
+        NeutralAtomAction::LocalGate { atom, .. }
+        | NeutralAtomAction::Measure { atom, .. }
+        | NeutralAtomAction::Reset { atom, .. }
+        | NeutralAtomAction::Reuse { atom, .. } => {
+            seen.insert(*atom);
+        }
+        NeutralAtomAction::Wait { .. } => {}
+    }
+}
+
 /// Wire value for [`ResourceReport::evidence_kind`] (ADR-0020).
 pub const RESOURCE_REPORT_EVIDENCE_KIND: &str = "analytic";
 
@@ -106,6 +216,19 @@ pub struct ResourceReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_rounds: Option<u64>,
 
+    /// Logical T gate count (magic-state-consuming, issue #283).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t_count: Option<u64>,
+    /// Logical T† gate count (issue #283).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tdag_count: Option<u64>,
+    /// Logical CCZ gate count (issue #283).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ccz_count: Option<u64>,
+    /// Total magic-state demand (T + Tdag + CCZ, issue #283).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magic_state_demand: Option<u64>,
+
     /// Number of schedule layers (`layers.len()`).
     #[serde(default)]
     pub estimated_cycles: u64,
@@ -135,6 +258,11 @@ pub struct ResourceReport {
     /// Never logical error rates or thresholds (ADR-0017 / ADR-0020).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_budget: Option<ErrorBudgetContributions>,
+
+    /// Temporal atom-pressure metrics: peak atoms, allocated-over-time series,
+    /// per-op measurement/reset counts, and reused ancilla count (issue #282).
+    #[serde(default)]
+    pub temporal_atom_metrics: TemporalAtomMetrics,
 }
 
 impl Default for ResourceReport {
@@ -159,11 +287,16 @@ impl Default for ResourceReport {
             code_family: None,
             distance: None,
             memory_rounds: None,
+            t_count: None,
+            tdag_count: None,
+            ccz_count: None,
+            magic_state_demand: None,
             estimated_cycles: 0,
             bottleneck: BottleneckKind::None,
             aware_search_completed_layers: None,
             aware_search_fell_back_layers: None,
             error_budget: None,
+            temporal_atom_metrics: TemporalAtomMetrics::default(),
         }
     }
 }
@@ -347,6 +480,11 @@ impl ResourceReport {
                     NeutralAtomAction::Reset { .. } => {
                         layer_has_reset = true;
                     }
+                    NeutralAtomAction::Reuse { .. } => {
+                        // Reuse is a bookkeeping reclaim; it contributes wall
+                        // clock via the layer max only, and is tallied in
+                        // `temporal_atom_metrics` below.
+                    }
                     NeutralAtomAction::Wait { .. } => {
                         report.wait_time_us += duration_us;
                     }
@@ -368,6 +506,7 @@ impl ResourceReport {
 
         report.estimated_cycles = layers.len() as u64;
         report.bottleneck = classify_bottleneck(&report);
+        report.temporal_atom_metrics = TemporalAtomMetrics::from_layers(layers);
         report
     }
 
@@ -620,6 +759,29 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
     }
     out.push('\n');
 
+    let temporal = &report.temporal_atom_metrics;
+    out.push_str("## Atom pressure & reuse\n");
+    out.push_str("| Metric | Value |\n");
+    out.push_str("| --- | ---: |\n");
+    out.push_str(&format!("| Peak atoms | {} |\n", temporal.peak_atoms));
+    out.push_str(&format!(
+        "| Measurement count (ops) | {} |\n",
+        temporal.measurement_count
+    ));
+    out.push_str(&format!(
+        "| Reset count (ops) | {} |\n",
+        temporal.reset_count
+    ));
+    out.push_str(&format!(
+        "| Reuse count (ops) | {} |\n",
+        temporal.reuse_count
+    ));
+    out.push_str(&format!(
+        "| Reused ancilla count | {} |\n",
+        temporal.reused_ancilla_count
+    ));
+    out.push('\n');
+
     if let Some(budget) = &report.error_budget {
         out.push_str("## Physical error budget\n");
         out.push_str("| Category | Contribution (rate × count) |\n");
@@ -660,6 +822,9 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
         "- `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).\n",
     );
     out.push_str("- Non-QEC reports omit atoms-per-logical and code-family rows.\n");
+    out.push_str(
+        "- `peak_atoms` counts distinct simultaneously-allocated atoms; qubit reuse (measure → reset → reuse of the same ancilla) lowers it versus a fresh-ancilla-per-round variant. `measurement_count` / `reset_count` are per-op tallies, distinct from the per-layer `measurement_rounds` / `reset_rounds`.\n",
+    );
     if report.aware_search_fell_back_layers.is_some_and(|n| n > 0) {
         out.push_str(
             "- Routing-aware search fell back to the greedy assignment on at least one layer \
@@ -1099,6 +1264,14 @@ mod tests {
                 "physical_atoms": 0,
                 "estimated_cycles": 4,
                 "bottleneck": "rydberg",
+                "temporal_atom_metrics": {
+                    "peak_atoms": 0,
+                    "allocated_atoms_series": [],
+                    "measurement_count": 0,
+                    "reset_count": 0,
+                    "reuse_count": 0,
+                    "reused_ancilla_count": 0,
+                },
             })
         );
     }

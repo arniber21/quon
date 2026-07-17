@@ -248,12 +248,15 @@ pub fn expand_logical_cx(
     Ok(())
 }
 
-struct SeamAtoms {
-    atoms: Vec<PhysicalAtomId>,
-    coords: Vec<(i32, i32)>,
+pub(crate) struct SeamAtoms {
+    pub(crate) atoms: Vec<PhysicalAtomId>,
+    pub(crate) coords: Vec<(i32, i32)>,
 }
 
-fn allocate_seam_atoms(distance: u32, next_atom: &mut u32) -> Result<SeamAtoms, ExpandError> {
+pub(crate) fn allocate_seam_atoms(
+    distance: u32,
+    next_atom: &mut u32,
+) -> Result<SeamAtoms, ExpandError> {
     let first = *next_atom;
     let last = next_atom
         .checked_add(distance)
@@ -265,14 +268,14 @@ fn allocate_seam_atoms(distance: u32, next_atom: &mut u32) -> Result<SeamAtoms, 
     })
 }
 
-fn place_seam_column(seam: &mut SeamAtoms, x: i32, left_patch: &ExpandedBlock) {
+pub(crate) fn place_seam_column(seam: &mut SeamAtoms, x: i32, left_patch: &ExpandedBlock) {
     let d = left_patch.distance as usize;
     for r in 0..d {
         seam.coords[r] = (x, 2 * r as i32 + 1);
     }
 }
 
-fn place_seam_row(seam: &mut SeamAtoms, y: i32, above_patch: &ExpandedBlock) {
+pub(crate) fn place_seam_row(seam: &mut SeamAtoms, y: i32, above_patch: &ExpandedBlock) {
     let d = above_patch.distance as usize;
     // Surface data are a prefix of `atoms`/`coords`; x = origin + 2c + 1.
     let origin_x = above_patch.coords.first().map(|(x, _)| *x - 1).unwrap_or(0);
@@ -281,7 +284,7 @@ fn place_seam_row(seam: &mut SeamAtoms, y: i32, above_patch: &ExpandedBlock) {
     }
 }
 
-fn allocate_ancilla_patch(
+pub(crate) fn allocate_ancilla_patch(
     logical_id: LogicalQubitId,
     distance: u32,
     next_atom: &mut u32,
@@ -296,41 +299,39 @@ fn allocate_ancilla_patch(
     crate::expand::expand_surface_layout_for_surgery(&meta, next_atom)
 }
 
-fn next_ancilla_logical_id(layouts: &[ExpandedBlock]) -> LogicalQubitId {
+pub(crate) fn next_ancilla_logical_id(layouts: &[ExpandedBlock]) -> LogicalQubitId {
     let max = layouts.iter().map(|b| b.logical_id.0).max().unwrap_or(0);
     LogicalQubitId(max.saturating_add(1))
 }
 
-fn find_layout_index(layouts: &[ExpandedBlock], id: LogicalQubitId) -> Result<usize, ExpandError> {
+pub(crate) fn find_layout_index(
+    layouts: &[ExpandedBlock],
+    id: LogicalQubitId,
+) -> Result<usize, ExpandError> {
     layouts
         .iter()
         .position(|b| b.logical_id == id)
         .ok_or(ExpandError::UnknownLogicalId(id.0))
 }
 
-fn place_patch_at(block: &mut ExpandedBlock, dx: i32, dy: i32) {
+pub(crate) fn place_patch_at(block: &mut ExpandedBlock, dx: i32, dy: i32) {
     for (x, y) in &mut block.coords {
         *x += dx;
         *y += dy;
     }
 }
 
-// `trusted` (this fn and the three row/column + two merge-round helpers below):
-// the bounds obligations are nonlinear (`r*d + (d-1) < d*d` given len == d*d) or
-// depend on caller-checked length equalities flux cannot see; verifying them
-// properly needs real specs — tracked in the flux/quon_qec verification issue.
-#[cfg_attr(feature = "flux", flux_rs::trusted)]
-fn right_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
+pub(crate) fn right_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
     let d = block.distance as usize;
-    if block.data_atoms.len() != d * d {
+    if d == 0 || block.data_atoms.len() != d * d {
         return Err(ExpandError::InvalidPatchData {
             distance: block.distance,
         });
     }
-    Ok((0..d).map(|r| block.data_atoms[r * d + (d - 1)]).collect())
+    Ok(block.data_atoms.chunks(d).map(|row| row[d - 1]).collect())
 }
 
-fn left_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
+pub(crate) fn left_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
     let d = block.distance as usize;
     if block.data_atoms.len() != d * d {
         return Err(ExpandError::InvalidPatchData {
@@ -340,7 +341,7 @@ fn left_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, Expand
     Ok((0..d).map(|r| block.data_atoms[r * d]).collect())
 }
 
-fn top_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
+pub(crate) fn top_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
     let d = block.distance as usize;
     if block.data_atoms.len() != d * d {
         return Err(ExpandError::InvalidPatchData {
@@ -350,30 +351,41 @@ fn top_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandErro
     Ok(block.data_atoms[..d].to_vec())
 }
 
-#[cfg_attr(feature = "flux", flux_rs::trusted)]
-fn bottom_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
+pub(crate) fn bottom_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
     let d = block.distance as usize;
-    if block.data_atoms.len() != d * d {
+    if d == 0 || block.data_atoms.len() != d * d {
         return Err(ExpandError::InvalidPatchData {
             distance: block.distance,
         });
     }
-    Ok(block.data_atoms[(d - 1) * d..d * d].to_vec())
+    // `bottom_row_data` is the last `d` elements. Using `len - d` (rather than
+    // `(d - 1) * d`) avoids the `d - 1` underflow; the `d == 0` guard above
+    // guarantees `len >= d`.
+    let len = block.data_atoms.len();
+    Ok(block.data_atoms[len - d..].to_vec())
 }
 
 /// Rough merge: measure ZZ on each facing L/R data pair via seam check.
-#[cfg_attr(feature = "flux", flux_rs::trusted)]
-fn rough_merge_round(
+pub(crate) fn rough_merge_round(
     left_col: &[PhysicalAtomId],
     right_col: &[PhysicalAtomId],
     seam: &SeamAtoms,
     primary: LogicalQubitId,
     partner: LogicalQubitId,
 ) -> Result<PhysicalRound, ExpandError> {
-    debug_assert_eq!(left_col.len(), seam.atoms.len());
-    debug_assert_eq!(right_col.len(), seam.atoms.len());
-    let mut entangling = Vec::with_capacity(2 * seam.atoms.len());
-    for i in 0..seam.atoms.len() {
+    let n = seam.atoms.len();
+    // Visible length checks (replacing `debug_assert_eq!`) so flux can see
+    // that `left_col[i]`, `right_col[i]`, and `seam.atoms[i]` are all in bounds
+    // for `i < n`.
+    if left_col.len() != n || right_col.len() != n {
+        return Err(ExpandError::SeamLengthMismatch {
+            left: left_col.len(),
+            right: right_col.len(),
+            seam: n,
+        });
+    }
+    let mut entangling = Vec::with_capacity(2 * n);
+    for i in 0..n {
         entangling.push(PhysicalCnot {
             control: left_col[i],
             target: seam.atoms[i],
@@ -384,7 +396,7 @@ fn rough_merge_round(
         });
     }
     let z_cnot_count = entangling.len();
-    let mut terminal = Vec::with_capacity(2 * seam.atoms.len());
+    let mut terminal = Vec::with_capacity(2 * n);
     for &atom in &seam.atoms {
         terminal.push(RoundTerminal::Measure {
             atom,
@@ -409,19 +421,27 @@ fn rough_merge_round(
 }
 
 /// Smooth merge: measure XX on each facing top/bottom data pair (H-sandwich).
-#[cfg_attr(feature = "flux", flux_rs::trusted)]
-fn smooth_merge_round(
+pub(crate) fn smooth_merge_round(
     above_row: &[PhysicalAtomId],
     below_row: &[PhysicalAtomId],
     seam: &SeamAtoms,
     primary: LogicalQubitId,
     partner: LogicalQubitId,
 ) -> Result<PhysicalRound, ExpandError> {
-    debug_assert_eq!(above_row.len(), seam.atoms.len());
-    debug_assert_eq!(below_row.len(), seam.atoms.len());
-    let mut local_mid = Vec::with_capacity(seam.atoms.len());
-    let mut x_cnots = Vec::with_capacity(2 * seam.atoms.len());
-    for i in 0..seam.atoms.len() {
+    let n = seam.atoms.len();
+    // Visible length checks (replacing `debug_assert_eq!`) so flux can see
+    // that `above_row[i]`, `below_row[i]`, and `seam.atoms[i]` are all in
+    // bounds for `i < n`.
+    if above_row.len() != n || below_row.len() != n {
+        return Err(ExpandError::SeamLengthMismatch {
+            left: above_row.len(),
+            right: below_row.len(),
+            seam: n,
+        });
+    }
+    let mut local_mid = Vec::with_capacity(n);
+    let mut x_cnots = Vec::with_capacity(2 * n);
+    for i in 0..n {
         local_mid.push(RoundLocalOp::H {
             atom: seam.atoms[i],
         });
@@ -434,7 +454,7 @@ fn smooth_merge_round(
             target: below_row[i],
         });
     }
-    let mut terminal = Vec::with_capacity(2 * seam.atoms.len());
+    let mut terminal = Vec::with_capacity(2 * n);
     for &atom in &seam.atoms {
         terminal.push(RoundTerminal::Measure {
             atom,
@@ -462,7 +482,7 @@ fn smooth_merge_round(
 ///
 /// Rough seams re-measure ZZ pairs; smooth seams re-measure XX (H-sandwich).
 /// Surrounding `memory_round` ops restore full patch stabilizer structure.
-fn split_seam_round(
+pub(crate) fn split_seam_round(
     boundary: MergeBoundary,
     side_a: &[PhysicalAtomId],
     side_b: &[PhysicalAtomId],

@@ -1,0 +1,12 @@
+-- Benchmark: surface-code distance-3 memory.
+-- Two syndrome-extraction rounds then logical Z measure.
+-- Compiles on the NA/QEC hybrid path.
+-- Resource report exposes: atoms, zones, moves, Rydberg ops, measurement
+-- rounds, idle time, estimated cycles, QEC counts.
+
+fn surface_d3_memory_bench(): Q<Bit> = run {
+        b <- surface_code<3>()
+        b <- memory_round(b)
+        b <- memory_round(b)
+        measure_logical_z(b)
+}

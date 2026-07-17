@@ -570,7 +570,8 @@ fn layer_atoms(layer: &ScheduleLayer) -> BTreeSet<AtomId> {
             }
             NeutralAtomAction::LocalGate { atom, .. }
             | NeutralAtomAction::Measure { atom, .. }
-            | NeutralAtomAction::Reset { atom, .. } => {
+            | NeutralAtomAction::Reset { atom, .. }
+            | NeutralAtomAction::Reuse { atom, .. } => {
                 atoms.insert(*atom);
             }
             NeutralAtomAction::Wait { .. } => {}
@@ -606,7 +607,9 @@ fn layer_has_measure_or_reset(layer: &ScheduleLayer) -> bool {
     layer.actions.iter().any(|a| {
         matches!(
             a,
-            NeutralAtomAction::Measure { .. } | NeutralAtomAction::Reset { .. }
+            NeutralAtomAction::Measure { .. }
+                | NeutralAtomAction::Reset { .. }
+                | NeutralAtomAction::Reuse { .. }
         )
     })
 }

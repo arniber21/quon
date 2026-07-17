@@ -113,6 +113,13 @@ pub enum RoundKind {
     MeasureAncilla,
     /// Record Pauli frame byproducts (no physical gates).
     FrameUpdate,
+    /// Magic-state-consuming logical T (issue #283).
+    /// Compiler model only — no physical gate expansion.
+    MagicT,
+    /// Magic-state-consuming logical T† (issue #283).
+    MagicTdag,
+    /// Magic-state-consuming logical CCZ (issue #283).
+    MagicCcz,
 }
 
 impl RoundKind {
@@ -139,6 +146,9 @@ impl RoundKind {
             Self::Split(MergeBoundary::Smooth) => "split_smooth",
             Self::MeasureAncilla => "measure_ancilla",
             Self::FrameUpdate => "frame_update",
+            Self::MagicT => "magic_t",
+            Self::MagicTdag => "magic_tdag",
+            Self::MagicCcz => "magic_ccz",
         }
     }
 }
@@ -254,6 +264,35 @@ impl ExpandedWorkload {
             )
         })
     }
+
+    /// Count of logical T gates (magic-state-consuming, issue #283).
+    pub fn t_count(&self) -> usize {
+        self.rounds
+            .iter()
+            .filter(|r| r.kind == RoundKind::MagicT)
+            .count()
+    }
+
+    /// Count of logical T† gates (issue #283).
+    pub fn tdag_count(&self) -> usize {
+        self.rounds
+            .iter()
+            .filter(|r| r.kind == RoundKind::MagicTdag)
+            .count()
+    }
+
+    /// Count of logical CCZ gates (issue #283).
+    pub fn ccz_count(&self) -> usize {
+        self.rounds
+            .iter()
+            .filter(|r| r.kind == RoundKind::MagicCcz)
+            .count()
+    }
+
+    /// Total magic-state demand (T + Tdag + CCZ, issue #283).
+    pub fn magic_state_demand(&self) -> usize {
+        self.t_count() + self.tdag_count() + self.ccz_count()
+    }
 }
 
 /// Failures expanding a [`QecWorkload`] into physical rounds.
@@ -261,6 +300,8 @@ impl ExpandedWorkload {
 pub enum ExpandError {
     #[error(transparent)]
     Qec(#[from] QecError),
+    #[error(transparent)]
+    Plan(#[from] crate::patch_ops::PlanError),
     #[error("unknown logical qubit id {0} in workload op")]
     UnknownLogicalId(u32),
     #[error("logical_cx requires surface-code blocks; logical {id} is `{family}`")]
@@ -301,6 +342,14 @@ pub enum ExpandError {
     },
     #[error("surface patch data count mismatch for distance {distance}")]
     InvalidPatchData { distance: u32 },
+    #[error(
+        "merge/split seam length mismatch: left/above={left}, right/below={right}, seam={seam}"
+    )]
+    SeamLengthMismatch {
+        left: usize,
+        right: usize,
+        seam: usize,
+    },
 }
 
 /// Expand a validated [`QecWorkload`] into per-round physical CNOT / measure / reset.
@@ -364,17 +413,55 @@ pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, Expan
                 rounds.push(round);
             }
             WorkloadOp::MeasureLogical { logical_id, basis } => {
-                let layout = find_layout(&layouts, *logical_id)?;
-                rounds.push(measure_logical_round(layout, *basis));
-            }
-            WorkloadOp::LogicalCx { control, target } => {
-                crate::lattice_surgery::expand_logical_cx(
-                    *control,
-                    *target,
+                // Lower logical measurement through the patch-operation planner
+                // (issue #281) rather than a separate ad hoc path.
+                let plan = crate::patch_ops::plan_measure_logical(*logical_id, *basis)?;
+                crate::patch_ops::lower_patch_plan(
+                    &plan,
                     &mut layouts,
                     &mut next_atom,
                     &mut rounds,
                 )?;
+            }
+            WorkloadOp::LogicalCx { control, target } => {
+                // Lower logical CX through the generalized patch-operation
+                // planner (issue #281) instead of the fixed CX template.
+                // The fixed template (expand_logical_cx) remains as a
+                // regression reference path.
+                let plan = crate::patch_ops::plan_logical_cx(*control, *target)?;
+                crate::patch_ops::lower_patch_plan(
+                    &plan,
+                    &mut layouts,
+                    &mut next_atom,
+                    &mut rounds,
+                )?;
+            }
+            WorkloadOp::LogicalT { logical_id } => {
+                // Magic-state-consuming T: compiler model only (issue #283).
+                // No physical gate expansion — records magic-state consumption.
+                let _ = find_layout(&layouts, *logical_id)?;
+                rounds.push(PhysicalRound::bare(RoundKind::MagicT, *logical_id));
+            }
+            WorkloadOp::LogicalTdag { logical_id } => {
+                let _ = find_layout(&layouts, *logical_id)?;
+                rounds.push(PhysicalRound::bare(RoundKind::MagicTdag, *logical_id));
+            }
+            WorkloadOp::LogicalCcz { a, b, c } => {
+                let _ = find_layout(&layouts, *a)?;
+                let _ = find_layout(&layouts, *b)?;
+                let _ = find_layout(&layouts, *c)?;
+                rounds.push(PhysicalRound {
+                    kind: RoundKind::MagicCcz,
+                    logical_id: *a,
+                    local_before: Vec::new(),
+                    entangling: Vec::new(),
+                    z_cnot_count: 0,
+                    local_mid: Vec::new(),
+                    local_after: Vec::new(),
+                    terminal: Vec::new(),
+                    partner_logical_id: Some(*c),
+                    frame_updates: Vec::new(),
+                });
             }
         }
     }
@@ -690,6 +777,8 @@ pub(crate) fn surface_memory_round(layout: &ExpandedBlock) -> PhysicalRound {
     }
 }
 
+// Kept as a regression reference path (issue #281 — now routed through patch_ops).
+#[allow(dead_code)]
 fn measure_logical_round(layout: &ExpandedBlock, basis: LogicalBasis) -> PhysicalRound {
     let terminal = layout
         .data_atoms
@@ -1469,5 +1558,77 @@ mod tests {
                 basis: "x"
             }
         ));
+    }
+
+    #[test]
+    fn logical_t_expands_to_magic_t_round() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.memory_round(LogicalQubitId(0)).unwrap();
+        b.logical_t(LogicalQubitId(0)).unwrap();
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .unwrap();
+        let expanded = expand_workload(&b.finish()).expect("expand");
+        assert_eq!(expanded.t_count(), 1);
+        assert_eq!(expanded.tdag_count(), 0);
+        assert_eq!(expanded.ccz_count(), 0);
+        assert_eq!(expanded.magic_state_demand(), 1);
+        assert!(expanded.rounds.iter().any(|r| r.kind == RoundKind::MagicT));
+    }
+
+    #[test]
+    fn logical_ccz_expands_to_magic_ccz_round() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
+            .unwrap();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(2))
+            .unwrap();
+        b.memory_round(LogicalQubitId(0)).unwrap();
+        b.logical_ccz(LogicalQubitId(0), LogicalQubitId(1), LogicalQubitId(2))
+            .unwrap();
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .unwrap();
+        b.measure_logical(LogicalQubitId(1), LogicalBasis::Z)
+            .unwrap();
+        b.measure_logical(LogicalQubitId(2), LogicalBasis::Z)
+            .unwrap();
+        let expanded = expand_workload(&b.finish()).expect("expand");
+        assert_eq!(expanded.ccz_count(), 1);
+        assert_eq!(expanded.magic_state_demand(), 1);
+        assert!(
+            expanded
+                .rounds
+                .iter()
+                .any(|r| r.kind == RoundKind::MagicCcz)
+        );
+    }
+
+    #[test]
+    fn logical_t_tdag_ccz_counts_track_independently() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
+            .unwrap();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(2))
+            .unwrap();
+        b.logical_t(LogicalQubitId(0)).unwrap();
+        b.logical_tdag(LogicalQubitId(1)).unwrap();
+        b.logical_ccz(LogicalQubitId(0), LogicalQubitId(1), LogicalQubitId(2))
+            .unwrap();
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .unwrap();
+        b.measure_logical(LogicalQubitId(1), LogicalBasis::Z)
+            .unwrap();
+        b.measure_logical(LogicalQubitId(2), LogicalBasis::Z)
+            .unwrap();
+        let expanded = expand_workload(&b.finish()).expect("expand");
+        assert_eq!(expanded.t_count(), 1);
+        assert_eq!(expanded.tdag_count(), 1);
+        assert_eq!(expanded.ccz_count(), 1);
+        assert_eq!(expanded.magic_state_demand(), 3);
     }
 }

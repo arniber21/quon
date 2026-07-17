@@ -163,6 +163,11 @@ fn schedule_expanded(
     let mut report = build_resource_report(&req.layers, Some(&code_blocks), None)?;
     // Distance ownership: `with_code_blocks` via `CodeFamily::distance()`.
     report.memory_rounds = Some(expanded.memory_round_count() as u64);
+    // Magic-state-consuming logical operation counts (issue #283).
+    report.t_count = Some(expanded.t_count() as u64);
+    report.tdag_count = Some(expanded.tdag_count() as u64);
+    report.ccz_count = Some(expanded.ccz_count() as u64);
+    report.magic_state_demand = Some(expanded.magic_state_demand() as u64);
     let report = match na.error_model.as_ref() {
         Some(model) => attach_qec_error_budget(report, Some(model))?,
         None => report,
