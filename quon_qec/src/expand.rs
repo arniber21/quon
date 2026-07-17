@@ -342,6 +342,14 @@ pub enum ExpandError {
     },
     #[error("surface patch data count mismatch for distance {distance}")]
     InvalidPatchData { distance: u32 },
+    #[error(
+        "merge/split seam length mismatch: left/above={left}, right/below={right}, seam={seam}"
+    )]
+    SeamLengthMismatch {
+        left: usize,
+        right: usize,
+        seam: usize,
+    },
 }
 
 /// Expand a validated [`QecWorkload`] into per-round physical CNOT / measure / reset.
