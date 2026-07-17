@@ -95,6 +95,12 @@ pub enum ExperimentRoundKind {
     SplitSmooth,
     MeasureAncilla,
     FrameUpdate,
+    /// Magic-state-consuming logical T (issue #283).
+    MagicT,
+    /// Magic-state-consuming logical T† (issue #283).
+    MagicTdag,
+    /// Magic-state-consuming logical CCZ (issue #283).
+    MagicCcz,
 }
 
 impl ExperimentRoundKind {
@@ -109,6 +115,9 @@ impl ExperimentRoundKind {
             RoundKind::Split(crate::expand::MergeBoundary::Smooth) => Self::SplitSmooth,
             RoundKind::MeasureAncilla => Self::MeasureAncilla,
             RoundKind::FrameUpdate => Self::FrameUpdate,
+            RoundKind::MagicT => Self::MagicT,
+            RoundKind::MagicTdag => Self::MagicTdag,
+            RoundKind::MagicCcz => Self::MagicCcz,
         }
     }
 
@@ -123,6 +132,9 @@ impl ExperimentRoundKind {
             Self::SplitSmooth => "split_smooth",
             Self::MeasureAncilla => "measure_ancilla",
             Self::FrameUpdate => "frame_update",
+            Self::MagicT => "magic_t",
+            Self::MagicTdag => "magic_tdag",
+            Self::MagicCcz => "magic_ccz",
         }
     }
 
@@ -437,7 +449,7 @@ pub fn emit_stim_structure(expanded: &ExpandedWorkload) -> Result<String, Experi
 // `.iter().find()` iterator-closure chains in this body trigger an internal
 // compiler error in flux-infer (projections.rs "impossible case reached").
 // This function carries no flux specs, so skipping its body loses nothing.
-// See docs/adr/0026-flux-infer-iterator-closure-ice.md for details.
+// See docs/adr/0027-flux-infer-iterator-closure-ice.md for details.
 // Remove `trusted` once flux-infer handles closure-based iterator adapters.
 #[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
@@ -627,7 +639,7 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
 // `.find()`, `.filter()`, `.map()`) trigger the same flux-infer internal
 // compiler error as `emit_stim_single_block_memory` above (projections.rs
 // "impossible case reached"). No flux specs here either.
-// See docs/adr/0026-flux-infer-iterator-closure-ice.md for details.
+// See docs/adr/0027-flux-infer-iterator-closure-ice.md for details.
 // Remove `trusted` once flux-infer handles closure-based iterator adapters.
 #[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, ExperimentError> {
@@ -790,6 +802,14 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
             }
             RoundKind::MeasureLogical => {
                 measure_logical_rounds.push(round);
+            }
+            RoundKind::MagicT | RoundKind::MagicTdag | RoundKind::MagicCcz => {
+                // Magic-state-consuming ops are compiler model only (issue #283).
+                // No physical Stim gates — record as a comment for traceability.
+                out.push_str(&format!(
+                    "# {} (magic-state consumption; compiler model, no Stim gate)\n",
+                    round.kind.as_experiment_str()
+                ));
             }
         }
     }
@@ -1043,6 +1063,9 @@ fn measurement_schedule_from_expanded(
         .map(|(i, round)| {
             let (measured_atoms, basis) = match round.kind {
                 RoundKind::Construct | RoundKind::FrameUpdate => (Vec::new(), None),
+                RoundKind::MagicT | RoundKind::MagicTdag | RoundKind::MagicCcz => {
+                    (Vec::new(), None)
+                }
                 RoundKind::MemoryRound
                 | RoundKind::MeasureLogical
                 | RoundKind::Merge(_)

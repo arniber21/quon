@@ -1,0 +1,14 @@
+-- Benchmark: surface-code distance-3 logical CX via lattice surgery.
+-- Two surface-code blocks, one memory round each, then logical CX,
+-- then logical Z measurement of both blocks.
+-- Tests the lattice-surgery merge/split path.
+
+fn surface_d3_cx_bench(): Q<Bit> = run {
+        a <- surface_code<3>()
+        b <- surface_code<3>()
+        a <- memory_round(a)
+        b <- memory_round(b)
+        (a, b) <- logical_cx(a, b)
+        _ <- measure_logical_z(a)
+        measure_logical_z(b)
+}

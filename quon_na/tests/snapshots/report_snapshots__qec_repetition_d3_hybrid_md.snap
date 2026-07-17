@@ -31,6 +31,15 @@ expression: md
 | Wait time (µs) | 2 |
 | Total time (µs) | 1313 |
 
+## Atom pressure & reuse
+| Metric | Value |
+| --- | ---: |
+| Peak atoms | 5 |
+| Measurement count (ops) | 7 |
+| Reset count (ops) | 4 |
+| Reuse count (ops) | 0 |
+| Reused ancilla count | 0 |
+
 ## Physical error budget
 | Category | Contribution (rate × count) |
 | --- | ---: |
@@ -46,4 +55,5 @@ expression: md
 - Field names align with TUM RAP Table I / Enola headline metrics.
 - `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
 - Non-QEC reports omit atoms-per-logical and code-family rows.
+- `peak_atoms` counts distinct simultaneously-allocated atoms; qubit reuse (measure → reset → reuse of the same ancilla) lowers it versus a fresh-ancilla-per-round variant. `measurement_count` / `reset_count` are per-op tallies, distinct from the per-layer `measurement_rounds` / `reset_rounds`.
 - Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.
