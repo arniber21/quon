@@ -21,5 +21,17 @@ expression: json
   "atoms_per_logical": 24,
   "code_family": "high_rate_qldpc_like",
   "estimated_cycles": 3,
-  "bottleneck": "rearrangement"
+  "bottleneck": "rearrangement",
+  "temporal_atom_metrics": {
+    "peak_atoms": 3,
+    "allocated_atoms_series": [
+      2,
+      2,
+      3
+    ],
+    "measurement_count": 1,
+    "reset_count": 1,
+    "reuse_count": 0,
+    "reused_ancilla_count": 0
+  }
 }

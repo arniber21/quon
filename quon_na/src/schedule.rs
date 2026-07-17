@@ -6,6 +6,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::layout::{AodTrapRef, AtomId, SiteId};
 
+/// Identifier for a logical reuse region (e.g. a QEC ancilla patch that is
+/// measured, reset, and reclaimed across rounds).
+///
+/// Regions are a *labelling* aid for resource reports and tooling: a `Reuse`
+/// event tags which region an atom is being reclaimed into. They do not change
+/// schedule legality (the measure→reset barrier does that); they only make
+/// reused-ancilla grouping visible in reports (issue #282).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReuseRegionId(pub u32);
+
 /// Single-qubit local gate (microwave / Raman); no AOD place/move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,6 +67,18 @@ pub enum NeutralAtomAction {
         atom: AtomId,
         duration_us: u64,
     },
+    /// First-class reclaim of a physical atom / ancilla after its
+    /// measurement and reset barriers have completed (issue #282).
+    ///
+    /// This is qubit-lifecycle reuse (measure → reset → reclaim), **not** RAP
+    /// AOD movement "reuse". The dialect verifier rejects a `Reuse` before the
+    /// atom has been measured and reset. `region` optionally tags which logical
+    /// reuse region the atom is being reclaimed into (for reporting only).
+    Reuse {
+        atom: AtomId,
+        region: Option<ReuseRegionId>,
+        duration_us: u64,
+    },
     Wait {
         duration_us: u64,
     },
@@ -71,6 +94,7 @@ impl NeutralAtomAction {
             | NeutralAtomAction::LocalGate { duration_us, .. }
             | NeutralAtomAction::Measure { duration_us, .. }
             | NeutralAtomAction::Reset { duration_us, .. }
+            | NeutralAtomAction::Reuse { duration_us, .. }
             | NeutralAtomAction::Wait { duration_us } => *duration_us,
         }
     }

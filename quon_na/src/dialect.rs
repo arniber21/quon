@@ -41,6 +41,7 @@ pub mod op {
     pub const LOCAL_GATE: &str = "quantum.na.local_gate";
     pub const MEASURE: &str = "quantum.na.measure";
     pub const RESET: &str = "quantum.na.reset";
+    pub const REUSE: &str = "quantum.na.reuse";
     pub const WAIT: &str = "quantum.na.wait";
     pub const LAYER: &str = "quantum.na.layer";
     pub const SCHEDULE: &str = "quantum.na.schedule";
@@ -48,7 +49,7 @@ pub mod op {
 
 /// The primary `quantum.na` ops. `transfer` is included because trap transfers
 /// are first-class schedule actions in `quon_na`.
-pub const OPS: [&str; 11] = [
+pub const OPS: [&str; 12] = [
     op::ALLOC_ATOM,
     op::PLACE,
     op::MOVE,
@@ -57,6 +58,7 @@ pub const OPS: [&str; 11] = [
     op::LOCAL_GATE,
     op::MEASURE,
     op::RESET,
+    op::REUSE,
     op::WAIT,
     op::LAYER,
     op::SCHEDULE,
@@ -76,6 +78,7 @@ pub mod attr {
     pub const DURATION_US: &str = "duration_us";
     pub const BASIS: &str = "basis";
     pub const GATE: &str = "gate";
+    pub const REGION: &str = "region";
     pub const DIRECTION: &str = "direction";
     pub const MOVES: &str = "moves";
     pub const PAIRS: &str = "pairs";
@@ -211,6 +214,12 @@ pub enum ActionSpec {
     },
     Reset {
         atom: u32,
+        duration_us: u64,
+    },
+    Reuse {
+        atom: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<u32>,
         duration_us: u64,
     },
     Wait {
@@ -411,6 +420,26 @@ pub enum VerifyError {
         reset_cycle: u32,
         measure_cycle: u32,
     },
+    #[error(
+        "cycle {reuse_cycle}: atom {atom} is reused before it has ever been measured (reuse requires a completed measurement barrier)"
+    )]
+    ReuseBeforeMeasure { atom: u32, reuse_cycle: u32 },
+    #[error(
+        "cycle {reuse_cycle}: atom {atom} is reused after measure at cycle {measure_cycle} without an intervening reset (reuse requires a completed reset barrier)"
+    )]
+    ReuseBeforeReset {
+        atom: u32,
+        measure_cycle: u32,
+        reuse_cycle: u32,
+    },
+    #[error(
+        "cycle {reuse_cycle}: atom {atom} is reused again after reuse at cycle {previous_reuse_cycle} without a fresh measurement/reset (stale measurement dependency)"
+    )]
+    StaleMeasurementDependency {
+        atom: u32,
+        previous_reuse_cycle: u32,
+        reuse_cycle: u32,
+    },
     #[error("module: expected a top-level quantum.na.schedule op, found none")]
     MissingSchedule,
     #[error("failed to parse quantum.na MLIR module")]
@@ -441,6 +470,7 @@ pub fn verify<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(),
         op::LOCAL_GATE => verify_local_gate(operation),
         op::MEASURE => verify_measure(operation),
         op::RESET => verify_reset(operation),
+        op::REUSE => verify_reuse(operation),
         op::WAIT => verify_wait(operation),
         op::LAYER => verify_layer(operation, None, None).map(|_| ()),
         op::SCHEDULE => verify_schedule(operation),
@@ -811,6 +841,19 @@ fn verify_reset<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(
     Ok(())
 }
 
+fn verify_reuse<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(), VerifyError> {
+    expect_counts(operation, op::REUSE, 1, 1)?;
+    expect_operand_type(operation, op::REUSE, 0, is_atom_type, ATOM_TYPE)?;
+    expect_result_type(operation, op::REUSE, 0, is_atom_type, ATOM_TYPE)?;
+    require_non_negative_i64(operation, op::REUSE, attr::ATOM)?;
+    require_non_negative_i64(operation, op::REUSE, attr::DURATION_US)?;
+    // `region` is optional; when present it must be a non-negative integer.
+    if operation.attribute(attr::REGION).is_ok() {
+        require_non_negative_i64(operation, op::REUSE, attr::REGION)?;
+    }
+    Ok(())
+}
+
 fn verify_wait<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(), VerifyError> {
     expect_counts(operation, op::WAIT, 0, 0)?;
     require_non_negative_i64(operation, op::WAIT, attr::DURATION_US)?;
@@ -880,6 +923,7 @@ type AodTrapKey = (u32, u32, u32);
 enum AtomEvent {
     Measure(u32),
     Reset(u32),
+    Reuse(u32),
     Use(u32),
 }
 
@@ -1008,6 +1052,11 @@ fn verify_layer_region(
                 let atom = require_non_negative_i64(&operation, op::RESET, attr::ATOM)? as u32;
                 facts.events.push(AtomEvent::Reset(atom));
             }
+            op::REUSE => {
+                verify_reuse(&operation)?;
+                let atom = require_non_negative_i64(&operation, op::REUSE, attr::ATOM)? as u32;
+                facts.events.push(AtomEvent::Reuse(atom));
+            }
             op::WAIT => {
                 verify_wait(&operation)?;
                 facts.has_wait = true;
@@ -1103,6 +1152,10 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
                 AtomEvent::Use(atom) => {
                     entry.2.insert(atom);
                 }
+                // Reuse is a bookkeeping reclaim, not a physical gate; it does
+                // not participate in same-cycle occupancy conflicts. Its
+                // ordering is checked in the cross-cycle pass below.
+                AtomEvent::Reuse(_) => {}
             }
         }
     }
@@ -1126,10 +1179,17 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
         /// Measured and not yet reset.
         Measured { cycle: u32 },
         /// Reset completed; atom may be reused in a later cycle.
-        Reset { cycle: u32 },
+        /// `measure_cycle` records the measurement this reset retired (if any).
+        Reset {
+            measure_cycle: Option<u32>,
+            cycle: u32,
+        },
+        /// Explicitly reclaimed by a `quantum.na.reuse` event. A second reuse
+        /// without a fresh measure/reset is a stale-measurement dependency.
+        Reused { cycle: u32 },
     }
 
-    // Pass 2: cross-cycle measure/reset state machine (event order).
+    // Pass 2: cross-cycle measure/reset/reuse state machine (event order).
     let mut phase: BTreeMap<u32, AtomPhase> = BTreeMap::new();
     for layer in layers {
         for event in &layer.events {
@@ -1147,7 +1207,9 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
                     // Invariant: with non-decreasing cycles, reset→measure with
                     // measure_cycle < reset_cycle cannot occur. The only live
                     // ResetBeforeMeasure case is same-cycle reset preceding measure.
-                    if let Some(AtomPhase::Reset { cycle: reset_cycle }) = phase.get(&atom).copied()
+                    if let Some(AtomPhase::Reset {
+                        cycle: reset_cycle, ..
+                    }) = phase.get(&atom).copied()
                         && layer.cycle == reset_cycle
                     {
                         return Err(VerifyError::ResetBeforeMeasure {
@@ -1159,7 +1221,74 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
                     phase.insert(atom, AtomPhase::Measured { cycle: layer.cycle });
                 }
                 AtomEvent::Reset(atom) => {
-                    phase.insert(atom, AtomPhase::Reset { cycle: layer.cycle });
+                    let measure_cycle = match phase.get(&atom).copied() {
+                        Some(AtomPhase::Measured { cycle }) => Some(cycle),
+                        _ => None,
+                    };
+                    phase.insert(
+                        atom,
+                        AtomPhase::Reset {
+                            measure_cycle,
+                            cycle: layer.cycle,
+                        },
+                    );
+                }
+                AtomEvent::Reuse(atom) => {
+                    // Explicit reclaim: legal only after measure→reset barriers
+                    // have completed in an earlier cycle (issue #282).
+                    match phase.get(&atom).copied() {
+                        None => {
+                            return Err(VerifyError::ReuseBeforeMeasure {
+                                atom,
+                                reuse_cycle: layer.cycle,
+                            });
+                        }
+                        Some(AtomPhase::Measured {
+                            cycle: measure_cycle,
+                        }) => {
+                            return Err(VerifyError::ReuseBeforeReset {
+                                atom,
+                                measure_cycle,
+                                reuse_cycle: layer.cycle,
+                            });
+                        }
+                        Some(AtomPhase::Reset {
+                            measure_cycle: None,
+                            ..
+                        }) => {
+                            // Reset without a prior measurement — nothing was
+                            // measured, so there is no completed measurement
+                            // barrier to reuse against.
+                            return Err(VerifyError::ReuseBeforeMeasure {
+                                atom,
+                                reuse_cycle: layer.cycle,
+                            });
+                        }
+                        Some(AtomPhase::Reset {
+                            measure_cycle: Some(measure_cycle),
+                            cycle: reset_cycle,
+                        }) => {
+                            if layer.cycle <= reset_cycle {
+                                // Same-cycle reset+reuse: the reset barrier has
+                                // not completed across a cycle boundary.
+                                return Err(VerifyError::ReuseBeforeReset {
+                                    atom,
+                                    measure_cycle,
+                                    reuse_cycle: layer.cycle,
+                                });
+                            }
+                            phase.insert(atom, AtomPhase::Reused { cycle: layer.cycle });
+                        }
+                        Some(AtomPhase::Reused {
+                            cycle: previous_reuse_cycle,
+                        }) => {
+                            return Err(VerifyError::StaleMeasurementDependency {
+                                atom,
+                                previous_reuse_cycle,
+                                reuse_cycle: layer.cycle,
+                            });
+                        }
+                    }
                 }
                 AtomEvent::Use(atom) => {
                     // Same-cycle measure/reset ↔ use already rejected in pass 1.
@@ -1173,13 +1302,15 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
                                 reuse_cycle: layer.cycle,
                             });
                         }
-                        Some(AtomPhase::Reset { cycle: reset_cycle })
-                            if layer.cycle > reset_cycle =>
-                        {
+                        Some(AtomPhase::Reset {
+                            cycle: reset_cycle, ..
+                        }) if layer.cycle > reset_cycle => {
                             phase.remove(&atom);
                         }
-                        Some(AtomPhase::Measured { .. }) | Some(AtomPhase::Reset { .. }) | None => {
-                        }
+                        Some(AtomPhase::Measured { .. })
+                        | Some(AtomPhase::Reset { .. })
+                        | Some(AtomPhase::Reused { .. })
+                        | None => {}
                     }
                 }
             }
@@ -1707,6 +1838,37 @@ pub fn reset<'c>(
     )
 }
 
+pub fn reuse<'c>(
+    context: &'c Context,
+    atom_value: Value<'c, '_>,
+    atom: u32,
+    region: Option<u32>,
+    duration_us: u64,
+    location: Location<'c>,
+) -> Result<Operation<'c>, BuildError> {
+    let mut attributes = vec![
+        named_attr(context, attr::ATOM, i64_attr(context, i64::from(atom))),
+        named_attr(
+            context,
+            attr::DURATION_US,
+            i64_attr(context, duration_us as i64),
+        ),
+    ];
+    if let Some(region) = region {
+        attributes.push(named_attr(
+            context,
+            attr::REGION,
+            i64_attr(context, i64::from(region)),
+        ));
+    }
+    finish(
+        OperationBuilder::new(op::REUSE, location)
+            .add_operands(&[atom_value])
+            .add_results(&[atom_type(context)])
+            .add_attributes(&attributes),
+    )
+}
+
 pub fn wait<'c>(
     context: &'c Context,
     duration_us: u64,
@@ -1858,6 +2020,21 @@ fn append_action<'c, B: BlockLike<'c, 'c>>(
         ActionSpec::Reset { atom, duration_us } => {
             let atom_ref = append_synthetic_atom(context, block, *atom, location)?;
             block.append_operation(reset(context, atom_ref, *atom, *duration_us, location)?);
+        }
+        ActionSpec::Reuse {
+            atom,
+            region,
+            duration_us,
+        } => {
+            let atom_ref = append_synthetic_atom(context, block, *atom, location)?;
+            block.append_operation(reuse(
+                context,
+                atom_ref,
+                *atom,
+                *region,
+                *duration_us,
+                location,
+            )?);
         }
         ActionSpec::Wait { duration_us } => {
             block.append_operation(wait(context, *duration_us, location)?);
