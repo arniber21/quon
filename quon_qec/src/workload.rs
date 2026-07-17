@@ -70,6 +70,23 @@ pub enum WorkloadOp {
         control: LogicalQubitId,
         target: LogicalQubitId,
     },
+    /// Magic-state-consuming logical T gate (issue #283).
+    ///
+    /// Consumes one magic-state resource and applies T to the block.
+    /// Surface-code only. This is a compiler model of magic-state
+    /// consumption, not a validated distillation factory.
+    LogicalT { logical_id: LogicalQubitId },
+    /// Magic-state-consuming logical T† gate (issue #283).
+    LogicalTdag { logical_id: LogicalQubitId },
+    /// Magic-state-consuming logical CCZ gate (issue #283).
+    ///
+    /// Consumes one magic-state resource and applies CCZ to three blocks.
+    /// Surface-code only.
+    LogicalCcz {
+        a: LogicalQubitId,
+        b: LogicalQubitId,
+        c: LogicalQubitId,
+    },
 }
 
 /// Per-block metadata recovered from constructors (and validated against later ops).
@@ -190,6 +207,16 @@ pub enum WorkloadError {
     },
     #[error("logical_cx control and target must be distinct; both are {0}")]
     LogicalCxSameLogical(u32),
+    #[error("`{op}` requires surface-code blocks; logical {id} is `{family}`")]
+    NonCliffordNotSurface {
+        op: &'static str,
+        id: u32,
+        family: &'static str,
+    },
+    #[error("logical_ccz requires three distinct logical ids")]
+    LogicalCczNotDistinct,
+    #[error("logical_ccz requires equal distances on all three blocks")]
+    LogicalCczDistanceMismatch,
     #[error("invalid code-family distance: {0}")]
     InvalidFamily(#[from] crate::family::QecError),
 }
@@ -296,6 +323,68 @@ impl WorkloadBuilder {
             });
         }
         self.ops.push(WorkloadOp::LogicalCx { control, target });
+        Ok(())
+    }
+
+    /// Record a magic-state-consuming logical T gate (issue #283).
+    ///
+    /// Surface-code only. The block remains live (T does not consume the block).
+    pub fn logical_t(&mut self, logical_id: LogicalQubitId) -> Result<(), WorkloadError> {
+        let block = self.require_live(logical_id)?.clone();
+        if block.family != SourceFamily::Surface {
+            return Err(WorkloadError::NonCliffordNotSurface {
+                op: "logical_t",
+                id: logical_id.0,
+                family: block.family.as_str(),
+            });
+        }
+        self.ops.push(WorkloadOp::LogicalT { logical_id });
+        Ok(())
+    }
+
+    /// Record a magic-state-consuming logical T† gate (issue #283).
+    pub fn logical_tdag(&mut self, logical_id: LogicalQubitId) -> Result<(), WorkloadError> {
+        let block = self.require_live(logical_id)?.clone();
+        if block.family != SourceFamily::Surface {
+            return Err(WorkloadError::NonCliffordNotSurface {
+                op: "logical_tdag",
+                id: logical_id.0,
+                family: block.family.as_str(),
+            });
+        }
+        self.ops.push(WorkloadOp::LogicalTdag { logical_id });
+        Ok(())
+    }
+
+    /// Record a magic-state-consuming logical CCZ gate (issue #283).
+    ///
+    /// Surface-code only. All three blocks must be surface-code at the same
+    /// distance. Blocks remain live.
+    pub fn logical_ccz(
+        &mut self,
+        a: LogicalQubitId,
+        b: LogicalQubitId,
+        c: LogicalQubitId,
+    ) -> Result<(), WorkloadError> {
+        if a == b || b == c || a == c {
+            return Err(WorkloadError::LogicalCczNotDistinct);
+        }
+        let ba = self.require_live(a)?.clone();
+        let bb = self.require_live(b)?.clone();
+        let bc = self.require_live(c)?.clone();
+        for (id, block) in [(a, &ba), (b, &bb), (c, &bc)] {
+            if block.family != SourceFamily::Surface {
+                return Err(WorkloadError::NonCliffordNotSurface {
+                    op: "logical_ccz",
+                    id: id.0,
+                    family: block.family.as_str(),
+                });
+            }
+        }
+        if ba.distance != bb.distance || bb.distance != bc.distance {
+            return Err(WorkloadError::LogicalCczDistanceMismatch);
+        }
+        self.ops.push(WorkloadOp::LogicalCcz { a, b, c });
         Ok(())
     }
 
@@ -555,6 +644,104 @@ mod tests {
         assert_eq!(
             block.code_family,
             CodeFamily::SurfaceCodeLike { distance: 3 }
+        );
+    }
+
+    #[test]
+    fn logical_t_records_magic_state_consumption() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.logical_t(LogicalQubitId(0)).unwrap();
+        let w = b.finish();
+        assert_eq!(w.ops.len(), 2);
+        assert!(matches!(
+            w.ops[1],
+            WorkloadOp::LogicalT {
+                logical_id: LogicalQubitId(0)
+            }
+        ));
+    }
+
+    #[test]
+    fn logical_tdag_records_magic_state_consumption() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.logical_tdag(LogicalQubitId(0)).unwrap();
+        let w = b.finish();
+        assert!(matches!(w.ops[1], WorkloadOp::LogicalTdag { .. }));
+    }
+
+    #[test]
+    fn logical_t_rejects_repetition() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(
+            SourceFamily::Repetition,
+            3,
+            LogicalBasis::Z,
+            LogicalQubitId(0),
+        )
+        .unwrap();
+        assert_eq!(
+            b.logical_t(LogicalQubitId(0)),
+            Err(WorkloadError::NonCliffordNotSurface {
+                op: "logical_t",
+                id: 0,
+                family: "repetition"
+            })
+        );
+    }
+
+    #[test]
+    fn logical_ccz_requires_three_distinct_surface_blocks() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
+            .unwrap();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(2))
+            .unwrap();
+        b.logical_ccz(LogicalQubitId(0), LogicalQubitId(1), LogicalQubitId(2))
+            .unwrap();
+        let w = b.finish();
+        assert!(matches!(w.ops.last(), Some(WorkloadOp::LogicalCcz { .. })));
+    }
+
+    #[test]
+    fn logical_ccz_rejects_non_distinct() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(1))
+            .unwrap();
+        assert_eq!(
+            b.logical_ccz(LogicalQubitId(0), LogicalQubitId(0), LogicalQubitId(1)),
+            Err(WorkloadError::LogicalCczNotDistinct)
+        );
+    }
+
+    #[test]
+    fn logical_ccz_rejects_repetition() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.construct(
+            SourceFamily::Repetition,
+            3,
+            LogicalBasis::Z,
+            LogicalQubitId(1),
+        )
+        .unwrap();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(2))
+            .unwrap();
+        assert_eq!(
+            b.logical_ccz(LogicalQubitId(0), LogicalQubitId(1), LogicalQubitId(2)),
+            Err(WorkloadError::NonCliffordNotSurface {
+                op: "logical_ccz",
+                id: 1,
+                family: "repetition"
+            })
         );
     }
 }
