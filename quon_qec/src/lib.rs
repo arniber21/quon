@@ -10,6 +10,7 @@ pub mod experiment;
 pub mod family;
 pub mod lattice_surgery;
 pub mod patch_ops;
+pub mod qldpc;
 pub mod workload;
 
 pub use expand::{
