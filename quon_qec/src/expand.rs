@@ -261,6 +261,8 @@ impl ExpandedWorkload {
 pub enum ExpandError {
     #[error(transparent)]
     Qec(#[from] QecError),
+    #[error(transparent)]
+    Plan(#[from] crate::patch_ops::PlanError),
     #[error("unknown logical qubit id {0} in workload op")]
     UnknownLogicalId(u32),
     #[error("logical_cx requires surface-code blocks; logical {id} is `{family}`")]
@@ -364,13 +366,24 @@ pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, Expan
                 rounds.push(round);
             }
             WorkloadOp::MeasureLogical { logical_id, basis } => {
-                let layout = find_layout(&layouts, *logical_id)?;
-                rounds.push(measure_logical_round(layout, *basis));
+                // Lower logical measurement through the patch-operation planner
+                // (issue #281) rather than a separate ad hoc path.
+                let plan = crate::patch_ops::plan_measure_logical(*logical_id, *basis)?;
+                crate::patch_ops::lower_patch_plan(
+                    &plan,
+                    &mut layouts,
+                    &mut next_atom,
+                    &mut rounds,
+                )?;
             }
             WorkloadOp::LogicalCx { control, target } => {
-                crate::lattice_surgery::expand_logical_cx(
-                    *control,
-                    *target,
+                // Lower logical CX through the generalized patch-operation
+                // planner (issue #281) instead of the fixed CX template.
+                // The fixed template (expand_logical_cx) remains as a
+                // regression reference path.
+                let plan = crate::patch_ops::plan_logical_cx(*control, *target)?;
+                crate::patch_ops::lower_patch_plan(
+                    &plan,
                     &mut layouts,
                     &mut next_atom,
                     &mut rounds,
@@ -690,6 +703,8 @@ pub(crate) fn surface_memory_round(layout: &ExpandedBlock) -> PhysicalRound {
     }
 }
 
+// Kept as a regression reference path (issue #281 — now routed through patch_ops).
+#[allow(dead_code)]
 fn measure_logical_round(layout: &ExpandedBlock, basis: LogicalBasis) -> PhysicalRound {
     let terminal = layout
         .data_atoms
