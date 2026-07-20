@@ -18,19 +18,48 @@ use crate::layout::{AodTrapRef, AtomId, SiteId};
 pub struct ReuseRegionId(pub u32);
 
 /// Single-qubit local gate (microwave / Raman); no AOD place/move.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `H` predates issue #298 (X-check sandwich / |+⟩ prep, still hand-emitted
+/// directly by `quon_qec`'s hybrid schedule builder). `Rz`/`U3` were added by
+/// #298 to make the NA schedule a complete executable program for arbitrary
+/// single-qubit rotations: `Rz(theta)` is a locally-addressable Z-axis
+/// rotation (radians); `U3 { theta, phi, lambda }` is the escape hatch used
+/// when a frontend gate has no realization in the target's native rz/ry
+/// basis (mirrors mqt-qmap's `warnUnsupportedGates` policy — see
+/// `quon_na::native_gate_decomp`). Global `ry(theta)` is **not** a
+/// `LocalGateKind` — see [`NeutralAtomAction::GlobalRy`] for why.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalGateKind {
     H,
+    /// Local `rz(theta)` (radians).
+    Rz(f64),
+    /// Generic single-qubit rotation escape hatch `u3(theta, phi, lambda)`
+    /// (radians): `U3 = Rz(phi) * Ry(theta) * Rz(lambda)`.
+    U3 {
+        theta: f64,
+        phi: f64,
+        lambda: f64,
+    },
 }
 
 impl LocalGateKind {
+    /// Base gate-kind name (no parameters) — used for the dialect's `gate`
+    /// string attribute and JSON `gate` field.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::H => "h",
+            Self::Rz(_) => "rz",
+            Self::U3 { .. } => "u3",
         }
     }
 
+    /// Reconstruct the zero-parameter [`Self::H`] kind from its name.
+    ///
+    /// `Rz`/`U3` carry parameters that don't round-trip through a bare
+    /// string, so this only ever resolves `"h"`; use the dialect / schedule
+    /// JSON views (which carry `theta`/`phi`/`lambda` as separate fields)
+    /// to reconstruct parameterized kinds.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "h" | "H" => Some(Self::H),
@@ -52,10 +81,26 @@ pub enum NeutralAtomAction {
         atoms: Vec<AtomId>,
         duration_us: u64,
     },
-    /// Local single-qubit gate (e.g. Hadamard for X-check sandwich / |+⟩ prep).
+    /// Local single-qubit gate (e.g. Hadamard for X-check sandwich / |+⟩ prep,
+    /// or `rz`/`u3` from issue #298 native-gate decomposition).
     LocalGate {
         atom: AtomId,
         gate: LocalGateKind,
+        duration_us: u64,
+    },
+    /// Global `ry(theta)` whole-plane raster (issue #298): one action that
+    /// addresses **every** currently-trapped atom simultaneously, not a
+    /// specific atom list. Real neutral-atom hardware locally addresses only
+    /// the Z axis (via light shifts, see [`LocalGateKind::Rz`]); Y-axis
+    /// rotations come from a single global microwave/Raman field, so — unlike
+    /// `Entangle2`/`EntangleN`, which vary *which* atoms participate — a
+    /// `GlobalRy` has no atom list to vary: it is structurally "all atoms or
+    /// none" for a given cycle. This compiler emits each `GlobalRy` in its
+    /// own dedicated schedule layer (see `pipeline::interleave_local_gates`),
+    /// so distinct atoms' distinct required `ry` angles never contend for the
+    /// same raster pulse.
+    GlobalRy {
+        theta_rad: f64,
         duration_us: u64,
     },
     Measure {
@@ -92,6 +137,7 @@ impl NeutralAtomAction {
             NeutralAtomAction::Entangle2 { duration_us, .. }
             | NeutralAtomAction::EntangleN { duration_us, .. }
             | NeutralAtomAction::LocalGate { duration_us, .. }
+            | NeutralAtomAction::GlobalRy { duration_us, .. }
             | NeutralAtomAction::Measure { duration_us, .. }
             | NeutralAtomAction::Reset { duration_us, .. }
             | NeutralAtomAction::Reuse { duration_us, .. }

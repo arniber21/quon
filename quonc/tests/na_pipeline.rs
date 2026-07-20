@@ -21,6 +21,13 @@ fn na_target() -> PathBuf {
     workspace_path("../targets/neutral_atom/generic_rna_v0.json")
 }
 
+/// Same shape as `na_target()` but `native_gates` lacks `ry` (and `rx`), so no
+/// non-diagonal single-qubit gate has a native rz/ry/rz-basis realization —
+/// forces the `u3(theta, phi, lambda)` escape hatch (issue #298).
+fn na_target_no_ry() -> PathBuf {
+    workspace_path("tests/fixtures/na_target_no_ry.json")
+}
+
 #[test]
 fn bell_emits_na_schedule_and_resource_report() {
     let source = workspace_path("../test/na/bell.qn");
@@ -201,6 +208,7 @@ fn na_fixtures_produce_nonempty_schedules() {
         "qaoa_graph.qn",
         "ising.qn",
         "syndrome_round_toy.qn",
+        "rotations.qn",
     ] {
         let source = workspace_path(&format!("../test/na/{name}"));
         let output = quonc()
@@ -302,4 +310,114 @@ fn raw_graph_stress_cubic_and_erdos_renyi() {
     .expect("er schedule");
     assert!(!req.layers.is_empty());
     assert!(report.estimated_cycles > 0);
+}
+
+// --- Issue #298: local rz / global ry / u3 end to end ---
+
+#[test]
+fn rotations_qn_preserves_local_rz_and_global_ry_end_to_end() {
+    let source = workspace_path("../test/na/rotations.qn");
+    let output = quonc()
+        .arg(&source)
+        .arg("--target")
+        .arg(na_target())
+        .arg("--emit-na-schedule")
+        .arg("-")
+        .arg("--emit-resource-report")
+        .arg("-")
+        .arg("--verify-na")
+        .arg("--quiet")
+        .output()
+        .expect("spawn");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Schedule preserves both entangling gates (CNOT @(0,1), CNOT @(1,2))...
+    assert!(
+        stdout.contains("\"Entangle2\""),
+        "missing Entangle2 in schedule: {stdout}"
+    );
+    // ...and every 1-qubit gate: `H @0` and `Ry(...) @2` decompose through a
+    // global `ry` raster (`H` also contributes a local `rz`); `Rz(...) @1`
+    // and `Rz(...) @0` are local `rz`s.
+    assert!(
+        stdout.contains("\"LocalGate\""),
+        "missing LocalGate in schedule: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"GlobalRy\""),
+        "missing GlobalRy in schedule: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"rz\""),
+        "missing rz gate kind in schedule: {stdout}"
+    );
+
+    // Resource report gains #298 single-qubit gate counts/time, consistent
+    // with the circuit: `H`'s zero-angle Euler component is dropped by the
+    // existing (unmodified) `backend::decompose` ZYZ math, so `H` (1) +
+    // `Rz(..) @1` (1) + `Rz(..) @0` (1) = 3 local rz`s; `H` (1) +
+    // `Ry(..) @2` (1) = 2 global ry rasters; no u3 escape needed on this
+    // target (native_gates includes `ry`).
+    assert!(
+        stderr.contains("\"local_rz_count\": 3"),
+        "expected 3 local rz gates, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"global_ry_count\": 2"),
+        "expected 2 global ry rasters, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"local_u3_count\": 0"),
+        "expected no u3 escapes on a target with native ry, got: {stderr}"
+    );
+}
+
+#[test]
+fn bell_on_target_without_native_ry_falls_back_to_u3_with_warning() {
+    // `bell.qn` applies `H @0` — non-diagonal, so with no `ry` (or `rx`+`sx`)
+    // in the target's native set, `backend::decompose`'s ZYZ math has no
+    // realizable native form; the NA-path decomposer must escape to
+    // `u3(theta, phi, lambda)` with a warning (mirrors qmap's
+    // `warnUnsupportedGates`), not silently drop the gate or hard-fail.
+    let source = workspace_path("../test/na/bell.qn");
+    let output = quonc()
+        .arg(&source)
+        .arg("--target")
+        .arg(na_target_no_ry())
+        .arg("--emit-na-schedule")
+        .arg("-")
+        .arg("--emit-resource-report")
+        .arg("-")
+        .arg("--verify-na")
+        .arg("--quiet")
+        .output()
+        .expect("spawn");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stdout.contains("\"u3\""),
+        "missing u3 escape-hatch gate in schedule: {stdout}"
+    );
+    assert!(
+        stderr.contains("\"local_u3_count\": 1"),
+        "expected one u3 escape, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("native-gate-decomp") && stderr.contains("u3"),
+        "expected an unsupported-gate warning on stderr, got: {stderr}"
+    );
 }

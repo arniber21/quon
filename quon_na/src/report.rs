@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::qec::{CodeBlock, CodeFamily, QecError, atoms_per_logical};
-use crate::schedule::{NeutralAtomAction, ScheduleLayer};
+use crate::schedule::{LocalGateKind, NeutralAtomAction, ScheduleLayer};
 
 #[cfg(feature = "flux")]
 use flux_rs::attrs::*;
@@ -156,6 +156,10 @@ fn accumulate_action_atoms(
         | NeutralAtomAction::Reuse { atom, .. } => {
             seen.insert(*atom);
         }
+        // No discrete atom list (issue #298): a global raster neither
+        // allocates nor frees an atom, so it doesn't change the
+        // allocated-atom census tracked here.
+        NeutralAtomAction::GlobalRy { .. } => {}
         NeutralAtomAction::Wait { .. } => {}
     }
 }
@@ -263,6 +267,39 @@ pub struct ResourceReport {
     /// per-op measurement/reset counts, and reused ancilla count (issue #282).
     #[serde(default)]
     pub temporal_atom_metrics: TemporalAtomMetrics,
+
+    // --- Single-qubit gate counts / time (issue #298) ---
+    //
+    // `Option` following the `aware_search_completed_layers` schema-evolution
+    // pattern: `None` only for a `ResourceReport` value that predates #298
+    // (or was hand-built without calling `from_layers`); `from_layers` always
+    // sets `Some`, `Some(0)` included, since single-qubit gate accounting
+    // applies to every NA schedule. Per-gate timing uses the target's
+    // `timing.single_qubit_us` (0.625 us in `generic_rna_v0.json`) — this is
+    // the same per-gate model documented (and deliberately *not* qmap's
+    // ~52 us global-raster batching model) in
+    // `docs/neutral_atom/architecture_model.md` §8.6.
+    /// Count of local `h` gate actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_h_count: Option<u64>,
+    /// Count of local `rz(theta)` gate actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_rz_count: Option<u64>,
+    /// Count of local `u3(theta, phi, lambda)` escape-hatch gate actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_u3_count: Option<u64>,
+    /// Cumulative local single-qubit gate op time (us): sum of `LocalGate`
+    /// (`h`/`rz`/`u3`) durations, independent of layer wall-clock overlap —
+    /// same accounting convention as `rearrangement_time_us`/`transfer_time_us`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_gate_time_us: Option<u64>,
+    /// Count of global `ry(theta)` whole-plane raster actions (one action =
+    /// one raster covering every trapped atom, not per-atom).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_ry_count: Option<u64>,
+    /// Cumulative global `ry` raster op time (us).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_ry_time_us: Option<u64>,
 }
 
 impl Default for ResourceReport {
@@ -297,6 +334,12 @@ impl Default for ResourceReport {
             aware_search_fell_back_layers: None,
             error_budget: None,
             temporal_atom_metrics: TemporalAtomMetrics::default(),
+            local_h_count: None,
+            local_rz_count: None,
+            local_u3_count: None,
+            local_gate_time_us: None,
+            global_ry_count: None,
+            global_ry_time_us: None,
         }
     }
 }
@@ -443,6 +486,12 @@ impl ResourceReport {
     /// Leaves sizing fields at zero / `None` until a builder overlay is applied.
     pub fn from_layers(layers: &[ScheduleLayer]) -> Self {
         let mut report = ResourceReport::default();
+        let mut local_h = 0u64;
+        let mut local_rz = 0u64;
+        let mut local_u3 = 0u64;
+        let mut local_gate_time_us = 0u64;
+        let mut global_ry = 0u64;
+        let mut global_ry_time_us = 0u64;
 
         for layer in layers {
             let mut layer_has_rydberg = false;
@@ -471,8 +520,22 @@ impl ResourceReport {
                         layer_has_rydberg = true;
                         report.entangle_n_count += 1;
                     }
-                    NeutralAtomAction::LocalGate { .. } => {
-                        // Locals contribute wall-clock via max layer duration only.
+                    NeutralAtomAction::LocalGate { gate, .. } => {
+                        // Locals contribute wall-clock via max layer duration
+                        // only (same convention as `Reuse` below); counts and
+                        // cumulative op time are tallied separately (#298).
+                        match gate {
+                            LocalGateKind::H => local_h += 1,
+                            LocalGateKind::Rz(_) => local_rz += 1,
+                            LocalGateKind::U3 { .. } => local_u3 += 1,
+                        }
+                        local_gate_time_us += duration_us;
+                    }
+                    NeutralAtomAction::GlobalRy { .. } => {
+                        // Whole-plane raster: wall-clock via max layer
+                        // duration only, same as other local ops (#298).
+                        global_ry += 1;
+                        global_ry_time_us += duration_us;
                     }
                     NeutralAtomAction::Measure { .. } => {
                         layer_has_measurement = true;
@@ -507,6 +570,12 @@ impl ResourceReport {
         report.estimated_cycles = layers.len() as u64;
         report.bottleneck = classify_bottleneck(&report);
         report.temporal_atom_metrics = TemporalAtomMetrics::from_layers(layers);
+        report.local_h_count = Some(local_h);
+        report.local_rz_count = Some(local_rz);
+        report.local_u3_count = Some(local_u3);
+        report.local_gate_time_us = Some(local_gate_time_us);
+        report.global_ry_count = Some(global_ry);
+        report.global_ry_time_us = Some(global_ry_time_us);
         report
     }
 
@@ -960,7 +1029,23 @@ mod tests {
         let empty = ResourceReport::from_layers(&[]);
         assert_eq!(empty.estimated_cycles, 0);
         assert_eq!(empty.bottleneck, BottleneckKind::None);
-        assert_eq!(empty, ResourceReport::default());
+        // Unlike `default()` (where the #298 single-qubit-gate fields are
+        // `None`, meaning "never computed"), `from_layers` always computes
+        // them — `Some(0)` for an empty schedule, not `None` — the same
+        // "applies to every report" semantics as e.g. `entangle2_count`,
+        // just kept `Option` for `deny_unknown_fields` schema evolution.
+        assert_eq!(
+            empty,
+            ResourceReport {
+                local_h_count: Some(0),
+                local_rz_count: Some(0),
+                local_u3_count: Some(0),
+                local_gate_time_us: Some(0),
+                global_ry_count: Some(0),
+                global_ry_time_us: Some(0),
+                ..ResourceReport::default()
+            }
+        );
 
         let blank_layer = ResourceReport::from_layers(&[ScheduleLayer {
             cycle: 0,

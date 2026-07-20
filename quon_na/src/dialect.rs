@@ -39,6 +39,9 @@ pub mod op {
     pub const TRANSFER: &str = "quantum.na.transfer";
     pub const ENTANGLE: &str = "quantum.na.entangle";
     pub const LOCAL_GATE: &str = "quantum.na.local_gate";
+    /// Global `ry(theta)` whole-plane raster (issue #298) — see
+    /// [`crate::schedule::NeutralAtomAction::GlobalRy`].
+    pub const GLOBAL_RY: &str = "quantum.na.global_ry";
     pub const MEASURE: &str = "quantum.na.measure";
     pub const RESET: &str = "quantum.na.reset";
     pub const REUSE: &str = "quantum.na.reuse";
@@ -49,13 +52,14 @@ pub mod op {
 
 /// The primary `quantum.na` ops. `transfer` is included because trap transfers
 /// are first-class schedule actions in `quon_na`.
-pub const OPS: [&str; 12] = [
+pub const OPS: [&str; 13] = [
     op::ALLOC_ATOM,
     op::PLACE,
     op::MOVE,
     op::TRANSFER,
     op::ENTANGLE,
     op::LOCAL_GATE,
+    op::GLOBAL_RY,
     op::MEASURE,
     op::RESET,
     op::REUSE,
@@ -78,6 +82,12 @@ pub mod attr {
     pub const DURATION_US: &str = "duration_us";
     pub const BASIS: &str = "basis";
     pub const GATE: &str = "gate";
+    /// `rz`/`u3` theta parameter (radians); also the `global_ry` angle.
+    pub const THETA: &str = "theta";
+    /// `u3` phi parameter (radians).
+    pub const PHI: &str = "phi";
+    /// `u3` lambda parameter (radians).
+    pub const LAMBDA: &str = "lambda";
     pub const REGION: &str = "region";
     pub const DIRECTION: &str = "direction";
     pub const MOVES: &str = "moves";
@@ -205,6 +215,21 @@ pub enum ActionSpec {
     LocalGate {
         atom: u32,
         gate: String,
+        /// Present for `rz`/`u3`; absent for `h`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theta: Option<f64>,
+        /// Present for `u3` only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phi: Option<f64>,
+        /// Present for `u3` only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lambda: Option<f64>,
+        duration_us: u64,
+    },
+    /// Global `ry(theta)` whole-plane raster (issue #298); not keyed to an
+    /// atom list — see [`crate::schedule::NeutralAtomAction::GlobalRy`].
+    GlobalRy {
+        theta: f64,
         duration_us: u64,
     },
     Measure {
@@ -468,6 +493,7 @@ pub fn verify<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(),
         op::TRANSFER => verify_transfer(operation),
         op::ENTANGLE => verify_entangle(operation),
         op::LOCAL_GATE => verify_local_gate(operation),
+        op::GLOBAL_RY => verify_global_ry(operation),
         op::MEASURE => verify_measure(operation),
         op::RESET => verify_reset(operation),
         op::REUSE => verify_reuse(operation),
@@ -824,12 +850,31 @@ fn verify_local_gate<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     require_non_negative_i64(operation, op::LOCAL_GATE, attr::DURATION_US)?;
     match require_string(operation, op::LOCAL_GATE, attr::GATE)?.as_str() {
         "h" | "H" => Ok(()),
+        "rz" => {
+            require_f64(operation, op::LOCAL_GATE, attr::THETA)?;
+            Ok(())
+        }
+        "u3" => {
+            require_f64(operation, op::LOCAL_GATE, attr::THETA)?;
+            require_f64(operation, op::LOCAL_GATE, attr::PHI)?;
+            require_f64(operation, op::LOCAL_GATE, attr::LAMBDA)?;
+            Ok(())
+        }
         _ => Err(VerifyError::WrongAttributeType {
             op: op::LOCAL_GATE,
             attr: attr::GATE,
-            expected: "\"h\"",
+            expected: "\"h\", \"rz\", or \"u3\"",
         }),
     }
+}
+
+fn verify_global_ry<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
+    operation: &O,
+) -> Result<(), VerifyError> {
+    expect_counts(operation, op::GLOBAL_RY, 0, 0)?;
+    require_f64(operation, op::GLOBAL_RY, attr::THETA)?;
+    require_non_negative_i64(operation, op::GLOBAL_RY, attr::DURATION_US)?;
+    Ok(())
 }
 
 fn verify_reset<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(), VerifyError> {
@@ -1041,6 +1086,13 @@ fn verify_layer_region(
                 verify_local_gate(&operation)?;
                 let atom = require_non_negative_i64(&operation, op::LOCAL_GATE, attr::ATOM)? as u32;
                 facts.events.push(AtomEvent::Use(atom));
+            }
+            op::GLOBAL_RY => {
+                // Not atom-keyed (see `NeutralAtomAction::GlobalRy`): it has
+                // no `atom` operand/attribute, so it cannot participate in
+                // the per-atom measurement/reset/reuse ordering checks below
+                // and is intentionally not pushed as an `AtomEvent`.
+                verify_global_ry(&operation)?;
             }
             op::MEASURE => {
                 verify_measure(&operation)?;
@@ -1768,27 +1820,61 @@ pub fn entangle<'c>(
     )
 }
 
+/// `theta`/`phi`/`lambda` are only attached when `Some` — `h` passes all
+/// `None`; `rz` passes `theta` only; `u3` passes all three.
+#[allow(clippy::too_many_arguments)]
 pub fn local_gate<'c>(
     context: &'c Context,
     atom_value: Value<'c, '_>,
     atom: u32,
     gate: &str,
+    theta: Option<f64>,
+    phi: Option<f64>,
+    lambda: Option<f64>,
     duration_us: u64,
     location: Location<'c>,
 ) -> Result<Operation<'c>, BuildError> {
+    let mut attributes = vec![
+        named_attr(context, attr::ATOM, i64_attr(context, i64::from(atom))),
+        named_attr(context, attr::GATE, string_attr(context, gate)),
+        named_attr(
+            context,
+            attr::DURATION_US,
+            i64_attr(context, duration_us as i64),
+        ),
+    ];
+    if let Some(theta) = theta {
+        attributes.push(named_attr(context, attr::THETA, f64_attr(context, theta)));
+    }
+    if let Some(phi) = phi {
+        attributes.push(named_attr(context, attr::PHI, f64_attr(context, phi)));
+    }
+    if let Some(lambda) = lambda {
+        attributes.push(named_attr(context, attr::LAMBDA, f64_attr(context, lambda)));
+    }
     finish(
         OperationBuilder::new(op::LOCAL_GATE, location)
             .add_operands(&[atom_value])
             .add_results(&[atom_type(context)])
-            .add_attributes(&[
-                named_attr(context, attr::ATOM, i64_attr(context, i64::from(atom))),
-                named_attr(context, attr::GATE, string_attr(context, gate)),
-                named_attr(
-                    context,
-                    attr::DURATION_US,
-                    i64_attr(context, duration_us as i64),
-                ),
-            ]),
+            .add_attributes(&attributes),
+    )
+}
+
+pub fn global_ry<'c>(
+    context: &'c Context,
+    theta: f64,
+    duration_us: u64,
+    location: Location<'c>,
+) -> Result<Operation<'c>, BuildError> {
+    finish(
+        OperationBuilder::new(op::GLOBAL_RY, location).add_attributes(&[
+            named_attr(context, attr::THETA, f64_attr(context, theta)),
+            named_attr(
+                context,
+                attr::DURATION_US,
+                i64_attr(context, duration_us as i64),
+            ),
+        ]),
     )
 }
 
@@ -1990,6 +2076,9 @@ fn append_action<'c, B: BlockLike<'c, 'c>>(
         ActionSpec::LocalGate {
             atom,
             gate,
+            theta,
+            phi,
+            lambda,
             duration_us,
         } => {
             let atom_ref = append_synthetic_atom(context, block, *atom, location)?;
@@ -1998,9 +2087,15 @@ fn append_action<'c, B: BlockLike<'c, 'c>>(
                 atom_ref,
                 *atom,
                 gate,
+                *theta,
+                *phi,
+                *lambda,
                 *duration_us,
                 location,
             )?);
+        }
+        ActionSpec::GlobalRy { theta, duration_us } => {
+            block.append_operation(global_ry(context, *theta, *duration_us, location)?);
         }
         ActionSpec::Measure {
             atom,

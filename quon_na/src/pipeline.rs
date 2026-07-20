@@ -42,7 +42,19 @@ fn elapsed_us(start: Instant) -> u64 {
 use melior::ir::Module;
 
 #[cfg(feature = "mlir")]
-use crate::extract::{ExtractError, extract_interaction_graph};
+use crate::extract::{ExtractError, LocalGateExtract, extract_interaction_graph_and_local_gates};
+#[cfg(feature = "mlir")]
+use crate::graph::InteractionId;
+#[cfg(feature = "mlir")]
+use crate::layout::AtomId;
+#[cfg(feature = "mlir")]
+use crate::native_gate_decomp::{
+    DecomposedLocalGate, NaDecompError, NaLocalOp, decompose_local_gates,
+};
+#[cfg(feature = "mlir")]
+use crate::schedule::NeutralAtomAction;
+#[cfg(feature = "mlir")]
+use std::collections::BTreeMap;
 
 /// Which movement/placement backend to run after entangling-layer scheduling.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -114,6 +126,9 @@ pub enum NaPipelineError {
     Movement(#[from] crate::movement::MovementPlanError),
     #[error("schedule compaction failed: {0}")]
     Compaction(#[from] CompactionError),
+    #[cfg(feature = "mlir")]
+    #[error("single-qubit gate decomposition failed: {0}")]
+    LocalGateDecomp(#[from] NaDecompError),
     #[error("interaction id overflow while building QEC hybrid schedule")]
     InteractionIdOverflow,
     #[error(
@@ -205,6 +220,11 @@ fn map_zone_kind(kind: BackendZoneKind) -> ZoneKind {
 }
 
 /// Schedule from a post-dynamic MLIR module.
+///
+/// Uses [`extract_interaction_graph_and_local_gates`] (not the bare-graph
+/// extractor) so 1-qubit gates are preserved end to end (issue #298) — the
+/// production `quonc` path always goes through here, never through
+/// [`run_from_graph`] directly.
 #[cfg(feature = "mlir")]
 pub fn run_from_module<'c>(
     module: &Module<'c>,
@@ -213,17 +233,19 @@ pub fn run_from_module<'c>(
 ) -> Result<NaScheduleArtifacts, NaPipelineError> {
     validate_speed_model(na).map_err(NaPipelineError::InvalidTarget)?;
     let extract_started = Instant::now();
-    let graph = extract_interaction_graph(module)?;
+    let (graph, local_gates) = extract_interaction_graph_and_local_gates(module)?;
     let extract_us = elapsed_us(extract_started);
     let logical_qubits = graph.vertices.len() as u64;
     if opts.dump_ir {
         eprintln!(
-            "--- interaction graph ---\nvertices={} interactions={}",
+            "--- interaction graph ---\nvertices={} interactions={} local_1q_gates={}",
             graph.vertices.len(),
-            graph.interactions.len()
+            graph.interactions.len(),
+            local_gates.len(),
         );
     }
-    let mut artifacts = run_from_graph(graph, na, opts, Some(logical_qubits))?;
+    let mut artifacts =
+        run_from_graph_with_local_gates(graph, local_gates, na, opts, Some(logical_qubits))?;
     if let Some(stats) = artifacts.stats.as_mut() {
         stats.stage_timings_us.extract_us = Some(extract_us);
         stats.stage_timings_us.total_us =
@@ -232,7 +254,9 @@ pub fn run_from_module<'c>(
     Ok(artifacts)
 }
 
-/// Schedule from a raw interaction graph (debug / stress entry).
+/// Schedule from a raw interaction graph (debug / stress entry) — no 1-qubit
+/// gates (there is no MLIR to extract them from). Use [`run_from_module`] for
+/// the full-fidelity, 1-qubit-gate-preserving production path.
 pub fn run_from_graph(
     graph: InteractionGraph,
     na: &NeutralAtomTarget,
@@ -251,8 +275,166 @@ pub fn run_from_graph(
     let max_pairs = na.interaction.max_parallel_entangling_pairs;
     let scheduled = schedule_entangling_layers(req, max_pairs)?;
     let entangling_layers_us = elapsed_us(stage_started);
-    let mut req = scheduled.request;
 
+    finish_pipeline(
+        scheduled.request,
+        na,
+        opts,
+        logical_qubits,
+        pipeline_started,
+        schedule_from_graph_us,
+        entangling_layers_us,
+    )
+}
+
+/// Schedule from a raw interaction graph plus captured 1-qubit gates
+/// (issue #298): decomposes each gate to `na.native_gates` (local `rz`,
+/// global `ry`, or a `u3` escape hatch — see [`crate::native_gate_decomp`])
+/// and splices the results into the entangling-scheduled layers at the
+/// gate's extraction-time anchor, before zoned/flat-AOD placement (neither
+/// backend's movement planning needs `LocalGate`/`GlobalRy` site info — see
+/// [`interleave_local_gates`]).
+#[cfg(feature = "mlir")]
+pub fn run_from_graph_with_local_gates(
+    graph: InteractionGraph,
+    local_gates: Vec<LocalGateExtract>,
+    na: &NeutralAtomTarget,
+    opts: NaScheduleOptions,
+    logical_qubits_override: Option<u64>,
+) -> Result<NaScheduleArtifacts, NaPipelineError> {
+    validate_speed_model(na).map_err(NaPipelineError::InvalidTarget)?;
+    let logical_qubits = logical_qubits_override.unwrap_or(graph.vertices.len() as u64);
+    let pipeline_started = Instant::now();
+
+    let decomposed = decompose_local_gates(&local_gates, &na.native_gates)?;
+
+    let stage_started = Instant::now();
+    let req = schedule_from_graph(graph)?;
+    let schedule_from_graph_us = elapsed_us(stage_started);
+
+    let stage_started = Instant::now();
+    let max_pairs = na.interaction.max_parallel_entangling_pairs;
+    let scheduled = schedule_entangling_layers(req, max_pairs)?;
+    let entangling_layers_us = elapsed_us(stage_started);
+
+    let mut req = scheduled.request;
+    req.layers = interleave_local_gates(req.layers, &scheduled.interaction_cycle, decomposed, na);
+
+    finish_pipeline(
+        req,
+        na,
+        opts,
+        logical_qubits,
+        pipeline_started,
+        schedule_from_graph_us,
+        entangling_layers_us,
+    )
+}
+
+/// Splice decomposed 1-qubit gate actions into `layers` at their
+/// extraction-time anchor (issue #298).
+///
+/// Every decomposed step becomes its **own** dedicated [`ScheduleLayer`]
+/// (never sharing a layer with another local step, an entangling action, or
+/// another `GlobalRy`). This is a deliberate correctness-first simplification
+/// over layer-packing multiple independent-atom local gates together: it
+/// trivially guarantees (a) no two `LocalGate`s on the same atom are ever
+/// reordered relative to each other or to the interaction they're anchored
+/// to, and (b) a `GlobalRy` never contends with a different atom's
+/// independently-required `ry` angle in the same raster pulse (real hardware
+/// can only realize one global Y angle per cycle). Packing independent local
+/// gates into shared layers for fewer cycles is a follow-up optimization, not
+/// a correctness requirement — see the PR description for issue #298.
+///
+/// A gate with `after: None` (no ≥2-qubit interaction ever touched its
+/// qubit) is scheduled before every entangling layer; a gate anchored to
+/// interaction `id` is scheduled immediately after the layer that hosted
+/// `id` (any position strictly between that layer and the qubit's *next*
+/// interaction, if any, is causally equivalent — nothing else touches the
+/// atom in between).
+#[cfg(feature = "mlir")]
+fn interleave_local_gates(
+    layers: Vec<ScheduleLayer>,
+    interaction_cycle: &BTreeMap<InteractionId, u32>,
+    decomposed: Vec<DecomposedLocalGate>,
+    na: &NeutralAtomTarget,
+) -> Vec<ScheduleLayer> {
+    let single_qubit_us = na.timing.single_qubit_us.max(0.0).round() as u64;
+
+    let mut by_anchor: BTreeMap<Option<u32>, Vec<NeutralAtomAction>> = BTreeMap::new();
+    for gate in decomposed {
+        let anchor_cycle = gate
+            .after
+            .and_then(|id| interaction_cycle.get(&id).copied());
+        let atom = AtomId(gate.qubit.0);
+        let bucket = by_anchor.entry(anchor_cycle).or_default();
+        for op in gate.ops {
+            let action = match op {
+                NaLocalOp::Local(kind) => NeutralAtomAction::LocalGate {
+                    atom,
+                    gate: kind,
+                    duration_us: single_qubit_us,
+                },
+                NaLocalOp::GlobalRy(theta) => NeutralAtomAction::GlobalRy {
+                    theta_rad: theta,
+                    duration_us: single_qubit_us,
+                },
+            };
+            bucket.push(action);
+        }
+    }
+
+    let mut out = Vec::with_capacity(layers.len());
+    if let Some(actions) = by_anchor.remove(&None) {
+        for action in actions {
+            out.push(ScheduleLayer {
+                cycle: 0,
+                actions: vec![action],
+            });
+        }
+    }
+    for layer in layers {
+        let cycle = layer.cycle;
+        out.push(layer);
+        if let Some(actions) = by_anchor.remove(&Some(cycle)) {
+            for action in actions {
+                out.push(ScheduleLayer {
+                    cycle: 0,
+                    actions: vec![action],
+                });
+            }
+        }
+    }
+    // Defensive: an anchor cycle that didn't match any layer shouldn't
+    // happen (`interaction_cycle` values always come from `layers.cycle`),
+    // but append rather than silently drop if it ever does.
+    for (_, actions) in by_anchor {
+        for action in actions {
+            out.push(ScheduleLayer {
+                cycle: 0,
+                actions: vec![action],
+            });
+        }
+    }
+
+    for (i, layer) in out.iter_mut().enumerate() {
+        layer.cycle = i as u32;
+    }
+    out
+}
+
+/// Shared tail of the pipeline: placement/movement, optional compaction, and
+/// the resource report. `req.layers` must already be fully populated
+/// (entangling actions, plus any interleaved local-gate actions).
+fn finish_pipeline(
+    mut req: GraphScheduleRequest,
+    na: &NeutralAtomTarget,
+    opts: NaScheduleOptions,
+    logical_qubits: u64,
+    pipeline_started: Instant,
+    schedule_from_graph_us: u64,
+    entangling_layers_us: u64,
+) -> Result<NaScheduleArtifacts, NaPipelineError> {
     // Only set for the zoned backend; overlaid onto the resource report
     // below (issue #111 review finding — makes a routing-aware search's
     // silent fallback to the greedy assignment visible instead of

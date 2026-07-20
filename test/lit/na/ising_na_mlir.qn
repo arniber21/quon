@@ -3,6 +3,15 @@
 -- Multi-layer Ising Trotter step (n=6) → quantum.na MLIR (#167, ADR-0011).
 -- Exercises the ScheduleLayer → ScheduleSpec lowering across many cycles:
 -- repeated transfer / move / entangle stages with reconstructed positions.
+--
+-- Issue #298 note: the frontend elaborates `Rzz(theta) @(i, i+1)` as
+-- `CNOT @(i, i+1) |> Rz(theta) @(i+1) |> CNOT @(i, i+1)` (a ZZ-interaction
+-- sandwich) and `x_layer` applies a bare `Rx` per qubit. Both the sandwich's
+-- local `Rz` and each `Rx` (which has no first-class `LocalGateKind` — see
+-- `quon_na::native_gate_decomp` — so it takes the `u3` escape hatch) used to
+-- be silently dropped during extraction; they now correctly appear between
+-- the two `CNOT`s / after the qubit's last interaction, which shifts every
+-- pinned cycle number below versus pre-#298.
 
 fn zz_layer(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
         (for i in (range(n - 1)) { (Rzz(((- 2.0) * j) * tau)) @(i, i + 1) })
@@ -39,11 +48,11 @@ fn ising_na(): Q<List<Bit>> = run {
 -- share one AOD grab (row coupling): it splits into two movement stages
 -- before its Rydberg layer.
 -- CHECK: "quantum.na.move"()
--- CHECK: cycle = 6 : i64
+-- CHECK: cycle = 8 : i64
 -- CHECK: "quantum.na.move"()
--- CHECK: cycle = 9 : i64
--- CHECK: "quantum.na.entangle"()
 -- CHECK: cycle = 11 : i64
+-- CHECK: "quantum.na.entangle"()
+-- CHECK: cycle = 13 : i64
 -- CHECK: "quantum.na.entangle"()
 --
 -- Schedule-level legality attributes come from the target descriptor.

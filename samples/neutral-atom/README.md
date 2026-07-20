@@ -55,8 +55,14 @@ On `bell.qn` (2 qubits, 1 `CNOT`), both backends succeed:
 
 | Backend | Estimated cycles | Rearrangement steps | Trap transfers | Bottleneck |
 | --- | ---: | ---: | ---: | --- |
-| `zoned` (default) | 4 | 1 | 4 | rearrangement |
-| `flat` | 1 | 0 | 0 | rydberg |
+| `zoned` (default) | 6 | 1 | 4 | rearrangement |
+| `flat` | 3 | 0 | 0 | rydberg |
+
+(Issue #298: `H @0`'s Z-Y-Z decomposition into a local `rz` + a global `ry`
+raster now contributes 2 real schedule layers — previously it was silently
+dropped during extraction, so these headline cycle counts undercounted the
+actual program. Rearrangement/transfer/bottleneck are unaffected: 1-qubit
+gates carry no site placement requirement.)
 
 `zoned` moves qubit 0 into a dedicated entanglement zone before the Rydberg
 pulse; `flat` entangles the two atoms in place on the row-major storage
@@ -93,10 +99,19 @@ quonc --target targets/neutral_atom/generic_rna_v0.json --na-backend zoned \
 
 | Sample | Placer | Estimated cycles | Rearrangement steps | Trap transfers | Total time (µs) |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `qaoa_graph.qn` (dense, 3-regular graph) | `routing-agnostic` (default) | 34 | 8 | 22 | 1640 |
-| `qaoa_graph.qn` | `routing-aware` | 37 | 9 | 24 | 1718 |
-| `ising.qn` (nearest-neighbor chain) | `routing-agnostic` (default) | 37 | 9 | 20 | 2206 |
-| `ising.qn` | `routing-aware` | 37 | 9 | 20 | 2245 |
+| `qaoa_graph.qn` (dense, 3-regular graph) | `routing-agnostic` (default) | 52 | 8 | 22 | 1658 |
+| `qaoa_graph.qn` | `routing-aware` | 55 | 9 | 24 | 1736 |
+| `ising.qn` (nearest-neighbor chain) | `routing-agnostic` (default) | 48 | 9 | 20 | 2217 |
+| `ising.qn` | `routing-aware` | 48 | 9 | 20 | 2256 |
+
+(Issue #298: both programs apply per-qubit `H`/`Rx` rotations
+(`qaoa_graph.qn`'s `hadamard_all`/`mixer_4`; `ising.qn`'s `x_layer`) that
+extraction used to silently drop; they now contribute real schedule layers,
+raising `estimated_cycles`/`total_time_us` here versus earlier numbers.
+Rearrangement/transfer counts are unaffected. `Rx` has no first-class
+`LocalGateKind` yet — issue #298's scope is `h`/`rz`/`ry`/`u3` — so it
+decomposes through the `u3(theta, phi, lambda)` escape hatch even though
+`rx` is nominally in `generic_rna_v0.json`'s `native_gates`.)
 
 Both zoned placer modes are ZAC-style descendants (Sec. VI-B of the RAP
 paper, arXiv:2505.22715): `routing-agnostic` (the default) places atoms by
@@ -110,8 +125,8 @@ This is the honest result, not a cherry-picked one: at this small size,
 `routing-aware` is not a strict win over `routing-agnostic` on either
 graph — on the chain the two modes produce *identical* structural metrics
 (cycles, rearrangement steps, trap transfers: locality already does the
-work for the placer), but the total wall-clock time still differs (2206 µs
-vs. 2245 µs). That is not a silent fallback to the agnostic planner: both
+work for the placer), but the total wall-clock time still differs (2217 µs
+vs. 2256 µs). That is not a silent fallback to the agnostic planner: both
 runs report `na_placer: routing_aware` in their schedule metadata and take
 the aware code path; the aware search's Eq. (1) routing-cost accounting
 adds a small amount of scheduled time even when it lands on the same

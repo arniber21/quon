@@ -11,10 +11,10 @@
   "measurement_rounds": 0,
   "reset_rounds": 0,
   "wait_time_us": 0,
-  "total_time_us": 367,
+  "total_time_us": 369,
   "logical_qubits": 2,
   "physical_atoms": 2,
-  "estimated_cycles": 4,
+  "estimated_cycles": 6,
   "bottleneck": "rearrangement",
   "aware_search_completed_layers": 0,
   "aware_search_fell_back_layers": 0,
@@ -29,6 +29,8 @@
   "temporal_atom_metrics": {
     "peak_atoms": 2,
     "allocated_atoms_series": [
+      1,
+      1,
       2,
       2,
       2,
@@ -38,5 +40,11 @@
     "reset_count": 0,
     "reuse_count": 0,
     "reused_ancilla_count": 0
-  }
+  },
+  "local_h_count": 0,
+  "local_rz_count": 1,
+  "local_u3_count": 0,
+  "local_gate_time_us": 1,
+  "global_ry_count": 1,
+  "global_ry_time_us": 1
 }

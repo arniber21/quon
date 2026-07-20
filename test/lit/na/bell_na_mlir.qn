@@ -1,7 +1,8 @@
 -- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-mlir - --quiet | %FileCheck %s
 --
 -- Bell → quantum.na MLIR (#167, ADR-0011): the canonical schedule artifact
--- for a neutral-atom target. Zoned pipeline: load transfers, one grouped
+-- for a neutral-atom target. Zoned pipeline: `H @0`'s Z-Y-Z decomposition
+-- (local `rz` + global `ry`, issue #298), then load transfers, one grouped
 -- move to the entangle pair, store transfers, then the Rydberg layer.
 
 fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
@@ -16,10 +17,18 @@ fn bell_na(): Q<(Bit, Bit)> = run {
 }
 
 -- CHECK: "quantum.na.schedule"()
+--
+-- `H @0` preserved end to end (issue #298): a local `rz` then a global `ry`
+-- raster, both before any movement (neither needs a site placement).
 -- CHECK: "quantum.na.layer"()
+-- CHECK: "quantum.na.local_gate"
+-- CHECK-SAME: gate = "rz"
+-- CHECK: "quantum.na.layer"()
+-- CHECK: "quantum.na.global_ry"()
+--
 -- CHECK: "quantum.na.transfer"()
 -- CHECK-SAME: direction = "slm_to_aod"
--- CHECK: cycle = 0 : i64
+-- CHECK: cycle = 2 : i64
 -- CHECK: "quantum.na.move"()
 -- CHECK-SAME: to_y_um\22:310.0
 -- CHECK: "quantum.na.transfer"()

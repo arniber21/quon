@@ -46,6 +46,8 @@ pub mod layout;
 #[cfg(feature = "mlir")]
 pub mod lower;
 pub mod movement;
+#[cfg(feature = "mlir")]
+pub mod native_gate_decomp;
 pub mod pipeline;
 pub mod placement;
 pub mod qec;
@@ -123,7 +125,11 @@ pub use dialect::{
     ScheduleSpec, dump_schedule_text, verify, verify_mlir_text, verify_module, verify_schedule_spec,
 };
 #[cfg(feature = "mlir")]
-pub use extract::{ExtractError, extract_interaction_graph, extract_interaction_graph_with_gamma};
+pub use extract::{
+    ExtractError, LocalGateExtract, extract_interaction_graph,
+    extract_interaction_graph_and_local_gates,
+    extract_interaction_graph_and_local_gates_with_gamma, extract_interaction_graph_with_gamma,
+};
 #[cfg(feature = "mlir")]
 pub use lower::{ScheduleLowerError, ScheduleLowerParams, lower_layers, lower_schedule};
 #[cfg(feature = "mlir")]

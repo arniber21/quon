@@ -5,6 +5,11 @@
 -- min_rydberg_spacing_um (18.75 um) apart — adjacent pair columns are only
 -- 10-12 um apart, so naive nearest-pair assignment fails the dialect's R3
 -- verifier. Placed correctly, the pairs sit at x = 0/2 and x = 24/26.
+--
+-- Issue #298: `H @0 |> H @2` are now preserved (local `rz` + global `ry`
+-- each, before any movement), pushing the final Rydberg layer's cycle from
+-- 3 to 10 versus pre-#298 — positions and the "same layer" structure are
+-- unaffected.
 
 fn two_bells(): Circuit<4, 4, 4, Clifford> = circuit {
         H @0 |> H @2 |> CNOT @(0, 1) |> CNOT @(2, 3)
@@ -29,7 +34,7 @@ fn par_na(): Q<List<Bit>> = run {
 -- CHECK-SAME: x_um\22:0.0
 -- CHECK: "quantum.na.entangle"()
 -- CHECK-SAME: x_um\22:24.0
--- CHECK: cycle = 3 : i64
+-- CHECK: cycle = 10 : i64
 --
 -- CHECK: min_rydberg_spacing_um = 1.875000e+01
 -- CHECK-SAME: target_id = "generic_reconfigurable_neutral_atom_v0"

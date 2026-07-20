@@ -1,0 +1,79 @@
+{
+  "id": "test_na_no_ry_v0",
+  "kind": "neutral_atom_reconfigurable",
+  "grid": {
+    "width_um": 420.0,
+    "height_um": 500.0
+  },
+  "zones": [
+    {
+      "zone_id": 0,
+      "kind": "storage",
+      "rows": 73,
+      "cols": 101,
+      "origin_um": [0.0, 0.0],
+      "site_pitch_um": [4.0, 4.0]
+    },
+    {
+      "zone_id": 1,
+      "kind": "entanglement",
+      "rows": 10,
+      "cols": 34,
+      "origin_um": [0.0, 310.0],
+      "site_pitch_um": [12.0, 10.0],
+      "pair_gap_um": 2.0
+    },
+    {
+      "zone_id": 2,
+      "kind": "readout",
+      "rows": 16,
+      "cols": 24,
+      "origin_um": [0.0, 430.0],
+      "site_pitch_um": [4.0, 4.0]
+    }
+  ],
+  "movement": {
+    "model": "aod_row_column_coupled",
+    "aod_rows": 100,
+    "aod_cols": 100,
+    "num_aods": 1,
+    "min_row_col_separation_um": 2.0,
+    "speed_model": {
+      "kind": "sqrt",
+      "acceleration_m_s2": 2750.0
+    },
+    "trap_transfer_us": 15.0
+  },
+  "interaction": {
+    "rydberg_range_um": 7.5,
+    "min_rydberg_spacing_um": 18.75,
+    "max_parallel_entangling_pairs": 340
+  },
+  "native_gates": ["cz", "rz", "measure_z", "reset"],
+  "timing": {
+    "cz_us": 0.36,
+    "single_qubit_us": 0.625,
+    "measurement_us": 1500.0,
+    "reset_us": 1500.0
+  },
+  "fidelity": {
+    "cz": 0.995,
+    "single_qubit": 0.9997,
+    "atom_transfer": 0.999,
+    "coherence_time_us": 1500000.0
+  },
+  "error_model": {
+    "rydberg": 0.002,
+    "measurement": 0.003,
+    "reset": 0.004,
+    "movement": 0.0005,
+    "transfer": 0.0007,
+    "idle_per_us": 2e-9
+  },
+  "cost_model": {
+    "rydberg_stage_weight": 1.0,
+    "movement_time_weight": 1.0,
+    "trap_transfer_weight": 1.0,
+    "idle_time_weight": 0.000001
+  }
+}
