@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::geometry::{euclidean_um, ordered_pair};
 use crate::layout::{AtomId, Position, SiteId};
-use crate::movement::types::{CandidateLeg, MoveSpec, MovementPlanError};
+use crate::movement::types::{MoveSpec, MovementPlanError};
 
 /// R1–R3 check with dialect-identical `≤` predicates over **all occupied** atoms (B11).
 pub fn check_entangling_geometry(

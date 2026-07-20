@@ -157,7 +157,27 @@ pub fn expand_logical_cx(
         Some(target),
     )?);
 
-    // 6. Measure ancilla logical Z (top-row product — not all data)
+    // 6. Measure ancilla logical Z (top-row product — not all data), then
+    // reset the whole ancilla footprint. The gadget leaves the ancilla fully
+    // disentangled from control/target at this point (byproducts corrected
+    // via the frame updates below), so every ancilla atom — not just the
+    // measured top row — is safe to reset; without this the un-reset
+    // bulk/check atoms stay physically "in the way" and trip the dialect
+    // verifier the first time a later op has to move them.
+    let mut ancilla_mz_terminal: Vec<RoundTerminal> = ancilla_logical_z
+        .iter()
+        .map(|&atom| RoundTerminal::Measure {
+            atom,
+            basis: LogicalBasis::Z,
+        })
+        .collect();
+    ancilla_mz_terminal.extend(
+        ancilla
+            .data_atoms
+            .iter()
+            .chain(ancilla.check_atoms.iter())
+            .map(|&atom| RoundTerminal::Reset { atom }),
+    );
     rounds.push(PhysicalRound {
         kind: RoundKind::MeasureAncilla,
         logical_id: ancilla_id,
@@ -166,13 +186,7 @@ pub fn expand_logical_cx(
         z_cnot_count: 0,
         local_mid: Vec::new(),
         local_after: Vec::new(),
-        terminal: ancilla_logical_z
-            .iter()
-            .map(|&atom| RoundTerminal::Measure {
-                atom,
-                basis: LogicalBasis::Z,
-            })
-            .collect(),
+        terminal: ancilla_mz_terminal,
         partner_logical_id: None,
         frame_updates: Vec::new(),
     });

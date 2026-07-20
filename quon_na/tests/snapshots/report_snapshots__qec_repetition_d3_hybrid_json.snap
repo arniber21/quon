@@ -22,6 +22,10 @@ expression: json
   "code_family": "repetition_code_toy",
   "distance": 3,
   "memory_rounds": 2,
+  "t_count": 0,
+  "tdag_count": 0,
+  "ccz_count": 0,
+  "magic_state_demand": 0,
   "estimated_cycles": 37,
   "bottleneck": "rearrangement",
   "error_budget": {

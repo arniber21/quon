@@ -807,6 +807,30 @@ pub fn lower_patch_plan(
                 let layout = find_layout(layouts, *logical_id)?;
                 let top_row = top_row_data(layout)?;
                 ancilla_mz_atoms = top_row.clone();
+                // The ancilla is fully retired here: by the Horsman gadget's
+                // design, the rough/smooth seam measurements plus this
+                // logical-Z readout leave it disentangled from control/target
+                // (byproducts are corrected via the frame updates below), so
+                // every ancilla atom — not just the measured top row — is
+                // safe to reset. Without this, the un-reset bulk/check atoms
+                // stay physically "in the way" and trip the dialect verifier
+                // (measured-then-reused-without-reset) the first time a later
+                // op's movement/geometry pass has to touch them, e.g. a
+                // second logical_cx allocating the next ancilla nearby.
+                let mut terminal: Vec<RoundTerminal> = top_row
+                    .iter()
+                    .map(|&atom| RoundTerminal::Measure {
+                        atom,
+                        basis: LogicalBasis::Z,
+                    })
+                    .collect();
+                terminal.extend(
+                    layout
+                        .data_atoms
+                        .iter()
+                        .chain(layout.check_atoms.iter())
+                        .map(|&atom| RoundTerminal::Reset { atom }),
+                );
                 rounds.push(PhysicalRound {
                     kind: RoundKind::MeasureAncilla,
                     logical_id: *logical_id,
@@ -815,13 +839,7 @@ pub fn lower_patch_plan(
                     z_cnot_count: 0,
                     local_mid: Vec::new(),
                     local_after: Vec::new(),
-                    terminal: top_row
-                        .iter()
-                        .map(|&atom| RoundTerminal::Measure {
-                            atom,
-                            basis: LogicalBasis::Z,
-                        })
-                        .collect(),
+                    terminal,
                     partner_logical_id: None,
                     frame_updates: Vec::new(),
                 });
