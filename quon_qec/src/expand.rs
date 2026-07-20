@@ -1459,17 +1459,6 @@ mod tests {
             );
         }
 
-        let mz_anc = expanded
-            .rounds
-            .iter()
-            .find(|r| r.kind == RoundKind::MeasureAncilla)
-            .expect("ancilla mz");
-        assert_eq!(
-            mz_anc.terminal.len(),
-            3,
-            "ancilla logical Z is top-row (d atoms), not all data"
-        );
-
         // L-shaped: control left of ancilla (L/R rough seam); target below ancilla
         // (top/bottom smooth seam).
         let c = &expanded.blocks[0];
@@ -1479,6 +1468,36 @@ mod tests {
             .iter()
             .find(|b| b.logical_id == LogicalQubitId(2))
             .expect("ancilla");
+
+        let mz_anc = expanded
+            .rounds
+            .iter()
+            .find(|r| r.kind == RoundKind::MeasureAncilla)
+            .expect("ancilla mz");
+        let measure_events = mz_anc
+            .terminal
+            .iter()
+            .filter(|t| matches!(t, RoundTerminal::Measure { .. }))
+            .count();
+        let reset_events = mz_anc
+            .terminal
+            .iter()
+            .filter(|t| matches!(t, RoundTerminal::Reset { .. }))
+            .count();
+        assert_eq!(
+            measure_events, 3,
+            "ancilla logical Z is top-row (d atoms), not all data"
+        );
+        // The ancilla's own footprint (2d²−1 for a distance-d surface patch),
+        // not `a.check_atoms.len()` — that field is read post-expansion and
+        // by then also holds the rough/smooth seam atoms attached afterward
+        // for check-graph accounting (see below), which the MeasureAncilla
+        // reset (emitted earlier, before that attachment) never touches.
+        let ancilla_footprint = 2 * (a.distance * a.distance) as usize - 1;
+        assert_eq!(
+            reset_events, ancilla_footprint,
+            "ancilla is fully retired (all data+check atoms reset) after its logical Z readout"
+        );
         let c_max_x = c.coords.iter().map(|(x, _)| *x).max().unwrap();
         let a_min_x = a
             .coords

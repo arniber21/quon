@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::geometry::ordered_pair;
-use crate::layout::{AtomBinding, AtomId, NeutralAtomLayout, Position, SiteId, TrapBinding};
+use crate::layout::{AtomBinding, AtomId, SiteId, TrapBinding};
 use crate::movement::bank::{ensure_interaction_pairs, site_position_map};
 use crate::movement::duals::{AodGrid, generate_duals, select_duals_sortis};
 use crate::movement::emit::{
@@ -20,9 +20,7 @@ use crate::movement::emit::{
     layer_has_entangle_n, layers_have_entangle, max_entangle2_width,
 };
 use crate::movement::geometry::check_entangling_geometry;
-use crate::movement::types::{
-    InteractionPair, MovementParams, MovementPlanError, MovementPlanResult,
-};
+use crate::movement::types::{MovementParams, MovementPlanError, MovementPlanResult};
 use crate::schedule::{NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::GraphScheduleRequest;
 

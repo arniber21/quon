@@ -12,12 +12,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::geometry::{euclidean_um, movement_duration_us, ordered_pair};
-use crate::layout::{AodTrapRef, AtomBinding, AtomId, Position, SiteId, TrapBinding};
+use crate::layout::{AodTrapRef, AtomId, Position, SiteId};
 use crate::movement::bank::{pair_occupants, site_position_map};
 use crate::movement::duals::{AodGrid, DualCandidate, pack_legs_greedy};
-use crate::movement::geometry::{
-    POS_EPS_UM, check_entangling_geometry, legs_conflict, verify_aod_legality,
-};
+use crate::movement::geometry::{POS_EPS_UM, check_entangling_geometry, verify_aod_legality};
 use crate::movement::types::{
     CandidateLeg, InteractionPair, MoveSpec, MovementParams, MovementPlanError,
 };

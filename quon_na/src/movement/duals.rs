@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use crate::geometry::euclidean_um;
 use crate::layout::{AtomId, Position, SiteId};
-use crate::movement::bank::{OrderedF64, layout_from_sites, site_position_map};
+use crate::movement::bank::{OrderedF64, layout_from_sites};
 use crate::movement::geometry::legs_conflict;
 use crate::movement::types::{CandidateLeg, InteractionPair, MovementParams, MovementPlanError};
 
@@ -198,6 +198,3 @@ pub(crate) fn pack_legs_greedy(
     }
     Ok(chosen)
 }
-
-// Re-export for site_position_map callers in plan.rs.
-pub(crate) use std::collections::BTreeMap;

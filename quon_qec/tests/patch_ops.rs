@@ -274,10 +274,26 @@ fn cx_plan_ancilla_measurement_is_top_row() {
         .find(|r| r.kind == quon_qec::expand::RoundKind::MeasureAncilla)
         .expect("ancilla mz");
     // d=3 → top row has 3 data atoms
+    let measure_events = mz_anc
+        .terminal
+        .iter()
+        .filter(|t| matches!(t, quon_qec::expand::RoundTerminal::Measure { .. }))
+        .count();
     assert_eq!(
-        mz_anc.terminal.len(),
-        3,
+        measure_events, 3,
         "ancilla logical Z is top-row (d atoms), not all data"
+    );
+    // The ancilla is fully retired here: 9 data + 8 check atoms reset (d=3
+    // intrinsic footprint, before the seam atoms get attached afterward for
+    // check-graph accounting — see cx_plan_seam_atoms_attached_to_ancilla_block).
+    let reset_events = mz_anc
+        .terminal
+        .iter()
+        .filter(|t| matches!(t, quon_qec::expand::RoundTerminal::Reset { .. }))
+        .count();
+    assert_eq!(
+        reset_events, 17,
+        "ancilla is fully retired (all data+check atoms reset) after its logical Z readout"
     );
 }
 

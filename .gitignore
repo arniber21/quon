@@ -37,3 +37,7 @@ test/na/Output/
 
 # Release packaging output (issue #234)
 /dist/
+
+# insta pending-snapshot scratch files: never intended to be committed
+# (review via `cargo insta review`, then the .snap itself is the artifact)
+*.snap.new
