@@ -55,6 +55,7 @@ pub mod schedule;
 pub mod schedule_entry;
 pub mod schedule_invariants;
 pub mod schedule_view;
+pub mod stats;
 pub mod zoned;
 
 pub use compaction::{
@@ -105,10 +106,14 @@ pub use schedule_view::{
     NA_SCHEDULE_VIEW_KIND, NA_SCHEDULE_VIEW_VERSION, NaScheduleView, NaScheduleViewMeta,
     ScheduleViewZone,
 };
+pub use stats::{
+    CompactionConfig, EffectiveConfig, NA_STATS_KIND, NA_STATS_SCHEMA_VERSION, NaStats,
+    SearchDiagnostics, StageTimingsUs, VersionInfo, na_stats_to_json,
+};
 pub use zoned::{
-    PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, ZonedScheduleError, ZonedScheduleResult,
-    euclidean_um, movement_duration_us, routing_cost_eq1, schedule_zoned, sqrt_d_max,
-    toy_zoned_architecture, validate_zone_constraints,
+    AWARE_NODE_BUDGET, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, ZonedScheduleError,
+    ZonedScheduleResult, euclidean_um, movement_duration_us, routing_cost_eq1, schedule_zoned,
+    sqrt_d_max, toy_zoned_architecture, validate_zone_constraints,
 };
 
 #[cfg(feature = "mlir")]
