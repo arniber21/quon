@@ -104,6 +104,27 @@ quonc program.qn \
   --resource-report-format markdown
 ```
 
+### `--emit-na-stats [PATH]`
+
+Emit compiler-internals telemetry about the compile: per-stage wall times
+(extract, schedule-from-graph, entangling-layer scheduling, placement/routing,
+compaction, resource-report build), routing-aware search diagnostics (node
+expansions, budget, fallbacks), an effective-configuration echo (backend,
+placer, placement strategy, compaction options), and tool/target version
+identifiers. With no path, or with `-`, stats are written to standard output.
+
+This is a **separate artifact** from `--emit-resource-report` (issue #307) —
+compiler-internals telemetry about *how* the compile ran, not schedule/QEC
+evidence about the program. It requires the neutral-atom backend (the same
+target/backend constraints as `--emit-na-schedule`) and does not yet
+instrument the QEC hybrid per-round pipeline.
+
+```bash
+quonc program.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-stats stats.json
+```
+
 ## Target options
 
 ### `--target <PATH>`

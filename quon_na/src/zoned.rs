@@ -181,6 +181,11 @@ pub struct ZonedScheduleResult {
     /// conflicts) and fell back to [`assign_greedy_legal`]. Always `0` under
     /// [`PlacerMode::RoutingAgnostic`].
     pub aware_search_no_legal_assignment_layers: u64,
+    /// Sum of best-first search node expansions across every
+    /// [`assign_aware_legal`] call this schedule made (issue #307: exposes
+    /// search cost, not just its pass/fail outcome). Always `0` under
+    /// [`PlacerMode::RoutingAgnostic`].
+    pub aware_search_node_expansions: u64,
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -450,6 +455,7 @@ pub fn schedule_zoned(
     let mut aware_search_completed_layers = 0u64;
     let mut aware_search_budget_exceeded_layers = 0u64;
     let mut aware_search_no_legal_assignment_layers = 0u64;
+    let mut aware_search_node_expansions = 0u64;
 
     let mut worklist: VecDeque<ScheduleLayer> = req.layers.iter().cloned().collect();
     while let Some(layer) = worklist.pop_front() {
@@ -477,6 +483,7 @@ pub fn schedule_zoned(
             PlacerMode::RoutingAgnostic => assign_greedy_legal(&gate_atoms, &inputs),
             PlacerMode::RoutingAware => assign_aware_legal(&gate_atoms, &inputs),
         };
+        aware_search_node_expansions += assignment.node_expansions as u64;
         match assignment.outcome {
             AwareSearchOutcome::NotApplicable => {}
             AwareSearchOutcome::Completed => aware_search_completed_layers += 1,
@@ -659,6 +666,7 @@ pub fn schedule_zoned(
         aware_search_completed_layers,
         aware_search_budget_exceeded_layers,
         aware_search_no_legal_assignment_layers,
+        aware_search_node_expansions,
     })
 }
 
@@ -926,6 +934,11 @@ struct GateAssignment {
     /// fallback from [`assign_aware_legal`], in which case the caller
     /// overwrites this with the specific fallback reason.
     outcome: AwareSearchOutcome,
+    /// Best-first search node expansions this call performed (issue #307).
+    /// `0` from [`assign_greedy_legal`] unless it is a fallback from
+    /// [`assign_aware_legal`], in which case the caller overwrites this with
+    /// the aware search's expansion count before falling back.
+    node_expansions: usize,
 }
 
 fn atom_position_or_origin(atom_pos: &BTreeMap<AtomId, Position>, atom: AtomId) -> Position {
@@ -1016,6 +1029,7 @@ fn assign_greedy_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) ->
         placed,
         deferred,
         outcome: AwareSearchOutcome::NotApplicable,
+        node_expansions: 0,
     }
 }
 
@@ -1064,7 +1078,7 @@ impl Ord for AwareNode {
 
 /// Expansion budget for the routing-aware search before falling back to the
 /// greedy assignment (which always terminates and supports deferral).
-const AWARE_NODE_BUDGET: usize = 100_000;
+pub const AWARE_NODE_BUDGET: usize = 100_000;
 
 /// Routing-aware best-first search ([RAP] Sec. IV-B style): extend by one gate,
 /// charge Eq. (1) √(d_max) of the moves implied so far. Extensions are limited
@@ -1087,12 +1101,14 @@ fn assign_aware_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) -> 
                 placed: node.assigned.into_iter().enumerate().collect(),
                 deferred: Vec::new(),
                 outcome: AwareSearchOutcome::Completed,
+                node_expansions: expansions,
             };
         }
         expansions += 1;
         if expansions > AWARE_NODE_BUDGET {
             let mut fallback = assign_greedy_legal(gates, inputs);
             fallback.outcome = AwareSearchOutcome::BudgetExceeded;
+            fallback.node_expansions = expansions;
             return fallback;
         }
         let (a, b) = gates[g];
@@ -1125,6 +1141,7 @@ fn assign_aware_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) -> 
     // Place what greedy can and defer the rest.
     let mut fallback = assign_greedy_legal(gates, inputs);
     fallback.outcome = AwareSearchOutcome::NoLegalAssignment;
+    fallback.node_expansions = expansions;
     fallback
 }
 

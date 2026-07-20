@@ -30,7 +30,7 @@ use mlir_bridge::pipeline::{
 };
 use quon_na::{
     GraphScheduleRequest, InteractionGraph, NaBackendKind, NaScheduleOptions, NaScheduleView,
-    NaScheduleViewMeta, NeutralAtomLayout, PlacementStrategy, PlacerMode, ResourceReport,
+    NaScheduleViewMeta, NaStats, NeutralAtomLayout, PlacementStrategy, PlacerMode, ResourceReport,
     ScheduleLayer, ScheduleLowerParams, ScheduleSpec, ScheduleViewZone, dump_schedule_text,
     lower_schedule, run_from_graph, run_from_module, run_from_qec_workload, verify_schedule_spec,
 };
@@ -99,6 +99,11 @@ pub struct CompileReport {
     pub na_schedule_spec: Option<ScheduleSpec>,
     /// Neutral-atom resource report when the NA path ran.
     pub resource_report: Option<ResourceReport>,
+    /// Compiler-internals stats (timings / search diagnostics / config echo,
+    /// issue #307) when the NA path ran through `run_from_graph` /
+    /// `run_from_module`. `None` for fixed targets and for the QEC hybrid
+    /// per-round path, which is not yet instrumented.
+    pub na_stats: Option<NaStats>,
     /// Interaction-graph vertex count (logical qubits) for NA compiles.
     pub na_logical_qubits: Option<u64>,
     /// True when the entrypoint used QEC builtins (ADR-0021 auto `--verify-na`).
@@ -135,6 +140,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
                 na_graph: artifacts.na_graph,
                 na_schedule_spec: artifacts.na_schedule_spec,
                 resource_report: artifacts.resource_report,
+                na_stats: artifacts.na_stats,
                 na_logical_qubits: artifacts.na_logical_qubits,
                 qec_backed: artifacts.qec_backed,
                 qec_workload: artifacts.qec_workload,
@@ -156,6 +162,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
                 na_graph: None,
                 na_schedule_spec: None,
                 resource_report: None,
+                na_stats: None,
                 na_logical_qubits: None,
                 qec_backed: false,
                 qec_workload: None,
@@ -184,6 +191,7 @@ struct CompileArtifacts {
     na_graph: Option<InteractionGraph>,
     na_schedule_spec: Option<ScheduleSpec>,
     resource_report: Option<ResourceReport>,
+    na_stats: Option<NaStats>,
     na_logical_qubits: Option<u64>,
     qec_backed: bool,
     qec_workload: Option<quon_qec::QecWorkload>,
@@ -246,6 +254,13 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
             } else {
                 run_from_module(&module, na, opts).map_err(|e| e.to_string())?
             };
+            // `quon_na::pipeline` doesn't know its own target id (only the
+            // wrapping `BackendTarget` does) — overlay it here so the emitted
+            // stats file is self-describing (issue #307).
+            let na_stats = artifacts.stats.clone().map(|mut stats| {
+                stats.version.target_id = Some(request.target.id.clone());
+                stats
+            });
             // ADR-0011: quantum.na is the canonical schedule IR. A planner
             // schedule that cannot lower to it is a compile failure, not a
             // degraded artifact.
@@ -271,6 +286,7 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 na_graph: Some(artifacts.request.graph.clone()),
                 na_schedule_spec: Some(schedule_spec),
                 resource_report: Some(artifacts.resource_report),
+                na_stats,
                 na_logical_qubits: Some(artifacts.logical_qubits),
                 qec_backed,
                 qec_workload: qec_backed.then_some(workload),
@@ -319,6 +335,7 @@ fn compile_fixed(
         na_graph: None,
         na_schedule_spec: None,
         resource_report: None,
+        na_stats: None,
         na_logical_qubits: None,
         qec_backed: false,
         qec_workload: None,

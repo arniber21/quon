@@ -1,0 +1,31 @@
+---
+source: quon_na/tests/stats_snapshots.rs
+expression: redact_timings(&json)
+---
+{
+  "config": {
+    "backend": "flat_aod",
+    "compaction": {
+      "applied": true,
+      "greedy": true,
+      "legality_checked": false,
+      "requested": true
+    },
+    "placement_strategy": "row_major"
+  },
+  "kind": "na_compiler_stats",
+  "schema_version": 1,
+  "search": {},
+  "stage_timings_us": {
+    "compaction_us": "<redacted_us>",
+    "entangling_layers_us": "<redacted_us>",
+    "movement_us": "<redacted_us>",
+    "placement_us": "<redacted_us>",
+    "resource_report_us": "<redacted_us>",
+    "schedule_from_graph_us": "<redacted_us>",
+    "total_us": "<redacted_us>"
+  },
+  "version": {
+    "quon_na_version": "0.1.0"
+  }
+}

@@ -12,6 +12,8 @@
 //!
 //! Fixed (OpenQASM) physical passes live in `mlir_bridge::pipeline`.
 
+use std::time::Instant;
+
 use backend::{AodSpeedModelKind, NeutralAtomTarget, ZoneKind as BackendZoneKind};
 use thiserror::Error;
 
@@ -25,7 +27,16 @@ use crate::placement::{PlacementStrategy, place};
 use crate::report::{ResourceReport, attach_qec_error_budget, build_resource_report};
 use crate::schedule::ScheduleLayer;
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
-use crate::zoned::{PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, schedule_zoned};
+use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, SearchDiagnostics, StageTimingsUs};
+use crate::zoned::{
+    AWARE_NODE_BUDGET, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, schedule_zoned,
+};
+
+/// Wall-clock elapsed microseconds since `start` (saturating on overflow —
+/// not reachable in practice, but keeps this instrumentation infallible).
+fn elapsed_us(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
 
 #[cfg(feature = "mlir")]
 use melior::ir::Module;
@@ -74,6 +85,11 @@ pub struct NaScheduleArtifacts {
     pub resource_report: ResourceReport,
     pub logical_qubits: u64,
     pub request: GraphScheduleRequest,
+    /// Per-stage timings / search diagnostics / config echo (issue #307).
+    /// `Some` from [`run_from_graph`] / [`run_from_module`]; `None` from
+    /// [`crate::qec_schedule::run_from_qec_workload`], whose per-round loop
+    /// is a distinct pipeline shape not yet instrumented.
+    pub stats: Option<NaStats>,
 }
 
 /// Errors from the NA schedule pipeline.
@@ -196,7 +212,9 @@ pub fn run_from_module<'c>(
     opts: NaScheduleOptions,
 ) -> Result<NaScheduleArtifacts, NaPipelineError> {
     validate_speed_model(na).map_err(NaPipelineError::InvalidTarget)?;
+    let extract_started = Instant::now();
     let graph = extract_interaction_graph(module)?;
+    let extract_us = elapsed_us(extract_started);
     let logical_qubits = graph.vertices.len() as u64;
     if opts.dump_ir {
         eprintln!(
@@ -205,7 +223,13 @@ pub fn run_from_module<'c>(
             graph.interactions.len()
         );
     }
-    run_from_graph(graph, na, opts, Some(logical_qubits))
+    let mut artifacts = run_from_graph(graph, na, opts, Some(logical_qubits))?;
+    if let Some(stats) = artifacts.stats.as_mut() {
+        stats.stage_timings_us.extract_us = Some(extract_us);
+        stats.stage_timings_us.total_us =
+            stats.stage_timings_us.total_us.saturating_add(extract_us);
+    }
+    Ok(artifacts)
 }
 
 /// Schedule from a raw interaction graph (debug / stress entry).
@@ -217,10 +241,16 @@ pub fn run_from_graph(
 ) -> Result<NaScheduleArtifacts, NaPipelineError> {
     validate_speed_model(na).map_err(NaPipelineError::InvalidTarget)?;
     let logical_qubits = logical_qubits_override.unwrap_or(graph.vertices.len() as u64);
+    let pipeline_started = Instant::now();
 
+    let stage_started = Instant::now();
     let req = schedule_from_graph(graph)?;
+    let schedule_from_graph_us = elapsed_us(stage_started);
+
+    let stage_started = Instant::now();
     let max_pairs = na.interaction.max_parallel_entangling_pairs;
     let scheduled = schedule_entangling_layers(req, max_pairs)?;
+    let entangling_layers_us = elapsed_us(stage_started);
     let mut req = scheduled.request;
 
     // Only set for the zoned backend; overlaid onto the resource report
@@ -228,16 +258,36 @@ pub fn run_from_graph(
     // silent fallback to the greedy assignment visible instead of
     // indistinguishable from "no routing contention").
     let mut aware_search_status: Option<(u64, u64)> = None;
+    let mut search_diagnostics = SearchDiagnostics::default();
+    let mut zoned_schedule_us = None;
+    let mut placement_us = None;
+    let mut movement_us = None;
+    let mut placer_mode = None;
+    let mut placement_strategy = None;
 
     req = match opts.backend {
         NaBackendKind::Zoned => {
+            placer_mode = Some(opts.placer);
             let arch = zoned_architecture(na);
+            let stage_started = Instant::now();
             let zoned = schedule_zoned(req, &arch, opts.placer)?;
+            zoned_schedule_us = Some(elapsed_us(stage_started));
             aware_search_status = Some((
                 zoned.aware_search_completed_layers,
                 zoned.aware_search_budget_exceeded_layers
                     + zoned.aware_search_no_legal_assignment_layers,
             ));
+            search_diagnostics = SearchDiagnostics {
+                aware_search_completed_layers: Some(zoned.aware_search_completed_layers),
+                aware_search_budget_exceeded_layers: Some(
+                    zoned.aware_search_budget_exceeded_layers,
+                ),
+                aware_search_no_legal_assignment_layers: Some(
+                    zoned.aware_search_no_legal_assignment_layers,
+                ),
+                aware_search_node_expansions: Some(zoned.aware_search_node_expansions),
+                aware_search_node_budget: Some(AWARE_NODE_BUDGET as u64),
+            };
             if opts.dump_ir {
                 eprintln!(
                     "--- after zoned schedule ---\nlayers={} routing_cost={:.4} rearrangements={} transfers={} \
@@ -254,9 +304,14 @@ pub fn run_from_graph(
             zoned.request
         }
         NaBackendKind::FlatAod => {
+            placement_strategy = Some(opts.placement);
+            let stage_started = Instant::now();
             let placed = place(req, opts.placement)?;
+            placement_us = Some(elapsed_us(stage_started));
             let params = movement_params(na);
+            let stage_started = Instant::now();
             let moved = plan_aod_movement(placed.request, &params)?;
+            movement_us = Some(elapsed_us(stage_started));
             if opts.dump_ir {
                 eprintln!(
                     "--- after flat AOD movement ---\nlayers={}",
@@ -267,6 +322,13 @@ pub fn run_from_graph(
         }
     };
 
+    let mut compaction_config = CompactionConfig {
+        requested: opts.compact,
+        applied: false,
+        greedy: false,
+        legality_checked: false,
+    };
+    let mut compaction_us = None;
     if opts.compact && !req.layers.is_empty() {
         let deps = infer_atom_dependencies(&req.layers);
         // After movement, layout bindings are final occupancy — static R2/R3
@@ -277,7 +339,12 @@ pub fn run_from_graph(
             legality: None,
             greedy: true,
         };
+        let stage_started = Instant::now();
         let compacted = compact_schedule(req.clone(), &deps, &compact_opts)?;
+        compaction_us = Some(elapsed_us(stage_started));
+        compaction_config.applied = true;
+        compaction_config.greedy = compact_opts.greedy;
+        compaction_config.legality_checked = compact_opts.arch.is_some();
         if opts.dump_ir {
             eprintln!(
                 "--- after compaction ---\nlayers={} (was {})",
@@ -288,6 +355,7 @@ pub fn run_from_graph(
         req = compacted.request;
     }
 
+    let stage_started = Instant::now();
     let report = build_resource_report(&req.layers, None, Some(logical_qubits.max(1)))?;
     let report = match aware_search_status {
         Some((completed, fell_back)) => report.with_aware_search_status(completed, fell_back),
@@ -300,11 +368,37 @@ pub fn run_from_graph(
         Some(model) => attach_qec_error_budget(report, Some(model))?,
         None => report,
     };
+    let resource_report_us = elapsed_us(stage_started);
+
+    let stats = NaStats {
+        kind: crate::stats::NA_STATS_KIND.to_string(),
+        schema_version: crate::stats::NA_STATS_SCHEMA_VERSION,
+        version: Default::default(),
+        config: EffectiveConfig {
+            backend: opts.backend,
+            placer_mode,
+            placement_strategy,
+            compaction: compaction_config,
+        },
+        stage_timings_us: StageTimingsUs {
+            extract_us: None,
+            schedule_from_graph_us,
+            entangling_layers_us,
+            zoned_schedule_us,
+            placement_us,
+            movement_us,
+            compaction_us,
+            resource_report_us,
+            total_us: elapsed_us(pipeline_started),
+        },
+        search: search_diagnostics,
+    };
 
     Ok(NaScheduleArtifacts {
         layers: req.layers.clone(),
         resource_report: report,
         logical_qubits,
         request: req,
+        stats: Some(stats),
     })
 }

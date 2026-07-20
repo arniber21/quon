@@ -10,7 +10,7 @@ use quon_core::{
     save_snapshot,
 };
 use quon_na::{
-    NeutralAtomAction, PlacementStrategy, PlacerMode, attach_qec_error_budget,
+    NeutralAtomAction, PlacementStrategy, PlacerMode, attach_qec_error_budget, na_stats_to_json,
     require_target_error_model, resource_report_to_json, resource_report_to_markdown,
     round_barrier_cuts,
 };
@@ -40,6 +40,11 @@ Examples:
   # Neutral-atom debug artifacts: schedule JSON + interaction graph DOT
   quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
     --emit-na-schedule --emit-na-graph --emit-resource-report
+
+  # Compiler statistics: per-stage wall times, search diagnostics, config
+  # echo (#307) — a separate artifact from --emit-resource-report
+  quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
+    --emit-na-stats -
 
   # QEC experiment: semantic *.qec.json + sibling structure-level .stim
   quonc examples/na_qec/repetition_d3_memory.qn \\
@@ -72,6 +77,10 @@ Notes:
   Schedule JSON (--emit-na-schedule) is a debug/visualization view
   (layout + zones + metrics envelope for python/visualize_na_schedule.py).
   --emit-na-graph writes Graphviz DOT for the interaction graph.
+  --emit-na-stats writes compiler-internals telemetry (timings / search
+  diagnostics / effective config), never schedule or QEC evidence — kept
+  separate from --emit-resource-report on purpose. Not available for
+  QEC-backed programs yet (per-round hybrid pipeline is uninstrumented).
   --emit-qec-experiment writes QEC evaluation JSON + structure-only Stim
   (no physical noise; Python annotates from JSON error_model).
 ";
@@ -146,6 +155,19 @@ struct Cli {
         help_heading = "Emit"
     )]
     emit_resource_report: Option<String>,
+
+    /// Emit neutral-atom compiler statistics (per-stage wall times, search
+    /// diagnostics, effective config echo; `-` = stdout). A separate artifact
+    /// from --emit-resource-report (issue #307) — compiler-internals
+    /// telemetry about the compile, not schedule/QEC evidence.
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = "-",
+        help_heading = "Emit"
+    )]
+    emit_na_stats: Option<String>,
 
     /// Emit QEC experiment JSON + sibling structure-level `.stim` (ADR-0018)
     #[arg(long, value_name = "PATH", help_heading = "Emit")]
@@ -579,13 +601,14 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
         || cli.emit_na_schedule.is_some()
         || cli.emit_na_graph.is_some()
         || cli.emit_resource_report.is_some()
+        || cli.emit_na_stats.is_some()
         || cli.emit_qec_experiment.is_some()
         || cli.emit_qec_validation.is_some())
         && !is_na
     {
         bail!(
             "--emit-na-mlir / --emit-na-schedule / --emit-na-graph / --emit-resource-report / \
-             --emit-qec-experiment / --emit-qec-validation require a \
+             --emit-na-stats / --emit-qec-experiment / --emit-qec-validation require a \
              neutral_atom_reconfigurable target (see targets/neutral_atom/)"
         );
     }
@@ -707,6 +730,31 @@ fn emit_artifacts(
         )?;
         emitted = true;
     }
+    let resource_report_on_stdout = cli.emit_resource_report.as_ref().is_some_and(|p| p == "-");
+
+    if let Some(path) = &cli.emit_na_stats {
+        let stats = report.na_stats.as_ref().ok_or_else(|| {
+            anyhow!(
+                "no NA compiler stats available for this compile (QEC-backed programs take the \
+                 per-round hybrid pipeline, which --emit-na-stats does not yet instrument; see \
+                 issue #307)"
+            )
+        })?;
+        let json = na_stats_to_json(stats)?;
+        // If an earlier artifact already printed to stdout on `-`, send stats
+        // to stderr so all artifacts remain recoverable without interleaving.
+        write_output(
+            path,
+            &json,
+            (qasm_owns_stdout
+                || mlir_owns_stdout
+                || schedule_on_stdout
+                || graph_on_stdout
+                || resource_report_on_stdout)
+                && path == "-",
+        )?;
+        emitted = true;
+    }
 
     if let Some(json_path) = &cli.emit_qec_experiment {
         emit_qec_experiment_artifacts(request, report, json_path)?;
@@ -731,8 +779,8 @@ fn emit_artifacts(
                     "{dim}(compiled successfully for neutral-atom target `{id}`; \
                      pass --emit-na-mlir for quantum.na MLIR, or \
                      --emit-na-schedule / --emit-na-graph / --emit-resource-report / \
-                     --emit-qec-experiment / --emit-qec-validation for debug / QEC \
-                     evaluation artifacts){dim:#}"
+                     --emit-na-stats / --emit-qec-experiment / --emit-qec-validation for debug / \
+                     QEC evaluation artifacts){dim:#}"
                 );
             }
             id => {

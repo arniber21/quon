@@ -178,6 +178,9 @@ fn schedule_expanded(
         resource_report: report,
         logical_qubits: logical_qubits.max(1),
         request: req,
+        // Per-round loop is a distinct pipeline shape from `run_from_graph`
+        // (issue #307 scope: instrument the single-pass pipeline first).
+        stats: None,
     })
 }
 
