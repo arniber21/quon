@@ -55,14 +55,19 @@ On `bell.qn` (2 qubits, 1 `CNOT`), both backends succeed:
 
 | Backend | Estimated cycles | Rearrangement steps | Trap transfers | Bottleneck |
 | --- | ---: | ---: | ---: | --- |
-| `zoned` (default) | 6 | 1 | 4 | rearrangement |
-| `flat` | 3 | 0 | 0 | rydberg |
+| `zoned` (default) | 9 | 1 | 4 | rearrangement |
+| `flat` | 6 | 0 | 0 | rydberg |
 
 (Issue #298: `H @0`'s Z-Y-Z decomposition into a local `rz` + a global `ry`
-raster now contributes 2 real schedule layers — previously it was silently
+raster now contributes real schedule layers — previously it was silently
 dropped during extraction, so these headline cycle counts undercounted the
-actual program. Rearrangement/transfer/bottleneck are unaffected: 1-qubit
-gates carry no site placement requirement.)
+actual program. The `ry` raster is a Hahn-echo-refocused composite pulse,
+not a bare raster: every *other* trapped atom (here, qubit 1) gets a local
+`Rz(pi)`/`Rz(-pi)` echo pair around the raster's second half, which provably
+nets to identity for it — a bare raster would otherwise have also rotated
+it, since every atom is bound into the trap array from schedule start (see
+`quon_na::pipeline::push_global_ry_with_refocus`). Rearrangement/transfer/
+bottleneck are unaffected: none of this needs a site placement.)
 
 `zoned` moves qubit 0 into a dedicated entanglement zone before the Rydberg
 pulse; `flat` entangles the two atoms in place on the row-major storage
@@ -99,19 +104,29 @@ quonc --target targets/neutral_atom/generic_rna_v0.json --na-backend zoned \
 
 | Sample | Placer | Estimated cycles | Rearrangement steps | Trap transfers | Total time (µs) |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `qaoa_graph.qn` (dense, 3-regular graph) | `routing-agnostic` (default) | 52 | 8 | 22 | 1658 |
-| `qaoa_graph.qn` | `routing-aware` | 55 | 9 | 24 | 1736 |
+| `qaoa_graph.qn` (dense, 3-regular graph) | `routing-agnostic` (default) | 80 | 8 | 22 | 1686 |
+| `qaoa_graph.qn` | `routing-aware` | 83 | 9 | 24 | 1764 |
 | `ising.qn` (nearest-neighbor chain) | `routing-agnostic` (default) | 48 | 9 | 20 | 2217 |
 | `ising.qn` | `routing-aware` | 48 | 9 | 20 | 2256 |
 
 (Issue #298: both programs apply per-qubit `H`/`Rx` rotations
 (`qaoa_graph.qn`'s `hadamard_all`/`mixer_4`; `ising.qn`'s `x_layer`) that
-extraction used to silently drop; they now contribute real schedule layers,
-raising `estimated_cycles`/`total_time_us` here versus earlier numbers.
+extraction used to silently drop; they now contribute real schedule layers.
 Rearrangement/transfer counts are unaffected. `Rx` has no first-class
 `LocalGateKind` yet — issue #298's scope is `h`/`rz`/`ry`/`u3` — so it
 decomposes through the `u3(theta, phi, lambda)` escape hatch even though
-`rx` is nominally in `generic_rna_v0.json`'s `native_gates`.)
+`rx` is nominally in `generic_rna_v0.json`'s `native_gates`; `u3` is a plain
+`LocalGate`, not a raster, so it costs no extra protection. `H`'s global `ry`
+component does: every *other* trapped atom needs a local
+`Rz(pi)`/`Rz(-pi)` echo pair around the raster's second half so it provably
+doesn't also rotate (a raw raster physically hits every trapped atom, not
+just the one it was decomposed for — see
+`quon_na::pipeline::push_global_ry_with_refocus`). `qaoa_graph.qn`'s 4
+independent `H`s (3 bystanders apiece) is why its cycle counts move more
+than `bell.qn`'s single `H` above. `ising.qn` has no bare `H` or other
+non-diagonal 1-qubit gate — its `Rzz`-sandwich `Rz`s are diagonal and need
+no `ry`/echo at all — so it is untouched by the echo fix and keeps its
+original #298 numbers.)
 
 Both zoned placer modes are ZAC-style descendants (Sec. VI-B of the RAP
 paper, arXiv:2505.22715): `routing-agnostic` (the default) places atoms by

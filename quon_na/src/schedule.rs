@@ -95,10 +95,20 @@ pub enum NeutralAtomAction {
     /// rotations come from a single global microwave/Raman field, so — unlike
     /// `Entangle2`/`EntangleN`, which vary *which* atoms participate — a
     /// `GlobalRy` has no atom list to vary: it is structurally "all atoms or
-    /// none" for a given cycle. This compiler emits each `GlobalRy` in its
-    /// own dedicated schedule layer (see `pipeline::interleave_local_gates`),
-    /// so distinct atoms' distinct required `ry` angles never contend for the
-    /// same raster pulse.
+    /// none" for a given cycle.
+    ///
+    /// Because every logical atom is bound into the trap array from schedule
+    /// start (`layout.initial_bindings`), a bare `GlobalRy` physically hits
+    /// every trapped atom, not just the one it was decomposed for (issue
+    /// #298 review finding — a first cut of this compiler emitted bare
+    /// rasters and silently corrupted every bystander atom's state). The
+    /// pipeline (`pipeline::push_global_ry_with_refocus`) therefore never
+    /// emits a lone nonzero-angle `GlobalRy` when more than one atom is
+    /// trapped: it splits the raster into two `theta / 2` half-pulses and
+    /// sandwiches a local `Rz(pi)` / `Rz(-pi)` echo pair (a Hahn-echo-style
+    /// composite pulse) around the second half for every atom that should
+    /// *not* receive the rotation — provably netting to identity for them,
+    /// while the wanted atom's two halves compose to the full `Ry(theta)`.
     GlobalRy {
         theta_rad: f64,
         duration_us: u64,

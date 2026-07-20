@@ -282,7 +282,11 @@ pub struct ResourceReport {
     /// Count of local `h` gate actions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_h_count: Option<u64>,
-    /// Count of local `rz(theta)` gate actions.
+    /// Count of local `rz(theta)` gate actions. Includes the Hahn-echo
+    /// `Rz(pi)`/`Rz(-pi)` refocusing pulses `GlobalRy` bystander isolation
+    /// inserts (issue #298 review finding) alongside "real" `rz` gates from
+    /// the source program — both are genuine `LocalGate { gate: Rz(..) }`
+    /// schedule actions, so this count does not distinguish them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_rz_count: Option<u64>,
     /// Count of local `u3(theta, phi, lambda)` escape-hatch gate actions.
@@ -294,7 +298,11 @@ pub struct ResourceReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_gate_time_us: Option<u64>,
     /// Count of global `ry(theta)` whole-plane raster actions (one action =
-    /// one raster covering every trapped atom, not per-atom).
+    /// one raster covering every trapped atom, not per-atom). A raster with
+    /// bystander atoms present (issue #298 review finding) is split into two
+    /// `theta / 2` half-pulses, so a single source-program `ry` gate that
+    /// isn't alone in the trap array contributes 2 to this count, not 1 —
+    /// see [`crate::schedule::NeutralAtomAction::GlobalRy`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global_ry_count: Option<u64>,
     /// Cumulative global `ry` raster op time (us).

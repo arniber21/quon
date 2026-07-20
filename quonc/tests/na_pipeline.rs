@@ -209,6 +209,7 @@ fn na_fixtures_produce_nonempty_schedules() {
         "ising.qn",
         "syndrome_round_toy.qn",
         "rotations.qn",
+        "h_and_ry.qn",
     ] {
         let source = workspace_path(&format!("../test/na/{name}"));
         let output = quonc()
@@ -359,19 +360,29 @@ fn rotations_qn_preserves_local_rz_and_global_ry_end_to_end() {
         "missing rz gate kind in schedule: {stdout}"
     );
 
-    // Resource report gains #298 single-qubit gate counts/time, consistent
-    // with the circuit: `H`'s zero-angle Euler component is dropped by the
-    // existing (unmodified) `backend::decompose` ZYZ math, so `H` (1) +
-    // `Rz(..) @1` (1) + `Rz(..) @0` (1) = 3 local rz`s; `H` (1) +
-    // `Ry(..) @2` (1) = 2 global ry rasters; no u3 escape needed on this
-    // target (native_gates includes `ry`).
+    // Resource report gains #298 single-qubit gate counts/time. Each of
+    // `H @0`'s and `Ry(..) @2`'s `ry` components is a Hahn-echo-refocused
+    // raster (review finding: every *other* trapped atom needs a local
+    // `Rz(pi)`/`Rz(-pi)` echo pair around the raster's second half so it
+    // provably doesn't also rotate — see
+    // `quon_na::pipeline::push_global_ry_with_refocus`), which is why the
+    // counts below are larger than "one rz/ry per gate": `H`'s zero-angle
+    // Euler component is dropped by the existing (unmodified)
+    // `backend::decompose` ZYZ math, so `H` contributes 1 own `rz` + 2
+    // bystanders (atoms 1, 2) x 2 echo `rz`s = 5; `Rz(..) @1` and
+    // `Rz(..) @0` are 1 plain local `rz` each; `Ry(..) @2` contributes 2
+    // bystanders (atoms 0, 1) x 2 echo `rz`s = 4 (no "own" `rz`, since `ry`
+    // passes straight through as a single native op). Total local rz =
+    // 5 + 1 + 1 + 4 = 11. Global ry rasters: `H` (2 half-pulses) +
+    // `Ry(..) @2` (2 half-pulses) = 4. No u3 escape needed on this target
+    // (native_gates includes `ry`).
     assert!(
-        stderr.contains("\"local_rz_count\": 3"),
-        "expected 3 local rz gates, got: {stderr}"
+        stderr.contains("\"local_rz_count\": 11"),
+        "expected 11 local rz gates, got: {stderr}"
     );
     assert!(
-        stderr.contains("\"global_ry_count\": 2"),
-        "expected 2 global ry rasters, got: {stderr}"
+        stderr.contains("\"global_ry_count\": 4"),
+        "expected 4 global ry half-pulses, got: {stderr}"
     );
     assert!(
         stderr.contains("\"local_u3_count\": 0"),
