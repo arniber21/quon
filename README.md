@@ -84,7 +84,11 @@ cargo run -p quonc -- test/na/bell.qn \
 For the strongest end-to-end path — a typed surface-code program compiled into a
 verified neutral-atom schedule, QEC experiment JSON, structure Stim, and an
 analytic resource report from one command — see the
-[neutral-atom FT compiler demo](https://quon.arnabg.me/guides/na-ft-demo/).
+[neutral-atom FT compiler demo](https://quon.arnabg.me/guides/na-ft-demo/). For
+full QEC evidence (analytic estimates fused with Stim/Sinter-sampled logical
+failure rates, with provenance), the demo also walks through the optional
+`--emit-qec-validation` report (requires the Python/Sinter stack via
+`just setup-python`).
 
 ## Install and Build
 

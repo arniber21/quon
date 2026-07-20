@@ -1,6 +1,8 @@
 -- Magic-state-consuming logical CCZ on three surface-code blocks (issue #283).
 -- Compiler model of magic-state consumption — not a validated distillation
--- factory or threshold claim. Compiles on the NA/QEC hybrid path.
+-- factory or threshold claim. `logical_ccz` exists at the QEC-workload IR
+-- layer only; the frontend does not yet bind it as a source identifier, so
+-- this file does not compile through quonc yet (tracked in #311).
 
 fn surface_d3_ccz(): Q<Bit> = run {
         a <- surface_code<3>()
