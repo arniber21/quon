@@ -228,10 +228,77 @@ fuses them into a single claim (ADR-0020):
 
 Analytic estimates and sampled logical failure rates are **different kinds of
 evidence**, and **neither is a threshold claim**. Readers may place the files
-side by side. An optional third artifact —
-`quonc --emit-qec-validation` — can place labeled analytic and sampled sections
-in one validation report without mutating the primary `ResourceReport` DTO
-(ADR-0020 amendment #280); it is still not a threshold claim.
+side by side, or use the fused `--emit-qec-validation` report walked through
+next, which does this automatically with provenance.
+
+## 5. Fused QEC validation report (`--emit-qec-validation`)
+
+Everything above (`--emit-na-schedule`, `--emit-resource-report`,
+`--emit-qec-experiment`) is zero-dependency — no Python required. Quon also
+has a stronger, optional end-to-end artifact that fuses the compiler's
+analytic estimates with sampled Stim/Sinter evidence into **one** report, with
+a provenance fingerprint tying the two together
+([ADR-0020 amendment #280](https://github.com/arniber21/quon/blob/main/docs/adr/0020-qec-reports-remain-separate.md);
+full reference:
+[`docs/neutral_atom/qec_validation_report.md`](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/qec_validation_report.md)).
+
+This needs the Python/Sinter stack (`devbox run -- just setup-python` once) —
+`--emit-qec-validation` shells out to `python/quon_qec_sinter.py` to sample
+logical failures. Run it against the distance-3 surface-code memory example
+(a smaller program than the CX walkthrough above, chosen to keep the excerpt
+short):
+
+```bash
+devbox run -- cargo run -p quonc -- examples/na_qec/surface_d3_memory.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-qec-validation /tmp/na-ft-demo.validation.json \
+  --validation-shots 2000 --validation-seed 7 --validation-decoder pymatching
+```
+
+That one command compiles, dual-emits the QEC experiment, builds the analytic
+`ResourceReport`, samples 2000 shots through Stim/Sinter, and fuses both into
+`/tmp/na-ft-demo.validation.json` (+ a sibling `.md` rendering) — while still
+writing the underlying primaries (`*.qec.json`, `.stim`,
+`*.resource_report.json`, `*.sampled.json`) as separate sibling files, per
+ADR-0020. The `.md` rendering below is captured verbatim from a real run —
+analytic and sampled evidence in clearly labeled sections, tied together by a
+provenance fingerprint:
+
+```markdown
+## Provenance
+
+| Field | Value |
+| --- | --- |
+| Source | `examples/na_qec/surface_d3_memory.qn` |
+| Distance | 3 |
+| Rounds | 2 |
+| Experiment SHA-256 | `4dbcec439c3474c7e5401c6e3dab302d782c71948d8f45fa419eb7910d390242` |
+
+## Analytic evidence
+*evidence_kind: `analytic`*
+
+| Metric | Value |
+| --- | ---: |
+| Logical qubits | 1 |
+| Physical atoms | 17 |
+| Estimated cycles | 165 |
+| Rydberg stages | 16 |
+
+## Sampled evidence
+*evidence_kind: `sampled`*
+
+- Decoder: `pymatching` · Seed: 7 · Confidence level: 0.95
+
+| Shots | Logical failures | Failure rate | 95% CI (Wilson) |
+| ---: | ---: | ---: | :--- |
+| 2000 | 6 | 0.003 | [0.0014, 0.0065] |
+```
+
+`provenance.experiment_sha256` ties the sampled row back to the exact compiled
+`*.qec.json` bytes; fusion **refuses** (or, with `--allow-sampled-mismatch`,
+warns) if attached sampled data doesn't match the compiled artifact. As
+always: 6 failures out of 2000 shots at one seeded noise-model working point
+is validation evidence, **not** a threshold claim.
 
 ## Current limitations
 
@@ -251,9 +318,19 @@ This demo is deliberately scoped. What it does **not** do:
   neutral-atom descriptor
   [`generic_rna_v0.json`](https://github.com/arniber21/quon/blob/main/targets/neutral_atom/generic_rna_v0.json),
   not any vendor's calibrated device model.
-- **Missing non-Clifford logical operations.** There is no magic-state
-  distillation, `T`/`CCZ` logical gate, or any non-Clifford logical operation
-  on the QEC path. The demonstrated logical operations are Clifford.
+- **Non-Clifford logical operations are a resource-accounting model, not yet
+  compiler-reachable from source.** Magic-state-*consuming* logical `T`,
+  `T†`, and `CCZ` exist at the QEC-workload layer (issue #283): a
+  `WorkloadBuilder` API, expansion into magic-state rounds, resource-report
+  fields (`t_count`, `tdag_count`, `ccz_count`, `magic_state_demand`), and QEC
+  experiment / Stim-comment emission. This is strictly *consumption* — magic
+  states are assumed already available and are never produced. There is no
+  distillation factory, and T/CCZ are recorded as metadata rather than
+  expanded to physical gates. The frontend typechecker does not yet bind
+  `logical_t` / `logical_tdag` / `logical_ccz` as source identifiers, so
+  `quonc` cannot compile a `.qn` program that uses them end-to-end yet
+  (tracked in #311). The logical operation demonstrated on this page
+  (`logical_cx`) remains Clifford.
 
 ## Where this fits
 
@@ -261,6 +338,8 @@ This demo is deliberately scoped. What it does **not** do:
 - [ADR-0019](https://github.com/arniber21/quon/blob/main/docs/adr/0019-simplified-lattice-surgery-cx.md) — simplified lattice-surgery CX.
 - [ADR-0020](https://github.com/arniber21/quon/blob/main/docs/adr/0020-qec-reports-remain-separate.md) — analytic reports and sampled results stay separate.
 - [ADR-0021](https://github.com/arniber21/quon/blob/main/docs/adr/0021-verify-na-auto-on-qec.md) — auto-verify `quantum.na` on QEC programs.
+- [`docs/neutral_atom/qec_validation_report.md`](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/qec_validation_report.md) — full `--emit-qec-validation` report schema and provenance/mismatch handling (#280).
+- [`docs/neutral_atom/magic_state_operations.md`](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/magic_state_operations.md) — what the magic-state-consuming `logical_t`/`logical_ccz` model does and does not do (#283).
 - The [neutral-atom pedagogy pack](https://github.com/arniber21/quon/tree/main/samples/neutral-atom)
   and the [quonc CLI reference](/reference/quonc/) cover the schedule model and
   emission flags in more depth.
