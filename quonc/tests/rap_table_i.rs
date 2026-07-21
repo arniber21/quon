@@ -17,6 +17,14 @@
 //!   run via `just ci-rust`'s dedicated `--release --include-ignored` step
 //!   (same pattern as `quon_lsp/tests/smoke.rs`). Dump-only by default;
 //!   `QUON_RAP_TABLE_I_ENFORCE=1` switches on Phase 2 hard tolerance asserts.
+//!
+//! A third test, [`ising_n98_preflight_and_dump_metrics`], covers the n = 98
+//! row added by issue #306 (`test/na/ising_n98.qn`). Unlike n42, n = 98 is
+//! **not** a CI anchor (issue #111's locked decision, reaffirmed by #306) —
+//! this test is `#[ignore]`d in its entirety (structural pre-flight *and*
+//! metric dump together, not split like n42's two tests) and is exercised by
+//! `just na-rap-sweep` / `python/na_rap_table_i_sweep.py`, not `just ci-rust`.
+//! See `docs/neutral_atom/rap_table_i_methodology.md`'s "n = 98" section.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -39,6 +47,12 @@ fn na_target() -> PathBuf {
 
 fn source() -> PathBuf {
     workspace_path("../test/na/ising_n42.qn")
+}
+
+/// Issue #306: n = 98 companion fixture. Same pinned target as n42
+/// ([`na_target`]) — only the circuit changes.
+fn source_n98() -> PathBuf {
+    workspace_path("../test/na/ising_n98.qn")
 }
 
 /// Published [RAP] Table I anchors, `ising` n = 42 (Sec. VI-B).
@@ -68,11 +82,13 @@ fn enforce_enabled() -> bool {
     std::env::var("QUON_RAP_TABLE_I_ENFORCE").as_deref() == Ok("1")
 }
 
-/// Run `quonc` on the fixture with the given `--na-placer` mode and parse the
-/// `--emit-resource-report` JSON from stdout.
-fn resource_report(placer: &str) -> Value {
+/// Run `quonc` on `src` with the given `--na-placer` mode and parse the
+/// `--emit-resource-report` JSON from stdout. Generalized over the source
+/// path (issue #306) so the n = 98 fixture can reuse this without
+/// duplicating the plumbing.
+fn resource_report_for(src: &std::path::Path, placer: &str) -> Value {
     let output = quonc()
-        .arg(source())
+        .arg(src)
         .arg("--target")
         .arg(na_target())
         .arg("--na-placer")
@@ -90,6 +106,11 @@ fn resource_report(placer: &str) -> Value {
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("parse resource report JSON for {placer}: {e}\n{stdout}"))
+}
+
+/// n42-fixture-specific convenience wrapper over [`resource_report_for`].
+fn resource_report(placer: &str) -> Value {
+    resource_report_for(&source(), placer)
 }
 
 fn u64_field(report: &Value, field: &str) -> u64 {
@@ -310,4 +331,121 @@ fn assert_time_within_tolerance(measured_us: u64, published_us: u64, label: &str
         "{label} rearrangement_time_us {measured_us} outside ±{:.0}% of published {published_us}",
         TIME_TOLERANCE_FRAC * 100.0
     );
+}
+
+/// [RAP] Table I `ising` n = 98 pre-flight structure: two Trotter steps of a
+/// 98-qubit chain, even (49-gate) / odd (48-gate) matchings per step —
+/// 2*(49+48) = 194 two-qubit gates over 4 entangling layers. See
+/// `test/na/ising_n98.qn`'s header comment for the full construction
+/// rationale (identical to `ising_n42.qn`, scaled).
+const EXPECTED_N98_ENTANGLE2_COUNT: u64 = 194;
+const EXPECTED_N98_RYDBERG_STAGES: u64 = 4;
+
+/// Published [RAP] Table I anchors, `ising` n = 98 (Sec. VI-B): 23 -> 12
+/// rearrangement steps. [RAP] does not publish a rearrangement-*time* number
+/// for this row (only steps), so this test — unlike the n42 dump test —
+/// prints just the step comparison, not a time_us comparison against a
+/// published figure.
+const PUBLISHED_N98_AGNOSTIC_STEPS: u64 = 23;
+const PUBLISHED_N98_AWARE_STEPS: u64 = 12;
+
+/// Issue #306: n = 98 companion to [`ising_n42_dumps_both_placer_rearrangement_metrics`].
+/// Combines the structural pre-flight and the metric dump into one test
+/// (unlike n42's split) because n = 98 is **not** a CI anchor at all (issue
+/// #111's locked decision, reaffirmed by #306) — there is no fast/un-ignored
+/// variant to keep out of `--release`. Dump-only: never hard-fails on
+/// numeric drift from the published row (no Phase 2 enforcement flag exists
+/// for this row; see docs/neutral_atom/rap_table_i_methodology.md's "n = 98"
+/// section). Exercised via `just na-rap-sweep` /
+/// `cargo test --release -p quonc --test rap_table_i -- --ignored ising_n98 --nocapture`,
+/// not `just ci-rust`.
+#[test]
+#[ignore = "n=98 is local-only (not a CI anchor, issue #111/#306); routing-aware is a \
+            double-digit-second run in --release. Run via `just na-rap-sweep` or \
+            `cargo test --release -p quonc --test rap_table_i -- --ignored ising_n98 --nocapture`"]
+fn ising_n98_preflight_and_dump_metrics() {
+    let src = source_n98();
+    let agnostic = resource_report_for(&src, "routing-agnostic");
+    let aware = resource_report_for(&src, "routing-aware");
+
+    for (label, report) in [("routing-agnostic", &agnostic), ("routing-aware", &aware)] {
+        assert_eq!(
+            u64_field(report, "entangle2_count"),
+            EXPECTED_N98_ENTANGLE2_COUNT,
+            "{label}: ising_n98.qn pre-flight gate count regressed"
+        );
+        assert_eq!(
+            u64_field(report, "rydberg_stages"),
+            EXPECTED_N98_RYDBERG_STAGES,
+            "{label}: ising_n98.qn pre-flight layer count regressed"
+        );
+    }
+    assert_eq!(u64_field(&agnostic, "logical_qubits"), 98);
+
+    let agnostic_steps = u64_field(&agnostic, "rearrangement_steps");
+    let aware_steps = u64_field(&aware, "rearrangement_steps");
+    let agnostic_time_us = u64_field(&agnostic, "rearrangement_time_us");
+    let aware_time_us = u64_field(&aware, "rearrangement_time_us");
+    let agnostic_transfer_us = u64_field(&agnostic, "transfer_time_us");
+    let aware_transfer_us = u64_field(&aware, "transfer_time_us");
+
+    let aware_completed = required_u64_field(&aware, "aware_search_completed_layers");
+    let aware_fell_back = required_u64_field(&aware, "aware_search_fell_back_layers");
+    let agnostic_completed = required_u64_field(&agnostic, "aware_search_completed_layers");
+    let agnostic_fell_back = required_u64_field(&agnostic, "aware_search_fell_back_layers");
+    assert_eq!(
+        (agnostic_completed, agnostic_fell_back),
+        (0, 0),
+        "routing-agnostic never runs the aware search; both counters must be 0"
+    );
+    assert!(
+        aware_completed + aware_fell_back >= 1,
+        "routing-aware must report at least one layer-assignment outcome (completed or \
+         fell back); got 0 of both — aware_search_status wiring regressed"
+    );
+
+    println!("--- RAP Table I (#111/#306) — ising n=98 (local-only) ---");
+    println!(
+        "{:<18} {:>10} {:>10} {:>14} {:>18} {:>18}",
+        "placer", "steps", "(paper)", "time_us(move)", "transfer_us", "aware search"
+    );
+    println!(
+        "{:<18} {:>10} {:>10} {:>14} {:>18} {:>18}",
+        "routing-agnostic",
+        agnostic_steps,
+        PUBLISHED_N98_AGNOSTIC_STEPS,
+        agnostic_time_us,
+        agnostic_transfer_us,
+        "n/a"
+    );
+    println!(
+        "{:<18} {:>10} {:>10} {:>14} {:>18} {:>18}",
+        "routing-aware",
+        aware_steps,
+        PUBLISHED_N98_AWARE_STEPS,
+        aware_time_us,
+        aware_transfer_us,
+        format!("{aware_completed} ok / {aware_fell_back} fell back")
+    );
+
+    if aware_fell_back > 0 {
+        eprintln!(
+            "FALLBACK: routing-aware fell back to greedy on {aware_fell_back} of \
+             {} layer-assignment call(s) on ising_n98 ({aware_completed} completed). At this \
+             larger scale (up to 49 simultaneous gates/layer, vs n42's 20-21), the default \
+             AwareSearchParams (node_budget=100_000, beam_width=2_000 — tuned empirically on \
+             ising_n42, see docs/neutral_atom/rap_table_i_methodology.md's Phase 2a status) \
+             are not necessarily sufficient; a real finding, not a bug, and left as a Phase 2b \
+             / follow-up tuning question rather than fixed here.",
+            aware_completed + aware_fell_back,
+        );
+    }
+    if aware_steps >= agnostic_steps {
+        eprintln!(
+            "WARNING: routing-aware ({aware_steps} steps) is not better than routing-agnostic \
+             ({agnostic_steps} steps) on ising_n98 — see the FALLBACK note above if \
+             aware_search_fell_back_layers > 0; this is expected when the search doesn't \
+             complete, not a new/separate finding."
+        );
+    }
 }

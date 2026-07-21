@@ -191,6 +191,28 @@ ci-rust: setup-python
 rap-table-i:
     cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture
 
+# RAP Table I full sweep (#306, follow-up to #111/#297/#307): both
+# --na-placer modes over every checked-in `ising` row (n=42, n=98), one
+# qmap-comparable CSV. Local-only, same precedent as `rap-table-i` above —
+# NOT wired into `ci-rust`'s hosted-runner gate. Needs a release quonc
+# (`cargo build --release -p quonc`) for reasonable wall time; `ising_n98`'s
+# routing-aware cell alone is a double-digit-second run. #304 (QASM
+# ingestion) is not implemented, so only the `ising` rows are swept — see
+# python/na_rap_table_i_sweep.py's module docstring and
+# docs/neutral_atom/rap_table_i_methodology.md for the full scope rationale.
+na-rap-sweep:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    quonc="${QUONC:-target/release/quonc}"
+    if [[ ! -x "$quonc" ]]; then
+      echo "error: quonc not found at $quonc (build release or set QUONC)" >&2
+      exit 1
+    fi
+    mkdir -p /tmp/quon_na_rap_sweep
+    QUONC="$quonc" python3 python/na_rap_table_i_sweep.py \
+      --csv /tmp/quon_na_rap_sweep/rap_table_i_sweep.csv
+    echo "wrote /tmp/quon_na_rap_sweep/rap_table_i_sweep.csv"
+
 # quonfmt · quonlint · LSP smoke on CI corpus
 ci-tooling: _tooling-build
     #!/usr/bin/env bash
