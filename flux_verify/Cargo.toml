@@ -15,6 +15,3 @@ enabled = true
 flux-rs = { git = "https://github.com/flux-rs/flux.git" }
 quon_core = { path = "../quon_core" }
 quon_na = { path = "../quon_na", default-features = false }
-
-[lints.rust]
-unsafe_code = "deny"
