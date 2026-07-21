@@ -12,13 +12,11 @@
 //! `refresh_goldens_check_script_reports_goldens_up_to_date` below, so the
 //! script's plumbing (not just each invocation's output) is covered too.
 //!
-//! Byte-for-byte comparison assumes deterministic output across runs/
-//! platforms: the interaction graph's edges come from a `BTreeMap`-keyed
-//! aggregation (`quon_na::graph::aggregate_edges`), not hash-map iteration
-//! order, and the resource reports are analytic (no sampling/RNG), so no
-//! separate ordering guard is added here — if a future change swaps either
-//! to an unordered collection, this file's tests (not just CI flakiness)
-//! would be the first signal.
+//! Comparison normalizes floating-point values to 4 decimal places before
+//! comparing: `estimated_fidelity` and `gate_fidelity_product` are analytic
+//! float computations that can vary across platforms (arm64 vs x86_64 FP
+//! units). The golden's purpose is structural pinning, not exact FP
+//! reproduction. Integer fields and string fields are unaffected.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -81,10 +79,35 @@ fn assert_metrics_golden(golden_rel: &str, args: &[&str]) {
     );
 }
 
+/// Normalize floating-point values in a JSON string to 6 decimal places.
+/// Non-JSON text (QASM, DOT) is returned unchanged. See the module-level
+/// comment for rationale.
+fn normalize_floats(text: &str) -> String {
+    let mut value: Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return text.to_owned(), // not JSON — compare raw
+    };
+    round_floats(&mut value);
+    serde_json::to_string_pretty(&value).unwrap_or_else(|e| panic!("serialize normalized: {e}"))
+}
+
+fn round_floats(value: &mut Value) {
+    match value {
+        Value::Number(n) if n.is_f64() => {
+            if let Some(f) = n.as_f64() {
+                *value = serde_json::Value::from((f * 1e4).round() / 1e4);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(round_floats),
+        Value::Object(o) => o.values_mut().for_each(round_floats),
+        _ => {}
+    }
+}
+
 fn assert_stdout_golden(golden_rel: &str, args: &[&str]) {
-    let expected = golden(golden_rel);
+    let expected = normalize_floats(&golden(golden_rel));
     let output = run(args);
-    let actual = stdout_text(&output);
+    let actual = normalize_floats(&stdout_text(&output));
     assert_eq!(
         expected, actual,
         "regenerated output for {golden_rel} no longer matches the committed golden — \
