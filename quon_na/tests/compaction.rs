@@ -42,6 +42,13 @@ fn measure(a: u32) -> NeutralAtomAction {
     }
 }
 
+fn global_ry(theta: f64) -> NeutralAtomAction {
+    NeutralAtomAction::GlobalRy {
+        theta_rad: theta,
+        duration_us: 1,
+    }
+}
+
 fn layer(cycle: u32, actions: Vec<NeutralAtomAction>) -> ScheduleLayer {
     ScheduleLayer { cycle, actions }
 }
@@ -821,4 +828,162 @@ fn zone_reject_move_merge_without_simulator() {
     };
     let err = force_merge_layers(req, &[], 0, 1, &opts).unwrap_err();
     assert!(matches!(err, CompactionError::ForbiddenMergeClass(_)));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #321: GlobalRy compaction barrier must cover the full atom universe.
+//
+// `infer_atom_dependencies` previously treated a bare `GlobalRy` layer as a
+// barrier only against atoms already seen in `last_use` (atoms with an earlier
+// action in the schedule). But `push_global_ry_with_refocus` (pipeline.rs)
+// protects *every* logical atom — the full `all_atoms` set — from the raster,
+// including atoms whose first explicit action comes *after* the raster. The
+// dependency barrier must therefore cover the full atom universe (every atom
+// appearing anywhere in the schedule), not just `last_use`. These tests pin
+// that invariant so a future relaxation of `classify_merge` cannot quietly
+// resurrect the bystander-corruption bug (#298).
+// ---------------------------------------------------------------------------
+
+/// A leading `GlobalRy` (before any atom-addressed action) must acquire
+/// ordering edges involving atoms whose first explicit action comes later in
+/// the schedule.
+///
+/// Fixture: L0 `GlobalRy(π)`, L1 `Entangle(0,1)`, L2 `Entangle(2,3)`. The
+/// raster at L0 physically hits atoms 0,1,2,3 (every trapped atom), even
+/// though none of them have an explicit action before L0. The dependency
+/// graph must therefore connect L0 → L1 and L0 → L2, so a future compaction
+/// pass cannot reorder L1 or L2 to or before the raster's cycle. Under the
+/// old `last_use`-only barrier, `last_use` is empty at L0, so no edges are
+/// emitted — this test fails on the unmodified code.
+#[test]
+fn leading_global_ry_barriers_against_later_atoms() {
+    let layers = vec![
+        layer(0, vec![global_ry(std::f64::consts::PI)]),
+        layer(1, vec![entangle(0, 1)]),
+        layer(2, vec![entangle(2, 3)]),
+    ];
+    let deps = infer_atom_dependencies(&layers);
+    let has = |b: u32, a: u32| {
+        deps.iter()
+            .any(|d| d.before == b && d.after == a && d.kind == ScheduleDependencyKind::AtomHazard)
+    };
+    assert!(
+        has(0, 1),
+        "GlobalRy at L0 must AtomHazard-precede Entangle(0,1) at L1 \
+         (atom 0 is in the universe even though its first action is later)"
+    );
+    assert!(
+        has(0, 2),
+        "GlobalRy at L0 must AtomHazard-precede Entangle(2,3) at L2 \
+         (atoms 2,3 are in the universe even though their first action is later)"
+    );
+}
+
+/// Atoms appearing both before and after a `GlobalRy` raster must both be
+/// ordered through it, and duplicate edges must remain absent (dedup).
+///
+/// Fixture: L0 `Entangle(0,1)`, L1 `GlobalRy(π)`, L2 `Entangle(0,2)`,
+/// L3 `Entangle(2,3)`. Atom 0 appears before (L0) and after (L2) the raster;
+/// atom 2 appears only after (L2, L3); atoms 1,3 round out the universe.
+///
+/// Post-fix (#321) AtomHazard edges:
+/// - `L0→L1`: atoms 0,1 seen before raster (barrier depends on prior use).
+/// - `L1→L2`: the raster touches atom 0 (barrier) **and** atom 2 first
+///   appears here (universe barrier) — deduped to a single edge.
+/// - `L1→L3`: atoms 2,3 first appear after raster (universe barrier — the
+///   new #321 behavior; under the old `last_use`-only barrier this edge was
+///   absent because atoms 2,3 had no prior `last_use` at L1).
+/// - `L2→L3`: atom 2 shared between L2 and L3 (non-raster data dep).
+///
+/// Note: atom 0's chain is `L0→L1→L2` (transitive), not a direct `L0→L2`,
+/// because the raster at L1 physically intervenes on atom 0 and becomes its
+/// immediate predecessor — L2's use of atom 0 depends on the raster, not
+/// directly on L0. The transitive path still enforces `cycle(L0) <
+/// cycle(L2)`. This is the correct, more conservative ordering.
+#[test]
+fn global_ry_orders_atoms_before_and_after_dedup() {
+    let layers = vec![
+        layer(0, vec![entangle(0, 1)]),
+        layer(1, vec![global_ry(std::f64::consts::PI)]),
+        layer(2, vec![entangle(0, 2)]),
+        layer(3, vec![entangle(2, 3)]),
+    ];
+    let deps = infer_atom_dependencies(&layers);
+    let count = |b: u32, a: u32, kind: ScheduleDependencyKind| {
+        deps.iter()
+            .filter(|d| d.before == b && d.after == a && d.kind == kind)
+            .count()
+    };
+    // Raster barriers against the full universe.
+    assert_eq!(
+        count(0, 1, ScheduleDependencyKind::AtomHazard),
+        1,
+        "L0→L1 (atoms 0,1 seen before raster)"
+    );
+    assert_eq!(
+        count(1, 2, ScheduleDependencyKind::AtomHazard),
+        1,
+        "L1→L2 must have exactly one AtomHazard edge (dedup: atom 0 touched by raster + atom 2 first appears after)"
+    );
+    assert_eq!(
+        count(1, 3, ScheduleDependencyKind::AtomHazard),
+        1,
+        "L1→L3 (atoms 2,3 first appear after raster — universe barrier, the new #321 behavior)"
+    );
+    // Non-raster edge between two post-raster layers sharing an atom.
+    assert_eq!(
+        count(2, 3, ScheduleDependencyKind::AtomHazard),
+        1,
+        "L2→L3 (shared atom 2)"
+    );
+    // The direct L0→L2 edge is intentionally absent: the raster at L1
+    // intervenes on atom 0, so L2 depends on L1 (transitively L0→L1→L2),
+    // not directly on L0. Asserting absence guards against regressing to
+    // the old last_use-only behavior that skipped the raster barrier.
+    assert_eq!(
+        count(0, 2, ScheduleDependencyKind::AtomHazard),
+        0,
+        "L0→L2 direct edge must be absent — raster L1 is atom 0's immediate predecessor (transitive L0→L1→L2)"
+    );
+    let total_atom_hazard = deps
+        .iter()
+        .filter(|d| d.kind == ScheduleDependencyKind::AtomHazard)
+        .count();
+    assert_eq!(
+        total_atom_hazard, 4,
+        "exactly four AtomHazard edges, no duplicates"
+    );
+}
+
+/// `classify_merge` must still forbid merging any layer containing a
+/// `GlobalRy` (or `LocalGate`) with another layer, even after the
+/// `infer_atom_dependencies` universe-barrier fix. This ties the dormant
+/// safety net to the dependency fix: if a future change relaxes
+/// `classify_merge` to permit merging a `GlobalRy` layer, the universe
+/// barrier from #321 must already be in place (tested above) or the
+/// bystander-corruption bug (#298) reappears.
+///
+/// Today `classify_merge` returns `Forbidden` for a `GlobalRy` layer, which
+/// `try_merge_pair` maps to `Skip` (non-transfer) → `force_merge_layers`
+/// returns `Conflict("merge skipped")`. If `classify_merge` is ever relaxed
+/// to allow the merge, the universe-barrier `AtomHazard` edge (L0→L1) would
+/// make `hard_dep_cycle_order_ok` reject the same-cycle merge with
+/// `DependencyViolation`. Either way the merge must not succeed. This test
+/// fails only if `classify_merge` is relaxed **and** the universe barrier is
+/// absent — exactly the gap #321 guards against.
+#[test]
+fn classify_merge_still_forbids_global_ry_layers() {
+    let mut req = empty_req(4);
+    req.layers = vec![
+        layer(0, vec![global_ry(std::f64::consts::PI)]),
+        layer(1, vec![entangle(0, 1)]),
+    ];
+    let opts = CompactionOptions::default();
+    let result = force_merge_layers(req, &[], 0, 1, &opts);
+    assert!(
+        result.is_err(),
+        "GlobalRy layers must not be mergeable: classify_merge Forbidden today, \
+         and the #321 universe barrier catches it if classify_merge is relaxed \
+         (got {result:?})"
+    );
 }

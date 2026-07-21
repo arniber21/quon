@@ -179,13 +179,31 @@ const PLACEHOLDER_AOD: AodTrapRef = AodTrapRef {
 /// Infer AtomHazard deps only. Does **not** invent FeedForward (B4).
 ///
 /// A [`NeutralAtomAction::GlobalRy`] has no atom list — it is a whole-plane
-/// raster that touches every atom trapped so far (issue #298) — so it is
-/// treated as a full barrier against every atom seen in an earlier layer:
-/// it depends on (and is depended on by) all of them, not just the atom(s)
-/// that motivated it. Atoms first appearing *after* the raster are
-/// unaffected by this synthetic barrier (they weren't trapped yet at that
-/// point in program order).
+/// raster that touches **every** atom in the schedule (issue #298): the echo
+/// protection in `pipeline::push_global_ry_with_refocus` assumes the raster
+/// hits the full `all_atoms` set, including atoms whose first explicit action
+/// comes *after* the raster. So a `GlobalRy` layer is treated as a full
+/// barrier against the **complete atom universe** — every atom appearing
+/// anywhere in the schedule — not just atoms already seen in an earlier layer
+/// (issue #321). Concretely, when a `GlobalRy` layer is reached, every atom
+/// in the universe is folded into that layer's touched set: atoms with a
+/// prior use yield a `pred → raster` `AtomHazard` edge, and atoms without one
+/// get the raster recorded as their `last_use`, so their first later action
+/// yields a `raster → later` edge. Either way the raster is ordered against
+/// the full universe, matching what the echo-refocus fix actually assumes.
+///
+/// This is dormant today because `classify_merge` always returns `Forbidden`
+/// for layers containing `GlobalRy`/`LocalGate`, so compaction never reorders
+/// them regardless of these edges. The edges exist so that a future
+/// relaxation of `classify_merge` cannot quietly resurrect the
+/// bystander-corruption bug (#298) for atoms idle at the raster's cycle.
 pub fn infer_atom_dependencies(layers: &[ScheduleLayer]) -> Vec<ScheduleDependency> {
+    // Pre-pass: the full atom universe — every atom appearing in any
+    // atom-addressed action anywhere in the schedule. `GlobalRy` itself has
+    // no atom list (it is whole-plane), so it contributes nothing here; the
+    // universe is exactly the atoms the echo protection must cover.
+    let universe: BTreeSet<AtomId> = layers.iter().flat_map(layer_atoms).collect();
+
     let mut last_use: BTreeMap<AtomId, u32> = BTreeMap::new();
     let mut deps = Vec::new();
     let mut seen: BTreeSet<(u32, u32, ScheduleDependencyKind)> = BTreeSet::new();
@@ -194,7 +212,11 @@ pub fn infer_atom_dependencies(layers: &[ScheduleLayer]) -> Vec<ScheduleDependen
         let i = idx as u32;
         let mut atoms = layer_atoms(layer);
         if layer_has_global_ry(layer) {
-            atoms.extend(last_use.keys().copied());
+            // Barrier against the full universe (#321): fold every atom in,
+            // not just those with a prior `last_use`. Atoms already seen emit
+            // `pred → raster`; atoms first seen here get the raster as their
+            // `last_use`, so a later first-action emits `raster → later`.
+            atoms.extend(universe.iter().copied());
         }
         for atom in atoms {
             if let Some(&pred) = last_use.get(&atom) {
