@@ -127,7 +127,7 @@ setup-python:
 
 # Unit + integration tests (soft-skip lit if tools missing). No Aer.
 test-fast:
-    cargo test --workspace {{WORKSPACE_EXCLUDE}}
+    cargo nextest run --workspace {{WORKSPACE_EXCLUDE}}
 
 # Local CI parity: rust + tooling + validation-doc assert (not website
 # build). `ci-rust`'s `cargo test --workspace` already exercises
@@ -150,7 +150,7 @@ ci-rust: setup-python
     cargo build --examples --workspace {{WORKSPACE_EXCLUDE}}
     export PATH="$PWD/.venv/bin:$PATH"
     export QUON_REQUIRE_LIT=1
-    cargo test --workspace {{WORKSPACE_EXCLUDE}}
+    cargo nextest run --workspace {{WORKSPACE_EXCLUDE}}
     export QUONC=target/release/quonc
     for script in \
       test/verify/bell.py \

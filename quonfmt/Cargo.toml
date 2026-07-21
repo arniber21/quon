@@ -1,7 +1,10 @@
 [package]
 name    = "quonfmt"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "quonfmt"
@@ -19,3 +22,6 @@ insta     = { workspace = true }
 proptest  = { workspace = true }
 arbitrary = { workspace = true }
 frontend  = { path = "../frontend", default-features = false }
+
+[lints.rust]
+unsafe_code = "deny"

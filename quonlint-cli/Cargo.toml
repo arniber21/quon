@@ -1,7 +1,10 @@
 [package]
 name    = "quonlint-cli"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "quonlint"
@@ -17,3 +20,6 @@ serde_json = { workspace = true }
 assert_cmd = "2"
 predicates = "3"
 serde_json = { workspace = true }
+
+[lints.rust]
+unsafe_code = "deny"

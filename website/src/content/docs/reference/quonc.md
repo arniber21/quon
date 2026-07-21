@@ -125,6 +125,54 @@ quonc program.qn \
   --emit-na-stats stats.json
 ```
 
+### `--emit-qec-experiment <PATH>`
+
+Dual-emit the QEC experiment artifact from one `quon_qec` workload IR pass
+(ADR-0018): a versioned semantic `*.qec.json` (family, distance, rounds,
+logical observables, check graph, atom/site map, `error_model` snapshot, refs
+into `quantum.na`) and a sibling structure-level `<stem>.stim` circuit for
+Sinter. Requires a `neutral_atom_reconfigurable` target and a QEC-backed
+program (e.g. `repetition_code` / `memory_round`); bare-qubit NA programs have
+no experiment IR.
+
+The `.stim` is **structure only** — no physical noise channels (ADR-0024).
+Python (`python/quon_qec_sinter.py`) loads both files and annotates noise from
+the JSON `error_model` before sampling. stdout dual-emit is not supported;
+`PATH` must be a filesystem path.
+
+```bash
+quonc examples/na_qec/repetition_d3_memory.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-qec-experiment /tmp/rep_d3.qec.json
+# writes /tmp/rep_d3.qec.json and /tmp/rep_d3.stim
+```
+
+See [`docs/neutral_atom/qec_experiment_schema.md`](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/qec_experiment_schema.md)
+for the full field reference.
+
+### `--emit-qec-validation <PATH>`
+
+The strongest end-to-end artifact: compiles, dual-emits the QEC experiment,
+builds the analytic `ResourceReport`, shells out to `python/quon_qec_sinter.py`
+to sample logical failures through Stim/Sinter, and fuses analytic + sampled
+evidence into `*.validation.json` (plus a sibling `*.validation.md` rendering)
+with a provenance fingerprint tying the two together
+([ADR-0020 amendment #280](https://github.com/arniber21/quon/blob/main/docs/adr/0020-qec-reports-remain-separate.md)).
+Analytic and sampled evidence live in **separate labeled sections**; neither is
+a threshold claim. Requires the Python/Sinter stack (`just setup-python`); use
+`--attach-sampled` for offline fusion without shelling out. Requires a
+`neutral_atom_reconfigurable` target. stdout is not supported.
+
+```bash
+quonc examples/na_qec/repetition_d3_memory.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-qec-validation /tmp/rep_d3.validation.json --validation-shots 256
+```
+
+See [`docs/neutral_atom/qec_validation_report.md`](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/qec_validation_report.md)
+for the full report schema and provenance semantics, and the
+[neutral-atom FT compiler demo](/guides/na-ft-demo/) for a walked-through example.
+
 ## Target options
 
 ### `--target <PATH>`
@@ -179,6 +227,43 @@ Skip schedule compaction after neutral-atom movement or zoned scheduling.
 ### `--na-placement <row-major|degree|clustering>`
 
 Select the flat AOD placement strategy.
+
+## QEC validation options
+
+These tune `--emit-qec-validation` (ADR-0020 amendment #280).
+
+### `--validation-shots <N>`
+
+Sinter shots for `--emit-qec-validation`. Default `64`.
+
+### `--validation-seed <SEED>`
+
+Deterministic Stim detector-sampler seed for `--emit-qec-validation`. Default `7`.
+
+### `--validation-decoder <NAME>`
+
+Sinter decoder for `--emit-qec-validation`. Default `pymatching`.
+
+### `--attach-sampled <PATH>`
+
+Fuse a pre-sampled evidence JSON (from `python/quon_qec_sinter.py --json`)
+instead of shelling out to Python. Useful for offline validation or CI
+environments without the Stim stack.
+
+### `--allow-sampled-mismatch`
+
+Warn and record the discrepancy (instead of refusing) when attached sampled
+data provenance does not match the compiled artifact.
+
+### `--python <PATH>`
+
+Python interpreter for the Stim/Sinter harness. Default: the repo `.venv` if
+present, then `python3`. Also settable via `QUON_PYTHON`.
+
+### `--sinter-harness <PATH>`
+
+Path to `quon_qec_sinter.py`. Default: search up from the current working
+directory for `python/quon_qec_sinter.py`.
 
 ## Debug options
 

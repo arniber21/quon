@@ -1,0 +1,6 @@
+# clippy configuration for the Quon workspace.
+#
+# Pin the MSRV so clippy suggests MSRV-appropriate lints (e.g. it won't recommend
+# `std::mem::take` if that was stabilized after the MSRV). Must match
+# `[workspace.package] rust-version` in the root Cargo.toml.
+msrv = "1.87"

@@ -15,6 +15,13 @@ export MLIR_SYS_220_PREFIX="$(llvm-config --prefix)"
 export PATH="$MLIR_SYS_220_PREFIX/bin:$PATH"
 export LIBCLANG_PATH="$MLIR_SYS_220_PREFIX/lib"
 
+# sccache for faster incremental rebuilds (RUSTC_WRAPPER); no-op if absent.
+# sccache is pinned in devbox.json; CI relies on Swatinem/rust-cache instead.
+if command -v sccache >/dev/null 2>&1; then
+  export RUSTC_WRAPPER="sccache"
+  export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache}"
+fi
+
 _z3_prefix="$(pkg-config --variable=prefix z3 2>/dev/null || true)"
 if [ -z "$_z3_prefix" ] && command -v z3 >/dev/null 2>&1; then
   _z3_bin="$(command -v z3)"
