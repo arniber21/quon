@@ -551,16 +551,37 @@ fn same_code_family(a: &CodeFamily, b: &CodeFamily) -> bool {
 /// `total_time_us` itself uses (`simultaneous_layer_time`'s
 /// layer-max-duration, not per-action durations): an atom is "active" for a
 /// layer's full max-duration if it appears in *any* action in that layer
-/// (via [`accumulate_action_atoms`] — `GlobalRy` contributes no atom
-/// identity here, same as [`TemporalAtomMetrics`]'s allocation census, since
-/// it has no discrete atom list), and its idle time is `total_time_us` minus
-/// the sum of active layer-durations. Atoms that never appear in any
-/// schedule action are excluded from the product entirely (out of scope for
-/// a per-action fidelity model — nothing here attributes them the full
-/// schedule duration as idle).
+/// (via [`accumulate_action_atoms`]).
+///
+/// **`GlobalRy` activity (issue #328):** `accumulate_action_atoms` inserts
+/// no atoms for `GlobalRy` (it has no discrete atom list), which is correct
+/// for the [`TemporalAtomMetrics`] allocation census but wrong for idle
+/// decay — a global raster physically hits *every* trapped atom, so every
+/// atom in the schedule's atom universe is active during a `GlobalRy` layer.
+/// This function builds the atom universe from all atom-addressed actions
+/// across the schedule (via [`accumulate_action_atoms`], same as the
+/// allocation census) and, for any layer containing a `GlobalRy` action,
+/// extends that layer's active set with the full universe. Atoms that appear
+/// only via `GlobalRy` (no atom-addressed action anywhere) stay outside the
+/// universe and contribute no idle term (out of scope for a per-action
+/// fidelity model — nothing here attributes them the full schedule duration
+/// as idle).
 fn idle_decay_product(layers: &[ScheduleLayer], total_time_us: u64, coherence_time_us: f64) -> f64 {
     use crate::layout::AtomId;
     use std::collections::{BTreeMap, BTreeSet};
+
+    // Build the fidelity atom universe from all atom-addressed actions across
+    // the schedule. GlobalRy alone does not contribute atoms here (issue #328:
+    // an atom known only through GlobalRy is outside the report's universe).
+    let universe: BTreeSet<AtomId> = {
+        let mut u = BTreeSet::new();
+        for layer in layers {
+            for action in &layer.actions {
+                accumulate_action_atoms(action, &mut u);
+            }
+        }
+        u
+    };
 
     let mut active_us: BTreeMap<AtomId, u64> = BTreeMap::new();
     for layer in layers {
@@ -571,8 +592,17 @@ fn idle_decay_product(layers: &[ScheduleLayer], total_time_us: u64, coherence_ti
             .fold(0u64, simultaneous_layer_time);
 
         let mut seen: BTreeSet<AtomId> = BTreeSet::new();
+        let mut has_global_ry = false;
         for action in &layer.actions {
             accumulate_action_atoms(action, &mut seen);
+            if matches!(action, NeutralAtomAction::GlobalRy { .. }) {
+                has_global_ry = true;
+            }
+        }
+        // A GlobalRy raster hits every atom in the universe, so mark them all
+        // active for this layer's max-duration (issue #328).
+        if has_global_ry {
+            seen.extend(universe.iter().copied());
         }
         for atom in seen {
             *active_us.entry(atom).or_insert(0) += max_duration;
@@ -1702,6 +1732,188 @@ mod tests {
         );
         // Idle decay strictly lowers the estimate below the raw gate product.
         assert!(estimated_fidelity < gate_fidelity_product);
+    }
+
+    /// Schedule for issue #328's regression: two atoms (0 and 1) with an
+    /// atom-addressed action providing the universe, plus a bare `GlobalRy`
+    /// layer that should mark *both* atoms active.
+    ///
+    /// - Layer 0: `Entangle2` on atoms 0 and 1, 10 µs — both atoms active,
+    ///   establishes the atom universe {0, 1}.
+    /// - Layer 1: bare `GlobalRy { 0.4, 6 µs }` — a whole-plane raster.
+    ///   Pre-#328 bug: `accumulate_action_atoms` inserts no atoms for
+    ///   `GlobalRy`, so neither atom gets credit for this layer's 6 µs and
+    ///   both are misattributed 6 µs of idle time. Post-#328 fix: both
+    ///   atoms are active (the raster hits every trapped atom), so each
+    ///   gets 6 µs of active credit.
+    ///
+    /// `total_time_us = 10 + 6 = 16`. Post-fix:
+    /// `active(atom0) = 10 + 6 = 16` → idle 0.
+    /// `active(atom1) = 10 + 6 = 16` → idle 0.
+    /// Pre-fix (bug): `active(atom0) = 10`, `active(atom1) = 10` → idle 6 each.
+    fn globalry_idle_toy_layers() -> Vec<ScheduleLayer> {
+        vec![
+            ScheduleLayer {
+                cycle: 0,
+                actions: vec![NeutralAtomAction::Entangle2 {
+                    atoms: [atom(0), atom(1)],
+                    duration_us: 10,
+                }],
+            },
+            ScheduleLayer {
+                cycle: 1,
+                actions: vec![NeutralAtomAction::GlobalRy {
+                    theta_rad: 0.4,
+                    duration_us: 6,
+                }],
+            },
+        ]
+    }
+
+    #[test]
+    fn idle_decay_marks_all_universe_atoms_active_for_globalry_layer() {
+        // Issue #328 regression: a bare `GlobalRy` layer must mark every atom
+        // in the schedule's atom universe as active for that layer's
+        // max-duration, so the raster time is not misattributed to idle decay.
+        let layers = globalry_idle_toy_layers();
+        let report = ResourceReport::from_layers(&layers)
+            .with_fidelity_estimate(&layers, &example_fidelity());
+
+        assert_eq!(report.total_time_us, 16);
+        assert_eq!(report.global_ry_count, Some(1));
+
+        // gate_fidelity_product = cz^1 * single_qubit^1 (1 GlobalRy):
+        // 0.99 * 0.98 = 0.9702.
+        let expected_gate_product = 0.99 * 0.98;
+        let gate_fidelity_product = match report.gate_fidelity_product {
+            Some(v) => v,
+            None => panic!("gate_fidelity_product attached"),
+        };
+        assert!(
+            (gate_fidelity_product - expected_gate_product).abs() < 1e-12,
+            "gate_fidelity_product = {gate_fidelity_product}, expected {expected_gate_product}"
+        );
+
+        // Post-fix: both atoms have zero idle time (active 16 of 16 µs), so
+        // idle_decay = 1.0 * 1.0 = 1.0 → estimated == gate product.
+        // Pre-fix (bug): each atom has 6 µs idle → (1 - 6/100) = 0.94 each,
+        // so estimated = gate_product * 0.94^2 = 0.9702 * 0.8836 ≈ 0.8572.
+        let estimated_fidelity = match report.estimated_fidelity {
+            Some(v) => v,
+            None => panic!("estimated_fidelity attached"),
+        };
+        assert!(
+            (estimated_fidelity - expected_gate_product).abs() < 1e-12,
+            "estimated_fidelity = {estimated_fidelity}, expected {expected_gate_product} \
+             (both atoms active for the GlobalRy layer → zero idle decay)"
+        );
+    }
+
+    #[test]
+    fn idle_decay_excludes_atoms_known_only_through_globalry() {
+        // Issue #328 invariant: an atom that appears *only* via `GlobalRy`
+        // (no atom-addressed action anywhere in the schedule) is NOT part
+        // of the atom universe and must not contribute an idle term.
+        // A `GlobalRy` layer alone, with no other atom-addressed actions,
+        // should produce an empty atom universe → idle_decay_product = 1.0
+        // (empty product).
+        let layers = vec![ScheduleLayer {
+            cycle: 0,
+            actions: vec![NeutralAtomAction::GlobalRy {
+                theta_rad: 0.4,
+                duration_us: 6,
+            }],
+        }];
+        let report = ResourceReport::from_layers(&layers)
+            .with_fidelity_estimate(&layers, &example_fidelity());
+
+        assert_eq!(report.total_time_us, 6);
+        assert_eq!(report.global_ry_count, Some(1));
+
+        let gate_fidelity_product = match report.gate_fidelity_product {
+            Some(v) => v,
+            None => panic!("gate_fidelity_product attached"),
+        };
+        // gate_fidelity_product = single_qubit^1 = 0.98.
+        assert!((gate_fidelity_product - 0.98).abs() < 1e-12);
+
+        // No atom-addressed actions → empty universe → idle_decay = 1.0
+        // (product over zero atoms). estimated == gate product.
+        let estimated_fidelity = match report.estimated_fidelity {
+            Some(v) => v,
+            None => panic!("estimated_fidelity attached"),
+        };
+        assert!(
+            (estimated_fidelity - gate_fidelity_product).abs() < 1e-12,
+            "estimated_fidelity = {estimated_fidelity}, expected {gate_fidelity_product} \
+             (empty atom universe → no idle decay term)"
+        );
+    }
+
+    #[test]
+    fn idle_decay_globalry_in_mixed_layer_marks_all_universe_atoms_active() {
+        // Issue #328: when a `GlobalRy` shares a layer with an atom-addressed
+        // action (e.g. a local gate on one atom), the `GlobalRy` still marks
+        // *all* universe atoms active for that layer — not just the atom
+        // addressed by the co-resident local gate.
+        //
+        // - Layer 0: `Entangle2` on atoms 0,1 (10 µs) → universe {0, 1}.
+        // - Layer 1: `LocalGate { H }` on atom 0 (3 µs) + `GlobalRy` (4 µs).
+        //   Layer max-duration = 4 µs. Both atoms must be active for 4 µs.
+        //
+        // total_time = 10 + 4 = 14.
+        // active(0) = 10 + 4 = 14 → idle 0.
+        // active(1) = 10 + 4 = 14 → idle 0.  (Pre-fix: active(1) = 10 → idle 4.)
+        let layers = vec![
+            ScheduleLayer {
+                cycle: 0,
+                actions: vec![NeutralAtomAction::Entangle2 {
+                    atoms: [atom(0), atom(1)],
+                    duration_us: 10,
+                }],
+            },
+            ScheduleLayer {
+                cycle: 1,
+                actions: vec![
+                    NeutralAtomAction::LocalGate {
+                        atom: atom(0),
+                        gate: LocalGateKind::H,
+                        duration_us: 3,
+                    },
+                    NeutralAtomAction::GlobalRy {
+                        theta_rad: 0.4,
+                        duration_us: 4,
+                    },
+                ],
+            },
+        ];
+        let report = ResourceReport::from_layers(&layers)
+            .with_fidelity_estimate(&layers, &example_fidelity());
+
+        assert_eq!(report.total_time_us, 14);
+
+        // gate_fidelity_product = cz^1 * single_qubit^2 (1 H + 1 GlobalRy):
+        // 0.99 * 0.98^2 = 0.99 * 0.9604 = 0.950796.
+        let expected_gate_product = 0.99 * 0.98 * 0.98;
+        let gate_fidelity_product = match report.gate_fidelity_product {
+            Some(v) => v,
+            None => panic!("gate_fidelity_product attached"),
+        };
+        assert!(
+            (gate_fidelity_product - expected_gate_product).abs() < 1e-12,
+            "gate_fidelity_product = {gate_fidelity_product}, expected {expected_gate_product}"
+        );
+
+        // Post-fix: both atoms active for 14 of 14 µs → idle 0 → no decay.
+        let estimated_fidelity = match report.estimated_fidelity {
+            Some(v) => v,
+            None => panic!("estimated_fidelity attached"),
+        };
+        assert!(
+            (estimated_fidelity - expected_gate_product).abs() < 1e-12,
+            "estimated_fidelity = {estimated_fidelity}, expected {expected_gate_product} \
+             (GlobalRy in mixed layer marks all universe atoms active → zero idle decay)"
+        );
     }
 
     #[test]
