@@ -18,9 +18,12 @@ expression: redact_timings(&json)
   "search": {
     "aware_search_budget_exceeded_layers": 0,
     "aware_search_completed_layers": 0,
+    "aware_search_deepening_factor": 0.6,
+    "aware_search_deepening_value": 0.2,
     "aware_search_no_legal_assignment_layers": 0,
     "aware_search_node_budget": 100000,
-    "aware_search_node_expansions": 0
+    "aware_search_node_expansions": 0,
+    "aware_search_pruning_window": 32
   },
   "stage_timings_us": {
     "compaction_us": "<redacted_us>",

@@ -113,9 +113,10 @@ pub use stats::{
     SearchDiagnostics, StageTimingsUs, VersionInfo, na_stats_to_json,
 };
 pub use zoned::{
-    AWARE_NODE_BUDGET, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, ZonedScheduleError,
-    ZonedScheduleResult, euclidean_um, movement_duration_us, routing_cost_eq1, schedule_zoned,
-    sqrt_d_max, toy_zoned_architecture, validate_zone_constraints,
+    AWARE_NODE_BUDGET, AwareSearchOutcome, AwareSearchParams, PlacerMode, ZoneKind, ZoneSpec,
+    ZonedArchitecture, ZonedScheduleError, ZonedScheduleResult, euclidean_um, movement_duration_us,
+    routing_cost_eq1, schedule_zoned, schedule_zoned_with_aware_params, sqrt_d_max,
+    toy_zoned_architecture, validate_zone_constraints,
 };
 
 #[cfg(feature = "mlir")]

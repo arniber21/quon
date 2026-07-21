@@ -176,11 +176,18 @@ ci-rust: setup-python
     echo "==> python/test_quon_qec_benchmarks.py (#254 / ADR-0023)"
     .venv/bin/python -m unittest python/test_quon_qec_benchmarks.py
 
-# RAP Table I dump (#111, --release --include-ignored). Local-only: the
-# routing-aware A* search peaks ~17.5 GB RSS, which OOMs GitHub's 16 GB hosted
-# runners (systemd-oomd SIGTERM, exit 143). The cheap preflight variant of this
-# test runs un-ignored in the ordinary workspace suite, so CI still pins the
-# gate/layer counts — only the slow metrics dump is local.
+# RAP Table I dump (#111, --release --include-ignored). Local-only: prior to
+# #297's heuristic + beam-width search, the uniform-cost routing-aware search
+# peaked ~17.5 GB RSS on `ising_n42` (always exhausting its budget on every
+# layer), which OOMs GitHub's 16 GB hosted runners (systemd-oomd SIGTERM,
+# exit 143). #297 fixes this as a side effect (measured peak RSS on this same
+# fixture is now ~64 MB — the search actually completes instead of filling
+# memory with an ever-growing frontier), but this recipe has not been
+# re-integrated into `ci-rust`'s hosted-runner gate; the cheap preflight
+# variant of this test still runs un-ignored in the ordinary workspace suite,
+# so CI still pins the gate/layer counts — only the slow metrics dump is
+# local. Re-wiring this into `ci-rust` now that the memory concern is
+# resolved is a reasonable follow-up, left out of #297's scope.
 rap-table-i:
     cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture
 

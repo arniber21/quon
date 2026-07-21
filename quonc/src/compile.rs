@@ -235,6 +235,7 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 compact: request.na_compact,
                 placement: request.na_placement,
                 dump_ir: request.dump_ir,
+                ..Default::default()
             };
             // ADR-0016 / #248: QEC-backed entrypoints expand via workload IR;
             // bare-qubit NA programs keep the interaction-graph extract path.
@@ -539,6 +540,7 @@ pub fn schedule_raw_graph(
         compact,
         placement,
         dump_ir: false,
+        ..Default::default()
     };
     let artifacts = run_from_graph(graph, na, opts, None)?;
     Ok((artifacts.request, artifacts.resource_report))

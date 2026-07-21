@@ -15,11 +15,16 @@ below.
 | Phase | Who | What |
 | --- | --- | --- |
 | **1 (this doc / agent-implementable)** | Agent | Land the circuit, pinned target, this doc, and a metric **dump** test that records agnostic vs aware rearrangement steps/time without failing CI on mismatch. |
-| **2 (human then enforce)** | Human sign-off, then agent | Review whether the Phase 1 numbers are a *mechanism-legitimate* reproduction (not just numerically close by accident). Only then flip on hard tolerance asserts (`QUON_RAP_TABLE_I_ENFORCE=1`, below). |
+| **2a (#297, agent-implementable)** | Agent | Implement [RAP]'s Eqs. (3)-(5) A* heuristic so the aware search actually completes instead of always falling back — see [Phase 2a status](#phase-2a-status-297-heuristic-search-closes-the-fallback-gap). Still does **not** flip the enforcement flag. |
+| **2b (human then enforce)** | Human sign-off, then agent | Review whether the Phase 2a numbers are a *mechanism-legitimate* reproduction (not just numerically close by accident) and whether the remaining gap to the paper's 9-step/1.6ms row is understood/acceptable. Only then flip on hard tolerance asserts (`QUON_RAP_TABLE_I_ENFORCE=1`, below). |
 
 Phase 1 deliberately does not hard-assert against the published numbers. See
 [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)
-for why that caution was warranted.
+for the original fallback finding, and
+[Phase 2a status](#phase-2a-status-297-heuristic-search-closes-the-fallback-gap)
+for what changed once the heuristic landed. `QUON_RAP_TABLE_I_ENFORCE` remains
+**unset by default** after #297 — Phase 2b's human sign-off has not happened
+yet.
 
 ## Anchor row
 
@@ -169,30 +174,38 @@ anchor's numbers. See
 proving the aware search mechanism itself (not this specific 42-qubit
 circuit) can both **complete** (`AwareSearchOutcome::Completed`, not a
 fallback) and find a strictly better joint assignment than the greedy
-placer on a genuinely contended layout. This is the evidence backing the
+placer on a genuinely contended layout, plus (added by #297)
+`aware_search_completes_and_beats_greedy_at_ising_n42_scale` — the same
+contention shape replicated across 10 well-separated clusters (20 gates, 340
+candidate pairs total, matching `ising_n42`'s real per-layer scale) to prove
+the mechanism holds up at fixture scale, not only in the tiny 2-gate case.
+This is the evidence backing the
 [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)'s
 claim that the `ising_n42` gap is plausibly budget/scaling, not "nothing to
 find."
 
 ### Runtime / CI wiring
 
-Routing-aware placement is a best-first search
-([`assign_aware_legal`](../../quon_na/src/zoned.rs), budget
-`AWARE_NODE_BUDGET = 100_000` expansions/layer) over this target's 340
-entanglement-zone pairs. Measured on this fixture: routing-agnostic ≈ 1 s,
-routing-aware ≈ 90–125 s in a `--release` build (debug is substantially
-slower) — the search burns its full budget on every one of the circuit's
-4 layers without finding a full assignment (see the
-[Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)),
-so this is worst-case-budget time, not early-termination time. That is too
-slow for the default `cargo test --workspace` gate (which runs in debug
-mode), so the dump test is `#[ignore]`d and wired into `just ci-rust` as a
-dedicated `--release --include-ignored` step — the same pattern
-`quon_lsp/tests/smoke.rs` uses for the tooling job. This still satisfies "n=42
-in CI" (locked decision): it runs every `just ci-rust` / CI `rust` job, just
-in release mode via an explicit step instead of the default debug test sweep.
-`ci-rust`'s recipe carries `set -euo pipefail` so a failure in this step (or
-any earlier one) actually fails the job instead of being swallowed.
+Routing-aware placement is an A* search
+([`assign_aware_legal`](../../quon_na/src/zoned.rs), default budget
+`AwareSearchParams::node_budget = AWARE_NODE_BUDGET = 100_000`
+expansions/layer, per-run configurable as of #297 — see
+[Phase 2a status](#phase-2a-status-297-heuristic-search-closes-the-fallback-gap))
+over this target's 340 entanglement-zone pairs. Measured on this fixture
+post-#297: routing-agnostic ≈ 1 s, routing-aware ≈ 2–12 s in a `--release`
+build depending on which parameters are exercised (pre-#297: routing-aware
+was 90–125 s, always exhausting its full budget on every layer without
+completing — see the [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)
+for that superseded measurement). Even at the improved speed this is still
+too slow for the default `cargo test --workspace` gate (which runs in debug
+mode, substantially slower again), so the dump test remains `#[ignore]`d and
+wired into `just ci-rust` as a dedicated `--release --include-ignored` step —
+the same pattern `quon_lsp/tests/smoke.rs` uses for the tooling job. This
+still satisfies "n=42 in CI" (locked decision): it runs every `just ci-rust` /
+CI `rust` job, just in release mode via an explicit step instead of the
+default debug test sweep. `ci-rust`'s recipe carries `set -euo pipefail` so a
+failure in this step (or any earlier one) actually fails the job instead of
+being swallowed.
 
 ```bash
 # What CI runs (see justfile's `ci-rust` recipe)
@@ -203,6 +216,12 @@ cargo test -p quonc --test rap_table_i preflight
 ```
 
 ## Phase 1 finding: routing-aware falls back to greedy on this target/circuit pair
+
+**Superseded by #297 (kept as historical record — see
+[Phase 2a status](#phase-2a-status-297-heuristic-search-closes-the-fallback-gap)
+below for the current numbers and mechanism).** This section describes the
+uniform-cost (`h = 0`) search's behavior *before* the Eqs. (3)-(5) heuristic
+existed; `aware_search_fell_back_layers` is `0`, not `4`, as of #297.
 
 **Corrected finding (#111 review; an earlier draft of this doc claimed "no
 routing contention" — that claim was wrong and has been retracted).** Measured
@@ -253,6 +272,140 @@ Phase 1's contract is only to make the fallback **visible** (the dump test
 now hard-asserts the diagnostic fields are present and prints a `FALLBACK`
 banner whenever `aware_search_fell_back_layers > 0`), not to fix it.
 
+## Phase 2a status (#297): heuristic search closes the fallback gap
+
+Implements [RAP] Sec. IV-C / V-C's guiding heuristic (Eqs. (3)–(5)) and Sec.
+V-D's pruning, turning `assign_aware_legal` from a uniform-cost (`h = 0`)
+search into true A*. Measured on `rap_table_i.json` / `ising_n42.qn` with the
+implementation's chosen defaults (see below):
+
+| Placer | Rearrangement steps | Rearrangement time_us (move-only) | Rydberg stages | Entangle2 count | Aware search |
+| --- | --- | --- | --- | --- | --- |
+| Routing-agnostic | 23 | 3049 | 4 | 82 | n/a |
+| Routing-aware | 18 | 2999 | 4 | 82 | **4 of 4 layers completed; 0 of 4 fell back** |
+
+`aware_search_fell_back_layers == 0` — the acceptance criterion this section
+exists to demonstrate. Routing-aware now genuinely beats routing-agnostic on
+both headline columns (18 vs 23 steps, −22%; 2999 vs 3049 µs move-only time,
+−2%) via a completed search, not a coincidental tie through fallback (the
+Phase 1 finding above). This is a real, human-verifiable improvement, but it
+is **not** [RAP]'s published 9-step/1.6 ms row for this same benchmark — see
+[Divergences from the paper's numbers](#divergences-from-the-papers-numbers-post-297)
+below for why, and why closing that remaining gap further is left to Phase 2b
+/ a follow-up rather than asserted here.
+
+**What changed in `assign_aware_legal` (`quon_na/src/zoned.rs`):**
+
+- **Eq. (1) grouping moved into the search itself.** Before #297, each
+  node's cost was the sum of every gate's own `√d_max` independently — it did
+  not group moves into AOD-compatible movement groups the way the post-search
+  router (`partition_aod_compatible`) actually does, so the search's notion of
+  "cheap" did not match what routing would really charge. `assign_aware_legal`
+  now maintains the same grouping ([`positions_aod_compatible`]) incrementally
+  per node, so `cost_so_far` is exact Eq. (1) cost, not a proxy. (This is also
+  why the pre-#297 unit test `aware_cost_not_worse_than_agnostic_on_matching`
+  keeps passing unchanged — it already only asserted an inequality, not exact
+  numbers.)
+- **Eq. (3)-(4) heuristic.** Admissible part: `max(0, √(max distance among
+  unplaced gates' nearest still-legal pair) − √(current largest group
+  distance))`. Accelerating part: `δ · (β + Σ_G SD(G)) · |unplaced|`, where
+  `SD(G)` is computed on **discrete ranks** of each group's source/target
+  coordinates (matching the paper's own discretization, Sec. V-A/V-C/Example
+  9), not raw µm displacement — an earlier draft used raw displacement
+  directly and a #297 review pass caught it blowing the heuristic up
+  (hundreds of µm-scale "spurious" penalty) whenever one group member's move
+  happened to be physically much longer than another's, even in perfectly
+  legal, uniform-in-the-only-sense-that-matters groups. Eq. (5)'s cross-layer
+  look-ahead term is **not** implemented — this module's search only decides
+  gate→pair assignment within one layer (no atom-by-atom intermediate/storage
+  placement across layers), so there is no "next gate's partner" to look
+  ahead to without a larger restructuring; documented scope reduction, see
+  `quon_na::zoned`'s module doc.
+- **Sec. V-D pruning window.** Bounds each gate's considered candidates per
+  node to the nearest `pruning_window` *legal* pairs (scanned from the full
+  legal set, so a gate is never denied a choice purely because a closer
+  *illegal* pair occupied a window slot). This does **not** preserve full
+  completeness, despite an earlier draft of this doc claiming otherwise: if
+  the only full legal assignment for a layer requires some gate to take a
+  choice outside its window, that assignment is never generated, and the
+  search can report `NoLegalAssignment` even though a full legal assignment
+  exists — a real, intentional gap in the same tradeoff spirit as beam width
+  below, not observed to matter on the `ising_n42` anchor fixture at
+  `window = 32` (0 fallbacks either way), but not a proof either.
+- **Beam width (engineering addition, not a paper term).** The single
+  largest lever, empirically: without a frontier cap, the priority queue at
+  `ising_n42` scale (20-21 simultaneous gates, 340 candidate pairs, real
+  crosstalk conflicts among physically adjacent entanglement-zone pairs —
+  `min_rydberg_spacing_um = 18.75` vs. pair pitch `(12, 10)` µm, so *most*
+  geometrically-adjacent pairs are mutually illegal) filled with a huge
+  number of shallow (early-gate) alternatives that all looked similarly cheap
+  under the heuristic, and 100,000 expansions were spent almost entirely
+  widening rather than deepening the search — verified by instrumentation
+  showing the frontier reaching 1M+ queued nodes while still stuck below half
+  depth on a 20-21-gate layer. Trimming the frontier back to the best
+  `beam_width` nodes whenever it exceeds `2 × beam_width` forces the search to
+  commit to promising partial placements instead. This is standard beam
+  search, not a departure from the paper's *legality* semantics — only from
+  its (unspecified, C++-implementation-only) search-loop mechanics.
+
+**Chosen parameter values (`AwareSearchParams::default()`,
+`quon_na/src/zoned.rs`):**
+
+| Parameter | Value | Source |
+| --- | --- | --- |
+| `deepening_factor` (δ) | 0.6 | [RAP] Sec. VI-A QASMBench set — `ising_n42` is itself a QASMBench benchmark (Table I's `ising2` row) |
+| `deepening_value` (β) | 0.2 | [RAP] Sec. VI-A QASMBench set |
+| `node_budget` | 100,000 | Unchanged from the pre-#297 `AWARE_NODE_BUDGET` constant; still the default, now genuinely sufficient with the heuristic + beam width rather than always being exhausted |
+| `pruning_window` | 32 | Chosen empirically (see below) to balance branching factor against solution quality; qmap's own window size was not discoverable from the parts of `HeuristicPlacer` fetched during implementation |
+| `beam_width` | 2,000 | Chosen empirically — swept 500 / 1,000 / 2,000 / 3,000 / 4,000 / 5,000 on this exact fixture; 2,000 was the smallest value (fastest, least risk of ever needing the budget) that still gave the best steps/time pair among values that completed all 4 layers within `node_budget` |
+
+α (Eq. (2)'s look-ahead weight) and γ (Eq. (2)'s reuse-cost offset) have no
+field in `AwareSearchParams` — see the "Eq. (5)" bullet above for why the
+cross-layer look-ahead term they belong to is out of scope for this port.
+
+Configurable via [`quon_na::pipeline::NaScheduleOptions::aware_search`] (a
+per-run option, not baked into the target JSON) — matching qmap's own
+`Config`-passed-to-the-placer-per-call shape rather than the architecture
+description. Threaded through `schedule_zoned_with_aware_params` (the
+original 3-argument `schedule_zoned` is now a thin wrapper defaulting to
+`AwareSearchParams::default()`, so no existing call site needed to change).
+
+### Divergences from the paper's numbers (post-#297)
+
+18/2999 vs. the paper's 9/1600 is a real, substantial gap. Contributing
+factors, in believed order of impact (not independently verified against
+qmap's own numbers — a follow-up could re-run qmap on an equivalent circuit
+to isolate these):
+
+- **This crate's search only reassigns entanglement-zone placement, not
+  storage-zone (intermediate) placement.** The paper's placement stage makes
+  *both* a gate placement (this crate's scope) and an intermediate placement
+  (returning non-reused atoms to storage) part of the same joint search, with
+  reuse/look-ahead cost terms connecting them across layers (Eq. (2)). This
+  crate's storage-zone return uses whatever position an atom already has
+  (reuse only when it's an exact repeat), never re-optimizing storage
+  placement — a materially smaller search space than the paper's.
+- **No cross-layer look-ahead (Eq. (5)),** as discussed above — placements
+  are locally good per-layer but don't anticipate the *next* layer's
+  requirements, which is exactly the mechanism the paper credits for its
+  best results (its Example 2 / Sec. IV-A).
+- **Beam width trades completeness for speed** more aggressively than
+  qmap's presumably-larger default budget (the issue's own brief cites qmap's
+  default as 50M nodes — three orders of magnitude above this
+  implementation's 100,000, though not apples-to-apples once beam width is
+  in the picture too).
+- **Parameter values are the QASMBench set from the paper's Table I**, but
+  qmap's actual per-parameter search (its Sec. VI-A parameter study, Fig. 10)
+  was not reproduced here — a wider sweep, or the MQT Bench parameter set
+  (`α=0.2, β=0.8, γ=5, δ=0.9`) worth trying for comparison, is a reasonable
+  Phase 2b follow-up.
+
+None of this changes the Phase 2a headline claim — `aware_search_fell_back_layers
+== 0`, and routing-aware genuinely, non-coincidentally beats routing-agnostic
+on this fixture now — but a human should read this section before deciding
+whether 18/2999 (vs. published 9/1600) counts as close enough to flip
+`QUON_RAP_TABLE_I_ENFORCE=1`, and at what tolerance.
+
 ## Tolerances (for Phase 2 enforcement)
 
 Locked decisions (implemented behind the enforce flag; **off by default** in
@@ -301,6 +454,8 @@ report the 22/9 or 82/4 numbers above; only `rap_table_i.json` +
 ## Refs
 
 - Issue #111; blocked-by (done): #107, #110
+- Issue #297 (Phase 2a: Eqs. (3)-(5) heuristic search) — see
+  [Phase 2a status](#phase-2a-status-297-heuristic-search-closes-the-fallback-gap)
 - [RAP] Stade, Lin, Cong, Wille, ICCAD 2025, arXiv:2505.22715, Table I / Sec.
   VI-B
 - `docs/neutral_atom/literature_notes.md` ([RAP] section)

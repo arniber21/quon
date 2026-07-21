@@ -33,7 +33,7 @@ use crate::qec::{CodeBlock, CodeBlockId};
 use crate::report::{attach_qec_error_budget, build_resource_report};
 use crate::schedule::{LocalGateKind, MeasurementBasis, NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
-use crate::zoned::schedule_zoned;
+use crate::zoned::schedule_zoned_with_aware_params;
 use backend::NeutralAtomTarget;
 
 /// Default duration (µs) for synthetic measure/reset/local actions from QEC expansion.
@@ -297,7 +297,8 @@ fn schedule_cnot_phase(
     round_req = match opts.backend {
         NaBackendKind::Zoned => {
             let arch = zoned_architecture(na);
-            schedule_zoned(round_req, &arch, opts.placer)?.request
+            schedule_zoned_with_aware_params(round_req, &arch, opts.placer, opts.aware_search)?
+                .request
         }
         NaBackendKind::FlatAod => {
             if round_req.layout.is_none() {

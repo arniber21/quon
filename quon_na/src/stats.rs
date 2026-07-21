@@ -106,8 +106,10 @@ pub struct StageTimingsUs {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchDiagnostics {
-    /// Per-layer gate-assignment calls where the best-first search found the
-    /// true joint-optimal assignment within budget.
+    /// Per-layer gate-assignment calls where the A* search found a full
+    /// assignment within budget (issue #297: the search's best find, not
+    /// necessarily a proven joint optimum — see
+    /// [`crate::zoned::AwareSearchOutcome::Completed`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_completed_layers: Option<u64>,
     /// Per-layer calls that exhausted the expansion budget and fell back to
@@ -124,11 +126,23 @@ pub struct SearchDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_node_expansions: Option<u64>,
     /// The expansion budget each per-layer call was allowed
-    /// ([`crate::zoned::AWARE_NODE_BUDGET`]) — constant across layers,
-    /// echoed here so `aware_search_node_expansions` can be read as a
+    /// ([`crate::zoned::AwareSearchParams::node_budget`]) — constant across
+    /// layers, echoed here so `aware_search_node_expansions` can be read as a
     /// fraction of budget without hardcoding the constant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_node_budget: Option<u64>,
+    /// δ used ([`crate::zoned::AwareSearchParams::deepening_factor`], [RAP]
+    /// Eq. (4)) — issue #297.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aware_search_deepening_factor: Option<f64>,
+    /// β used ([`crate::zoned::AwareSearchParams::deepening_value`], [RAP]
+    /// Eq. (4)) — issue #297.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aware_search_deepening_value: Option<f64>,
+    /// [RAP] Sec. V-D pruning window used
+    /// ([`crate::zoned::AwareSearchParams::pruning_window`]) — issue #297.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aware_search_pruning_window: Option<u64>,
 }
 
 /// Compaction knobs actually exercised. Requested and applied can diverge:

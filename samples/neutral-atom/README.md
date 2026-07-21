@@ -105,9 +105,9 @@ quonc --target targets/neutral_atom/generic_rna_v0.json --na-backend zoned \
 | Sample | Placer | Estimated cycles | Rearrangement steps | Trap transfers | Total time (µs) |
 | --- | --- | ---: | ---: | ---: | ---: |
 | `qaoa_graph.qn` (dense, 3-regular graph) | `routing-agnostic` (default) | 80 | 8 | 22 | 1686 |
-| `qaoa_graph.qn` | `routing-aware` | 83 | 9 | 24 | 1764 |
+| `qaoa_graph.qn` | `routing-aware` | 83 | 9 | 24 | 1742 |
 | `ising.qn` (nearest-neighbor chain) | `routing-agnostic` (default) | 48 | 9 | 20 | 2217 |
-| `ising.qn` | `routing-aware` | 48 | 9 | 20 | 2256 |
+| `ising.qn` | `routing-aware` | 48 | 9 | 20 | 2217 |
 
 (Issue #298: both programs apply per-qubit `H`/`Rx` rotations
 (`qaoa_graph.qn`'s `hadamard_all`/`mixer_4`; `ising.qn`'s `x_layer`) that
@@ -131,25 +131,32 @@ original #298 numbers.)
 Both zoned placer modes are ZAC-style descendants (Sec. VI-B of the RAP
 paper, arXiv:2505.22715): `routing-agnostic` (the default) places atoms by
 nearest-legal-distance only, and `routing-aware` is the RAP-style search
-that additionally minimizes projected routing cost (Eq. (1)) — **`zoned`
-itself is not "RAP"**; RAP names one of its two placer *modes*, not the
-backend. See [`quon_na::zoned`](../../quon_na/src/zoned.rs) for the module
-docs this walkthrough is drawn from.
+that additionally minimizes projected routing cost (Eq. (1)), guided by the
+paper's Eq. (3)-(4) heuristic (issue #297) — **`zoned` itself is not
+"RAP"**; RAP names one of its two placer *modes*, not the backend. See
+[`quon_na::zoned`](../../quon_na/src/zoned.rs) for the module docs this
+walkthrough is drawn from.
 
 This is the honest result, not a cherry-picked one: at this small size,
 `routing-aware` is not a strict win over `routing-agnostic` on either
-graph — on the chain the two modes produce *identical* structural metrics
-(cycles, rearrangement steps, trap transfers: locality already does the
-work for the placer), but the total wall-clock time still differs (2217 µs
-vs. 2256 µs). That is not a silent fallback to the agnostic planner: both
-runs report `na_placer: routing_aware` in their schedule metadata and take
-the aware code path; the aware search's Eq. (1) routing-cost accounting
-adds a small amount of scheduled time even when it lands on the same
-move/transfer/entangle structure as the agnostic planner. On the denser
-MaxCut graph, `routing-aware` is slightly *more* expensive on every axis.
-This aligns with the #111 story: the comparison is about *when* aware
-placement pays off (denser, larger interaction graphs), not that it always
-wins. Both are analytic-schedule-only comparisons.
+graph — on the chain the two modes now produce *identical* metrics across
+the board, including total time (2217 µs both). That is not a silent
+fallback to the agnostic planner: both runs report `na_placer: routing_aware`
+in their schedule metadata and take the aware code path, and (verifiable via
+`--emit-na-stats`) the aware search genuinely completes every layer rather
+than exhausting its budget — it's a real search that, on this small,
+low-contention circuit, converges on the same joint-optimal placement
+distance-minimizing greedy already finds. On the denser MaxCut graph,
+`routing-aware` still uses one more rearrangement step and 2 more trap
+transfers than agnostic, but 1742 µs total time is now *lower* than the
+1764 µs a mismatched (pre-#297) cost model used to report for the same step
+count — the guided search finds a shorter-travel placement within that
+group structure. This aligns with the #111/#297 story: the comparison is
+about *when* aware placement pays off (denser, larger interaction graphs —
+see the RAP Table I reproduction on the 42-qubit `ising_n42` fixture in
+`docs/neutral_atom/rap_table_i_methodology.md`, where aware now beats
+agnostic decisively), not that it always wins on every small fixture. Both
+are analytic-schedule-only comparisons.
 
 ### 3. Dynamic circuit / mid-circuit measurement
 

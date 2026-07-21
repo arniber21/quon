@@ -30,6 +30,7 @@ fn run_from_graph_schedules_cubic_without_quonc() {
             compact: true,
             placement: PlacementStrategy::RowMajor,
             dump_ir: false,
+            ..Default::default()
         },
         None,
     )
@@ -58,6 +59,7 @@ fn run_from_graph_attaches_error_budget_when_target_has_model() {
             compact: true,
             placement: PlacementStrategy::RowMajor,
             dump_ir: false,
+            ..Default::default()
         },
         None,
     )

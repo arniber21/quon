@@ -97,6 +97,7 @@ fn zoned_routing_agnostic_stats_shape() {
             compact: true,
             placement: PlacementStrategy::RowMajor,
             dump_ir: false,
+            ..Default::default()
         },
         None,
     )
@@ -131,6 +132,7 @@ fn zoned_routing_aware_stats_shape() {
             compact: true,
             placement: PlacementStrategy::RowMajor,
             dump_ir: false,
+            ..Default::default()
         },
         None,
     )
@@ -171,6 +173,7 @@ fn flat_aod_stats_shape() {
             compact: true,
             placement: PlacementStrategy::RowMajor,
             dump_ir: false,
+            ..Default::default()
         },
         None,
     )
@@ -206,6 +209,7 @@ fn no_compact_flag_reflects_requested_not_applied() {
             compact: false,
             placement: PlacementStrategy::RowMajor,
             dump_ir: false,
+            ..Default::default()
         },
         None,
     )

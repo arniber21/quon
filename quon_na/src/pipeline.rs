@@ -29,7 +29,8 @@ use crate::schedule::ScheduleLayer;
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
 use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, SearchDiagnostics, StageTimingsUs};
 use crate::zoned::{
-    AWARE_NODE_BUDGET, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, schedule_zoned,
+    AwareSearchParams, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture,
+    schedule_zoned_with_aware_params,
 };
 
 /// Wall-clock elapsed microseconds since `start` (saturating on overflow —
@@ -76,6 +77,10 @@ pub struct NaScheduleOptions {
     pub placement: PlacementStrategy,
     /// When true, print stage summaries to stderr (matches `quonc --dump-ir`).
     pub dump_ir: bool,
+    /// Zoned backend, [`PlacerMode::RoutingAware`] only: A* search tunables
+    /// (issue #297). Ignored otherwise. A per-run option (not a target JSON
+    /// field) — see [`AwareSearchParams`]'s doc for why.
+    pub aware_search: AwareSearchParams,
 }
 
 impl Default for NaScheduleOptions {
@@ -86,6 +91,7 @@ impl Default for NaScheduleOptions {
             compact: true,
             placement: PlacementStrategy::RowMajor,
             dump_ir: false,
+            aware_search: AwareSearchParams::default(),
         }
     }
 }
@@ -574,7 +580,8 @@ fn finish_pipeline(
             placer_mode = Some(opts.placer);
             let arch = zoned_architecture(na);
             let stage_started = Instant::now();
-            let zoned = schedule_zoned(req, &arch, opts.placer)?;
+            let zoned =
+                schedule_zoned_with_aware_params(req, &arch, opts.placer, opts.aware_search)?;
             zoned_schedule_us = Some(elapsed_us(stage_started));
             aware_search_status = Some((
                 zoned.aware_search_completed_layers,
@@ -590,7 +597,10 @@ fn finish_pipeline(
                     zoned.aware_search_no_legal_assignment_layers,
                 ),
                 aware_search_node_expansions: Some(zoned.aware_search_node_expansions),
-                aware_search_node_budget: Some(AWARE_NODE_BUDGET as u64),
+                aware_search_node_budget: Some(opts.aware_search.node_budget as u64),
+                aware_search_deepening_factor: Some(opts.aware_search.deepening_factor),
+                aware_search_deepening_value: Some(opts.aware_search.deepening_value),
+                aware_search_pruning_window: Some(opts.aware_search.pruning_window as u64),
             };
             if opts.dump_ir {
                 eprintln!(

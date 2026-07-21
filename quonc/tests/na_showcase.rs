@@ -62,6 +62,51 @@ fn emit_na_schedule(source: &PathBuf, extra_args: &[&str]) -> (std::process::Out
     (output, json)
 }
 
+/// Like [`emit_na_schedule`] but also captures `--emit-na-stats` (issue
+/// #307) alongside the schedule, for tests that need the routing-aware
+/// search's completed/fell-back diagnostics rather than inferring "genuine
+/// aware computation, not a silent fallback" from a numeric side effect.
+fn emit_na_schedule_and_stats(
+    source: &PathBuf,
+    extra_args: &[&str],
+) -> (std::process::Output, Value, Value) {
+    let report_path = temp_json_path("schedule");
+    let stats_path = temp_json_path("stats");
+    let _ = std::fs::remove_file(&report_path);
+    let _ = std::fs::remove_file(&stats_path);
+
+    let output = quonc()
+        .arg(source)
+        .arg("--target")
+        .arg(na_target())
+        .args(extra_args)
+        .arg("--emit-na-schedule")
+        .arg(&report_path)
+        .arg("--emit-na-stats")
+        .arg(&stats_path)
+        .arg("--quiet")
+        .output()
+        .expect("spawn quonc");
+
+    let (schedule_json, stats_json) = if output.status.success() {
+        let schedule_text = std::fs::read_to_string(&report_path)
+            .unwrap_or_else(|e| panic!("read schedule {}: {e}", report_path.display()));
+        let stats_text = std::fs::read_to_string(&stats_path)
+            .unwrap_or_else(|e| panic!("read stats {}: {e}", stats_path.display()));
+        (
+            serde_json::from_str(&schedule_text)
+                .unwrap_or_else(|e| panic!("parse schedule JSON: {e}\n{schedule_text}")),
+            serde_json::from_str(&stats_text)
+                .unwrap_or_else(|e| panic!("parse stats JSON: {e}\n{stats_text}")),
+        )
+    } else {
+        (Value::Null, Value::Null)
+    };
+    let _ = std::fs::remove_file(&report_path);
+    let _ = std::fs::remove_file(&stats_path);
+    (output, schedule_json, stats_json)
+}
+
 /// Headline #1 (`--na-backend zoned|flat` on `bell.qn`): both backends
 /// succeed, and their schedule metrics must match the numbers quoted in
 /// `samples/neutral-atom/README.md`'s "1. `--na-backend zoned|flat`" table.
@@ -150,9 +195,26 @@ fn qft_small_flat_backend_fails_closed_with_expected_error() {
 
 /// Headline #2 (`--na-placer routing-agnostic|routing-aware` on
 /// `qaoa_graph.qn` / `ising.qn`): pins the numbers quoted in the README's
-/// placer-comparison table, including the N2 finding that `ising.qn`'s two
-/// placer modes share identical structural metrics but different
-/// `total_time_us` — not a silent fallback to the agnostic planner.
+/// placer-comparison table.
+///
+/// Issue #297 changed both the aware search's cost accounting (it now groups
+/// moves into AOD-compatible movement groups *during* the search, Eq. (1),
+/// instead of summing each gate's own `d_max` independently — the old
+/// per-gate sum did not match what `partition_aod_compatible` actually
+/// charges post-search) and added the Eq. (3)-(4) heuristic, so this test's
+/// pinned numbers moved. `ising.qn` is a small, low-contention circuit
+/// (unlike the `ising_n42` RAP Table I anchor in `quonc/tests/rap_table_i.rs`
+/// — this is a different, much smaller fixture with the same naming
+/// pattern): with the corrected grouped-cost model, aware's genuine
+/// joint-optimal for this circuit turns out to *coincide* with agnostic's
+/// distance-minimizing choice on every metric, including `total_time_us`
+/// (previously aware's mismatched cost model produced a *worse*
+/// `total_time_us` than agnostic here, which is itself evidence the old
+/// per-gate cost proxy was wrong). Because the numbers now tie exactly, the
+/// former N2 proof ("numbers differ, so it can't be a silent fallback") no
+/// longer applies here — replaced below with a direct check of the
+/// `--emit-na-stats` search diagnostics (issue #307), which is a strictly
+/// more direct proof than inferring non-fallback from a numeric side effect.
 #[test]
 fn placer_headline_numbers_match_readme() {
     let qaoa = workspace_path("../test/na/qaoa_graph.qn");
@@ -170,7 +232,7 @@ fn placer_headline_numbers_match_readme() {
         &ising,
         &["--na-backend", "zoned", "--na-placer", "routing-agnostic"],
     );
-    let (_, ising_aware) = emit_na_schedule(
+    let (_, ising_aware, ising_aware_stats) = emit_na_schedule_and_stats(
         &ising,
         &["--na-backend", "zoned", "--na-placer", "routing-aware"],
     );
@@ -207,7 +269,10 @@ fn placer_headline_numbers_match_readme() {
     assert_eq!(m["estimated_cycles"], 83, "qaoa aware: {qaoa_aware}");
     assert_eq!(m["rearrangement_steps"], 9, "qaoa aware: {qaoa_aware}");
     assert_eq!(m["trap_transfers"], 24, "qaoa aware: {qaoa_aware}");
-    assert_eq!(m["total_time_us"], 1764, "qaoa aware: {qaoa_aware}");
+    // 1764 -> 1742 under #297: same step/transfer counts, but the corrected
+    // grouped-cost search now finds a lower-travel-distance placement within
+    // that same group structure.
+    assert_eq!(m["total_time_us"], 1742, "qaoa aware: {qaoa_aware}");
 
     let agnostic_m = &ising_agnostic["metrics"];
     let aware_m = &ising_aware["metrics"];
@@ -236,15 +301,22 @@ fn placer_headline_numbers_match_readme() {
         "ising aware: {ising_aware}"
     );
     assert_eq!(aware_m["trap_transfers"], 20, "ising aware: {ising_aware}");
-    assert_eq!(aware_m["total_time_us"], 2256, "ising aware: {ising_aware}");
+    // #297: was 2256 (worse than agnostic's 2217) under the old per-gate
+    // (ungrouped) search cost model; now 2217, tied with agnostic — see this
+    // test's doc comment for why that is the corrected, expected outcome.
+    assert_eq!(aware_m["total_time_us"], 2217, "ising aware: {ising_aware}");
 
-    // N2: the structural metrics above are byte-for-byte identical between
-    // the two placer modes on `ising.qn` — confirm that isn't because the
-    // "aware" run silently fell back to the agnostic code path, by checking
-    // the schedule metadata actually reports `routing_aware`.
+    // N2 (revised for #297): every structural metric above — including
+    // `total_time_us`, which used to differ — is now byte-for-byte identical
+    // between the two placer modes on `ising.qn`. Confirm that is a genuine
+    // tied optimum, not a silent fallback to the agnostic code path, via two
+    // independent signals: the schedule metadata reports `routing_aware`,
+    // and the `--emit-na-stats` search diagnostics show every layer actually
+    // completed the A* search (no budget-exceeded / no-legal-assignment
+    // fallback).
     assert_eq!(
-        agnostic_m["estimated_cycles"], aware_m["estimated_cycles"],
-        "sanity: this test's premise is that structural metrics tie"
+        agnostic_m["total_time_us"], aware_m["total_time_us"],
+        "sanity: this test's premise is that every metric now ties: {ising_agnostic} vs {ising_aware}"
     );
     assert_eq!(
         ising_aware["meta"]["na_placer"], "routing_aware",
@@ -252,9 +324,21 @@ fn placer_headline_numbers_match_readme() {
          proving it took the aware code path rather than silently falling \
          back to agnostic: {ising_aware}"
     );
-    assert_ne!(
-        agnostic_m["total_time_us"], aware_m["total_time_us"],
-        "total_time_us should still differ even when structural metrics tie: {ising_agnostic} vs {ising_aware}"
+    let search = &ising_aware_stats["search"];
+    let completed = search["aware_search_completed_layers"]
+        .as_u64()
+        .expect("aware_search_completed_layers present");
+    let fell_back = search["aware_search_budget_exceeded_layers"]
+        .as_u64()
+        .expect("aware_search_budget_exceeded_layers present")
+        + search["aware_search_no_legal_assignment_layers"]
+            .as_u64()
+            .expect("aware_search_no_legal_assignment_layers present");
+    assert!(
+        completed >= 1 && fell_back == 0,
+        "the aware run's search must have genuinely completed every layer, not fallen back to \
+         greedy (which would explain the tie with agnostic for an uninteresting reason): \
+         completed={completed} fell_back={fell_back}, stats={ising_aware_stats}"
     );
 }
 
