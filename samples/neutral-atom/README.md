@@ -123,7 +123,11 @@ doesn't also rotate (a raw raster physically hits every trapped atom, not
 just the one it was decomposed for — see
 `quon_na::pipeline::push_global_ry_with_refocus`). `qaoa_graph.qn`'s 4
 independent `H`s (3 bystanders apiece) is why its cycle counts move more
-than `bell.qn`'s single `H` above. `ising.qn` has no bare `H` or other
+than `bell.qn`'s single `H` above. The echo-refocus sequence costs O(N)
+actions per rotation (O(N²) total for N independent rotations) — see
+[`docs/neutral_atom/globalry_scaling.md`](../../docs/neutral_atom/globalry_scaling.md)
+for the full scaling analysis, measured benchmark, and the architectural
+changes needed to remove the ceiling. `ising.qn` has no bare `H` or other
 non-diagonal 1-qubit gate — its `Rzz`-sandwich `Rz`s are diagonal and need
 no `ry`/echo at all — so it is untouched by the echo fix and keeps its
 original #298 numbers.)
