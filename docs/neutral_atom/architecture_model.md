@@ -356,7 +356,7 @@ labeled placeholders.
 | `min_rydberg_spacing_um` | 18.75 (= 2.5 × r_b) | cited rule, derived value | Rule: [OLSQ-DPQA] App. A.3 Implication 10. Value follows from r_b above. |
 | `min_row_col_separation_um` | 2 | cited | [OLSQ-DPQA] App. A.1 Implication 3 |
 | `timing.cz_us` | 0.36 | cited | [QMAP-docs] architecture JSON (`rydberg_gate: 0.36`); [Enola] Sec. 2 (360 ns) |
-| `timing.single_qubit_us` | 0.625 | cited | [Enola] Sec. 2 (625 ns); [Atomique] Table I. Divergence: [QMAP-docs] example uses 52 µs for a global-raster 1Q model; we take the per-gate value. |
+| `timing.single_qubit_us` | 0.625 | cited | [Enola] Sec. 2 (625 ns); [Atomique] Table I. Divergence: [QMAP-docs] example uses 52 µs for a global-raster 1Q model; we take the per-gate value. Issue #298: quon's `NeutralAtomAction::GlobalRy` (whole-plane `ry` raster, mqt-qmap parity) also charges `single_qubit_us` per raster action — i.e. quon keeps the *per-gate* rate uniformly for both local (`LocalGateKind::Rz`/`U3`) and global (`GlobalRy`) 1Q actions, rather than switching to qmap's ~52 µs *global-batch* rate for the raster. This is a deliberate, documented modeling choice, not an oversight: `ResourceReport.global_ry_time_us` (§11.2) will therefore read lower than an equivalent qmap-style global-batch accounting would. |
 | `timing.measurement_us` | 1500 | **placeholder** | Illustrative only; none of the compiled papers states a readout latency. Order of magnitude typical of fluorescence imaging; do not cite as literature. |
 | `timing.reset_us` | 1500 | **placeholder** | Illustrative only, as above. |
 | `fidelity.cz` | 0.995 | cited | [OLSQ-DPQA] Sec. 1/App. A.4; [Enola] Sec. 2; [QMAP-docs] (0.995) |
@@ -641,6 +641,26 @@ explicit evidence labels for machine readers:
 | `estimated_cycles` | `layers.len()` as `u64` | Parallel schedule cycles |
 | `bottleneck` | `none` / `rydberg` / `rearrangement` / `transfer` / `measurement` / `mixed` | Max of four scores below |
 | `error_budget` | Optional object of analytic `rate × count` contributions (ADR-0017) | Not a logical error rate / threshold |
+| `local_h_count` / `local_rz_count` / `local_u3_count` | Optional (issue #298); `LocalGate` action counts by kind. `from_layers` always sets `Some`, `Some(0)` included — `None` only for a pre-#298 report. `local_rz_count` includes the Hahn-echo `Rz(pi)`/`Rz(-pi)` bystander-isolation pulses below, not only "real" source-program `rz`s | qmap's native local `rz` / generic `u3` passthrough |
+| `local_gate_time_us` | Optional; sum of `LocalGate` (`h`/`rz`/`u3`) durations, independent of layer overlap (same convention as `rearrangement_time_us`) | Per-gate `timing.single_qubit_us` model (§8.6) |
+| `global_ry_count` | Optional; count of `GlobalRy` whole-plane raster actions — one action addresses every trapped atom, so this is **not** a per-atom gate count. A raster with any bystander atom present splits into two `theta / 2` half-pulses (issue #298 review finding, below), so a single source `ry` gate typically contributes 2, not 1 | qmap's global-`ry` raster stage count |
+| `global_ry_time_us` | Optional; sum of `GlobalRy` durations | Also `timing.single_qubit_us` per raster — see the §8.6 divergence note: quon charges the per-gate rate here too, not qmap's ~52 µs global-batch rate |
+
+**`GlobalRy` bystander isolation (issue #298 review finding):** every logical
+atom is bound into the trap array from schedule start
+(`layout.initial_bindings`), so a bare `GlobalRy` physically hits every
+trapped atom, not just the one it was decomposed for — an early version of
+this feature emitted bare rasters and silently applied unwanted rotations to
+every other atom. The pipeline
+(`quon_na::pipeline::push_global_ry_with_refocus`) instead uses a
+Hahn-echo-style composite pulse whenever more than one atom is trapped:
+split the raster into two `theta / 2` half-pulses, and for every atom that
+should *not* receive the rotation, sandwich a local `Rz(pi)` / `Rz(-pi)`
+pulse pair around the second half. This is provably exact (not an
+approximation): `Rz(-pi) . Ry(theta/2) . Rz(pi) . Ry(theta/2) = I` for a
+bystander, while the wanted atom's two untouched half-pulses compose to the
+full `Ry(theta)`. See that function's doc comment for the derivation and
+`quonc/tests/na_semantic_equivalence.rs` for an end-to-end unitary check.
 
 `error_budget` field multipliers (when attached from `error_model`):
 

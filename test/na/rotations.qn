@@ -1,0 +1,13 @@
+-- Neutral-atom single-qubit rotation coverage for issue #298: local `rz`,
+-- global `ry` (via `H`'s Z-Y-Z decomposition), interleaved with entangling
+-- gates on multiple qubits so extraction/scheduling must place each 1-qubit
+-- gate at the right position and layer, not just append them.
+
+fn rotations(): Circuit<3, 3, 6, Universal> = circuit {
+        H @0 |> Rz(0.39269908169872414) @1 |> CNOT @(0, 1) |> Ry(0.7853981633974483) @2 |> CNOT @(1, 2) |> Rz(1.5707963267948966) @0
+}
+
+fn rotations_na(): Q<List<Bit>> = run {
+        q <- (rotations()) @ (qreg 3)
+        measure_all q
+}

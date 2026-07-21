@@ -76,7 +76,17 @@ fn bell_backend_headline_numbers_match_readme() {
         String::from_utf8_lossy(&zoned_out.stderr)
     );
     let m = &zoned["metrics"];
-    assert_eq!(m["estimated_cycles"], 4, "zoned bell.qn: {zoned}");
+    // `estimated_cycles` grew 4 -> 9 under issue #298: `H @0` used to be
+    // silently dropped during extraction (the gap #298 closes); it now
+    // contributes a local `rz` plus a Hahn-echo-refocused global `ry`
+    // raster from its Z-Y-Z decomposition (2 half-pulses + a local
+    // `Rz(pi)`/`Rz(-pi)` echo pair on atom 1, so atom 1 provably doesn't
+    // also pick up the rotation — issue #298 review finding: every atom is
+    // trapped from schedule start, so a bare raster would otherwise hit it
+    // too; see `quon_na::pipeline::push_global_ry_with_refocus`).
+    // Movement-side numbers (rearrangement/transfers/bottleneck) are
+    // unaffected — none of this needs a site placement.
+    assert_eq!(m["estimated_cycles"], 9, "zoned bell.qn: {zoned}");
     assert_eq!(m["rearrangement_steps"], 1, "zoned bell.qn: {zoned}");
     assert_eq!(m["trap_transfers"], 4, "zoned bell.qn: {zoned}");
     assert_eq!(m["bottleneck"], "rearrangement", "zoned bell.qn: {zoned}");
@@ -88,7 +98,8 @@ fn bell_backend_headline_numbers_match_readme() {
         String::from_utf8_lossy(&flat_out.stderr)
     );
     let m = &flat["metrics"];
-    assert_eq!(m["estimated_cycles"], 1, "flat bell.qn: {flat}");
+    // Same #298 story: 1 -> 6 for the same reason as the zoned case above.
+    assert_eq!(m["estimated_cycles"], 6, "flat bell.qn: {flat}");
     assert_eq!(m["rearrangement_steps"], 0, "flat bell.qn: {flat}");
     assert_eq!(m["trap_transfers"], 0, "flat bell.qn: {flat}");
     assert_eq!(m["bottleneck"], "rydberg", "flat bell.qn: {flat}");
@@ -164,25 +175,44 @@ fn placer_headline_numbers_match_readme() {
         &["--na-backend", "zoned", "--na-placer", "routing-aware"],
     );
 
+    // Issue #298: `qaoa_graph.qn` applies `H` (hadamard_all) and `Rx`
+    // (mixer_4) to every qubit — both used to be silently dropped during
+    // extraction; `ising.qn` applies `Rx` (x_layer) likewise. Both now
+    // contribute real schedule layers (`estimated_cycles`/`total_time_us`
+    // grow), while rearrangement/transfer counts are unaffected (1-qubit
+    // gates have no site placement requirement). `Rx` has no first-class
+    // `LocalGateKind` (scope: `h`/`rz`/`ry`/`u3` — see
+    // `quon_na::native_gate_decomp`), so it decomposes through the `u3`
+    // escape hatch here even though `rx` is nominally in this target's
+    // `native_gates` — `u3` is a `LocalGate`, not a raster, so it needs no
+    // echo protection. `H`'s global `ry` component does: every *other*
+    // trapped atom gets a local `Rz(pi)`/`Rz(-pi)` echo pair around the
+    // raster's second half (review finding — see
+    // `quon_na::pipeline::push_global_ry_with_refocus`), which is why
+    // `qaoa_graph.qn`'s 4 independent `H`s (3 bystanders each) inflate
+    // `estimated_cycles`/`total_time_us` well beyond just "2 extra layers
+    // per `H`". `ising.qn` has no bare `H`/non-diagonal 1-qubit gate (its
+    // `Rzz`-sandwich `Rz`s are diagonal, needing no `ry`/echo at all), so
+    // it is untouched by this and keeps its #298-era numbers below.
     let m = &qaoa_agnostic["metrics"];
-    assert_eq!(m["estimated_cycles"], 34, "qaoa agnostic: {qaoa_agnostic}");
+    assert_eq!(m["estimated_cycles"], 80, "qaoa agnostic: {qaoa_agnostic}");
     assert_eq!(
         m["rearrangement_steps"], 8,
         "qaoa agnostic: {qaoa_agnostic}"
     );
     assert_eq!(m["trap_transfers"], 22, "qaoa agnostic: {qaoa_agnostic}");
-    assert_eq!(m["total_time_us"], 1640, "qaoa agnostic: {qaoa_agnostic}");
+    assert_eq!(m["total_time_us"], 1686, "qaoa agnostic: {qaoa_agnostic}");
 
     let m = &qaoa_aware["metrics"];
-    assert_eq!(m["estimated_cycles"], 37, "qaoa aware: {qaoa_aware}");
+    assert_eq!(m["estimated_cycles"], 83, "qaoa aware: {qaoa_aware}");
     assert_eq!(m["rearrangement_steps"], 9, "qaoa aware: {qaoa_aware}");
     assert_eq!(m["trap_transfers"], 24, "qaoa aware: {qaoa_aware}");
-    assert_eq!(m["total_time_us"], 1718, "qaoa aware: {qaoa_aware}");
+    assert_eq!(m["total_time_us"], 1764, "qaoa aware: {qaoa_aware}");
 
     let agnostic_m = &ising_agnostic["metrics"];
     let aware_m = &ising_aware["metrics"];
     assert_eq!(
-        agnostic_m["estimated_cycles"], 37,
+        agnostic_m["estimated_cycles"], 48,
         "ising agnostic: {ising_agnostic}"
     );
     assert_eq!(
@@ -194,11 +224,11 @@ fn placer_headline_numbers_match_readme() {
         "ising agnostic: {ising_agnostic}"
     );
     assert_eq!(
-        agnostic_m["total_time_us"], 2206,
+        agnostic_m["total_time_us"], 2217,
         "ising agnostic: {ising_agnostic}"
     );
     assert_eq!(
-        aware_m["estimated_cycles"], 37,
+        aware_m["estimated_cycles"], 48,
         "ising aware: {ising_aware}"
     );
     assert_eq!(
@@ -206,7 +236,7 @@ fn placer_headline_numbers_match_readme() {
         "ising aware: {ising_aware}"
     );
     assert_eq!(aware_m["trap_transfers"], 20, "ising aware: {ising_aware}");
-    assert_eq!(aware_m["total_time_us"], 2245, "ising aware: {ising_aware}");
+    assert_eq!(aware_m["total_time_us"], 2256, "ising aware: {ising_aware}");
 
     // N2: the structural metrics above are byte-for-byte identical between
     // the two placer modes on `ising.qn` — confirm that isn't because the

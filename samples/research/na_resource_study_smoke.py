@@ -51,15 +51,21 @@ QAOA_GOLDEN = GOLDEN_DIR / "qaoa_graph_zoned.resource_report.json"
 PLACERS = ("routing-agnostic", "routing-aware")
 
 # Exact headline numbers the notebook's "Resource table" quotes for the
-# `routing-aware` `qaoa_graph.qn` cell (37/9/24) — no #189 golden covers
+# `routing-aware` `qaoa_graph.qn` cell (83/9/24) — no #189 golden covers
 # `routing-aware` (only `routing-agnostic` was checked in), so this is the
 # one cell that needs its own pinned expectation rather than a golden
 # cross-check. This is analytic/deterministic `--emit-resource-report`
 # output, not a sampled statistic, so an exact match is the right bar; if a
 # placer-heuristic change legitimately moves these numbers, update both this
 # dict and na_resource_study.ipynb's "Resource table" together.
+#
+# estimated_cycles moved 37 -> 83 in #298 (full single-qubit gate
+# representation): each of qaoa_graph.qn's independent H gates now costs a
+# GlobalRy split into a target half-pulse plus an Rz(pi)/Rz(-pi) echo pair
+# on every bystander atom (issue #298 review finding #1 fix), which adds
+# cycles without changing rearrangement/transfer counts.
 QAOA_GRAPH_ROUTING_AWARE_EXPECTED = {
-    "estimated_cycles": 37,
+    "estimated_cycles": 83,
     "rearrangement_steps": 9,
     "trap_transfers": 24,
     "bottleneck": "rearrangement",

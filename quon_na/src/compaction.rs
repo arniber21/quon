@@ -177,6 +177,14 @@ const PLACEHOLDER_AOD: AodTrapRef = AodTrapRef {
 };
 
 /// Infer AtomHazard deps only. Does **not** invent FeedForward (B4).
+///
+/// A [`NeutralAtomAction::GlobalRy`] has no atom list — it is a whole-plane
+/// raster that touches every atom trapped so far (issue #298) — so it is
+/// treated as a full barrier against every atom seen in an earlier layer:
+/// it depends on (and is depended on by) all of them, not just the atom(s)
+/// that motivated it. Atoms first appearing *after* the raster are
+/// unaffected by this synthetic barrier (they weren't trapped yet at that
+/// point in program order).
 pub fn infer_atom_dependencies(layers: &[ScheduleLayer]) -> Vec<ScheduleDependency> {
     let mut last_use: BTreeMap<AtomId, u32> = BTreeMap::new();
     let mut deps = Vec::new();
@@ -184,7 +192,10 @@ pub fn infer_atom_dependencies(layers: &[ScheduleLayer]) -> Vec<ScheduleDependen
 
     for (idx, layer) in layers.iter().enumerate() {
         let i = idx as u32;
-        let atoms = layer_atoms(layer);
+        let mut atoms = layer_atoms(layer);
+        if layer_has_global_ry(layer) {
+            atoms.extend(last_use.keys().copied());
+        }
         for atom in atoms {
             if let Some(&pred) = last_use.get(&atom) {
                 let key = (pred, i, ScheduleDependencyKind::AtomHazard);
@@ -200,6 +211,13 @@ pub fn infer_atom_dependencies(layers: &[ScheduleLayer]) -> Vec<ScheduleDependen
         }
     }
     deps
+}
+
+fn layer_has_global_ry(layer: &ScheduleLayer) -> bool {
+    layer
+        .actions
+        .iter()
+        .any(|a| matches!(a, NeutralAtomAction::GlobalRy { .. }))
 }
 
 /// Build measure→correction FeedForward edges from an explicit pairing list.
@@ -574,6 +592,9 @@ fn layer_atoms(layer: &ScheduleLayer) -> BTreeSet<AtomId> {
             | NeutralAtomAction::Reuse { atom, .. } => {
                 atoms.insert(*atom);
             }
+            // No discrete atom list — handled separately in
+            // `infer_atom_dependencies` as a full barrier over `last_use`.
+            NeutralAtomAction::GlobalRy { .. } => {}
             NeutralAtomAction::Wait { .. } => {}
         }
     }

@@ -1,0 +1,14 @@
+-- Minimal `GlobalRy` bystander-isolation regression (issue #298 review
+-- finding): two independent qubits, each with its own 1-qubit rotation and
+-- no entangling gate between them at all. A schedule that doesn't correctly
+-- isolate each qubit's `GlobalRy` raster from the other atom would compose
+-- both rotations onto both atoms.
+
+fn h_and_ry(): Circuit<2, 2, 2, Universal> = circuit {
+        H @0 |> Ry(0.7853981633974483) @1
+}
+
+fn h_and_ry_na(): Q<List<Bit>> = run {
+        q <- (h_and_ry()) @ (qreg 2)
+        measure_all q
+}

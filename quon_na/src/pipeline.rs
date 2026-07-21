@@ -42,7 +42,19 @@ fn elapsed_us(start: Instant) -> u64 {
 use melior::ir::Module;
 
 #[cfg(feature = "mlir")]
-use crate::extract::{ExtractError, extract_interaction_graph};
+use crate::extract::{ExtractError, LocalGateExtract, extract_interaction_graph_and_local_gates};
+#[cfg(feature = "mlir")]
+use crate::graph::InteractionId;
+#[cfg(feature = "mlir")]
+use crate::layout::AtomId;
+#[cfg(feature = "mlir")]
+use crate::native_gate_decomp::{
+    DecomposedLocalGate, NaDecompError, NaLocalOp, decompose_local_gates,
+};
+#[cfg(feature = "mlir")]
+use crate::schedule::{LocalGateKind, NeutralAtomAction};
+#[cfg(feature = "mlir")]
+use std::collections::BTreeMap;
 
 /// Which movement/placement backend to run after entangling-layer scheduling.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -114,6 +126,23 @@ pub enum NaPipelineError {
     Movement(#[from] crate::movement::MovementPlanError),
     #[error("schedule compaction failed: {0}")]
     Compaction(#[from] CompactionError),
+    #[cfg(feature = "mlir")]
+    #[error("single-qubit gate decomposition failed: {0}")]
+    LocalGateDecomp(#[from] NaDecompError),
+    /// Internal invariant violation (issue #298 review finding #2): a
+    /// captured 1-qubit gate's `after` anchor named an interaction id that
+    /// `schedule_entangling_layers` never assigned a cycle to.
+    /// `schedule_entangling_layers` always populates `interaction_cycle` for
+    /// every interaction it schedules, so this should be unreachable — it is
+    /// a hard error rather than a silent fallback (which would have
+    /// mis-scheduled the gate to the very start of the program, hiding a
+    /// real bug) on purpose.
+    #[cfg(feature = "mlir")]
+    #[error(
+        "internal error: 1-qubit gate anchored to interaction {interaction:?}, which \
+         schedule_entangling_layers never assigned a cycle to"
+    )]
+    LocalGateAnchorMissing { interaction: InteractionId },
     #[error("interaction id overflow while building QEC hybrid schedule")]
     InteractionIdOverflow,
     #[error(
@@ -205,6 +234,11 @@ fn map_zone_kind(kind: BackendZoneKind) -> ZoneKind {
 }
 
 /// Schedule from a post-dynamic MLIR module.
+///
+/// Uses [`extract_interaction_graph_and_local_gates`] (not the bare-graph
+/// extractor) so 1-qubit gates are preserved end to end (issue #298) — the
+/// production `quonc` path always goes through here, never through
+/// [`run_from_graph`] directly.
 #[cfg(feature = "mlir")]
 pub fn run_from_module<'c>(
     module: &Module<'c>,
@@ -213,17 +247,19 @@ pub fn run_from_module<'c>(
 ) -> Result<NaScheduleArtifacts, NaPipelineError> {
     validate_speed_model(na).map_err(NaPipelineError::InvalidTarget)?;
     let extract_started = Instant::now();
-    let graph = extract_interaction_graph(module)?;
+    let (graph, local_gates) = extract_interaction_graph_and_local_gates(module)?;
     let extract_us = elapsed_us(extract_started);
     let logical_qubits = graph.vertices.len() as u64;
     if opts.dump_ir {
         eprintln!(
-            "--- interaction graph ---\nvertices={} interactions={}",
+            "--- interaction graph ---\nvertices={} interactions={} local_1q_gates={}",
             graph.vertices.len(),
-            graph.interactions.len()
+            graph.interactions.len(),
+            local_gates.len(),
         );
     }
-    let mut artifacts = run_from_graph(graph, na, opts, Some(logical_qubits))?;
+    let mut artifacts =
+        run_from_graph_with_local_gates(graph, local_gates, na, opts, Some(logical_qubits))?;
     if let Some(stats) = artifacts.stats.as_mut() {
         stats.stage_timings_us.extract_us = Some(extract_us);
         stats.stage_timings_us.total_us =
@@ -232,7 +268,9 @@ pub fn run_from_module<'c>(
     Ok(artifacts)
 }
 
-/// Schedule from a raw interaction graph (debug / stress entry).
+/// Schedule from a raw interaction graph (debug / stress entry) — no 1-qubit
+/// gates (there is no MLIR to extract them from). Use [`run_from_module`] for
+/// the full-fidelity, 1-qubit-gate-preserving production path.
 pub fn run_from_graph(
     graph: InteractionGraph,
     na: &NeutralAtomTarget,
@@ -251,8 +289,274 @@ pub fn run_from_graph(
     let max_pairs = na.interaction.max_parallel_entangling_pairs;
     let scheduled = schedule_entangling_layers(req, max_pairs)?;
     let entangling_layers_us = elapsed_us(stage_started);
-    let mut req = scheduled.request;
 
+    finish_pipeline(
+        scheduled.request,
+        na,
+        opts,
+        logical_qubits,
+        pipeline_started,
+        schedule_from_graph_us,
+        entangling_layers_us,
+    )
+}
+
+/// Schedule from a raw interaction graph plus captured 1-qubit gates
+/// (issue #298): decomposes each gate to `na.native_gates` (local `rz`,
+/// global `ry`, or a `u3` escape hatch — see [`crate::native_gate_decomp`])
+/// and splices the results into the entangling-scheduled layers at the
+/// gate's extraction-time anchor, before zoned/flat-AOD placement (neither
+/// backend's movement planning needs `LocalGate`/`GlobalRy` site info — see
+/// [`interleave_local_gates`]).
+#[cfg(feature = "mlir")]
+pub fn run_from_graph_with_local_gates(
+    graph: InteractionGraph,
+    local_gates: Vec<LocalGateExtract>,
+    na: &NeutralAtomTarget,
+    opts: NaScheduleOptions,
+    logical_qubits_override: Option<u64>,
+) -> Result<NaScheduleArtifacts, NaPipelineError> {
+    validate_speed_model(na).map_err(NaPipelineError::InvalidTarget)?;
+    let logical_qubits = logical_qubits_override.unwrap_or(graph.vertices.len() as u64);
+    let pipeline_started = Instant::now();
+
+    let decomposed = decompose_local_gates(&local_gates, &na.native_gates)?;
+
+    let stage_started = Instant::now();
+    let req = schedule_from_graph(graph)?;
+    let schedule_from_graph_us = elapsed_us(stage_started);
+
+    let stage_started = Instant::now();
+    let max_pairs = na.interaction.max_parallel_entangling_pairs;
+    let scheduled = schedule_entangling_layers(req, max_pairs)?;
+    let entangling_layers_us = elapsed_us(stage_started);
+
+    let mut req = scheduled.request;
+    req.layers = interleave_local_gates(
+        req.layers,
+        &scheduled.interaction_cycle,
+        decomposed,
+        na,
+        logical_qubits,
+    )?;
+
+    finish_pipeline(
+        req,
+        na,
+        opts,
+        logical_qubits,
+        pipeline_started,
+        schedule_from_graph_us,
+        entangling_layers_us,
+    )
+}
+
+/// Splice decomposed 1-qubit gate actions into `layers` at their
+/// extraction-time anchor (issue #298).
+///
+/// Every decomposed step becomes its **own** dedicated [`ScheduleLayer`]
+/// (never sharing a layer with another local step, an entangling action, or
+/// another `GlobalRy`). This is a deliberate correctness-first simplification
+/// over layer-packing multiple independent-atom local gates together: it
+/// trivially guarantees no two `LocalGate`s on the same atom are ever
+/// reordered relative to each other or to the interaction they're anchored
+/// to. Packing independent local gates into shared layers for fewer cycles
+/// is a follow-up optimization, not a correctness requirement — see the PR
+/// description for issue #298.
+///
+/// A gate with `after: None` (no ≥2-qubit interaction ever touched its
+/// qubit) is scheduled before every entangling layer; a gate anchored to
+/// interaction `id` is scheduled immediately after the layer that hosted
+/// `id` (any position strictly between that layer and the qubit's *next*
+/// interaction, if any, is causally equivalent — nothing else touches the
+/// atom in between).
+///
+/// **`GlobalRy` bystander isolation (issue #298 review finding — CRITICAL):**
+/// every logical atom is bound to a site from `layout.initial_bindings` at
+/// schedule start (this compiler has no zone-based spatial isolation of the
+/// raster's footprint), so a bare `GlobalRy` physically hits *every* trapped
+/// atom, not just the one it was decomposed for. Emitting one raw `GlobalRy`
+/// per decomposed gate — this function's first cut — silently applied an
+/// unwanted rotation to every bystander atom, composing across successive
+/// rasters into schedule output that did not implement the source circuit's
+/// unitary. Fixed via [`push_global_ry_with_refocus`]: a Hahn-echo-style
+/// composite-pulse sequence (split the raster into two half-angle pulses;
+/// sandwich a local `Rz(pi)`/`Rz(-pi)` pair around the second half for every
+/// atom that should *not* receive the rotation) that is exact — see that
+/// function's doc comment for the derivation and this module's tests for a
+/// mechanical check.
+#[cfg(feature = "mlir")]
+fn interleave_local_gates(
+    layers: Vec<ScheduleLayer>,
+    interaction_cycle: &BTreeMap<InteractionId, u32>,
+    decomposed: Vec<DecomposedLocalGate>,
+    na: &NeutralAtomTarget,
+    total_atoms: u64,
+) -> Result<Vec<ScheduleLayer>, NaPipelineError> {
+    let single_qubit_us = na.timing.single_qubit_us.max(0.0).round() as u64;
+    let all_atoms: Vec<AtomId> = (0..total_atoms).map(|i| AtomId(i as u32)).collect();
+
+    let mut by_anchor: BTreeMap<Option<u32>, Vec<NeutralAtomAction>> = BTreeMap::new();
+    for gate in decomposed {
+        // Issue #298 review finding #2: distinguish "no anchor" (`None`,
+        // legitimate — schedule before everything) from "anchor named an
+        // interaction id `schedule_entangling_layers` never assigned a
+        // cycle to" (an internal invariant violation) — the previous
+        // `.and_then` silently collapsed both to `None`, which would have
+        // mis-scheduled the gate to the very start of the program instead
+        // of surfacing the bug.
+        let anchor_cycle = match gate.after {
+            None => None,
+            Some(id) => Some(
+                *interaction_cycle
+                    .get(&id)
+                    .ok_or(NaPipelineError::LocalGateAnchorMissing { interaction: id })?,
+            ),
+        };
+        let atom = AtomId(gate.qubit.0);
+        let bucket = by_anchor.entry(anchor_cycle).or_default();
+        for op in gate.ops {
+            match op {
+                NaLocalOp::Local(kind) => {
+                    bucket.push(NeutralAtomAction::LocalGate {
+                        atom,
+                        gate: kind,
+                        duration_us: single_qubit_us,
+                    });
+                }
+                NaLocalOp::GlobalRy(theta) => {
+                    push_global_ry_with_refocus(bucket, atom, theta, &all_atoms, single_qubit_us);
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(layers.len());
+    if let Some(actions) = by_anchor.remove(&None) {
+        for action in actions {
+            out.push(ScheduleLayer {
+                cycle: 0,
+                actions: vec![action],
+            });
+        }
+    }
+    for layer in layers {
+        let cycle = layer.cycle;
+        out.push(layer);
+        if let Some(actions) = by_anchor.remove(&Some(cycle)) {
+            for action in actions {
+                out.push(ScheduleLayer {
+                    cycle: 0,
+                    actions: vec![action],
+                });
+            }
+        }
+    }
+    // Defensive: an anchor cycle that didn't match any layer shouldn't
+    // happen (`interaction_cycle` values always come from `layers.cycle`),
+    // but append rather than silently drop if it ever does.
+    for (_, actions) in by_anchor {
+        for action in actions {
+            out.push(ScheduleLayer {
+                cycle: 0,
+                actions: vec![action],
+            });
+        }
+    }
+
+    for (i, layer) in out.iter_mut().enumerate() {
+        layer.cycle = i as u32;
+    }
+    Ok(out)
+}
+
+/// Push a `GlobalRy(theta)` intended for `atom` into `bucket`, correctly
+/// isolating every other atom in `all_atoms` from the raster (issue #298
+/// review finding — see [`interleave_local_gates`]'s doc comment for why a
+/// bare `GlobalRy` is unsafe).
+///
+/// When `atom` is the only trapped atom, no other atom can be corrupted, so
+/// this pushes a single plain `GlobalRy(theta)` — no need for the composite
+/// sequence. Otherwise it pushes, in order:
+/// 1. `GlobalRy(theta / 2)`
+/// 2. `LocalGate { gate: Rz(pi) }` for every bystander atom
+/// 3. `GlobalRy(theta / 2)`
+/// 4. `LocalGate { gate: Rz(-pi) }` for every bystander atom
+///
+/// This is a Hahn-echo-style composite-pulse sequence, standard in quantum
+/// control for realizing an effectively-local operation from a globally
+/// shared drive. Derivation (all rotations as 2x2 `SU(2)`; `.` = matrix
+/// product, left = applied last):
+///
+/// - Bystander net effect: `Rz(-pi) . Ry(theta/2) . Rz(pi) . Ry(theta/2)`.
+///   Using `Rz(pi) . Ry(a) = Ry(-a) . Rz(pi)` (conjugating the `Y` generator
+///   by a `pi` `Z`-rotation flips its sign): the middle three terms collapse
+///   to `Ry(theta/2) . Ry(-theta/2) . Rz(pi) = Rz(pi)`, so the whole product
+///   is `Rz(-pi) . Rz(pi) = I` — **exactly** identity, not an approximation.
+/// - `atom`'s net effect from just this function's output is
+///   `Ry(theta/2) . Ry(theta/2) = Ry(theta)` — the plain `ry` component
+///   `native_gate_decomp` decomposed it to. The surrounding `Rz(phi)` /
+///   `Rz(lambda)` from that same decomposition are separate `NaLocalOp`
+///   entries already emitted immediately before/after this one by the
+///   caller's loop, so `atom`'s full realized unitary is
+///   `Rz(phi) . Ry(theta) . Rz(lambda)` — its intended ZYZ step.
+///
+/// Verified both symbolically (above) and numerically against
+/// `backend::unitary` in this module's tests.
+#[cfg(feature = "mlir")]
+fn push_global_ry_with_refocus(
+    bucket: &mut Vec<NeutralAtomAction>,
+    atom: AtomId,
+    theta: f64,
+    all_atoms: &[AtomId],
+    duration_us: u64,
+) {
+    let bystanders: Vec<AtomId> = all_atoms.iter().copied().filter(|&a| a != atom).collect();
+    if bystanders.is_empty() {
+        bucket.push(NeutralAtomAction::GlobalRy {
+            theta_rad: theta,
+            duration_us,
+        });
+        return;
+    }
+
+    let half = theta / 2.0;
+    bucket.push(NeutralAtomAction::GlobalRy {
+        theta_rad: half,
+        duration_us,
+    });
+    for &bystander in &bystanders {
+        bucket.push(NeutralAtomAction::LocalGate {
+            atom: bystander,
+            gate: LocalGateKind::Rz(std::f64::consts::PI),
+            duration_us,
+        });
+    }
+    bucket.push(NeutralAtomAction::GlobalRy {
+        theta_rad: half,
+        duration_us,
+    });
+    for &bystander in &bystanders {
+        bucket.push(NeutralAtomAction::LocalGate {
+            atom: bystander,
+            gate: LocalGateKind::Rz(-std::f64::consts::PI),
+            duration_us,
+        });
+    }
+}
+
+/// Shared tail of the pipeline: placement/movement, optional compaction, and
+/// the resource report. `req.layers` must already be fully populated
+/// (entangling actions, plus any interleaved local-gate actions).
+fn finish_pipeline(
+    mut req: GraphScheduleRequest,
+    na: &NeutralAtomTarget,
+    opts: NaScheduleOptions,
+    logical_qubits: u64,
+    pipeline_started: Instant,
+    schedule_from_graph_us: u64,
+    entangling_layers_us: u64,
+) -> Result<NaScheduleArtifacts, NaPipelineError> {
     // Only set for the zoned backend; overlaid onto the resource report
     // below (issue #111 review finding — makes a routing-aware search's
     // silent fallback to the greedy assignment visible instead of
@@ -401,4 +705,141 @@ pub fn run_from_graph(
         request: req,
         stats: Some(stats),
     })
+}
+
+#[cfg(all(test, feature = "mlir"))]
+mod tests {
+    use super::*;
+    use backend::unitary::{Complex, M2, mul2, rotation_unitary, unitary_distance2};
+
+    fn identity() -> M2 {
+        M2([
+            [Complex::new(1.0, 0.0), Complex::new(0.0, 0.0)],
+            [Complex::new(0.0, 0.0), Complex::new(1.0, 0.0)],
+        ])
+    }
+
+    fn load_na_target() -> NeutralAtomTarget {
+        let path = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../targets/neutral_atom/generic_rna_v0.json"
+        ));
+        let loaded = backend::json::load(path).expect("load target");
+        loaded.neutral_atom_target().expect("na target").clone()
+    }
+
+    /// Interpret a flat list of `NeutralAtomAction`s (as produced by
+    /// [`push_global_ry_with_refocus`]) into each atom's net unitary, the
+    /// same way a real schedule-consuming semantic check would. `LocalGate`
+    /// only ever appears as `Rz` here (the refocus echo pulses); `GlobalRy`
+    /// applies to every atom in `atoms`.
+    fn net_unitaries(actions: &[NeutralAtomAction], atoms: &[AtomId]) -> Vec<M2> {
+        let mut net: std::collections::BTreeMap<AtomId, M2> =
+            atoms.iter().map(|&a| (a, identity())).collect();
+        for action in actions {
+            match action {
+                NeutralAtomAction::LocalGate {
+                    atom,
+                    gate: LocalGateKind::Rz(theta),
+                    ..
+                } => {
+                    let u = rotation_unitary("rz", *theta).expect("rz unitary");
+                    let entry = net.get_mut(atom).expect("known atom");
+                    *entry = mul2(u, *entry);
+                }
+                NeutralAtomAction::GlobalRy { theta_rad, .. } => {
+                    let u = rotation_unitary("ry", *theta_rad).expect("ry unitary");
+                    for entry in net.values_mut() {
+                        *entry = mul2(u, *entry);
+                    }
+                }
+                other => panic!("unexpected action in refocus-only test: {other:?}"),
+            }
+        }
+        atoms.iter().map(|a| net[a]).collect()
+    }
+
+    /// Issue #298 review Finding 1: a bystander atom's net effect from a
+    /// refocused `GlobalRy` must be exactly identity (not approximately —
+    /// this is an algebraic identity, see `push_global_ry_with_refocus`'s
+    /// doc comment), for a range of raster angles including edge cases.
+    #[test]
+    fn global_ry_refocus_is_exact_identity_for_bystanders() {
+        let wanted = AtomId(0);
+        let bystander = AtomId(1);
+        let atoms = [wanted, bystander];
+        for &theta in &[0.1, 0.6, 1.5, std::f64::consts::PI, -0.9, 6.0] {
+            let mut actions = Vec::new();
+            push_global_ry_with_refocus(&mut actions, wanted, theta, &atoms, 1);
+            let nets = net_unitaries(&actions, &atoms);
+            let bystander_net = nets[1];
+            assert!(
+                unitary_distance2(bystander_net, identity()) < 1e-9,
+                "theta={theta}: bystander net should be identity, got {bystander_net:?}"
+            );
+        }
+    }
+
+    /// The wanted atom's net effect from just the `GlobalRy` component is
+    /// `Ry(theta)` — matching what a plain (unrefocused) raster would have
+    /// realized for it, so combining this with its surrounding `Rz`
+    /// decomposition steps (emitted separately by the caller) reproduces its
+    /// intended ZYZ unitary exactly.
+    #[test]
+    fn global_ry_refocus_realizes_wanted_atom_rotation() {
+        let wanted = AtomId(0);
+        let atoms = [wanted, AtomId(1), AtomId(2)];
+        for &theta in &[0.1, 0.6, 1.5, -2.2] {
+            let mut actions = Vec::new();
+            push_global_ry_with_refocus(&mut actions, wanted, theta, &atoms, 1);
+            let nets = net_unitaries(&actions, &atoms);
+            let expected = rotation_unitary("ry", theta).expect("ry unitary");
+            assert!(
+                unitary_distance2(nets[0], expected) < 1e-9,
+                "theta={theta}: wanted atom net should be Ry(theta), got {:?}",
+                nets[0]
+            );
+        }
+    }
+
+    /// Single-atom case: no bystanders exist, so no refocus overhead is
+    /// needed — must fall back to a single plain `GlobalRy`.
+    #[test]
+    fn global_ry_refocus_skips_echo_when_no_bystanders() {
+        let only = AtomId(0);
+        let mut actions = Vec::new();
+        push_global_ry_with_refocus(&mut actions, only, 0.42, &[only], 1);
+        assert_eq!(
+            actions,
+            vec![NeutralAtomAction::GlobalRy {
+                theta_rad: 0.42,
+                duration_us: 1,
+            }]
+        );
+    }
+
+    /// Issue #298 review Finding 2: an `after: Some(id)` that fails to
+    /// resolve in `interaction_cycle` must be a hard error, not a silent
+    /// fallback to `None` (which would mis-schedule the gate to the very
+    /// start of the program).
+    #[test]
+    fn interleave_local_gates_errors_on_unresolved_anchor() {
+        use crate::graph::{InteractionId, LogicalQubitId};
+        use crate::native_gate_decomp::{DecomposedLocalGate, NaLocalOp};
+
+        let na = load_na_target();
+        let decomposed = vec![DecomposedLocalGate {
+            qubit: LogicalQubitId(0),
+            after: Some(InteractionId(999)), // never present in interaction_cycle
+            ops: vec![NaLocalOp::Local(LocalGateKind::Rz(0.5))],
+        }];
+        let interaction_cycle = BTreeMap::new();
+        let result = interleave_local_gates(Vec::new(), &interaction_cycle, decomposed, &na, 1);
+        assert!(matches!(
+            result,
+            Err(NaPipelineError::LocalGateAnchorMissing {
+                interaction: InteractionId(999)
+            })
+        ));
+    }
 }

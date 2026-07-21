@@ -31,5 +31,11 @@ expression: json
     "reset_count": 1,
     "reuse_count": 0,
     "reused_ancilla_count": 0
-  }
+  },
+  "local_h_count": 0,
+  "local_rz_count": 0,
+  "local_u3_count": 0,
+  "local_gate_time_us": 0,
+  "global_ry_count": 0,
+  "global_ry_time_us": 0
 }

@@ -28,7 +28,8 @@ use crate::dialect::{
 };
 use crate::layout::{AodTrapRef, AtomId, NeutralAtomLayout, Position, SiteId, TrapBinding};
 use crate::schedule::{
-    MeasurementBasis, NeutralAtomAction, ScheduleLayer, TransferDirection, TrapTransfer,
+    LocalGateKind, MeasurementBasis, NeutralAtomAction, ScheduleLayer, TransferDirection,
+    TrapTransfer,
 };
 use crate::schedule_entry::GraphScheduleRequest;
 
@@ -320,9 +321,26 @@ fn lower_action(
             atom,
             gate,
             duration_us,
-        } => Ok(ActionSpec::LocalGate {
-            atom: atom.0,
-            gate: gate.as_str().to_string(),
+        } => {
+            let (theta, phi, lambda) = match *gate {
+                LocalGateKind::H => (None, None, None),
+                LocalGateKind::Rz(theta) => (Some(theta), None, None),
+                LocalGateKind::U3 { theta, phi, lambda } => (Some(theta), Some(phi), Some(lambda)),
+            };
+            Ok(ActionSpec::LocalGate {
+                atom: atom.0,
+                gate: gate.as_str().to_string(),
+                theta,
+                phi,
+                lambda,
+                duration_us: *duration_us,
+            })
+        }
+        NeutralAtomAction::GlobalRy {
+            theta_rad,
+            duration_us,
+        } => Ok(ActionSpec::GlobalRy {
+            theta: *theta_rad,
             duration_us: *duration_us,
         }),
         NeutralAtomAction::Measure {

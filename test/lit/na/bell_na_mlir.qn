@@ -1,8 +1,17 @@
 -- RUN: %quonc %s --target %S/../../../targets/neutral_atom/generic_rna_v0.json --emit-na-mlir - --quiet | %FileCheck %s
 --
 -- Bell → quantum.na MLIR (#167, ADR-0011): the canonical schedule artifact
--- for a neutral-atom target. Zoned pipeline: load transfers, one grouped
+-- for a neutral-atom target. Zoned pipeline: `H @0`'s Z-Y-Z decomposition
+-- (local `rz` + global `ry`, issue #298), then load transfers, one grouped
 -- move to the entangle pair, store transfers, then the Rydberg layer.
+--
+-- The `ry` component is a Hahn-echo-refocused composite pulse, not a bare
+-- raster (issue #298 review finding): every other trapped atom (here, just
+-- atom 1) is bound into the array from schedule start, so a raw `GlobalRy`
+-- would physically also rotate it. Two `GlobalRy(theta/2)` half-pulses
+-- sandwich a local `Rz(pi)`/`Rz(-pi)` echo pair on atom 1 that provably nets
+-- to identity for it (see `quon_na::pipeline::push_global_ry_with_refocus`),
+-- so only atom 0 actually rotates.
 
 fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
         H @0 |> CNOT @(0, 1)
@@ -16,10 +25,26 @@ fn bell_na(): Q<(Bit, Bit)> = run {
 }
 
 -- CHECK: "quantum.na.schedule"()
--- CHECK: "quantum.na.layer"()
+--
+-- `H @0` preserved end to end (issue #298): local `rz` (atom 0) then a
+-- refocused global `ry` raster — half-pulse, atom 1's echo flip, half-pulse,
+-- atom 1's echo correction — all before any movement (none of it needs a
+-- site placement).
+-- CHECK: "quantum.na.local_gate"
+-- CHECK-SAME: atom = 0
+-- CHECK-SAME: gate = "rz"
+-- CHECK: "quantum.na.global_ry"()
+-- CHECK: "quantum.na.local_gate"
+-- CHECK-SAME: atom = 1
+-- CHECK-SAME: gate = "rz"
+-- CHECK: "quantum.na.global_ry"()
+-- CHECK: "quantum.na.local_gate"
+-- CHECK-SAME: atom = 1
+-- CHECK-SAME: gate = "rz"
+--
 -- CHECK: "quantum.na.transfer"()
 -- CHECK-SAME: direction = "slm_to_aod"
--- CHECK: cycle = 0 : i64
+-- CHECK: cycle = 5 : i64
 -- CHECK: "quantum.na.move"()
 -- CHECK-SAME: to_y_um\22:310.0
 -- CHECK: "quantum.na.transfer"()

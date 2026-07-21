@@ -50,6 +50,13 @@ pub struct LayerUtilization {
 pub struct EntanglingScheduleResult {
     pub request: GraphScheduleRequest,
     pub utilizations: Vec<LayerUtilization>,
+    /// Which `ScheduleLayer.cycle` each interaction landed in (issue #298):
+    /// lets a post-pass splice 1-qubit gate actions into the right layer
+    /// relative to the ≥2-qubit interactions on the same qubit — see
+    /// `pipeline::interleave_local_gates`. `#[serde(default)]` so older
+    /// serialized results without this field still deserialize.
+    #[serde(default)]
+    pub interaction_cycle: BTreeMap<InteractionId, u32>,
     /// Maximum degree Δ among 2Q commutation subgraphs that were Misra–Gries colored.
     pub max_degree: u32,
     /// True iff every non-empty commutation segment was 2Q-only and used Misra–Gries.
@@ -109,6 +116,7 @@ pub fn schedule_entangling_layers(
         req.graph.interactions.iter().map(|i| (i.id, i)).collect();
 
     let mut layers = Vec::new();
+    let mut interaction_cycle: BTreeMap<InteractionId, u32> = BTreeMap::new();
     let mut next_cycle: u32 = 0;
     let mut max_degree: u32 = 0;
     let mut misra_gries_applied = true;
@@ -143,6 +151,9 @@ pub fn schedule_entangling_layers(
                 layer
                     .validate_conflicts()
                     .map_err(|e| EntanglingScheduleError::Conflict(format_conflict(e)))?;
+                for interaction in chunk {
+                    interaction_cycle.insert(interaction.id, next_cycle);
+                }
                 layers.push(layer);
                 next_cycle = next_cycle.saturating_add(1);
             }
@@ -174,6 +185,7 @@ pub fn schedule_entangling_layers(
     Ok(EntanglingScheduleResult {
         request: req,
         utilizations,
+        interaction_cycle,
         max_degree,
         misra_gries_applied,
     })
