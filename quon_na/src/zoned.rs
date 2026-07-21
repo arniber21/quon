@@ -1,4 +1,4 @@
-//! Zoned routing-aware placement (issue #107).
+//! Zoned routing-aware placement (issue #107, heuristic search #297).
 //!
 //! Reproduces the **placement cost = routing cost** formulation of
 //! [RAP] (Stade, Lin, Cong, Wille, ICCAD 2025, arXiv:2505.22715):
@@ -6,9 +6,71 @@
 //! - Sec. III-B — routing-aware definition (layer-by-layer; cost is routing)
 //! - Sec. III-A — reuse analysis (“don’t move atoms already in place”)
 //! - Sec. IV-A — cost Eq. (1): `cost(p) = Σ_G √(d_max(G))` over greedily
-//!   grouped compatible movements; Eq. (2) adds reuse / look-ahead terms
+//!   grouped compatible movements ([`routing_cost_eq1`])
 //! - Sec. IV-B — search extends by assigning one gate’s atoms to entanglement
-//!   pairs (A*-style / best-first)
+//!   pairs (A*-style / best-first): [`assign_aware_legal`]
+//! - Sec. IV-C / V-C, Eqs. (3)-(5) — the guiding heuristic
+//!   ([`AwareSearchParams`], `heuristic_estimate`): an admissible-lower-bound
+//!   term (Eq. 3: worst-case nearest-available distance among unplaced gates
+//!   vs. the current largest group distance) plus an inadmissible
+//!   accelerating term (Eq. 4: `δ · (β + ΣSD(groups)) · |unplaced|`, favoring
+//!   partial placements whose per-group displacement is close to uniform —
+//!   i.e. parallel, easy to extend). The Eq. (3) sign convention (`max(0,
+//!   √unplaced − √placed)`, not a bare subtraction) and `δ`/`β` as qmap's
+//!   `deepeningFactor`/`deepeningValue` are cross-checked against qmap's
+//!   reference `HeuristicPlacer` (`munich-quantum-toolkit/qmap`,
+//!   `src/na/zoned/layout_synthesizer/placer/HeuristicPlacer.cpp`,
+//!   `getHeuristic`/`sumStdDeviationForGroups`) and match. `SD(G)` itself is
+//!   *inspired by* qmap's rank-based approach, not a literal port: qmap
+//!   discretizes row/column indices once, globally, over the whole layer's
+//!   job list (real lattice grid positions, capped via `min(1.0, …)`, shared
+//!   across groups via its BST); this module instead recomputes ranks
+//!   locally, per group, per axis, at heuristic-evaluation time (uncapped) —
+//!   a materially coarser quantity for small groups (e.g. a 2-member group
+//!   always reduces to ranks `{0,1}` regardless of actual lattice position).
+//!   Since this term is already inadmissible/heuristic-only by design (Eq.
+//!   4 has no correctness requirement — [`AwareSearchOutcome::Completed`]
+//!   only claims *a* full assignment was found, not the true joint optimum,
+//!   see below), this doesn't threaten correctness, but it is not a faithful
+//!   reproduction of qmap's discretization. Eq.
+//!   (5)'s cross-layer look-ahead term (and Eq. (2)'s `α`/`γ` reuse-cost
+//!   terms) are **not** ported: this module's search only decides gate→pair
+//!   assignment within one layer (no atom-by-atom intermediate/storage
+//!   placement across layers, so there is no natural "next gate's partner"
+//!   hook to look ahead to) — documented scope reduction, not an oversight.
+//! - Sec. V-A — binary-search-tree movement-group compatibility check: this
+//!   module uses the same per-axis order/coupling test
+//!   ([`positions_aod_compatible`]) both post-search (`partition_aod_compatible`)
+//!   and, as of #297, *during* the search itself (search-time `groups` on
+//!   [`AwareNode`]) so a node's cost matches what routing will actually emit.
+//!   Linear-scan compatibility checking (not a literal BST) — legal at this
+//!   crate's layer sizes (≤ tens of gates), a documented simplification of
+//!   the paper's data structure, not of its legality semantics.
+//! - Sec. V-D — pruning: [`AwareSearchParams::pruning_window`] bounds each
+//!   gate's considered pair choices to the nearest-`window` *legal* ones
+//!   (scanned from the full legal set, not truncated before legality
+//!   filtering — so a gate is never denied a choice purely because a closer
+//!   *illegal* pair occupied a window slot). This does **not** preserve full
+//!   completeness: if the only full legal assignment for a layer requires
+//!   some gate to take a choice outside its window (e.g. its near pairs are
+//!   needed by other gates and its only remaining legal pair is the
+//!   `window + 1`-th nearest), that assignment is never generated, and the
+//!   search can report [`AwareSearchOutcome::NoLegalAssignment`] even though
+//!   a full legal assignment exists. Same tradeoff spirit as `beam_width`
+//!   below (bounded search, not exhaustive) — not observed to matter on the
+//!   `ising_n42` anchor fixture (0 fallbacks either way at `window = 32`),
+//!   but a real, intentional gap, not an oversight.
+//! - **Not from the paper** — [`AwareSearchParams::beam_width`]: the search
+//!   frontier is trimmed to the best `beam_width` nodes whenever it exceeds
+//!   `2 × beam_width`. Needed empirically (#297 review): at real fixture
+//!   scale (`ising_n42`'s 20-21-gate/340-pair layers with real crosstalk
+//!   conflicts between adjacent entanglement-zone pairs), an untrimmed
+//!   priority queue fills with shallow alternatives faster than deep ones
+//!   get explored, and `node_budget` expansions are spent almost entirely
+//!   widening rather than deepening — measured reaching a 1M+-node frontier
+//!   while still stuck below half depth. Standard beam search; a departure
+//!   from the paper's (unspecified) search-loop mechanics, not from its
+//!   legality semantics.
 //!
 //! Readout-zone measurement constraints come from [AbstractModel]
 //! (arXiv:2405.08068) Sec. III-A, **not** from [RAP] (which models only
@@ -17,7 +79,12 @@
 //!
 //! Dual modes ([RAP] Sec. VI-B comparison methodology):
 //! - [`PlacerMode::RoutingAgnostic`] — ZAC-style distance-minimizing placement
-//! - [`PlacerMode::RoutingAware`] — search minimizing Eq. (1) routing cost
+//! - [`PlacerMode::RoutingAware`] — heuristic-guided search minimizing Eq. (1)
+//!   routing cost. With the Eq. (3)-(5) heuristic (#297), this is true A*
+//!   (not uniform-cost): the accelerating term is intentionally inadmissible,
+//!   so a completed search is the search's best find, not a proven joint
+//!   optimum — matching the paper's own framing ("accepting that the
+//!   resulting heuristic may not be admissible anymore", Sec. IV-C).
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
@@ -165,9 +232,12 @@ pub struct ZonedScheduleResult {
     pub rearrangement_steps: u64,
     pub trap_transfers: u64,
     /// Number of per-layer gate-assignment calls where [`assign_aware_legal`]
-    /// found a full legal assignment within [`AWARE_NODE_BUDGET`] (uniform-cost
-    /// search, so this is the true joint-optimal for that layer). Always `0`
-    /// under [`PlacerMode::RoutingAgnostic`] (the concept doesn't apply).
+    /// found a full legal assignment within budget. As of #297 this is a
+    /// heuristic-guided A* with an intentionally inadmissible accelerating
+    /// term (Eqs. (3)-(4)), so `Completed` means "the search's best find",
+    /// not a proven joint optimum for the layer (matching [RAP]'s own
+    /// framing — see the module doc). Always `0` under
+    /// [`PlacerMode::RoutingAgnostic`] (the concept doesn't apply).
     pub aware_search_completed_layers: u64,
     /// Per-layer calls where the aware search exhausted the expansion budget
     /// before finding a full assignment and fell back to
@@ -391,16 +461,32 @@ fn zone_id_for_site(layout: &NeutralAtomLayout, arch: &ZonedArchitecture, site: 
     0
 }
 
-/// Schedule a graph request onto a zoned architecture.
+/// Schedule a graph request onto a zoned architecture, using the default
+/// [`AwareSearchParams`] ([RAP] Sec. VI-A QASMBench set) for
+/// [`PlacerMode::RoutingAware`]. Use
+/// [`schedule_zoned_with_aware_params`] to override the A* search's
+/// tunables (node budget, deepening factor/value, pruning window).
 ///
 /// Expects `req.layers` to already contain entangling layers (#105). Fills
 /// movement/transfer actions around those entangles and updates `layout` to a
 /// storage+entanglement site map. Soft-unblocked vs #106: uses RAP-local
 /// greedy move grouping, not Enola sortIS.
 pub fn schedule_zoned(
+    req: GraphScheduleRequest,
+    arch: &ZonedArchitecture,
+    mode: PlacerMode,
+) -> Result<ZonedScheduleResult, ZonedScheduleError> {
+    schedule_zoned_with_aware_params(req, arch, mode, AwareSearchParams::default())
+}
+
+/// [`schedule_zoned`], but with explicit [`AwareSearchParams`] for
+/// [`PlacerMode::RoutingAware`]'s A* search (issue #297). Ignored under
+/// [`PlacerMode::RoutingAgnostic`].
+pub fn schedule_zoned_with_aware_params(
     mut req: GraphScheduleRequest,
     arch: &ZonedArchitecture,
     mode: PlacerMode,
+    aware_search: AwareSearchParams,
 ) -> Result<ZonedScheduleResult, ZonedScheduleError> {
     arch.validate()?;
     if req.layers.is_empty() {
@@ -477,11 +563,12 @@ pub fn schedule_zoned(
             pair_sites: &pair_sites,
             site_occupant: &site_occupant,
             conflict_um,
+            aod_min_sep_um: arch.aod_min_separation_um,
         };
         let gate_atoms: Vec<(AtomId, AtomId)> = gates.iter().map(|g| g.atoms).collect();
         let assignment = match mode {
             PlacerMode::RoutingAgnostic => assign_greedy_legal(&gate_atoms, &inputs),
-            PlacerMode::RoutingAware => assign_aware_legal(&gate_atoms, &inputs),
+            PlacerMode::RoutingAware => assign_aware_legal(&gate_atoms, &inputs, &aware_search),
         };
         aware_search_node_expansions += assignment.node_expansions as u64;
         match assignment.outcome {
@@ -754,8 +841,26 @@ fn partition_aod_compatible(moves: &[PlannedMove], min_sep_um: f64) -> Vec<Vec<&
 }
 
 fn moves_aod_compatible(a: &PlannedMove, b: &PlannedMove, min_sep_um: f64) -> bool {
-    axis_aod_compatible(a.from.y_um, a.to.y_um, b.from.y_um, b.to.y_um, min_sep_um)
-        && axis_aod_compatible(a.from.x_um, a.to.x_um, b.from.x_um, b.to.x_um, min_sep_um)
+    positions_aod_compatible((a.from, a.to), (b.from, b.to), min_sep_um)
+}
+
+/// [RAP] Sec. V-A's movement-group compatibility check (non-crossing +
+/// preservation), on raw `(from, to)` position pairs rather than
+/// [`PlannedMove`] — shared by the post-search routing grouper
+/// ([`moves_aod_compatible`]) and the search-time grouping
+/// [`assign_aware_legal`] performs to keep its Eq. (1) cost consistent with
+/// what routing will actually emit (#297). The paper implements this with a
+/// binary search tree per group for O(log n) lookups (Sec. V-A); this is a
+/// linear scan against existing group members instead — legal at this
+/// crate's per-layer group sizes, a data-structure simplification, not a
+/// semantics one.
+fn positions_aod_compatible(
+    a: (Position, Position),
+    b: (Position, Position),
+    min_sep_um: f64,
+) -> bool {
+    axis_aod_compatible(a.0.y_um, a.1.y_um, b.0.y_um, b.1.y_um, min_sep_um)
+        && axis_aod_compatible(a.0.x_um, a.1.x_um, b.0.x_um, b.1.x_um, min_sep_um)
 }
 
 fn axis_aod_compatible(from_a: f64, to_a: f64, from_b: f64, to_b: f64, min_sep_um: f64) -> bool {
@@ -899,28 +1004,42 @@ struct AssignInputs<'a> {
     /// Minimum legal distance between atoms of different simultaneous pairs
     /// ([`ZonedArchitecture::pair_conflict_um`]); `0.0` disables the check.
     conflict_um: f64,
+    /// Minimum AOD row/column separation ([`ZonedArchitecture::aod_min_separation_um`],
+    /// here `aod_min_separation_um` field) used only by
+    /// [`assign_aware_legal`]'s search-time movement grouping (Eq. (1)); `0.0`
+    /// disables the separation sub-check (see [`positions_aod_compatible`]).
+    aod_min_sep_um: f64,
 }
 
-/// Whether [`assign_aware_legal`]'s best-first search found the true
-/// joint-optimal assignment for a layer, or gave up and fell back to
-/// [`assign_greedy_legal`] (issue #111 review finding: a silent fallback here
-/// is indistinguishable from "no routing contention" unless it is surfaced).
+/// Whether [`assign_aware_legal`]'s A* search found a full legal assignment
+/// for a layer, or gave up and fell back to [`assign_greedy_legal`] (issue
+/// #111 review finding: a silent fallback here is indistinguishable from "no
+/// routing contention" unless it is surfaced).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AwareSearchOutcome {
     /// [`assign_greedy_legal`] was called directly (routing-agnostic mode);
     /// the aware-search-completion concept doesn't apply.
     NotApplicable,
     /// The search popped a full-assignment goal node within
-    /// [`AWARE_NODE_BUDGET`] expansions. Uniform-cost search (h = 0) pops
-    /// nodes in nondecreasing cost order, so this is the true joint-optimal
-    /// assignment for the layer, not an approximation.
+    /// [`AwareSearchParams::node_budget`] expansions. As of #297 the search
+    /// is heuristic-guided with an intentionally inadmissible accelerating
+    /// term (Eqs. (3)-(4)), so this is the search's best find for the layer,
+    /// not a proven joint optimum — see the module doc.
     Completed,
-    /// The search exhausted [`AWARE_NODE_BUDGET`] expansions before popping a
-    /// full-assignment goal node and fell back to [`assign_greedy_legal`].
+    /// The search exhausted [`AwareSearchParams::node_budget`] expansions
+    /// before popping a full-assignment goal node and fell back to
+    /// [`assign_greedy_legal`].
     BudgetExceeded,
-    /// The search exhausted its entire reachable space (heap emptied) with
-    /// no full legal assignment reachable at all (e.g. spacing/occupancy
-    /// conflicts) and fell back to [`assign_greedy_legal`].
+    /// The search exhausted its reachable space (heap emptied) within the
+    /// current [`AwareSearchParams::pruning_window`]/[`AwareSearchParams::beam_width`]
+    /// bounds without popping a full-assignment goal node, and fell back to
+    /// [`assign_greedy_legal`]. Pre-#297 (unwindowed, unbeamed uniform-cost
+    /// search) this proved no full legal assignment existed at all (e.g.
+    /// spacing/occupancy conflicts); as of #297 it does **not** prove that —
+    /// `pruning_window` can exclude the only choice a full assignment
+    /// requires for some gate (see the module doc), so this outcome can also
+    /// mean "no full assignment within the windowed/beamed search space,"
+    /// not "no full assignment exists."
     NoLegalAssignment,
 }
 
@@ -1033,12 +1152,88 @@ fn assign_greedy_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) ->
     }
 }
 
+/// Tunable parameters for [`assign_aware_legal`]'s A* search ([RAP] Secs.
+/// IV-C / V-C / V-D, Eqs. (3)-(5)). Defaults are the paper's QASMBench
+/// parameter set (Sec. VI-A: α=0.2, β=0.2, γ=5, δ=0.6) restricted to the
+/// terms this port implements — see the module doc for why α (Eq. (2)'s
+/// look-ahead weight) and γ (Eq. (2)'s reuse-cost offset) have no field
+/// here. `ising_n42` (the #297 anchor fixture, `docs/neutral_atom/rap_table_i_methodology.md`)
+/// is itself one of the paper's QASMBench benchmarks (Table I's `ising2`
+/// row), so this is also the qmap-comparable default for that fixture, not
+/// an arbitrary pick.
+///
+/// Exposed via [`crate::pipeline::NaScheduleOptions::aware_search`] (a
+/// per-run option, not a target/hardware JSON field) — matching qmap's own
+/// shape, where the analogous `Config` is passed to the placer per call, not
+/// baked into the architecture description.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwareSearchParams {
+    /// δ (Eq. (4)): scales the accelerating (spacing-preservation) term.
+    /// qmap: `deepeningFactor`.
+    pub deepening_factor: f64,
+    /// β (Eq. (4)): additive floor inside the accelerating term, so a
+    /// perfectly uniform (SD = 0) partial placement still contributes a
+    /// small nonzero penalty proportional to how many gates remain. qmap:
+    /// `deepeningValue`.
+    pub deepening_value: f64,
+    /// Expansion budget before falling back to [`assign_greedy_legal`].
+    pub node_budget: usize,
+    /// [RAP] Sec. V-D pruning: number of nearest *legal* entanglement pairs
+    /// considered per gate at each node expansion (bounds branching factor
+    /// on layers with many simultaneous gates / candidate pairs).
+    pub pruning_window: usize,
+    /// Beam width: the frontier is trimmed back to the best `beam_width`
+    /// nodes (by priority) whenever it grows past `2 * beam_width`. Not a
+    /// term from the paper's Eqs. (3)-(5) — an engineering addition this
+    /// port needed (#297 review finding) because a plain priority queue's
+    /// frontier, at real fixture scale (20+ simultaneous gates, hundreds of
+    /// candidate pairs, tens of them mutually conflicting), fills with
+    /// shallow (early-gate) alternatives faster than deep ones ever get
+    /// explored — without a cap, `node_budget` expansions are spent almost
+    /// entirely widening rather than deepening the search, and it never
+    /// reaches a full assignment. See the module doc.
+    pub beam_width: usize,
+}
+
+impl Default for AwareSearchParams {
+    fn default() -> Self {
+        Self {
+            deepening_factor: 0.6, // δ, [RAP] Sec. VI-A QASMBench set
+            deepening_value: 0.2,  // β, [RAP] Sec. VI-A QASMBench set
+            node_budget: AWARE_NODE_BUDGET,
+            pruning_window: 32,
+            beam_width: 2_000,
+        }
+    }
+}
+
+/// One AOD-compatible movement group forming during the search — mirrors
+/// [`partition_aod_compatible`]'s post-search grouping so a node's Eq. (1)
+/// cost matches what routing will actually charge for it (#297; previously
+/// the search charged each gate's own `d_max` independently, which did not
+/// account for grouping at all).
+#[derive(Clone)]
+struct SearchGroup {
+    /// `(from, to)` per atom placed into this group so far — used only for
+    /// the [`positions_aod_compatible`] check against new candidate moves
+    /// and for [`sum_std_deviation_for_groups`].
+    moves: Vec<(Position, Position)>,
+    max_dist_um: f64,
+}
+
 #[derive(Clone)]
 struct AwareNode {
-    /// Negative cost for max-heap as min-cost.
-    neg_cost: OrderedFloat,
     assigned: Vec<(Position, Position)>,
     used_pairs: BTreeSet<usize>,
+    /// `groups`' cost g(p) = Eq. (1) `Σ_G √(d_max(G))` is always recomputable
+    /// via [`groups_cost`] — not cached on the node, since only the combined
+    /// priority (`neg_priority`) is needed once a node is queued.
+    groups: Vec<SearchGroup>,
+    /// f(p) = g(p) + h(p), negated for max-heap-as-min-heap (`OrderedFloat`
+    /// pops the numerically largest value first; negating cost turns that
+    /// into "smallest f(p) first"). The only field `Ord`/`Eq` examine.
+    neg_priority: OrderedFloat,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1057,7 +1252,7 @@ impl Ord for OrderedFloat {
 
 impl PartialEq for AwareNode {
     fn eq(&self, other: &Self) -> bool {
-        self.neg_cost == other.neg_cost
+        self.neg_priority == other.neg_priority
     }
 }
 impl Eq for AwareNode {}
@@ -1068,29 +1263,252 @@ impl PartialOrd for AwareNode {
 }
 impl Ord for AwareNode {
     fn cmp(&self, other: &Self) -> Ordering {
-        // BinaryHeap is max-heap; larger neg_cost (less negative) = worse.
-        // We store -cost so smaller cost → larger neg_cost → pops first?
-        // Actually max-heap pops largest. We want smallest cost first.
-        // Store OrderedFloat(-cost): larger (-cost) means smaller cost → pops first. ✓
-        self.neg_cost.cmp(&other.neg_cost)
+        // BinaryHeap is a max-heap; we store -f(p), so the numerically
+        // smallest f(p) (best priority) pops first — standard A* order.
+        self.neg_priority.cmp(&other.neg_priority)
     }
 }
 
-/// Expansion budget for the routing-aware search before falling back to the
-/// greedy assignment (which always terminates and supports deferral).
+/// Try to add a planned atom move into the first AOD-compatible group of
+/// `groups` (first-fit, same policy as [`partition_aod_compatible`]);
+/// otherwise start a new singleton group. Near-zero-distance moves (reuse:
+/// the atom is already at its target) join no group and cost nothing, same
+/// as the post-search `schedule_zoned` accounting.
+fn add_move_to_groups(groups: &mut Vec<SearchGroup>, mv: (Position, Position), min_sep_um: f64) {
+    let dist = euclidean_um(mv.0, mv.1);
+    if dist < 1e-9 {
+        return;
+    }
+    if let Some(group) = groups.iter_mut().find(|group| {
+        group
+            .moves
+            .iter()
+            .all(|&member| positions_aod_compatible(member, mv, min_sep_um))
+    }) {
+        group.moves.push(mv);
+        group.max_dist_um = group.max_dist_um.max(dist);
+    } else {
+        groups.push(SearchGroup {
+            moves: vec![mv],
+            max_dist_um: dist,
+        });
+    }
+}
+
+fn groups_cost(groups: &[SearchGroup]) -> f64 {
+    routing_cost_eq1(&groups.iter().map(|g| g.max_dist_um).collect::<Vec<_>>())
+}
+
+/// Population standard deviation (`0.0` for fewer than 2 samples).
+fn std_dev(values: &[f64]) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / n;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+    variance.sqrt()
+}
+
+/// [RAP] Eq. (4)'s `Σ_G SD(G)`: per axis, per group, the standard deviation
+/// of `value − scale·key`, where `key`/`value` are each member's *discrete
+/// rank* among the group's distinct source/target coordinates on that axis
+/// (its Sec. V-A/V-C — "the source locations of the atoms are rearranged,
+/// and the target traps are discretized among all the atoms to be moved"),
+/// and `scale` corrects for a group whose target coordinates are more/less
+/// spread out in rank-count than its source coordinates (Example 9: 8 target
+/// cols vs. 4 source cols ⇒ scale 2, so a rank-uniform — not
+/// physically-uniform — placement reads as `SD ≈ 0`).
+///
+/// Ranks, not raw µm distances: an earlier version of this function used raw
+/// `to − from` µm displacement directly, which is *not* a safe substitute —
+/// a #297 review finding caught it producing a heuristic that blows up
+/// (`SD` in the hundreds) whenever one group member's move happens to be
+/// physically much longer than another's, even when the group is perfectly
+/// legal and uniform in the only sense that matters (order-preserving
+/// discrete placement). Ranks are bounded by group size regardless of
+/// absolute travel distance, matching qmap's own bounded behavior
+/// (`sumStdDeviationForGroups` operates on the same discrete key/value pairs
+/// its BST already stores, never on raw coordinates).
+fn sum_std_deviation_for_groups(groups: &[SearchGroup]) -> f64 {
+    groups
+        .iter()
+        .map(|g| {
+            axis_std_dev_by_rank(g.moves.iter().map(|(from, to)| (from.x_um, to.x_um)))
+                + axis_std_dev_by_rank(g.moves.iter().map(|(from, to)| (from.y_um, to.y_um)))
+        })
+        .sum()
+}
+
+/// One axis' contribution to [`sum_std_deviation_for_groups`]: discretize
+/// `from`/`to` coordinates into ranks among their own distinct values, scale
+/// the source rank to match the target rank's spread, and return the
+/// standard deviation of `to_rank − scale · from_rank` across `pairs`.
+fn axis_std_dev_by_rank(pairs: impl Iterator<Item = (f64, f64)> + Clone) -> f64 {
+    let froms = distinct_sorted(pairs.clone().map(|(from, _)| from));
+    let tos = distinct_sorted(pairs.clone().map(|(_, to)| to));
+    // Scale so a placement that advances every member's target rank in
+    // lockstep with its source rank (not necessarily 1:1, if the two sides
+    // have different counts of distinct coordinates) reads as SD ≈ 0.
+    let scale = if froms.len() > 1 {
+        (tos.len().saturating_sub(1)).max(1) as f64 / (froms.len() - 1) as f64
+    } else {
+        1.0
+    };
+    let diffs: Vec<f64> = pairs
+        .map(|(from, to)| rank_of(&tos, to) - scale * rank_of(&froms, from))
+        .collect();
+    std_dev(&diffs)
+}
+
+/// Distinct values from `values`, sorted ascending (µm-scale float
+/// equality — these are trap-site coordinates, not accumulated sums, so
+/// exact-bit ties from identical sites are the only ties expected).
+fn distinct_sorted(values: impl Iterator<Item = f64>) -> Vec<f64> {
+    let mut sorted: Vec<f64> = values.collect();
+    sorted.sort_by(f64::total_cmp);
+    sorted.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    sorted
+}
+
+/// Rank (0-indexed position) of `value` among `sorted` (a [`distinct_sorted`]
+/// list); `0` if not found (defensive — every value passed in by
+/// [`axis_std_dev_by_rank`] was itself used to build the corresponding
+/// `sorted` list, so this is unreachable in practice).
+fn rank_of(sorted: &[f64], value: f64) -> f64 {
+    sorted
+        .iter()
+        .position(|&x| (x - value).abs() < 1e-9)
+        .unwrap_or(0) as f64
+}
+
+/// One occupancy-legal `(pair, orientation)` choice for a gate. Occupancy
+/// legality ([`pair_occupancy_ok`]) depends only on `site_occupant`, which is
+/// fixed for the whole layer — layer-static, unlike the simultaneous-pair
+/// spacing conflict ([`pairs_conflict`]), which depends on which pairs the
+/// *current node* has already chosen and so must still be rechecked per node
+/// via [`pair_legal`].
+struct GateCandidate {
+    pair_index: usize,
+    orient: (Position, Position),
+    d_max: f64,
+}
+
+/// All occupancy-legal `(pair, orientation)` choices for `gate`, sorted
+/// ascending by `d_max`. Both orientations of a pair are kept as separate
+/// entries — an orientation can change which movement group a placement
+/// joins even when it doesn't change `d_max`. Not window-truncated: the
+/// pruning window is applied by the caller while *scanning* this list for
+/// legal choices (occupancy + simultaneous-conflict + unused), so
+/// completeness (finding a full assignment whenever one exists) does not
+/// depend on the window size.
+fn gate_candidates(gate: (AtomId, AtomId), inputs: &AssignInputs<'_>) -> Vec<GateCandidate> {
+    let (a, b) = gate;
+    let pa = atom_position_or_origin(inputs.atom_pos, a);
+    let pb = atom_position_or_origin(inputs.atom_pos, b);
+    let mut options = Vec::new();
+    for (i, &(left, right)) in inputs.pairs.iter().enumerate() {
+        if !pair_occupancy_ok(inputs.pair_sites[i], gate, inputs.site_occupant) {
+            continue;
+        }
+        for orient in [(left, right), (right, left)] {
+            let d_max = euclidean_um(pa, orient.0).max(euclidean_um(pb, orient.1));
+            options.push(GateCandidate {
+                pair_index: i,
+                orient,
+                d_max,
+            });
+        }
+    }
+    options.sort_by(|x, y| x.d_max.total_cmp(&y.d_max));
+    options
+}
+
+/// [RAP] Eqs. (3)-(4): the admissible lower-bound term plus the
+/// (inadmissible) accelerating term. See the module doc for the qmap
+/// cross-check that resolved Eq. (3)'s sign convention
+/// (`max(0, √unplaced − √placed)`, not a bare subtraction) and for why Eq.
+/// (5)'s cross-layer look-ahead term has no equivalent here.
+fn heuristic_estimate(
+    node: &AwareNode,
+    gates: &[(AtomId, AtomId)],
+    candidates: &[Vec<GateCandidate>],
+    params: &AwareSearchParams,
+) -> f64 {
+    let level = node.assigned.len();
+    let n_unplaced = gates.len() - level;
+    if n_unplaced == 0 {
+        return 0.0;
+    }
+    let max_dist_of_placed = node
+        .groups
+        .iter()
+        .fold(0.0_f64, |m, g| m.max(g.max_dist_um));
+    let mut max_dist_of_unplaced = 0.0_f64;
+    for gate_candidates in &candidates[level..] {
+        // Nearest choice not yet claimed by this node; if every candidate is
+        // already claimed (rare — would require this node to have already
+        // used every occupancy-legal pair for some other, still-unplaced,
+        // gate), fall back to the worst candidate in the list as a
+        // pessimistic (rather than silently-zero) estimate.
+        let best = gate_candidates
+            .iter()
+            .find(|c| !node.used_pairs.contains(&c.pair_index))
+            .or_else(|| gate_candidates.last())
+            .map_or(0.0, |c| c.d_max);
+        max_dist_of_unplaced = max_dist_of_unplaced.max(best);
+    }
+    let admissible = if max_dist_of_unplaced <= max_dist_of_placed {
+        0.0
+    } else {
+        max_dist_of_unplaced.sqrt() - max_dist_of_placed.sqrt()
+    };
+    let accelerating = params.deepening_factor
+        * (params.deepening_value + sum_std_deviation_for_groups(&node.groups))
+        * n_unplaced as f64;
+    admissible + accelerating
+}
+
+/// Default expansion budget for the routing-aware search before falling back
+/// to the greedy assignment (which always terminates and supports
+/// deferral). Overridable per call via [`AwareSearchParams::node_budget`].
 pub const AWARE_NODE_BUDGET: usize = 100_000;
 
-/// Routing-aware best-first search ([RAP] Sec. IV-B style): extend by one gate,
-/// charge Eq. (1) √(d_max) of the moves implied so far. Extensions are limited
-/// to occupancy- and spacing-legal pairs; when no legal full assignment exists
-/// (or the node budget is exhausted) it falls back to
+/// Routing-aware A* search ([RAP] Sec. IV-B encoding; Sec. IV-C / V-C
+/// heuristic — see the module doc for the full section/equation map): extend
+/// by one gate, charge Eq. (1) `√(d_max)` of the AOD-compatible movement
+/// groups implied so far, guided by the Eq. (3)-(4) heuristic. Extensions
+/// are limited to occupancy- and spacing-legal pairs, and (Sec. V-D) to the
+/// nearest `pruning_window` legal choices per gate. The frontier is also
+/// beam-trimmed to `beam_width` (see [`AwareSearchParams::beam_width`] —
+/// an engineering addition beyond the paper's Eqs., needed to reach full
+/// assignments within budget at real fixture scale). When no legal full
+/// assignment exists (or the node budget is exhausted) it falls back to
 /// [`assign_greedy_legal`], which defers unplaceable gates.
-fn assign_aware_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) -> GateAssignment {
+fn assign_aware_legal(
+    gates: &[(AtomId, AtomId)],
+    inputs: &AssignInputs<'_>,
+    params: &AwareSearchParams,
+) -> GateAssignment {
+    if gates.is_empty() {
+        return GateAssignment {
+            placed: Vec::new(),
+            deferred: Vec::new(),
+            outcome: AwareSearchOutcome::Completed,
+            node_expansions: 0,
+        };
+    }
+    let candidates: Vec<Vec<GateCandidate>> = gates
+        .iter()
+        .map(|&gate| gate_candidates(gate, inputs))
+        .collect();
+
     let mut heap = BinaryHeap::new();
     heap.push(AwareNode {
-        neg_cost: OrderedFloat(0.0),
         assigned: Vec::new(),
         used_pairs: BTreeSet::new(),
+        groups: Vec::new(),
+        neg_priority: OrderedFloat(0.0),
     });
 
     let mut expansions = 0usize;
@@ -1105,40 +1523,69 @@ fn assign_aware_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) -> 
             };
         }
         expansions += 1;
-        if expansions > AWARE_NODE_BUDGET {
+        if expansions > params.node_budget {
             let mut fallback = assign_greedy_legal(gates, inputs);
             fallback.outcome = AwareSearchOutcome::BudgetExceeded;
             fallback.node_expansions = expansions;
             return fallback;
         }
-        let (a, b) = gates[g];
-        let pa = atom_position_or_origin(inputs.atom_pos, a);
-        let pb = atom_position_or_origin(inputs.atom_pos, b);
-        for (i, &(left, right)) in inputs.pairs.iter().enumerate() {
-            if node.used_pairs.contains(&i) || !pair_legal(i, (a, b), &node.used_pairs, inputs) {
+        let gate = gates[g];
+        let pa = atom_position_or_origin(inputs.atom_pos, gate.0);
+        let pb = atom_position_or_origin(inputs.atom_pos, gate.1);
+        let mut taken = 0usize;
+        for cand in &candidates[g] {
+            if node.used_pairs.contains(&cand.pair_index)
+                || !pair_legal(cand.pair_index, gate, &node.used_pairs, inputs)
+            {
                 continue;
             }
-            for orient in [(left, right), (right, left)] {
-                let d1 = euclidean_um(pa, orient.0);
-                let d2 = euclidean_um(pb, orient.1);
-                // Reuse: zero-distance moves don't contribute to d_max.
-                let d_max = d1.max(d2);
-                let step_cost = sqrt_d_max(d_max);
-                let cost_so_far = -node.neg_cost.0 + step_cost;
-                let mut used = node.used_pairs.clone();
-                used.insert(i);
-                let mut assigned = node.assigned.clone();
-                assigned.push(orient);
-                heap.push(AwareNode {
-                    neg_cost: OrderedFloat(-cost_so_far),
-                    assigned,
-                    used_pairs: used,
-                });
+            let mut groups = node.groups.clone();
+            add_move_to_groups(&mut groups, (pa, cand.orient.0), inputs.aod_min_sep_um);
+            add_move_to_groups(&mut groups, (pb, cand.orient.1), inputs.aod_min_sep_um);
+            let cost_so_far = groups_cost(&groups);
+            let mut used_pairs = node.used_pairs.clone();
+            used_pairs.insert(cand.pair_index);
+            let mut assigned = node.assigned.clone();
+            assigned.push(cand.orient);
+            let child = AwareNode {
+                assigned,
+                used_pairs,
+                groups,
+                neg_priority: OrderedFloat(0.0),
+            };
+            let h = heuristic_estimate(&child, gates, &candidates, params);
+            let priority = cost_so_far + h;
+            heap.push(AwareNode {
+                neg_priority: OrderedFloat(-priority),
+                ..child
+            });
+            taken += 1;
+            if taken >= params.pruning_window {
+                break;
             }
         }
+        // Beam trim: without this, the frontier is dominated by a huge
+        // number of shallow (early-gate) alternatives that all look
+        // similarly cheap, and the search never accumulates enough budget
+        // to reach a full-depth completion (#297 review finding — measured
+        // on `ising_n42`'s real 20-21-gate/340-pair layers, where the
+        // frontier reached over a million queued nodes while still stuck
+        // below half depth). Keeping only the best `beam_width` candidates
+        // forces the search to commit to its most promising partial
+        // placements instead of endlessly generating new shallow ones.
+        if heap.len() > params.beam_width * 2 {
+            let mut kept = BinaryHeap::with_capacity(params.beam_width);
+            for _ in 0..params.beam_width {
+                match heap.pop() {
+                    Some(n) => kept.push(n),
+                    None => break,
+                }
+            }
+            heap = kept;
+        }
     }
-    // Heap exhausted: no legal assignment of every gate exists this stage.
-    // Place what greedy can and defer the rest.
+    // Search space exhausted: no legal assignment of every gate exists this
+    // stage. Place what greedy can and defer the rest.
     let mut fallback = assign_greedy_legal(gates, inputs);
     fallback.outcome = AwareSearchOutcome::NoLegalAssignment;
     fallback.node_expansions = expansions;
@@ -1525,13 +1972,14 @@ mod tests {
             pair_sites: &pair_sites,
             site_occupant: &site_occupant,
             conflict_um: 0.0,
+            aod_min_sep_um: 0.0,
         };
 
         let greedy = assign_greedy_legal(&gates, &inputs);
         assert_eq!(greedy.outcome, AwareSearchOutcome::NotApplicable);
         assert!(greedy.deferred.is_empty());
 
-        let aware = assign_aware_legal(&gates, &inputs);
+        let aware = assign_aware_legal(&gates, &inputs, &AwareSearchParams::default());
         assert_eq!(
             aware.outcome,
             AwareSearchOutcome::Completed,
@@ -1544,6 +1992,166 @@ mod tests {
         assert!(
             aware_cost < greedy_cost * 0.5,
             "aware ({aware_cost}) must substantially beat greedy's myopic pick ({greedy_cost})"
+        );
+    }
+
+    /// Scaled-up sibling of
+    /// [`aware_search_completes_and_beats_greedy_on_contended_pairs`] — issue
+    /// #297's acceptance criteria explicitly ask for a variant "closer to the
+    /// ising_n42 scale" (`docs/neutral_atom/rap_table_i_methodology.md`'s
+    /// anchor fixture has up to 21 simultaneous gates and 340 candidate
+    /// entanglement-zone pairs per layer). This test replicates the small
+    /// test's exact contention shape (a mildly-preferring gate A and a
+    /// disastrously-mispaired gate B whose naive/greedy choices should be
+    /// swapped) 10 times over, in 10 well-separated, mutually non-conflicting
+    /// clusters (20 gates total), embedded in a pool of 340 candidate pairs
+    /// (20 "real" + 320 far-away, uniformly-unattractive filler pairs that
+    /// exist only to inflate the branching factor to match the real
+    /// fixture's scale). Before #297's Eq. (3)-(4) heuristic, the *old*
+    /// uniform-cost (`h = 0`) search explored nodes in nondecreasing-cost
+    /// order over this same 20-gate/340-pair space — exactly the shape
+    /// documented (`rap_table_i_methodology.md`'s "Phase 1 finding") to blow
+    /// `AWARE_NODE_BUDGET` on every layer of the real `ising_n42` fixture, so
+    /// this synthetic scenario is a fair proxy for that failure mode (the old
+    /// code no longer exists to run head-to-head, since replacing it wholesale
+    /// was the point of #297).
+    #[test]
+    fn aware_search_completes_and_beats_greedy_at_ising_n42_scale() {
+        const GROUPS: usize = 10;
+        const GROUP_SPACING: f64 = 5000.0;
+        const FILLER_PAIRS: usize = 320;
+
+        let mut gates = Vec::new();
+        let mut atom_pos = BTreeMap::new();
+        let mut pairs = Vec::new();
+        let mut pair_sites = Vec::new();
+        let mut next_atom = 0u32;
+        let mut next_site = 200u32; // clear of the {100..103} range used elsewhere in this file.
+
+        for group in 0..GROUPS {
+            let offset = group as f64 * GROUP_SPACING;
+            let atom_a0 = AtomId(next_atom);
+            let atom_a1 = AtomId(next_atom + 1);
+            let atom_b0 = AtomId(next_atom + 2);
+            let atom_b1 = AtomId(next_atom + 3);
+            next_atom += 4;
+
+            // Gate A: near the midpoint, mildly prefers pair_near.
+            atom_pos.insert(
+                atom_a0,
+                Position {
+                    x_um: offset + 499.0,
+                    y_um: 0.0,
+                },
+            );
+            atom_pos.insert(
+                atom_a1,
+                Position {
+                    x_um: offset + 500.0,
+                    y_um: 0.0,
+                },
+            );
+            // Gate B: essentially on top of pair_near, disastrous at pair_far.
+            atom_pos.insert(
+                atom_b0,
+                Position {
+                    x_um: offset + 0.4,
+                    y_um: 0.0,
+                },
+            );
+            atom_pos.insert(
+                atom_b1,
+                Position {
+                    x_um: offset + 0.6,
+                    y_um: 0.0,
+                },
+            );
+
+            let pair_near = (
+                Position {
+                    x_um: offset,
+                    y_um: 0.0,
+                },
+                Position {
+                    x_um: offset + 1.0,
+                    y_um: 0.0,
+                },
+            );
+            let pair_far = (
+                Position {
+                    x_um: offset + 1000.0,
+                    y_um: 0.0,
+                },
+                Position {
+                    x_um: offset + 1001.0,
+                    y_um: 0.0,
+                },
+            );
+            pairs.push(pair_near);
+            pairs.push(pair_far);
+            pair_sites.push((SiteId(next_site), SiteId(next_site + 1)));
+            pair_sites.push((SiteId(next_site + 2), SiteId(next_site + 3)));
+            next_site += 4;
+
+            gates.push((atom_a0, atom_a1));
+            gates.push((atom_b0, atom_b1));
+        }
+
+        // Filler pairs: far from every group's atoms (never the cheapest
+        // choice for any gate) but occupancy-legal, so they genuinely widen
+        // this layer's branching factor to ~340 candidates/gate like the
+        // real fixture, without perturbing the intended optimum.
+        for k in 0..FILLER_PAIRS {
+            let x = 10_000_000.0 + k as f64 * 10.0;
+            pairs.push((
+                Position { x_um: x, y_um: 0.0 },
+                Position {
+                    x_um: x + 1.0,
+                    y_um: 0.0,
+                },
+            ));
+            pair_sites.push((SiteId(next_site), SiteId(next_site + 1)));
+            next_site += 2;
+        }
+        assert_eq!(pairs.len(), 2 * GROUPS + FILLER_PAIRS);
+        assert_eq!(pairs.len(), 340, "matches ising_n42's per-layer pair count");
+        assert_eq!(gates.len(), 20, "close to ising_n42's per-layer gate count");
+
+        let site_occupant = BTreeMap::new();
+        let inputs = AssignInputs {
+            atom_pos: &atom_pos,
+            pairs: &pairs,
+            pair_sites: &pair_sites,
+            site_occupant: &site_occupant,
+            conflict_um: 0.0,
+            aod_min_sep_um: 0.0,
+        };
+
+        let greedy = assign_greedy_legal(&gates, &inputs);
+        assert_eq!(greedy.outcome, AwareSearchOutcome::NotApplicable);
+        assert!(greedy.deferred.is_empty());
+
+        let aware = assign_aware_legal(&gates, &inputs, &AwareSearchParams::default());
+        assert_eq!(
+            aware.outcome,
+            AwareSearchOutcome::Completed,
+            "the guided search must complete (not fall back to greedy) even at this scale"
+        );
+        assert!(aware.deferred.is_empty());
+        assert!(
+            aware.node_expansions < AWARE_NODE_BUDGET / 10,
+            "a guided search should need far fewer than the full budget's worth of expansions \
+             to solve 10 independent copies of a tiny contended scenario; got {} expansions \
+             (budget {AWARE_NODE_BUDGET})",
+            aware.node_expansions
+        );
+
+        let greedy_cost = assignment_cost(&greedy, &gates, &atom_pos);
+        let aware_cost = assignment_cost(&aware, &gates, &atom_pos);
+        assert!(
+            aware_cost < greedy_cost * 0.5,
+            "aware ({aware_cost}) must substantially beat greedy's myopic pick ({greedy_cost}), \
+             summed across all {GROUPS} independent contended clusters"
         );
     }
 
