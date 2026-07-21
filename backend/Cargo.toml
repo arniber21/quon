@@ -1,7 +1,10 @@
 [package]
 name    = "backend"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+repository.workspace = true
 
 [features]
 # Opt-in Flux refinement-type checking. Off by default so the stable

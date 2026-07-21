@@ -9,7 +9,7 @@
     "id": "generic_openqasm"
   },
   "toolchain": {
-    "quonc_version": "0.1.0",
+    "quonc_version": "0.2.0",
     "git_commit": "baseline",
     "git_dirty": false
   },

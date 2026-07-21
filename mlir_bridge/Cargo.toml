@@ -1,7 +1,10 @@
 [package]
 name    = "mlir_bridge"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+repository.workspace = true
 build   = "build.rs"
 
 [dependencies]
@@ -19,3 +22,6 @@ proptest = { workspace = true }
 [build-dependencies]
 # melior's build script handles LLVM/MLIR linking.
 # Set MLIR_SYS_220_PREFIX to your LLVM 22 install prefix if not on the default search path.
+
+[lints]
+workspace = true

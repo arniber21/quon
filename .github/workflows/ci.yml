@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -12,8 +16,12 @@ env:
 
 jobs:
   rust:
-    name: fmt · clippy · build · test
-    runs-on: ubuntu-latest
+    name: fmt · clippy · build · test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +39,14 @@ jobs:
           # Binaries and fingerprints in target/ bake in nix store paths;
           # invalidate whenever the devbox environment changes.
           prefix-key: nix-${{ hashFiles('devbox.lock') }}
+
+      - name: Cache pip wheels
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('python/requirements.txt') }}
 
       # `just ci-rust`'s `cargo test --workspace` already runs
       # `quonc/tests/samples_catalog.rs` (ADR-0025 / #185) as an ordinary

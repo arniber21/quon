@@ -123,11 +123,35 @@ rm -f "$DUMP"
   | jq '{metrics}' > "$OUT_ROOT/noise_target_overlay/metrics.json"
 
 if [[ "$MODE" == "check" ]]; then
-  if diff -ru "samples/visualization/goldens" "$OUT_ROOT" >/tmp/viz-goldens-diff.txt 2>&1; then
+  # Normalize floats to 4 decimal places in JSON goldens before diffing:
+  # `estimated_fidelity` and `gate_fidelity_product` are analytic float
+  # computations that vary across platforms (arm64 vs x86_64 FP units).
+  # Non-JSON files (QASM, DOT, MLIR) pass through unchanged.
+  normalize() {
+    if [[ "$1" == *.json ]]; then
+      jq '(.. | numbers) |= ((. * 1e4 | round) / 1e4)' "$1" 2>/dev/null || cat "$1"
+    else
+      cat "$1"
+    fi
+  }
+  diff_ok=true
+  while IFS= read -r -d '' golden; do
+    rel="${golden#samples/visualization/goldens/}"
+    regenerated="$OUT_ROOT/$rel"
+    if [[ ! -f "$regenerated" ]]; then
+      echo "refresh_goldens --check: missing regenerated golden: $rel" >&2
+      diff_ok=false
+      continue
+    fi
+    if ! diff <(normalize "$golden") <(normalize "$regenerated") >/dev/null 2>&1; then
+      echo "refresh_goldens --check: committed golden $rel is STALE — regenerate with samples/visualization/refresh_goldens.sh" >&2
+      diff "$golden" "$regenerated" >&2 || true
+      diff_ok=false
+    fi
+  done < <(find samples/visualization/goldens -type f -print0)
+  if $diff_ok; then
     echo "refresh_goldens --check: committed goldens are up to date"
   else
-    echo "refresh_goldens --check: committed goldens are STALE — regenerate with samples/visualization/refresh_goldens.sh" >&2
-    cat /tmp/viz-goldens-diff.txt >&2
     exit 1
   fi
 else

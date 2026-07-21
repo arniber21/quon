@@ -42,6 +42,13 @@ _Avoid_: tensor, parallel, par
 **Parametric specialization**: The mechanism (`frontend/src/elaborate.rs`) that turns a `Nat`/`Int`/`Float`-parameterized circuit function into a fully monomorphic, first-order gate tree at a concrete call site — partial evaluation of the classical parameters (loop bounds, angles, register widths), not a separate parametric IR. Memoized per call site in `LoweringCtx::specialized` so the same instantiation (e.g. `qft(3)` reached twice) is lowered once. Distinct from Z3-checked symbolic `DepthExpr`s in the type system, which stay symbolic; specialization only runs when lowering to MLIR needs a concrete gate sequence.
 _Avoid_: monomorphization, template instantiation
 
+
+**CircIr**: The Melior-free flat gate+wire IR produced by extracting a `quantum.circ` region and consumed by unitary optimization kernels (ZX rewriting, Clifford+T). Rebuilt back to verified `quantum.circ` ops. Owned by the `quon_circ` crate; `mlir_bridge` only adapts Melior ↔ CircIr. Distinct from the source-elaboration **SpecializedCircuit** and from **ZX-graph** (spider algebra on petgraph).
+_Avoid_: extracted circuit, pass IR, gate list (unqualified)
+
+**SpecializedCircuit**: The Melior-free first-order gate tree (enum: Compose / GateApp / Adjoint / Par / …) produced by parametric specialization in the frontend. Lower’s input after classical parameters are gone. Lives in the frontend crate; not CircIr.
+_Avoid_: monomorphized Expr, elaborated AST (unqualified)
+
 ### IR dialects
 
 **quantum.circ**: The purely unitary MLIR dialect. All ops are unitary; no measurement. Every `!qubit` SSA value has exactly one use (enforced by a standalone region verifier pass). ZX-calculus rewriting and Clifford+T optimization run here.
