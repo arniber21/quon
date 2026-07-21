@@ -1,0 +1,61 @@
+-- RAP Table I regression fixture (issue #111, #306) — n=98 companion to
+-- ising_n42.qn. NOT the narrative Ising sample (see test/na/ising.qn, n=6;
+-- test/verify/ising.qn). This is a CI-adjacent regression circuit: structural
+-- fidelity to [RAP]'s reproduced row matters more than physical Trotter
+-- semantics.
+--
+-- Target row: [RAP] (Stade, Lin, Cong, Wille, ICCAD 2025, arXiv:2505.22715)
+-- Table I, Sec. VI-B, `ising` n=98 — published as 23 -> 12 rearrangement
+-- steps (routing-agnostic -> routing-aware). Unlike ising_n42.qn, this row is
+-- **optional / local-only, not a CI anchor** (issue #111's locked decision,
+-- reaffirmed by #306): see
+-- docs/neutral_atom/rap_table_i_methodology.md's "n = 98 (optional, local)"
+-- section, which explicitly anticipated this exact file. Also unlike n42,
+-- [RAP] Table I does not publish a two-qubit-gate-count / entangling-layer
+-- breakdown for the n=98 row, so this file's own compiled counts (194
+-- two-qubit gates, 4 entangling layers — see below) are a structural
+-- self-check, not a published-number cross-check.
+--
+-- Structure: identical construction to ising_n42.qn, scaled to n=98. Two
+-- Trotter-shaped steps of a 98-qubit nearest-neighbor chain. Each step's "ZZ
+-- layer" is split into two explicit sequential `for` loops — even bonds
+-- (0,1)(2,3)...(96,97) [49 gates], then odd bonds (1,2)(3,4)...(95,96) [48
+-- gates] — instead of one ascending loop. Both groups are perfect matchings
+-- (disjoint qubit pairs within a group), so `quon_na`'s ASAP dependency-DAG
+-- scheduler (last-qubit-use tracking; ties to actual SSA wire threading, not
+-- program text order) places every gate in a group on the SAME dag_layer and
+-- only serializes between groups. Result: layers 0/1 (step 1 even/odd) then
+-- 2/3 (step 2 even/odd) — 4 layers total, 49+48+49+48 = 194 two-qubit gates.
+-- A single ascending `for i in range(97)` loop would instead chain every gate
+-- through its shared neighbor and produce 97 serial layers per step — do not
+-- "simplify" this file back to that shape (same rationale as ising_n42.qn).
+--
+-- Uses native `CZ` (not `Rzz`): `Rzz(theta) @(a,b)` elaborates to
+-- `CNOT; Rz; CNOT` (frontend/src/elaborate.rs's decompose_rzz), which would
+-- double the two-qubit gate count to 388 and break the 194/4 structural
+-- self-check. `CZ` is in every NA target's `native_gates` and is not
+-- decomposed. The single-qubit `Rx` layer is cosmetic Trotter-shape flavor:
+-- `qubits(98)` iteration is a parallel (depth-1) construct, and single-qubit
+-- gates are invisible to the two-qubit interaction-graph extraction, so it
+-- cannot perturb the 194/4 counts either way.
+
+fn zz_even_98(tau: Float): Circuit<98, 98, 49, Universal> = circuit {
+    for k in range(49) { CZ @(2 * k, 2 * k + 1) }
+}
+
+fn zz_odd_98(tau: Float): Circuit<98, 98, 48, Universal> = circuit {
+    for k in range(48) { CZ @(2 * k + 1, 2 * k + 2) }
+}
+
+fn x_layer_98(h: Float, tau: Float): Circuit<98, 98, 1, Universal> = circuit {
+    for q in qubits(98) { Rx(-2.0 * h * tau) q }
+}
+
+fn trotter_step_98(h: Float, tau: Float): Circuit<98, 98, 98, Universal> = circuit {
+    zz_even_98(tau) |> zz_odd_98(tau) |> x_layer_98(h, tau)
+}
+
+fn main(): Q<List<Bit>> = run {
+    q <- (trotter_step_98(0.5, 0.1) |> trotter_step_98(0.5, 0.1)) @ (qreg 98)
+    measure_all q
+}

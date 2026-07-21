@@ -37,8 +37,12 @@ yet.
 
 Circuit pre-flight (both placer modes see the same circuit): **82** two-qubit
 gates, **4** entangling layers. n = 98 (23 → 12 steps in the same table row
-group) is **optional / local only, not CI** — see
-[n = 98 (optional, local)](#n--98-optional-local).
+group) is **optional / local only, not CI** — the fixture (`test/na/ising_n98.qn`)
+landed in #306, see [n = 98 (optional, local — landed by #306)](#n--98-optional-local--landed-by-306).
+#306 also adds a repeatable local sweep harness over both rows × both placer
+modes — see [Full sweep harness (#306)](#full-sweep-harness-306). Neither
+addition changes what's hard-asserted in CI (still just `ising_n42`'s
+structural pre-flight, per the locked Phase 1/2 split above).
 
 ## Metric mapping
 
@@ -184,6 +188,13 @@ This is the evidence backing the
 claim that the `ising_n42` gap is plausibly budget/scaling, not "nothing to
 find."
 
+`ising_n98_preflight_and_dump_metrics` (#306) is the n = 98 companion to
+`ising_n42_dumps_both_placer_rearrangement_metrics`, combined with its own
+structural pre-flight into a single `#[ignore]`d test (no fast/un-ignored
+split, since n = 98 is not a CI anchor at all — see
+[n = 98](#n--98-optional-local--landed-by-306)). No `QUON_RAP_TABLE_I_ENFORCE`
+equivalent exists for it.
+
 ### Runtime / CI wiring
 
 Routing-aware placement is an A* search
@@ -198,17 +209,29 @@ was 90–125 s, always exhausting its full budget on every layer without
 completing — see the [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)
 for that superseded measurement). Even at the improved speed this is still
 too slow for the default `cargo test --workspace` gate (which runs in debug
-mode, substantially slower again), so the dump test remains `#[ignore]`d and
-wired into `just ci-rust` as a dedicated `--release --include-ignored` step —
-the same pattern `quon_lsp/tests/smoke.rs` uses for the tooling job. This
-still satisfies "n=42 in CI" (locked decision): it runs every `just ci-rust` /
-CI `rust` job, just in release mode via an explicit step instead of the
-default debug test sweep. `ci-rust`'s recipe carries `set -euo pipefail` so a
-failure in this step (or any earlier one) actually fails the job instead of
-being swallowed.
+mode, substantially slower again), so the dump test remains `#[ignore]`d.
+
+**Correction (#306 review — a prior draft of this section was stale/wrong):**
+the `just rap-table-i` recipe
+(`cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture`)
+is a **local-only convenience recipe** — checked directly against
+`Justfile` and `.github/workflows/ci.yml` while implementing #306, neither
+`ci-rust` nor any CI job actually invokes it. Only
+`ising_n42_preflight_gate_and_layer_counts` (the fast, un-ignored test) runs
+in CI today, as part of `cargo test --workspace` inside `ci-rust`'s `rust`
+job. So "n=42 in CI" currently means the *structural* 82/4 pre-flight only —
+the slower metric-dump comparison against the published 22/9 / 3.1/1.6ms row
+is **not** automatically re-run by CI; a human/agent must run `just
+rap-table-i` locally to regenerate it. Re-wiring the dump test into a CI job
+(the Justfile's own comment on `rap-table-i` already flags this as "a
+reasonable follow-up, left out of #297's scope") remains exactly that: an
+open follow-up, not something #306 changes. #306's own `na-rap-sweep` recipe
+(below) follows the *same* local-only precedent deliberately, for the same
+reason (wall time), not because CI wiring was judged unnecessary.
 
 ```bash
-# What CI runs (see justfile's `ci-rust` recipe)
+# Local-only — NOT invoked by any CI job (see justfile's `rap-table-i` recipe
+# and the correction above)
 cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture
 
 # Fast pre-flight only (part of the default gate)
@@ -430,12 +453,101 @@ back to greedy on every layer (23/23 steps, no paper delta) — see the finding
 above. Do **not** enable the flag in CI until Phase 2 human sign-off closes
 the mechanism gap (real A* / larger budget / tighter geometry / etc.).
 
-## n = 98 (optional, local)
+## n = 98 (optional, local — landed by #306)
 
-[RAP] Table I also reports `ising` n = 98: 23 → 12 rearrangement steps. Not a
-CI row (locked decision) — no fixture is checked in for it in Phase 1. A
-future local-only addition would follow the same even/odd `for`-loop
-construction at `n = 98` (49 even-group gates, 48 odd-group gates per step).
+[RAP] Table I also reports `ising` n = 98: 23 → 12 rearrangement steps.
+**Still not a CI row** (issue #111's locked decision, reaffirmed by #306) —
+but the fixture this section originally anticipated is now checked in:
+`test/na/ising_n98.qn`, the same even/odd `for`-loop construction as
+`ising_n42.qn` scaled to `n = 98` (49 even-group gates, 48 odd-group gates
+per step; header comment has the full rationale). It shares the same pinned
+`rap_table_i.json` target as n42. Structural pre-flight (placer-independent):
+**194** two-qubit gates over **4** entangling layers (2 × (49 + 48)), verified
+by compiling the fixture, same discipline as n42's 82/4.
+
+**Measured** (this repo, `--release`, default `AwareSearchParams` — the same
+values documented in [Phase 2a status](#phase-2a-status-297-heuristic-search-closes-the-fallback-gap)
+above, tuned empirically on `ising_n42`, *not* re-tuned for this larger
+fixture):
+
+| Placer | Rearrangement steps | Rearrangement time_us (move-only) | Rydberg stages | Entangle2 count | Aware search |
+| --- | --- | --- | --- | --- | --- |
+| Routing-agnostic | 48 | 8896 | 4 | 194 | n/a |
+| Routing-aware | 48 | 8896 | 4 | 194 | **0 of 4 layers completed; 4 of 4 fell back to greedy** |
+
+Both placers produce **identical** output here — this is the *same fallback
+mechanism* as the pre-#297 [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)
+above, just now surfacing at n = 98's larger scale instead of n = 42's.
+`--emit-na-stats` (#307) shows why: `aware_search_node_expansions` reaches
+`400004` against a `node_budget` of `100000` — the search hits its expansion
+cap on every layer. `ising_n98`'s layers have up to 49 simultaneous gates
+(vs. n42's 20-21) over the same 340-candidate-pair entanglement zone, so the
+per-layer search space is far larger while `node_budget` (100,000) and
+`beam_width` (2,000) — both chosen empirically *on `ising_n42`* in #297 — are
+unchanged. Neither parameter is exposed as a `quonc` CLI flag today (only
+[`quon_na::pipeline::NaScheduleOptions::aware_search`] as a library-level
+option), so this sweep could not simply pass a larger budget without a code
+change; re-tuning (or exposing) those parameters for larger circuits is left
+as a Phase 2b / follow-up question, not attempted here. Net result: this
+repo's measured 48/48 steps is **not** comparable to [RAP]'s published 23/12
+for this row — the gap is dominated by the aware search never completing at
+this scale, on top of the same structural divergences from the paper already
+documented in [Divergences from the paper's numbers](#divergences-from-the-papers-numbers-post-297)
+(no storage-zone re-placement, no cross-layer look-ahead, beam-limited
+search). [RAP] does not publish a rearrangement-*time* figure for the n = 98
+row (only the step counts), so there is no published `time_us` to compare
+against either.
+
+Exercised by `quonc/tests/rap_table_i.rs`'s `ising_n98_preflight_and_dump_metrics`
+(`#[ignore]`d — see [Tests](#tests)) and by the full sweep harness added in
+#306 — see [Full sweep harness (#306)](#full-sweep-harness-306) below. No
+`QUON_RAP_TABLE_I_ENFORCE`-style flag exists for this row; it is dump-only
+with no Phase 2 plan, since it was never a CI anchor to begin with.
+
+## Full sweep harness (#306)
+
+Issue #306 adds a repeatable local/nightly sweep over every checked-in RAP
+Table I row (currently: `ising_n42`, `ising_n98`) × both `--na-placer` modes,
+producing one CSV: `python/na_rap_table_i_sweep.py` (run via `just
+na-rap-sweep`). Wall time on this fixture set, `--release`,
+measured end to end: **≈20-25 s total** (`ising_n42` agnostic ≈0.2 s, aware
+≈4.8-4.9 s; `ising_n98` agnostic ≈0.2-0.25 s, aware ≈16-19.4 s — dominated by
+the same budget-exhausting search described above). This is well past what
+the default `cargo test --workspace` gate should carry, so — mirroring
+`rap-table-i`'s own existing precedent immediately above in the Justfile —
+`na-rap-sweep` is **not** wired into `just ci-rust`'s hosted-runner gate; it
+stays a documented local/nightly convenience recipe.
+
+**Scope: #304 (QASM ingestion) is not implemented.** [RAP] Table I's full
+benchmark set (Sec. VI-A) includes several QASMBench/MQT Bench circuits at
+multiple qubit counts beyond the `ising` rows (see
+[`literature_notes.md`](./literature_notes.md#rap--stade-lin-cong-wille-iccad-2025-arxiv250522715--the-reproduced-paper)'s
+"[RAP]" section). Quon has no QASM *ingestion* path today (only OpenQASM
+*emission*, for fixed targets) — issue #304 tracks building one, and it is
+**out of scope for #306**. The sweep therefore covers only the two
+hand-authored `ising` rows; it does **not** attempt to fabricate or
+approximate the paper's other benchmark rows. Closing this gap is entirely
+gated on #304 landing first.
+
+CSV columns reuse `ResourceReport` / `NaStats` field names (this repo's own
+convention — matches `python/quon_qec_benchmarks.py`) rather than qmap's
+exact headers, since the two tools' internals differ enough that a literal
+rename would misrepresent some columns (e.g. quon's `rearrangement_time_us`
+is move-only √-law time, see [Timing model](#timing-model) above; qmap's
+`rearrangement_duration` uses a jerk-limited model). A `circuit_name` column
+(qmap's own primary-key column name, e.g. `ising_n42`) is included verbatim
+for easy joining, and the script's module docstring documents the full
+quon-column ↔ qmap-column mapping — fetched from qmap's
+`eval/na/zoned/eval_ids_relaxed_routing.py` `print_header()` while building
+this script (not independently verified by running qmap itself; see next
+paragraph). A side-by-side comparison notebook should rename/join on that
+documented mapping rather than assume identical headers.
+
+**Direct mqt-qmap comparison: not attempted.** Installing and running
+mqt-qmap (a full Python package with its own native build) in this sandboxed
+environment was judged nontrivial relative to its value for #306 — this is
+explicitly optional per the issue and is left as a follow-up. The
+qmap-recognizable column naming above is the mitigation for now.
 
 ## Distinct from QEC benchmarks (#254)
 
@@ -456,6 +568,15 @@ report the 22/9 or 82/4 numbers above; only `rap_table_i.json` +
 - Issue #111; blocked-by (done): #107, #110
 - Issue #297 (Phase 2a: Eqs. (3)-(5) heuristic search) — see
   [Phase 2a status](#phase-2a-status-297-heuristic-search-closes-the-fallback-gap)
+- Issue #307 (`--emit-na-stats` compiler telemetry) — search diagnostics
+  (`aware_search_node_expansions` / `_node_budget`) used by
+  [n = 98](#n--98-optional-local--landed-by-306) and the
+  [full sweep harness](#full-sweep-harness-306)
+- Issue #306 (full Table I sweep + qmap-comparable CSV harness) — see
+  [n = 98](#n--98-optional-local--landed-by-306) and
+  [Full sweep harness (#306)](#full-sweep-harness-306); depends on #304
+  (QASM ingestion, not implemented) for the paper's non-`ising` rows —
+  explicitly out of scope, see that section
 - [RAP] Stade, Lin, Cong, Wille, ICCAD 2025, arXiv:2505.22715, Table I / Sec.
   VI-B
 - `docs/neutral_atom/literature_notes.md` ([RAP] section)
@@ -463,3 +584,5 @@ report the 22/9 or 82/4 numbers above; only `rap_table_i.json` +
   model), §8.6 (constant provenance)
 - `targets/neutral_atom/README.md` (`rap_table_i.json` note)
 - QEC benchmarks: issue #254, `docs/neutral_atom/qec_benchmark_methodology.md`
+- `python/na_rap_table_i_sweep.py`, `quonc/tests/rap_table_i.rs`,
+  `Justfile`'s `na-rap-sweep` recipe
