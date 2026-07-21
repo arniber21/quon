@@ -85,7 +85,10 @@ use `--attach-sampled` with a harness-produced JSON.
 ### `analytic`
 
 `evidence_kind` (`"analytic"`), `disclaimer`, and `resource_report` — the
-unmodified `ResourceReport` (schedule metrics + `error_budget`).
+unmodified `ResourceReport` (schedule metrics + `error_budget` +
+`gate_fidelity_product` / `estimated_fidelity`, the Enola Eq. (1) fidelity
+estimate, issue #305 — a distinct analytic estimate from `error_budget`, see
+architecture_model.md §11.2).
 
 ### `sampled`
 

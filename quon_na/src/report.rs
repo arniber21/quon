@@ -757,7 +757,11 @@ impl ResourceReport {
     /// (`entangle2_count`, `local_h_count`, …) are sufficient for
     /// `gate_fidelity_product`, but per-atom idle time isn't tracked by any
     /// existing aggregate, so idle decay re-scans `layers` directly.
-    pub fn with_fidelity_estimate(mut self, layers: &[ScheduleLayer], fidelity: &NeutralAtomFidelity) -> Self {
+    pub fn with_fidelity_estimate(
+        mut self,
+        layers: &[ScheduleLayer],
+        fidelity: &NeutralAtomFidelity,
+    ) -> Self {
         let entangling_actions = self.entangle2_count + self.entangle_n_count;
         let single_qubit_actions = self.local_h_count.unwrap_or(0)
             + self.local_rz_count.unwrap_or(0)
@@ -1666,7 +1670,8 @@ mod tests {
     #[test]
     fn fidelity_estimate_matches_hand_computation() {
         let layers = fidelity_toy_layers();
-        let report = ResourceReport::from_layers(&layers).with_fidelity_estimate(&layers, &example_fidelity());
+        let report = ResourceReport::from_layers(&layers)
+            .with_fidelity_estimate(&layers, &example_fidelity());
 
         assert_eq!(report.total_time_us, 15);
         assert_eq!(report.entangle2_count, 1);
@@ -1730,7 +1735,8 @@ mod tests {
                 },
             ],
         }];
-        let report = ResourceReport::from_layers(&layers).with_fidelity_estimate(&layers, &example_fidelity());
+        let report = ResourceReport::from_layers(&layers)
+            .with_fidelity_estimate(&layers, &example_fidelity());
 
         // 2 GlobalRy half-pulses + 2 Rz echo pulses = 4 single_qubit factors,
         // not 1 (a naive "logical ry gate count" would undercount this).

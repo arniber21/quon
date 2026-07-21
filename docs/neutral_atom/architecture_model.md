@@ -506,7 +506,10 @@ scheduler is claimed for v0.
 The resource estimator (#110) aggregates a compiled neutral-atom schedule into
 a `ResourceReport` (`quon_na::report`). Emitters produce **JSON** (pretty
 serde) and **Markdown** matching the sample below. Fidelity (Enola Eq. 1) is
-**deferred**; §9 cost weights remain placeholders.
+implemented as an **analytic estimate** (issue #305, §11.2's
+`gate_fidelity_product` / `estimated_fidelity`) — not a logical error rate or
+threshold claim, and distinct from the `error_budget` line items below; §9
+cost weights remain placeholders.
 
 ### 11.0 Two artifacts: analytic vs sampled (ADR-0020)
 
@@ -515,7 +518,7 @@ JSON, Markdown file, or required companion summary:
 
 | Artifact | Producer | Contents | Evidence kind |
 | --- | --- | --- | --- |
-| Compiler `ResourceReport` (`--emit-resource-report`) | `quonc` / `quon_na::report` | Schedule metrics, QEC sizing metadata (`distance`, `memory_rounds`, …), analytic `error_budget` (`rate × schedule count`) | **Analytic** estimate |
+| Compiler `ResourceReport` (`--emit-resource-report`) | `quonc` / `quon_na::report` | Schedule metrics, QEC sizing metadata (`distance`, `memory_rounds`, …), analytic `error_budget` (`rate × schedule count`), analytic `gate_fidelity_product` / `estimated_fidelity` ([Enola] Eq. (1), issue #305) | **Analytic** estimate |
 | Sinter CSV (`python/quon_qec_sinter.py`) | Python harness on `--emit-qec-experiment` dual-emit | Sampled `logical_failures` / `logical_failure_rate` (plus shot/error-model columns) | **Sampled** Monte Carlo |
 
 Readers may place the files side by side. Documentation and labels must state
@@ -545,10 +548,18 @@ includes the Physical error budget section (and the matching Notes bullet).
 When `error_budget` is unset (library builders without a model), that section
 and Notes bullet are omitted.
 
+Similarly, when the target has a `fidelity` model (mandatory on every loaded
+`NeutralAtomTarget`, unlike the optional `error_model`), production
+`--emit-resource-report` always includes the Fidelity estimate section (and
+matching Notes bullet, issue #305); a report built directly from
+`ResourceReport::from_layers` without calling `with_fidelity_estimate`
+(library use, most unit tests) omits both.
+
 **Contribution float format:** nonzero values with absolute value `< 1e-4` use
 lowercase scientific notation (`8e-9`); otherwise Rust `Display` (`0.004`,
 `0.0005`). The sample below matches `resource_report_to_markdown` + the
-`toy_with_error_budget` snapshot for the Physical error budget rows.
+`toy_with_error_budget` snapshot for the Physical error budget rows, and the
+`toy_with_fidelity_estimate` snapshot for the Fidelity estimate rows.
 
 ```markdown
 # Neutral-atom analytic resource report
@@ -588,12 +599,19 @@ lowercase scientific notation (`8e-9`); otherwise Rust `Display` (`0.004`,
 | Transfer | 0.0007 |
 | Idle | 8e-9 |
 
+## Fidelity estimate (Enola Eq. (1))
+| Metric | Value |
+| --- | ---: |
+| Gate fidelity product | 0.989034975 |
+| Estimated fidelity (with idle decay) | 0.989020469154 |
+
 ## Notes
 - Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).
 - Field names align with TUM RAP Table I / Enola headline metrics.
 - `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
 - Non-QEC reports omit atoms-per-logical and code-family rows.
 - Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.
+- Fidelity estimate is an analytic Enola Eq. (1) product over the compiled schedule (`fidelity.cz` for entangling actions, `fidelity.single_qubit` for local/global-ry actions including Hahn-echo bystander pulses, `fidelity.atom_transfer` for trap transfers, `fidelity.coherence_time_us` for idle decay) — not a logical error rate, not sampled (Sinter), and not a threshold claim; distinct from the analytic physical error budget (ADR-0017, `error_budget`, when present) — a `rate × schedule-count` sum, not a fidelity product.
 ```
 
 **Non-QEC omit policy:** always emit Logical qubits and Physical atoms (may be
@@ -603,7 +621,11 @@ homogeneous `with_code_blocks`; Memory rounds from the hybrid QEC schedule path
 in #248). Never print `N/A` for omitted QEC detail. Bottleneck cell text uses
 the same snake_case strings as JSON. Microsecond headers use Unicode `(µs)`.
 Emit the Physical error budget table and its Notes bullet **only when**
-`error_budget` is set.
+`error_budget` is set. Emit the Fidelity estimate table and its Notes bullet
+**only when** `gate_fidelity_product` is set (issue #305); the "Estimated
+fidelity (with idle decay)" row is additionally gated on `estimated_fidelity`
+being set (in practice the two fields are always set or unset together, since
+`with_fidelity_estimate` sets both).
 
 QEC hybrid reports (e.g. repetition-code memory) additionally include:
 
@@ -645,6 +667,8 @@ explicit evidence labels for machine readers:
 | `local_gate_time_us` | Optional; sum of `LocalGate` (`h`/`rz`/`u3`) durations, independent of layer overlap (same convention as `rearrangement_time_us`) | Per-gate `timing.single_qubit_us` model (§8.6) |
 | `global_ry_count` | Optional; count of `GlobalRy` whole-plane raster actions — one action addresses every trapped atom, so this is **not** a per-atom gate count. A raster with any bystander atom present splits into two `theta / 2` half-pulses (issue #298 review finding, below), so a single source `ry` gate typically contributes 2, not 1 | qmap's global-`ry` raster stage count |
 | `global_ry_time_us` | Optional; sum of `GlobalRy` durations | Also `timing.single_qubit_us` per raster — see the §8.6 divergence note: quon charges the per-gate rate here too, not qmap's ~52 µs global-batch rate |
+| `gate_fidelity_product` | Optional (issue #305); raw product of per-action fidelities over the compiled schedule, no idle decay — see the multiplier table below | [Enola] Eq. (1) numerator |
+| `estimated_fidelity` | Optional (issue #305); `gate_fidelity_product` × per-atom idle decay (`1 - t_idle/coherence_time_us`, the **linear** approximation §9 commits to, not `exp(-t_idle/T)`) | [Enola] Eq. (1) full estimate |
 
 **`GlobalRy` bystander isolation (issue #298 review finding):** every logical
 atom is bound into the trap array from schedule start
@@ -673,10 +697,29 @@ full `Ry(theta)`. See that function's doc comment for the derivation and
 | `transfer` | `error_model.transfer × trap_transfers` |
 | `idle` | `error_model.idle_per_us × wait_time_us` |
 
+`gate_fidelity_product` factors (when attached from `fidelity` via
+`ResourceReport::with_fidelity_estimate`, issue #305) — reuses the report's
+own schedule-scan aggregates rather than a separate "logical gate count", so
+the Hahn-echo `Rz(pi)`/`Rz(-pi)` bystander pulses above are counted as genuine
+actions, not undercounted:
+
+| Knob | Feeds | Multiplier |
+| --- | --- | --- |
+| `fidelity.cz` | Entangling actions | `fidelity.cz ^ (entangle2_count + entangle_n_count)` |
+| `fidelity.single_qubit` | Local + global-`ry` actions (including echo pulses) | `fidelity.single_qubit ^ (local_h_count + local_rz_count + local_u3_count + global_ry_count)` |
+| `fidelity.atom_transfer` | Trap transfers | `fidelity.atom_transfer ^ trap_transfers` |
+| `fidelity.coherence_time_us` | Per-atom idle decay (folded into `estimated_fidelity` only, not `gate_fidelity_product`) | `∏_atoms max(0, 1 - t_idle(atom) / coherence_time_us)`, `t_idle(atom) = total_time_us` minus the layer max-durations of layers the atom appears in |
+
+`gate_fidelity_product` and `estimated_fidelity` are **not** a logical error
+rate or a below/above-threshold claim (ADR-0020) — they are separate,
+visibly-labeled analytic estimates from `error_budget`
+(`quon_na::report::ResourceReport::with_fidelity_estimate`, distinct from
+`with_error_budget`).
+
 New required numerics (`logical_qubits`, `physical_atoms`, `estimated_cycles`,
 `bottleneck`) use `#[serde(default)]` so older JSON without those keys still
-deserializes. Optional QEC fields and `error_budget` use
-`skip_serializing_if = "Option::is_none"`.
+deserializes. Optional QEC fields, `error_budget`, `gate_fidelity_product`,
+and `estimated_fidelity` use `skip_serializing_if = "Option::is_none"`.
 
 ### 11.3 `estimated_cycles` and `bottleneck`
 
