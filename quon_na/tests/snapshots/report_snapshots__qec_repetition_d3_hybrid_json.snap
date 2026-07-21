@@ -87,5 +87,7 @@ expression: json
   "local_u3_count": 0,
   "local_gate_time_us": 0,
   "global_ry_count": 0,
-  "global_ry_time_us": 0
+  "global_ry_time_us": 0,
+  "gate_fidelity_product": 0.9360247661791113,
+  "estimated_fidelity": 0.9335643463370112
 }

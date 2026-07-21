@@ -172,6 +172,11 @@ fn schedule_expanded(
         Some(model) => attach_qec_error_budget(report, Some(model))?,
         None => report,
     };
+    // Analytic end-to-end fidelity estimate (Enola Eq. (1), issue #305) —
+    // same unconditional overlay as the flat/zoned pipeline
+    // (`pipeline::finish_pipeline`); `NeutralAtomTarget::fidelity` is
+    // mandatory, so this always applies once a target is available.
+    let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
 
     Ok(NaScheduleArtifacts {
         layers: req.layers.clone(),

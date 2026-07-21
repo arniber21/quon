@@ -6,8 +6,14 @@
 //! Physical error-budget contributions (`error_budget`) use the target's
 //! optional [`NeutralAtomErrorModel`] (ADR-0017): `rate × schedule count` only,
 //! never logical error rates or `1 - fidelity`.
+//!
+//! End-to-end fidelity estimates (`gate_fidelity_product` / `estimated_fidelity`,
+//! issue #305) use the target's [`NeutralAtomFidelity`] instead: Enola Eq. (1),
+//! product of per-action fidelities times per-atom idle decay. Both estimates
+//! are **analytic** (ADR-0020) and distinct from `error_budget` — see
+//! [`ResourceReport::with_fidelity_estimate`].
 
-use backend::{BackendError, NeutralAtomErrorModel};
+use backend::{BackendError, NeutralAtomErrorModel, NeutralAtomFidelity};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -308,6 +314,53 @@ pub struct ResourceReport {
     /// Cumulative global `ry` raster op time (us).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global_ry_time_us: Option<u64>,
+
+    // --- End-to-end fidelity estimate (Enola Eq. (1), issue #305) ---
+    //
+    // `None` until [`ResourceReport::with_fidelity_estimate`] is called with a
+    // target's [`NeutralAtomFidelity`] — the same "None until overlaid"
+    // convention `error_budget` uses (ADR-0017 §11.4), not a per-field schema
+    // migration marker. In production, `quon_na::pipeline::finish_pipeline`
+    // and `quon_na::qec_schedule::schedule_expanded` always call the overlay
+    // when a `NeutralAtomTarget` is available (its `fidelity` field is
+    // mandatory, unlike the optional `error_model`), so both fields are
+    // `Some` on every `--emit-resource-report` output; only reports built
+    // directly from `ResourceReport::from_layers` / `build_resource_report`
+    // without that overlay (library use, most unit tests) leave them unset.
+    //
+    // **Analytic estimate, not a logical error rate or threshold claim**
+    // (ADR-0020) — same discipline as `error_budget`, kept as a visibly
+    // separate field pair so the two analytic estimates are never conflated.
+    /// Raw product of per-action fidelities over the compiled schedule, with
+    /// **no** idle decay: `fidelity.cz ^ (entangling actions) ×
+    /// fidelity.single_qubit ^ (local + global-ry actions) ×
+    /// fidelity.atom_transfer ^ (trap transfers)`.
+    ///
+    /// "Actions" here are real compiled-schedule
+    /// [`crate::schedule::NeutralAtomAction`]s, not source-program gate
+    /// counts: a `GlobalRy` raster with bystander atoms present splits into
+    /// two half-pulses plus a `Rz(pi)`/`Rz(-pi)` echo pair per bystander
+    /// (issue #298's `push_global_ry_with_refocus`), and every one of those
+    /// echo pulses is a genuine `LocalGate` action already counted in
+    /// `local_rz_count` — so this product counts them for free by reusing
+    /// the schedule-scan aggregates (`entangle2_count` + `entangle_n_count`,
+    /// `local_h_count` + `local_rz_count` + `local_u3_count` +
+    /// `global_ry_count`, `trap_transfers`) rather than re-deriving a
+    /// separate "logical gate count".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_fidelity_product: Option<f64>,
+    /// `gate_fidelity_product` times per-atom idle decay:
+    /// `∏_atoms max(0, 1 - t_idle(atom) / fidelity.coherence_time_us)` —
+    /// architecture_model.md §9/§11's **linear** approximation of [Enola]
+    /// Eq. (1)'s decoherence factor (not `exp(-t_idle/T)`). `t_idle(atom)`
+    /// is `total_time_us` minus the sum of layer max-durations
+    /// (`simultaneous_layer_time`) over layers in which the atom appears in
+    /// any action — the same per-layer wall-clock-proxy granularity
+    /// `total_time_us` itself uses, not a finer intra-layer accounting.
+    /// Atoms that never appear in any schedule action contribute no idle
+    /// term (out of scope for a per-action fidelity model).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_fidelity: Option<f64>,
 }
 
 impl Default for ResourceReport {
@@ -348,6 +401,8 @@ impl Default for ResourceReport {
             local_gate_time_us: None,
             global_ry_count: None,
             global_ry_time_us: None,
+            gate_fidelity_product: None,
+            estimated_fidelity: None,
         }
     }
 }
@@ -485,6 +540,52 @@ fn same_code_family(a: &CodeFamily, b: &CodeFamily) -> bool {
         ) => n1 == n2 && k1 == k2 && d1 == d2,
         _ => false,
     }
+}
+
+/// Per-atom idle-decay product for Enola Eq. (1) (issue #305):
+/// `∏_atoms max(0, 1 - t_idle(atom) / coherence_time_us)`, the linear
+/// approximation architecture_model.md §9/§11 commits to (not
+/// `exp(-t_idle/T)`).
+///
+/// Idle time is tracked at the same per-layer wall-clock-proxy granularity
+/// `total_time_us` itself uses (`simultaneous_layer_time`'s
+/// layer-max-duration, not per-action durations): an atom is "active" for a
+/// layer's full max-duration if it appears in *any* action in that layer
+/// (via [`accumulate_action_atoms`] — `GlobalRy` contributes no atom
+/// identity here, same as [`TemporalAtomMetrics`]'s allocation census, since
+/// it has no discrete atom list), and its idle time is `total_time_us` minus
+/// the sum of active layer-durations. Atoms that never appear in any
+/// schedule action are excluded from the product entirely (out of scope for
+/// a per-action fidelity model — nothing here attributes them the full
+/// schedule duration as idle).
+fn idle_decay_product(layers: &[ScheduleLayer], total_time_us: u64, coherence_time_us: f64) -> f64 {
+    use crate::layout::AtomId;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut active_us: BTreeMap<AtomId, u64> = BTreeMap::new();
+    for layer in layers {
+        let max_duration = layer
+            .actions
+            .iter()
+            .map(NeutralAtomAction::duration_us)
+            .fold(0u64, simultaneous_layer_time);
+
+        let mut seen: BTreeSet<AtomId> = BTreeSet::new();
+        for action in &layer.actions {
+            accumulate_action_atoms(action, &mut seen);
+        }
+        for atom in seen {
+            *active_us.entry(atom).or_insert(0) += max_duration;
+        }
+    }
+
+    active_us
+        .values()
+        .map(|&active| {
+            let idle_us = total_time_us.saturating_sub(active);
+            (1.0 - idle_us as f64 / coherence_time_us).max(0.0)
+        })
+        .product()
 }
 
 impl ResourceReport {
@@ -643,6 +744,35 @@ impl ResourceReport {
         self.error_budget = Some(ErrorBudgetContributions::from_schedule_and_model(
             &self, model,
         ));
+        self
+    }
+
+    /// Overlay an analytic end-to-end fidelity estimate (Enola Eq. (1),
+    /// issue #305): `gate_fidelity_product` (raw per-action product) and
+    /// `estimated_fidelity` (additionally multiplying in per-atom idle
+    /// decay). See the field docs above for the exact formulas.
+    ///
+    /// `layers` must be the same compiled schedule this report's counts came
+    /// from (`from_layers`) — the per-action counts already on `self`
+    /// (`entangle2_count`, `local_h_count`, …) are sufficient for
+    /// `gate_fidelity_product`, but per-atom idle time isn't tracked by any
+    /// existing aggregate, so idle decay re-scans `layers` directly.
+    pub fn with_fidelity_estimate(mut self, layers: &[ScheduleLayer], fidelity: &NeutralAtomFidelity) -> Self {
+        let entangling_actions = self.entangle2_count + self.entangle_n_count;
+        let single_qubit_actions = self.local_h_count.unwrap_or(0)
+            + self.local_rz_count.unwrap_or(0)
+            + self.local_u3_count.unwrap_or(0)
+            + self.global_ry_count.unwrap_or(0);
+        let transfer_actions = self.trap_transfers;
+
+        let gate_fidelity_product = fidelity.cz.powf(entangling_actions as f64)
+            * fidelity.single_qubit.powf(single_qubit_actions as f64)
+            * fidelity.atom_transfer.powf(transfer_actions as f64);
+
+        let idle_decay = idle_decay_product(layers, self.total_time_us, fidelity.coherence_time_us);
+
+        self.gate_fidelity_product = Some(gate_fidelity_product);
+        self.estimated_fidelity = Some(gate_fidelity_product * idle_decay);
         self
     }
 
@@ -890,6 +1020,23 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
         out.push('\n');
     }
 
+    if let Some(gate_fidelity_product) = report.gate_fidelity_product {
+        out.push_str("## Fidelity estimate (Enola Eq. (1))\n");
+        out.push_str("| Metric | Value |\n");
+        out.push_str("| --- | ---: |\n");
+        out.push_str(&format!(
+            "| Gate fidelity product | {} |\n",
+            format_contribution(gate_fidelity_product)
+        ));
+        if let Some(estimated_fidelity) = report.estimated_fidelity {
+            out.push_str(&format!(
+                "| Estimated fidelity (with idle decay) | {} |\n",
+                format_contribution(estimated_fidelity)
+            ));
+        }
+        out.push('\n');
+    }
+
     out.push_str("## Notes\n");
     out.push_str(
         "- Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).\n",
@@ -915,12 +1062,23 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
             "- Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.\n",
         );
     }
+    if report.gate_fidelity_product.is_some() {
+        out.push_str(
+            "- Fidelity estimate is an analytic Enola Eq. (1) product over the compiled schedule \
+             (`fidelity.cz` for entangling actions, `fidelity.single_qubit` for local/global-ry \
+             actions including Hahn-echo bystander pulses, `fidelity.atom_transfer` for trap \
+             transfers, `fidelity.coherence_time_us` for idle decay) — not a logical error rate, \
+             not sampled (Sinter), and not a threshold claim; distinct from the analytic physical \
+             error budget (ADR-0017, `error_budget`, when present) — a `rate × schedule-count` \
+             sum, not a fidelity product.\n",
+        );
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
-    use backend::{BackendError, NeutralAtomErrorModel};
+    use backend::{BackendError, NeutralAtomErrorModel, NeutralAtomFidelity};
     use serde_json::json;
 
     use super::*;
@@ -1464,6 +1622,143 @@ mod tests {
         assert!((budget.movement - 0.0005).abs() < 1e-12);
         assert!((budget.transfer - 0.0007).abs() < 1e-12);
         assert!((budget.idle - 8e-9).abs() < 1e-18);
+    }
+
+    fn example_fidelity() -> NeutralAtomFidelity {
+        NeutralAtomFidelity {
+            cz: 0.99,
+            single_qubit: 0.98,
+            atom_transfer: 0.97,
+            coherence_time_us: 100.0,
+        }
+    }
+
+    /// Hand-computable schedule for issue #305's unit-test acceptance
+    /// criterion: 2 atoms, 1 `Entangle2` (CZ), 1 local rotation, known idle
+    /// time.
+    ///
+    /// - Layer 0: `Entangle2` on atoms 0 and 1, 10 µs — both atoms active.
+    /// - Layer 1: `LocalGate { gate: H }` on atom 0 only, 5 µs — atom 0
+    ///   active, atom 1 idle for this layer's 5 µs.
+    ///
+    /// `total_time_us = 10 + 5 = 15`. `active(atom0) = 10 + 5 = 15` → idle
+    /// `0`. `active(atom1) = 10` (layer 0 only) → idle `15 - 10 = 5`.
+    fn fidelity_toy_layers() -> Vec<ScheduleLayer> {
+        vec![
+            ScheduleLayer {
+                cycle: 0,
+                actions: vec![NeutralAtomAction::Entangle2 {
+                    atoms: [atom(0), atom(1)],
+                    duration_us: 10,
+                }],
+            },
+            ScheduleLayer {
+                cycle: 1,
+                actions: vec![NeutralAtomAction::LocalGate {
+                    atom: atom(0),
+                    gate: LocalGateKind::H,
+                    duration_us: 5,
+                }],
+            },
+        ]
+    }
+
+    #[test]
+    fn fidelity_estimate_matches_hand_computation() {
+        let layers = fidelity_toy_layers();
+        let report = ResourceReport::from_layers(&layers).with_fidelity_estimate(&layers, &example_fidelity());
+
+        assert_eq!(report.total_time_us, 15);
+        assert_eq!(report.entangle2_count, 1);
+        assert_eq!(report.local_h_count, Some(1));
+
+        // gate_fidelity_product = cz^1 * single_qubit^1 (no transfers):
+        // 0.99 * 0.98 = 0.9702. No idle decay folded in.
+        let expected_gate_product = 0.99 * 0.98;
+        let gate_fidelity_product = match report.gate_fidelity_product {
+            Some(v) => v,
+            None => panic!("gate_fidelity_product attached"),
+        };
+        assert!(
+            (gate_fidelity_product - expected_gate_product).abs() < 1e-12,
+            "gate_fidelity_product = {gate_fidelity_product}, expected {expected_gate_product}"
+        );
+
+        // idle decay: atom 0 has zero idle time (1 - 0/100 = 1.0); atom 1 is
+        // idle for 5 of the coherence_time_us=100 window (1 - 5/100 = 0.95).
+        let expected_estimated_fidelity = expected_gate_product * 1.0 * 0.95;
+        let estimated_fidelity = match report.estimated_fidelity {
+            Some(v) => v,
+            None => panic!("estimated_fidelity attached"),
+        };
+        assert!(
+            (estimated_fidelity - expected_estimated_fidelity).abs() < 1e-12,
+            "estimated_fidelity = {estimated_fidelity}, expected {expected_estimated_fidelity}"
+        );
+        // Idle decay strictly lowers the estimate below the raw gate product.
+        assert!(estimated_fidelity < gate_fidelity_product);
+    }
+
+    #[test]
+    fn fidelity_estimate_counts_global_ry_echo_pulses() {
+        // Regression for issue #305's central correctness point: a `GlobalRy`
+        // with a bystander atom present splits into two half-pulses plus a
+        // Rz(pi)/Rz(-pi) echo pair on the bystander (issue #298's
+        // `push_global_ry_with_refocus`) — every one of those is a genuine
+        // schedule action and must be counted as its own `single_qubit`
+        // factor, not collapsed to "one source-program `ry` gate".
+        let layers = vec![ScheduleLayer {
+            cycle: 0,
+            actions: vec![
+                NeutralAtomAction::GlobalRy {
+                    theta_rad: 0.4,
+                    duration_us: 1,
+                },
+                NeutralAtomAction::LocalGate {
+                    atom: atom(1),
+                    gate: LocalGateKind::Rz(std::f64::consts::PI),
+                    duration_us: 1,
+                },
+                NeutralAtomAction::GlobalRy {
+                    theta_rad: 0.4,
+                    duration_us: 1,
+                },
+                NeutralAtomAction::LocalGate {
+                    atom: atom(1),
+                    gate: LocalGateKind::Rz(-std::f64::consts::PI),
+                    duration_us: 1,
+                },
+            ],
+        }];
+        let report = ResourceReport::from_layers(&layers).with_fidelity_estimate(&layers, &example_fidelity());
+
+        // 2 GlobalRy half-pulses + 2 Rz echo pulses = 4 single_qubit factors,
+        // not 1 (a naive "logical ry gate count" would undercount this).
+        assert_eq!(report.global_ry_count, Some(2));
+        assert_eq!(report.local_rz_count, Some(2));
+        let expected = example_fidelity().single_qubit.powf(4.0);
+        let gate_fidelity_product = match report.gate_fidelity_product {
+            Some(v) => v,
+            None => panic!("gate_fidelity_product attached"),
+        };
+        assert!(
+            (gate_fidelity_product - expected).abs() < 1e-12,
+            "gate_fidelity_product = {gate_fidelity_product}, expected {expected} \
+             (4 single_qubit-fidelity factors: 2 GlobalRy half-pulses + 2 Rz echo pulses)"
+        );
+    }
+
+    #[test]
+    fn fidelity_estimate_unset_by_default() {
+        let report = ResourceReport::from_layers(&toy_layers());
+        assert_eq!(report.gate_fidelity_product, None);
+        assert_eq!(report.estimated_fidelity, None);
+        let json = match serde_json::to_string(&report) {
+            Ok(s) => s,
+            Err(e) => panic!("serialize: {e}"),
+        };
+        assert!(!json.contains("gate_fidelity_product"));
+        assert!(!json.contains("estimated_fidelity"));
     }
 
     #[test]

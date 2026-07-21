@@ -672,6 +672,12 @@ fn finish_pipeline(
         Some(model) => attach_qec_error_budget(report, Some(model))?,
         None => report,
     };
+    // Analytic end-to-end fidelity estimate (Enola Eq. (1), issue #305).
+    // Unlike `error_model`, `NeutralAtomTarget::fidelity` is a mandatory
+    // field, so this overlay always applies once a target is available —
+    // `gate_fidelity_product`/`estimated_fidelity` are `Some` on every
+    // production report from this pipeline.
+    let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
     let resource_report_us = elapsed_us(stage_started);
 
     let stats = NaStats {
