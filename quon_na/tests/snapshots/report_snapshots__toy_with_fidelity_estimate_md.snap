@@ -7,54 +7,40 @@ expression: md
 ## Qubit resources
 | Metric | Value |
 | --- | ---: |
-| Logical qubits | 1 |
-| Physical atoms | 5 |
-| Atoms per logical | 5 |
-| Code family | repetition_code_toy |
-| Distance | 3 |
-| Memory rounds | 2 |
+| Logical qubits | 0 |
+| Physical atoms | 0 |
 
 ## Schedule metrics
 | Metric | Value |
 | --- | ---: |
-| Estimated cycles | 37 |
+| Estimated cycles | 3 |
 | Bottleneck | rearrangement |
-| Rydberg stages | 6 |
-| Rearrangement steps | 8 |
-| Rearrangement time (µs) | 1060 |
-| Trap transfers | 26 |
-| Transfer time (µs) | 390 |
-| Entangle2 count | 8 |
-| EntangleN count | 0 |
-| Measurement rounds | 3 |
-| Reset rounds | 2 |
-| Wait time (µs) | 2 |
-| Total time (µs) | 1313 |
+| Rydberg stages | 2 |
+| Rearrangement steps | 1 |
+| Rearrangement time (µs) | 10 |
+| Trap transfers | 1 |
+| Transfer time (µs) | 6 |
+| Entangle2 count | 1 |
+| EntangleN count | 1 |
+| Measurement rounds | 1 |
+| Reset rounds | 1 |
+| Wait time (µs) | 4 |
+| Total time (µs) | 30 |
 
 ## Atom pressure & reuse
 | Metric | Value |
 | --- | ---: |
-| Peak atoms | 5 |
-| Measurement count (ops) | 7 |
-| Reset count (ops) | 4 |
+| Peak atoms | 3 |
+| Measurement count (ops) | 1 |
+| Reset count (ops) | 1 |
 | Reuse count (ops) | 0 |
 | Reused ancilla count | 0 |
-
-## Physical error budget
-| Category | Contribution (rate × count) |
-| --- | ---: |
-| Rydberg | 0.012 |
-| Measurement | 0.009 |
-| Reset | 0.008 |
-| Movement | 0.004 |
-| Transfer | 0.0182 |
-| Idle | 4e-9 |
 
 ## Fidelity estimate (Enola Eq. (1))
 | Metric | Value |
 | --- | ---: |
-| Gate fidelity product | 0.936024766179 |
-| Estimated fidelity (with idle decay) | 0.933564346337 |
+| Gate fidelity product | 0.989034975 |
+| Estimated fidelity (with idle decay) | 0.989020469154 |
 
 ## Notes
 - Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).
@@ -62,5 +48,4 @@ expression: md
 - `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
 - Non-QEC reports omit atoms-per-logical and code-family rows.
 - `peak_atoms` counts distinct simultaneously-allocated atoms; qubit reuse (measure → reset → reuse of the same ancilla) lowers it versus a fresh-ancilla-per-round variant. `measurement_count` / `reset_count` are per-op tallies, distinct from the per-layer `measurement_rounds` / `reset_rounds`.
-- Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.
 - Fidelity estimate is an analytic Enola Eq. (1) product over the compiled schedule (`fidelity.cz` for entangling actions, `fidelity.single_qubit` for local/global-ry actions including Hahn-echo bystander pulses, `fidelity.atom_transfer` for trap transfers, `fidelity.coherence_time_us` for idle decay) — not a logical error rate, not sampled (Sinter), and not a threshold claim; distinct from the analytic physical error budget (ADR-0017, `error_budget`, when present) — a `rate × schedule-count` sum, not a fidelity product.

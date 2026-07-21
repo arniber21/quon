@@ -50,6 +50,12 @@ expression: md
 | Transfer | 0.1134 |
 | Idle | 4e-9 |
 
+## Fidelity estimate (Enola Eq. (1))
+| Metric | Value |
+| --- | ---: |
+| Gate fidelity product | 0.665322241696 |
+| Estimated fidelity (with idle decay) | 0.614999077741 |
+
 ## Notes
 - Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).
 - Field names align with TUM RAP Table I / Enola headline metrics.
@@ -57,3 +63,4 @@ expression: md
 - Non-QEC reports omit atoms-per-logical and code-family rows.
 - `peak_atoms` counts distinct simultaneously-allocated atoms; qubit reuse (measure → reset → reuse of the same ancilla) lowers it versus a fresh-ancilla-per-round variant. `measurement_count` / `reset_count` are per-op tallies, distinct from the per-layer `measurement_rounds` / `reset_rounds`.
 - Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.
+- Fidelity estimate is an analytic Enola Eq. (1) product over the compiled schedule (`fidelity.cz` for entangling actions, `fidelity.single_qubit` for local/global-ry actions including Hahn-echo bystander pulses, `fidelity.atom_transfer` for trap transfers, `fidelity.coherence_time_us` for idle decay) — not a logical error rate, not sampled (Sinter), and not a threshold claim; distinct from the analytic physical error budget (ADR-0017, `error_budget`, when present) — a `rate × schedule-count` sum, not a fidelity product.

@@ -49,5 +49,7 @@
   "local_u3_count": 0,
   "local_gate_time_us": 3,
   "global_ry_count": 2,
-  "global_ry_time_us": 2
+  "global_ry_time_us": 2,
+  "gate_fidelity_product": 0.9895403187277962,
+  "estimated_fidelity": 0.989535700878253
 }

@@ -10,7 +10,7 @@
 //! Compaction (#108) may change schedule numbers; refreshing `.snap` files is
 //! intentional then.
 
-use backend::NeutralAtomErrorModel;
+use backend::{NeutralAtomErrorModel, NeutralAtomFidelity};
 use quon_na::{
     AodTrapRef, AtomId, AtomMove, BottleneckKind, CodeBlockId, CodeFamily, LogicalQubitId,
     MeasurementBasis, MovementGroup, NaScheduleOptions, NetRate, NeutralAtomAction,
@@ -119,6 +119,12 @@ const FORBIDDEN_THRESHOLD_CLAIMS: &[&str] = &[
 
 const NOTES_ANALYTIC_BULLET: &str = "- Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).";
 const NOTES_BUDGET_BULLET: &str = "- Physical error budget lines are analytic schedule-count × rate contributions only — not sampled logical failure rates (Sinter) or threshold claims.";
+/// Prefix only (the full bullet is long) — enough to pin the note exists and
+/// carries the ADR-0020 analytic/not-a-threshold-claim discipline for the
+/// Enola Eq. (1) fidelity estimate (issue #305), without over-fitting the
+/// snapshot test to the exact wording already pinned by the `.snap` goldens.
+const NOTES_FIDELITY_BULLET_PREFIX: &str =
+    "- Fidelity estimate is an analytic Enola Eq. (1) product over the compiled schedule";
 
 fn assert_no_threshold_claims(text: &str) {
     let lower = text.to_ascii_lowercase();
@@ -203,6 +209,25 @@ fn assert_json_md(name: &str, report: &ResourceReport) {
         md.contains("analytic"),
         "Markdown must label the report as analytic (ADR-0020)"
     );
+    if report.gate_fidelity_product.is_some() {
+        assert!(
+            md.contains("## Fidelity estimate (Enola Eq. (1))"),
+            "Markdown with gate_fidelity_product must include the Fidelity estimate section"
+        );
+        assert!(
+            md.contains(NOTES_FIDELITY_BULLET_PREFIX),
+            "Markdown with gate_fidelity_product must include the fidelity Notes bullet"
+        );
+    } else {
+        assert!(
+            !md.contains("## Fidelity estimate"),
+            "Markdown without gate_fidelity_product must omit the Fidelity estimate section"
+        );
+        assert!(
+            !md.contains(NOTES_FIDELITY_BULLET_PREFIX),
+            "Markdown without gate_fidelity_product must omit the fidelity Notes bullet"
+        );
+    }
     insta::assert_snapshot!(format!("{name}_json"), json);
     insta::assert_snapshot!(format!("{name}_md"), md);
 }
@@ -301,12 +326,27 @@ fn qec_repetition_d3_hybrid_schedule_report() {
     assert!(budget.movement > 0.0);
     assert!(budget.transfer > 0.0);
 
+    // Hybrid QEC path also always attaches the Enola Eq. (1) fidelity
+    // estimate (issue #305): `NeutralAtomTarget::fidelity` is a mandatory
+    // field, unlike the optional `error_model`.
+    let gate_fidelity_product = report
+        .gate_fidelity_product
+        .expect("hybrid QEC report attaches analytic gate_fidelity_product");
+    let estimated_fidelity = report
+        .estimated_fidelity
+        .expect("hybrid QEC report attaches analytic estimated_fidelity");
+    assert!((0.0..=1.0).contains(&gate_fidelity_product));
+    assert!((0.0..=1.0).contains(&estimated_fidelity));
+    // Idle decay only ever lowers (never raises) the raw gate product.
+    assert!(estimated_fidelity <= gate_fidelity_product);
+
     let md = resource_report_to_markdown(report);
     assert!(md.contains("| Distance | 3 |"));
     assert!(md.contains("| Memory rounds | 2 |"));
     assert!(md.contains("## Physical error budget"));
     assert!(md.contains("| Measurement | 0.009 |"));
     assert!(!md.contains("0.009000000000000001"));
+    assert!(md.contains("## Fidelity estimate (Enola Eq. (1))"));
     // Exact Notes bullets — not a vacuous "contains not && threshold".
     assert_markdown_notes(&md, true);
 
@@ -370,10 +410,24 @@ fn qec_surface_d3_hybrid_schedule_report() {
     assert!(budget.measurement > 0.0);
     assert!(budget.reset > 0.0);
 
+    // Denser circuit (48 Entangle2 actions) than the repetition-code case, so
+    // the fidelity product should be visibly lower — still a valid
+    // probability, and idle decay never raises it.
+    let gate_fidelity_product = report
+        .gate_fidelity_product
+        .expect("hybrid QEC report attaches analytic gate_fidelity_product");
+    let estimated_fidelity = report
+        .estimated_fidelity
+        .expect("hybrid QEC report attaches analytic estimated_fidelity");
+    assert!((0.0..=1.0).contains(&gate_fidelity_product));
+    assert!((0.0..=1.0).contains(&estimated_fidelity));
+    assert!(estimated_fidelity <= gate_fidelity_product);
+
     let md = resource_report_to_markdown(report);
     assert!(md.contains("| Distance | 3 |"));
     assert!(md.contains("| Memory rounds | 2 |"));
     assert!(md.contains("surface_code_like"));
+    assert!(md.contains("## Fidelity estimate (Enola Eq. (1))"));
     assert_markdown_notes(&md, true);
 
     assert_json_md("qec_surface_d3_hybrid", report);
@@ -440,6 +494,28 @@ fn toy_with_error_budget() {
     let report = ResourceReport::from_layers(&layers).with_error_budget(&model);
     assert!(report.error_budget.is_some());
     assert_json_md("toy_with_error_budget", &report);
+}
+
+#[test]
+fn toy_with_fidelity_estimate() {
+    // Reuses the shared toy schedule (move + wait, transfer + CZ, EntangleN +
+    // measure + reset) so the golden exercises entangling, transfer, *and*
+    // idle-decay terms together — not just the hand-computed 2-atom case in
+    // `quon_na::report`'s unit tests.
+    let layers = toy_move_entangle_measure_layers();
+    let fidelity = NeutralAtomFidelity {
+        cz: 0.995,
+        single_qubit: 0.9997,
+        atom_transfer: 0.999,
+        coherence_time_us: 1500000.0,
+    };
+    let report = ResourceReport::from_layers(&layers).with_fidelity_estimate(&layers, &fidelity);
+    assert!(report.gate_fidelity_product.is_some());
+    assert!(report.estimated_fidelity.is_some());
+    // Idle decay (nonzero here: atom 2 only appears in the last layer) must
+    // strictly lower the estimate below the raw gate product.
+    assert!(report.estimated_fidelity.unwrap() < report.gate_fidelity_product.unwrap());
+    assert_json_md("toy_with_fidelity_estimate", &report);
 }
 
 #[test]
