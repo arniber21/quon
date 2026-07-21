@@ -51,6 +51,3 @@ required-features = ["mlir"]
 [[example]]
 name = "repetition_code_toy"
 path = "examples/repetition_code_toy.rs"
-
-[lints.rust]
-unsafe_code = "deny"

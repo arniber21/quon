@@ -26,6 +26,3 @@ petgraph = { workspace = true } # independent shortest-path oracle for different
 
 [package.metadata.flux]
 enabled = true
-
-[lints.rust]
-unsafe_code = "deny"

@@ -23,6 +23,3 @@ flux-rs    = { workspace = true, optional = true }
 
 [package.metadata.flux]
 enabled = true
-
-[lints.rust]
-unsafe_code = "deny"

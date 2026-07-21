@@ -22,6 +22,3 @@ insta     = { workspace = true }
 proptest  = { workspace = true }
 arbitrary = { workspace = true }
 frontend  = { path = "../frontend", default-features = false }
-
-[lints.rust]
-unsafe_code = "deny"

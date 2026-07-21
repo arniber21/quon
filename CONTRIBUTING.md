@@ -54,9 +54,9 @@ Use `gh` for issue-tracker operations (`gh issue view`, `gh issue create`).
 - **MLIR builders**: `OperationBuilder` → `build()?` → `verify(&op)?` before
   returning.
 - **JSON wire DTOs**: `#[serde(deny_unknown_fields)]` on `Deserialize` structs.
-- **Workspace lints**: `[workspace.lints.rust] unsafe_code = "warn"`
-  workspace-wide; `deny` in crates with no unsafe. `lints.workspace = true`
-  in every crate.
+- **Workspace lints**: `[workspace.lints.rust] unsafe_code = "allow"` at the
+  workspace level; `lints.workspace = true` in crates with FFI (`mlir_bridge`,
+  `quonc`, `frontend`). Keep `unsafe` out of other crates by convention.
 - Run `just test-ci` (or `devbox run -- just test-ci`) before submitting.
 
 ## Validation

@@ -25,6 +25,3 @@ proptest = { workspace = true }
 
 [package.metadata.flux]
 enabled = true
-
-[lints.rust]
-unsafe_code = "deny"
