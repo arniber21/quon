@@ -121,29 +121,34 @@ fn read_i32_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str)
         .map(|integer| integer.value() as i32)
 }
 
-/// Resolves the physical/logical indices for a gate's qubit operands,
-/// preferring the walk's `qubit_roots` (identity threaded across region
-/// boundaries) but folding in a directly-attached `phys_qubit` attribute when
-/// present and not already among the roots. Shared by [`crate::metrics`] and
-/// [`crate::passes::depth_scheduling`], which both need a gate's physical
-/// qubits and only differ in what they do with them.
+/// Resolves the qubit identity for a gate's operands from the **canonical SSA
+/// wiring channel** (ADR-0034).
+///
+/// `qubit_roots` are [`WireTracker`] root ids: stable identifiers for a logical
+/// qubit's wire that survive `unitary_region`/`if` boundaries (a region's block
+/// argument aliases the enclosing op's operand root). When roots are available
+/// — the normal case after SABRE routing, threaded across region boundaries by
+/// the walk — identity is derived **purely** from them.
+///
+/// The `phys_qubit` attribute is a *derived* annotation written by SABRE from
+/// its `Layout` (itself a consequence of SSA rewiring). It is never folded in
+/// here: doing so would let scheduling and emit disagree on which qubits a gate
+/// touches (issue #316). Emit follows SSA wiring directly; scheduling follows
+/// these roots; both consume the same canonical channel.
+///
+/// The attr fallback (when `qubit_roots` is empty) covers hand-built test
+/// fixtures that annotate gates directly without a tracker — not the production
+/// pipeline, which always seeds roots via [`walk_block`].
 pub fn resolve_phys_qubits<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
     qubit_roots: &[usize],
 ) -> Vec<i32> {
-    let mut phys = if qubit_roots.is_empty() {
-        read_i32_attr(operation, quantum_dynamic::attr::PHYS_QUBIT)
-            .map(|value| vec![value])
-            .unwrap_or_default()
-    } else {
-        qubit_roots.iter().map(|root| *root as i32).collect()
-    };
-    if let Some(attr_phys) = read_i32_attr(operation, quantum_dynamic::attr::PHYS_QUBIT)
-        && !phys.contains(&attr_phys)
-    {
-        phys.push(attr_phys);
+    if !qubit_roots.is_empty() {
+        return qubit_roots.iter().map(|root| *root as i32).collect();
     }
-    phys
+    read_i32_attr(operation, quantum_dynamic::attr::PHYS_QUBIT)
+        .map(|value| vec![value])
+        .unwrap_or_default()
 }
 
 /// Walks `block`, seeding a fresh [`WireTracker`] from its own block

@@ -12,10 +12,12 @@
 //!    (circ → dynamic).
 //! 3. **Dynamic passes** ([`run_dynamic_passes`]) — `measurement_deferral`,
 //!    `classical_region_fusion`.
-//! 4. **Fixed physical** ([`run_fixed_physical`]) — strict order:
-//!    `native_gate_decomp` → `sabre_routing` → `native_gate_decomp` (post-SWAP)
-//!    → `depth_scheduling`. T-count is sampled after SABRE and before the
-//!    second decomp (same hook as the historical `quonc` driver).
+//! 4. **Fixed physical** ([`run_fixed_physical`] in [`crate::fixed_physical`]) —
+//!    strict order: `native_gate_decomp` → `sabre_routing` →
+//!    `native_gate_decomp` (post-SWAP) → `depth_scheduling`. T-count is sampled
+//!    after SABRE and before the second decomp (same hook as the historical
+//!    `quonc` driver). SSA wiring is the canonical layout channel; `phys_qubit`
+//!    is a derived annotation (ADR-0034).
 //! 5. **OpenQASM emit** ([`emit_openqasm`]) — orchestration hook over
 //!    [`crate::emit::openqasm3`].
 //!
@@ -30,20 +32,15 @@ use melior::Context;
 use melior::ir::Module;
 
 use crate::emit::openqasm3;
-use crate::metrics;
 use crate::passes::{
-    classical_region_fusion, compiler_uncomputation, depth_scheduling, gate_cancellation,
-    measurement_deferral, native_gate_decomp, rotation_merging,
-    sabre_routing::{self, SabreCost},
-    zx_simplification,
+    classical_region_fusion, compiler_uncomputation, gate_cancellation,
+    measurement_deferral, rotation_merging, zx_simplification,
 };
 
-/// Result of the Fixed physical pass sequence.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FixedPhysicalResult {
-    /// T-count sampled after SABRE and before the post-SWAP `native_gate_decomp`.
-    pub t_count: u64,
-}
+// The Fixed physical pipeline (decomp → route → decomp → schedule) and its
+// result type live in [`crate::fixed_physical`] — the one deep module owning
+// Fixed physical layout (ADR-0034). Re-exported here for call-site stability.
+pub use crate::fixed_physical::{FixedPhysicalResult, run_fixed_physical};
 
 /// Runs `quantum.circ` optimization passes to fixpoint (SPEC §7.1 passes 1–4).
 ///
@@ -68,24 +65,6 @@ pub fn run_circ_passes_to_fixpoint(context: &Context, module: &Module<'_>) {
 pub fn run_dynamic_passes(context: &Context, module: &Module<'_>) {
     measurement_deferral::run_on_module(context, module);
     classical_region_fusion::run_on_module(context, module);
-}
-
-/// Runs Fixed physical passes in the implemented strict order.
-///
-/// Order: `native_gate_decomp` → `sabre_routing` → `native_gate_decomp` →
-/// `depth_scheduling`. Returns the pre–post-SWAP T-count for metrics.
-pub fn run_fixed_physical(
-    context: &Context,
-    target: &BackendTarget,
-    sabre_cost: SabreCost,
-    module: &Module<'_>,
-) -> FixedPhysicalResult {
-    native_gate_decomp::run_on_module(context, target, module);
-    sabre_routing::run_on_module(context, target, sabre_cost, module);
-    let t_count = metrics::count_t_gates(module);
-    native_gate_decomp::run_on_module(context, target, module);
-    depth_scheduling::run_on_module(context, target, module);
-    FixedPhysicalResult { t_count }
 }
 
 /// OpenQASM 3.0 emission hook used by the Fixed compile path.

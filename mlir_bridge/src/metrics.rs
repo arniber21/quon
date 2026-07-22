@@ -4,7 +4,9 @@
 //! [`crate::dynamic_walk`], the same shared walker
 //! [`crate::passes::depth_scheduling`] uses. For programs with
 //! `quantum.dynamic.if`, **both** branches are counted (conservative upper
-//! bound).
+//! bound). Qubit identity is derived from the canonical SSA wiring channel
+//! (WireTracker roots); the `phys_qubit` attr is a derived annotation
+//! (ADR-0034, issue #316).
 
 use melior::ir::attribute::{IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;

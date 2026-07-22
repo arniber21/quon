@@ -1,6 +1,9 @@
 //! Depth-optimal scheduling pass (issue #26, SPEC §7.4).
 //!
-//! ASAP/ALAP scheduling of routed circuits with `phys_qubit` attributes.
+//! ASAP/ALAP scheduling of routed circuits. Qubit identity for the dependency
+//! graph is derived from the **canonical SSA wiring channel** (WireTracker
+//! roots via [`crate::dynamic_walk::resolve_phys_qubits`]), not from the
+//! `phys_qubit` attr — which is a derived annotation (ADR-0034, issue #316).
 
 use std::collections::HashMap;
 use std::sync::Arc;
