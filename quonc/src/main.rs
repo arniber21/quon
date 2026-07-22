@@ -79,8 +79,8 @@ Notes:
   --emit-na-graph writes Graphviz DOT for the interaction graph.
   --emit-na-stats writes compiler-internals telemetry (timings / search
   diagnostics / effective config), never schedule or QEC evidence — kept
-  separate from --emit-resource-report on purpose. Not available for
-  QEC-backed programs yet (per-round hybrid pipeline is uninstrumented).
+  separate from --emit-resource-report on purpose. Available for both
+  bare-qubit and QEC-backed programs (#317).
   --emit-qec-experiment writes QEC evaluation JSON + structure-only Stim
   (no physical noise; Python annotates from JSON error_model).
 ";
@@ -735,8 +735,8 @@ fn emit_artifacts(
     if let Some(path) = &cli.emit_na_stats {
         let stats = report.na_stats.as_ref().ok_or_else(|| {
             anyhow!(
-                "no NA compiler stats available for this compile (QEC-backed programs take the \
-                 per-round hybrid pipeline, which --emit-na-stats does not yet instrument; see \
+                "no NA compiler stats available for this compile (the neutral-atom \
+                 pipeline failed to populate NaStats — this should not happen; see \
                  issue #307)"
             )
         })?;

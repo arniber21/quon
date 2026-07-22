@@ -100,9 +100,10 @@ pub struct CompileReport {
     /// Neutral-atom resource report when the NA path ran.
     pub resource_report: Option<ResourceReport>,
     /// Compiler-internals stats (timings / search diagnostics / config echo,
-    /// issue #307) when the NA path ran through `run_from_graph` /
-    /// `run_from_module`. `None` for fixed targets and for the QEC hybrid
-    /// per-round path, which is not yet instrumented.
+    /// issue #307) when the NA path ran. Populated for both bare-qubit
+    /// (`run_from_graph` / `run_from_module`) and QEC hybrid
+    /// (`run_from_qec_workload`) paths via the shared `plan_backend` stage
+    /// (#317). `None` for fixed targets.
     pub na_stats: Option<NaStats>,
     /// Interaction-graph vertex count (logical qubits) for NA compiles.
     pub na_logical_qubits: Option<u64>,

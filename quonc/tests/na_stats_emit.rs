@@ -195,26 +195,30 @@ fn requires_neutral_atom_target() {
     );
 }
 
-/// QEC-backed programs take the per-round hybrid pipeline, which
-/// `--emit-na-stats` does not instrument yet — this must fail with a clear,
-/// scoped error rather than silently emitting an empty/wrong artifact.
+/// QEC-backed programs now populate NaStats via the shared `plan_backend`
+/// stage (#317), so `--emit-na-stats` succeeds and emits valid stats JSON.
 #[test]
-fn qec_backed_program_fails_clearly() {
+fn qec_backed_program_emits_stats() {
     let source = workspace_path("../examples/na_qec/repetition_d3_memory.qn");
-    let output = quonc()
-        .arg(&source)
-        .arg("--target")
-        .arg(na_target())
-        .arg("--emit-na-stats")
-        .arg("-")
-        .output()
-        .expect("spawn quonc");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let (output, stats) = run_emit_na_stats(&source, &[]);
     assert!(
-        stderr.contains("NA compiler stats") && stderr.contains("QEC"),
-        "expected a clear QEC-scope error, got: {stderr}"
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    // Stage timings are populated — the QEC path now instruments per-phase
+    // entangle + plan_backend timings (#317 / #307).
+    assert_eq!(stats["kind"], "na_compiler_stats");
+    assert!(
+        stats["stage_timings_us"]["total_us"].as_u64().unwrap_or(0) > 0,
+        "total_us must be > 0 for QEC-backed compile"
+    );
+    // Zoned backend (default) should have zoned_schedule_us populated.
+    assert!(
+        stats["stage_timings_us"]["zoned_schedule_us"].is_number(),
+        "zoned_schedule_us must be present for zoned backend"
+    );
+    assert_eq!(stats["config"]["backend"], "zoned");
 }
 
 /// When both `--emit-na-schedule -` and `--emit-na-stats -` target stdout,
