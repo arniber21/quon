@@ -87,6 +87,12 @@ _Avoid_: gate table, STD_GATES, native-gate map
 **T-count**: The number of non-Clifford `T` / `T†` gates in a circuit (after normalizing exact `Rz(k·π/4)` into discrete Clifford+T when applicable). The primary cost metric for fault-tolerant Clifford+T optimization; distinct from total gate count and from `DepthExpr`.
 _Avoid_: T-gate count, non-Clifford count, magic-state count
 
+**Phase polynomial**: A representation of a `{CNOT, T, T†}` circuit block as a sum of linear Boolean phase terms `f(x) = Σ a_l · l(x)` over GF(2), where each `l` is a parity (XOR of input bits) and `a_l` is a coefficient mod 8 (T⁸ = I). Used by `clifford_t_opt` for non-adjacent T-count reduction: terms on the same parity merge, halving T-count when coefficients go even (Clifford). Split at H/S boundaries. See ADR-0013, ADR-0039.
+_Avoid_: phase poly, linear phase form
+
+**Stabilizer tableau**: A `(2n) × (2n+1)` binary matrix (CHP representation, Aaronson-Gottesman 2004) encoding an n-qubit Clifford operation's conjugation action on Pauli generators. Used by `clifford_t_opt` to detect non-adjacent identity sequences (e.g. `S⁴ = I`) and single-Pauli simplifications (e.g. `S² → Z`) in `clifford = true` circuits. See ADR-0013, ADR-0039.
+_Avoid_: CHP tableau, Clifford tableau (unqualified)
+
 **ZX-graph**: An auxiliary graph representation of a `quantum.circ` circuit used for non-local algebraic simplification. Nodes are Z- or X-spiders with phase angles; edges are wires or Hadamard boxes. Built on `petgraph::StableGraph`.
 _Avoid_: ZX-diagram, spider graph
 
