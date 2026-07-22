@@ -39,7 +39,9 @@ use mlir_sys::mlirOperationSetAttributeByName;
 
 use crate::dialect::quantum_dynamic;
 use crate::metrics;
-use crate::passes::{depth_scheduling, native_gate_decomp, sabre_routing, sabre_routing::SabreCost};
+use crate::passes::{
+    depth_scheduling, native_gate_decomp, sabre_routing, sabre_routing::SabreCost,
+};
 
 /// Result of the Fixed physical pass sequence.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -81,11 +83,8 @@ pub fn run_fixed_physical(
 /// the `phys_qubit` attr, corrupting every attr after routing leaves their
 /// output unchanged. Used by the integration tests in `tests/fixed_physical.rs`.
 pub fn corrupt_phys_qubit_attrs(context: &Context, module: &Module<'_>, bogus: i32) {
-    let attr: melior::ir::Attribute<'_> = IntegerAttribute::new(
-        IntegerType::new(context, 32).into(),
-        i64::from(bogus),
-    )
-    .into();
+    let attr: melior::ir::Attribute<'_> =
+        IntegerAttribute::new(IntegerType::new(context, 32).into(), i64::from(bogus)).into();
     let raw = attr.to_raw();
     let name = StringRef::new(quantum_dynamic::attr::PHYS_QUBIT).to_raw();
     let Some(body) = module
