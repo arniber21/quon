@@ -28,6 +28,7 @@ pub(crate) mod circuit;
 mod error;
 mod exhaust;
 mod linear;
+mod monad;
 mod unify;
 
 #[cfg(test)]
@@ -754,10 +755,7 @@ impl TypeChecker {
             }
 
             // ── Quantum monad (issue #14, SPEC §3.5) ────────────────────────────
-            Expr::Return(v) => {
-                let t = self.synth(env, delta, v)?;
-                Ok(Ty::Q(Box::new(t)))
-            }
+            Expr::Return(v) => self.synth_return(env, delta, v),
             Expr::Bind { rhs, param, body } => self.synth_bind(env, delta, rhs, param, body),
 
             // ── Borrow blocks (issue #15, SPEC §3.4) ────────────────────────────
@@ -910,62 +908,6 @@ impl TypeChecker {
             Ty::QReg(k_w.clone()),
             Ty::QReg(n_w.minus(k_w).normalize()),
         ]))
-    }
-
-    /// Sequential Z-basis measurement of every qubit in a register (SPEC §5).
-    fn synth_measure_all(
-        &mut self,
-        env: &Env,
-        delta: &mut Delta,
-        q: &Sp<Expr>,
-    ) -> Result<Ty, TypeError> {
-        let q_ty = self.synth(env, delta, q)?;
-        match self.table.resolve(&q_ty) {
-            Ty::QReg(_) => Ok(Ty::Q(Box::new(Ty::list(Ty::Bit)))),
-            other => Err(TypeError::Mismatch {
-                expected: Ty::QReg(DepthExpr::Var("n".into())),
-                found: other,
-                span: q.1,
-            }),
-        }
-    }
-
-    /// Monadic map (SPEC §5): `(A -> Q<B>, List<A>) -> Q<List<B>>`.
-    fn synth_map_q(
-        &mut self,
-        env: &Env,
-        delta: &mut Delta,
-        f: &Sp<Expr>,
-        xs: &Sp<Expr>,
-    ) -> Result<Ty, TypeError> {
-        let xs_ty = self.synth(env, delta, xs)?;
-        let elem_a = self.table.fresh();
-        self.table.unify(&xs_ty, &Ty::list(elem_a.clone()), xs.1)?;
-        let f_ty = self.synth(env, delta, f)?;
-        let (dom, cod) = self.as_function(&f_ty, f.1)?;
-        self.table.unify(&dom, &elem_a, f.1)?;
-        match self.table.resolve(&cod) {
-            Ty::Q(inner) => Ok(Ty::Q(Box::new(Ty::list(*inner)))),
-            other => Err(TypeError::Mismatch {
-                expected: Ty::Q(Box::new(self.table.fresh())),
-                found: other,
-                span: f.1,
-            }),
-        }
-    }
-
-    /// Sequence a list of monadic computations (SPEC §5): `List<Q<A>> -> Q<List<A>>`.
-    fn synth_sequence_q(
-        &mut self,
-        env: &Env,
-        delta: &mut Delta,
-        cs: &Sp<Expr>,
-    ) -> Result<Ty, TypeError> {
-        let cs_ty = self.synth(env, delta, cs)?;
-        let elem = self.table.fresh();
-        self.table
-            .unify(&cs_ty, &Ty::list(Ty::Q(Box::new(elem.clone()))), cs.1)?;
-        Ok(Ty::Q(Box::new(Ty::list(elem))))
     }
 
     /// Matrix/list indexing: `index(base, i)` (parser desugars `base[i]`).
@@ -1186,128 +1128,6 @@ impl TypeChecker {
         let (dom, cod) = self.as_function(&f_ty, f.1)?;
         self.check(env, delta, x, &dom)?;
         Ok(cod)
-    }
-
-    /// A monadic bind `x <- e₁; e₂` (`Bind(e₁, fn(x) -> e₂)`, SPEC §3.5). `e₁` must produce a
-    /// quantum computation `Q<A>` — or a pure value `A`, which is auto-lifted (so a unitary
-    /// result threaded through `<-` is accepted). `x : A` is then bound (routed by linearity)
-    /// and the continuation `e₂` is checked; it must itself be `Q<B>`, the type of the bind.
-    /// `Δ` threads `e₁` then `e₂`, so a resource consumed by `e₁` is gone for `e₂` — reusing a
-    /// just-measured qubit surfaces as [`TypeError::LinearUsedTwice`].
-    fn synth_bind(
-        &mut self,
-        env: &Env,
-        delta: &mut Delta,
-        rhs: &Sp<Expr>,
-        param: &Sp<Name>,
-        body: &Sp<Expr>,
-    ) -> Result<Ty, TypeError> {
-        let rhs_ty = self.synth(env, delta, rhs)?;
-        // The value the bind threads. The payload of a `Q<A>` is the usual case. A *pure*
-        // quantum resource is auto-lifted: a unitary application `c @ r : QReg<m>` has no
-        // measurement, so it stays outside `Q`, yet is naturally named with `<-` (teleport's
-        // `(a, b) <- bell_state() @ (alice, bob)`). A pure *classical* value (or an unsolved
-        // metavariable) is not a quantum computation — binding it with `<-` is the error AC5
-        // names; use `let` instead.
-        let bound = match self.table.resolve(&rhs_ty) {
-            Ty::Q(inner) => *inner,
-            pure if pure.is_linear_resource() => pure,
-            _ => {
-                return Err(TypeError::ExpectedMonad {
-                    found: self.table.zonk(&rhs_ty),
-                    span: rhs.1,
-                });
-            }
-        };
-        let mut inner = env.clone();
-        // Bind the threaded value. `_` discards it (a `Pat::Wildcard`, which rejects a leftover
-        // linear resource as a no-dropping error); a name routes by linearity via `bind_pat`.
-        let pat = if param.0 == "_" {
-            (Pat::Wildcard, param.1)
-        } else {
-            (Pat::Var(param.0.clone()), param.1)
-        };
-        let introduced = self.bind_pat(&pat, &bound, &mut inner, delta)?;
-        let body_ty = self.synth(&inner, delta, body)?;
-        self.ensure_consumed(delta, &introduced)?;
-        // The continuation must be a quantum computation.
-        match self.table.resolve(&body_ty) {
-            Ty::Q(_) => Ok(body_ty),
-            other => Err(TypeError::ExpectedMonad {
-                found: other,
-                span: body.1,
-            }),
-        }
-    }
-
-    /// A `borrow b₁: T₁, … in { body }` block (SPEC §3.4, ADR-0003): scoped ancilla
-    /// allocation. Each ancilla enters `Δ` as a linear resource and the body is checked as a
-    /// monadic block producing `Q<τ>`. Two guarantees are enforced:
-    ///
-    /// * **Cleanup (no-dropping).** Every ancilla must be consumed inside the block —
-    ///   measured, `reset`, `discard`ed, or fed into an operation that consumes it. A still-live
-    ///   ancilla at block exit is a [`TypeError::LinearUnconsumed`] (via [`Self::ensure_consumed`]).
-    /// * **No escape.** A borrowed name may not appear in the block's *result* value, even
-    ///   buried inside a returned register — otherwise the ancilla outlives its scope
-    ///   ([`TypeError::BorrowEscape`]). The data qubits a block legitimately returns are fine;
-    ///   only the *borrowed* names are forbidden in a `return`.
-    ///
-    /// The body is a statement sequence; it is folded into the same `Bind`/`Let`/`Return` chain
-    /// a `run { }` block desugars to (issue #8) and then synthesized.
-    fn synth_borrow(
-        &mut self,
-        env: &Env,
-        delta: &mut Delta,
-        bindings: &[(Sp<Name>, Sp<Type>)],
-        body: &[Sp<Stmt>],
-        span: SimpleSpan,
-    ) -> Result<Ty, TypeError> {
-        let block =
-            crate::desugar::fold_monadic_block(body, span).map_err(|_| TypeError::Unsupported {
-                construct: "malformed borrow block",
-                span,
-            })?;
-
-        // Introduce each ancilla into `Δ`. An ancilla must be a linear quantum resource; a
-        // classical `borrow x: Int` is meaningless (there is nothing to reclaim).
-        let mut introduced = Vec::new();
-        let mut borrowed: BTreeSet<String> = BTreeSet::new();
-        for (name, ann) in bindings {
-            let ty = self.resolve_type(ann)?;
-            if !ty.is_linear_resource() {
-                return Err(TypeError::Mismatch {
-                    expected: Ty::Qubit,
-                    found: ty,
-                    span: ann.1,
-                });
-            }
-            self.record_annotation(name.1, &ty);
-            delta.introduce(name.0.clone(), ty, name.1)?;
-            introduced.push((name.0.clone(), name.1));
-            borrowed.insert(name.0.clone());
-        }
-
-        // No-escape: reject before threading `Δ`, since a `return a` would otherwise *consume*
-        // the ancilla into the result and pass the cleanup check, hiding the escape.
-        if let Some((name, esc_span)) = find_borrow_escape(&block, &borrowed) {
-            let borrow_span = bindings
-                .iter()
-                .find(|(n, _)| n.0 == name)
-                .map(|(_, ann)| ann.1)
-                .unwrap_or(span);
-            return Err(TypeError::BorrowEscape {
-                name,
-                span: esc_span,
-                borrow_span,
-            });
-        }
-
-        let result_ty = self.synth(env, delta, &block)?;
-        self.ensure_consumed(delta, &introduced)?;
-        match self.table.resolve(&result_ty) {
-            Ty::Q(_) => Ok(result_ty),
-            other => Err(TypeError::ExpectedMonad { found: other, span }),
-        }
     }
 
     /// Convert a classical `Int`-typed index/count expression into a symbolic depth value,
@@ -2957,98 +2777,6 @@ fn collect_called_fns_stmt(
     match &s.0 {
         Stmt::Bind { rhs, .. } | Stmt::Let { rhs, .. } => collect_called_fns(rhs, fns, out),
         Stmt::Expr(e) => collect_called_fns(e, fns, out),
-    }
-}
-
-/// Walk a folded monadic block looking for a borrowed ancilla escaping in a `return`. The
-/// only escape route is a value flowing out of the block, i.e. the argument of a `return`:
-/// a borrowed name appearing there (`return a`, or buried in `return (q `tensored` a)`) means
-/// the ancilla outlives its scope. Mentions in *consuming* positions (`measure(a)`,
-/// `discard(a)`, `a `tensored` b` whose result is then measured) are fine — those are exactly
-/// how an ancilla is reclaimed — so only `Return` payloads are inspected. Returns the first
-/// offending name with the span of the returned value.
-fn find_borrow_escape(
-    expr: &Sp<Expr>,
-    borrowed: &BTreeSet<String>,
-) -> Option<(String, SimpleSpan)> {
-    match &expr.0 {
-        Expr::Return(v) => {
-            if let Some(name) = first_borrowed_var(v, borrowed) {
-                return Some((name, v.1));
-            }
-            // A `return` may itself wrap further structure (e.g. a nested block); keep walking.
-            find_borrow_escape(v, borrowed)
-        }
-        Expr::Bind { rhs, body, .. } => {
-            find_borrow_escape(rhs, borrowed).or_else(|| find_borrow_escape(body, borrowed))
-        }
-        Expr::Let { rhs, body, .. } => {
-            find_borrow_escape(rhs, borrowed).or_else(|| find_borrow_escape(body, borrowed))
-        }
-        Expr::If { cond, then, else_ } => find_borrow_escape(cond, borrowed)
-            .or_else(|| find_borrow_escape(then, borrowed))
-            .or_else(|| find_borrow_escape(else_, borrowed)),
-        Expr::Match { scrutinee, arms } => find_borrow_escape(scrutinee, borrowed).or_else(|| {
-            arms.iter()
-                .find_map(|(_, e)| find_borrow_escape(e, borrowed))
-        }),
-        _ => None,
-    }
-}
-
-/// The first borrowed name appearing anywhere in a returned value expression, if any.
-fn first_borrowed_var(expr: &Sp<Expr>, borrowed: &BTreeSet<String>) -> Option<String> {
-    let mut found = None;
-    collect_var_hit(expr, borrowed, &mut found);
-    found
-}
-
-/// Recursively scan `expr` for a `Var` whose name is in `borrowed`, recording the first hit.
-fn collect_var_hit(expr: &Sp<Expr>, borrowed: &BTreeSet<String>, found: &mut Option<String>) {
-    if found.is_some() {
-        return;
-    }
-    match &expr.0 {
-        Expr::Var(name) => {
-            if borrowed.contains(name) {
-                *found = Some(name.clone());
-            }
-        }
-        Expr::App(a, b)
-        | Expr::Compose(a, b)
-        | Expr::Par(a, b)
-        | Expr::GateApp { gate: a, qubits: b } => {
-            collect_var_hit(a, borrowed, found);
-            collect_var_hit(b, borrowed, found);
-        }
-        Expr::TypeApp { callee, .. } => collect_var_hit(callee, borrowed, found),
-        Expr::BinOp { lhs, rhs, .. } => {
-            collect_var_hit(lhs, borrowed, found);
-            collect_var_hit(rhs, borrowed, found);
-        }
-        Expr::Neg(a) | Expr::Adjoint(a) | Expr::Controlled(a) | Expr::Return(a) => {
-            collect_var_hit(a, borrowed, found);
-        }
-        Expr::Ascribe(a, _) => collect_var_hit(a, borrowed, found),
-        Expr::Tuple(es) | Expr::List(es) => {
-            for e in es {
-                collect_var_hit(e, borrowed, found);
-            }
-        }
-        Expr::If { cond, then, else_ } => {
-            collect_var_hit(cond, borrowed, found);
-            collect_var_hit(then, borrowed, found);
-            collect_var_hit(else_, borrowed, found);
-        }
-        Expr::Let { rhs, body, .. } => {
-            collect_var_hit(rhs, borrowed, found);
-            collect_var_hit(body, borrowed, found);
-        }
-        Expr::Bind { rhs, body, .. } => {
-            collect_var_hit(rhs, borrowed, found);
-            collect_var_hit(body, borrowed, found);
-        }
-        _ => {}
     }
 }
 
