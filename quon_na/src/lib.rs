@@ -46,6 +46,7 @@ pub mod layout;
 #[cfg(feature = "mlir")]
 pub mod lower;
 pub mod movement;
+pub mod plan;
 #[cfg(feature = "mlir")]
 pub mod native_gate_decomp;
 pub mod pipeline;

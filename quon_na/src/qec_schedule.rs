@@ -8,6 +8,8 @@
 //! 4. Concatenate rounds; compact with Barrier cuts at Wait markers (fail-closed)
 //! 5. Resource report sized from code blocks + memory-round metadata
 
+use std::time::Instant;
+
 use quon_qec::{
     ExpandedWorkload, PhysicalAtomId, PhysicalCnot, PhysicalRound, QecWorkload, RoundTerminal,
     expand_workload,
@@ -23,17 +25,15 @@ use crate::graph::{
     InteractionSegment, LogicalQubitId, SegmentKind,
 };
 use crate::layout::{AtomId, NeutralAtomLayout};
-use crate::movement::plan_aod_movement;
 use crate::pipeline::{
-    NaBackendKind, NaPipelineError, NaScheduleArtifacts, NaScheduleOptions, movement_params,
-    validate_speed_model, zoned_architecture,
+    NaPipelineError, NaScheduleArtifacts, NaScheduleOptions, validate_speed_model,
 };
-use crate::placement::place;
+use crate::plan::{QecStageAccumulator, plan_backend};
 use crate::qec::code_blocks_from_expanded;
 use crate::report::{attach_qec_error_budget, build_resource_report};
 use crate::schedule::{LocalGateKind, MeasurementBasis, NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
-use crate::zoned::schedule_zoned_with_aware_params;
+use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, StageTimingsUs};
 use backend::NeutralAtomTarget;
 
 /// Default duration (µs) for synthetic measure/reset/local actions from QEC expansion.
@@ -42,6 +42,11 @@ const QEC_LOCAL_GATE_DURATION_US: u64 = 1;
 
 /// Durable round-barrier Wait duration (µs). Survives [`crate::lower::lower_schedule`].
 const QEC_ROUND_BARRIER_WAIT_US: u64 = 1;
+
+/// Wall-clock elapsed microseconds since `start` (saturating on overflow).
+fn elapsed_us(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
 
 /// Expand a [`QecWorkload`] and schedule it with per-round planners + barriers.
 pub fn run_from_qec_workload(
@@ -62,6 +67,8 @@ fn schedule_expanded(
     let code_blocks = code_blocks_from_expanded(expanded);
     let all_atoms = all_physical_atoms(expanded);
     let logical_qubits = expanded.blocks.len() as u64;
+    let pipeline_started = Instant::now();
+    let mut stage_acc = QecStageAccumulator::default();
 
     let mut all_layers: Vec<ScheduleLayer> = Vec::new();
     let mut combined_interactions: Vec<Interaction<AtomVertexId>> = Vec::new();
@@ -77,6 +84,7 @@ fn schedule_expanded(
             opts,
             &mut next_interaction_id,
             &mut shared_layout,
+            &mut stage_acc,
         )?;
 
         if let Some(segment) = round_segment {
@@ -122,6 +130,13 @@ fn schedule_expanded(
         layout: shared_layout,
     };
 
+    let mut compaction_config = CompactionConfig {
+        requested: opts.compact,
+        applied: false,
+        greedy: false,
+        legality_checked: false,
+    };
+    let mut compaction_us = None;
     if opts.compact && !req.layers.is_empty() {
         let mut deps = infer_atom_dependencies(&req.layers);
         // Lattice-surgery measure → subsequent phase FeedForward edges
@@ -150,7 +165,12 @@ fn schedule_expanded(
             legality: None,
             greedy: true,
         };
+        let stage_started = Instant::now();
         let compacted = compact_schedule(req.clone(), &deps, &compact_opts)?;
+        compaction_us = Some(elapsed_us(stage_started));
+        compaction_config.applied = true;
+        compaction_config.greedy = compact_opts.greedy;
+        compaction_config.legality_checked = compact_opts.arch.is_some();
         if opts.dump_ir {
             eprintln!(
                 "--- QEC after compaction ---\nlayers={}",
@@ -160,6 +180,7 @@ fn schedule_expanded(
         req = compacted.request;
     }
 
+    let stage_started = Instant::now();
     let mut report = build_resource_report(&req.layers, Some(&code_blocks), None)?;
     // Distance ownership: `with_code_blocks` via `CodeFamily::distance()`.
     report.memory_rounds = Some(expanded.memory_round_count() as u64);
@@ -177,17 +198,43 @@ fn schedule_expanded(
     // (`pipeline::finish_pipeline`); `NeutralAtomTarget::fidelity` is
     // mandatory, so this always applies once a target is available.
     let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
+    let resource_report_us = elapsed_us(stage_started);
 
     let req = project_request_to_logical(req);
+
+    // Stage stats — issue #317 / #307. The QEC path now populates NaStats the
+    // same way as `run_from_graph`, using the shared `plan_backend` timings
+    // accumulated across all CNOT phases.
+    let stats = NaStats {
+        kind: crate::stats::NA_STATS_KIND.to_string(),
+        schema_version: crate::stats::NA_STATS_SCHEMA_VERSION,
+        version: Default::default(),
+        config: EffectiveConfig {
+            backend: opts.backend,
+            placer_mode: stage_acc.placer_mode,
+            placement_strategy: stage_acc.placement_strategy,
+            compaction: compaction_config,
+        },
+        stage_timings_us: StageTimingsUs {
+            extract_us: None,
+            schedule_from_graph_us: stage_acc.schedule_from_graph_us,
+            entangling_layers_us: stage_acc.entangling_layers_us,
+            zoned_schedule_us: stage_acc.zoned_schedule_us,
+            placement_us: stage_acc.placement_us,
+            movement_us: stage_acc.movement_us,
+            compaction_us,
+            resource_report_us,
+            total_us: elapsed_us(pipeline_started),
+        },
+        search: stage_acc.search_diagnostics,
+    };
 
     Ok(NaScheduleArtifacts {
         layers: req.layers.clone(),
         resource_report: report,
         logical_qubits: logical_qubits.max(1),
         request: req,
-        // Per-round loop is a distinct pipeline shape from `run_from_graph`
-        // (issue #307 scope: instrument the single-pass pipeline first).
-        stats: None,
+        stats: Some(stats),
     })
 }
 
@@ -217,6 +264,7 @@ fn schedule_round(
     opts: NaScheduleOptions,
     next_interaction_id: &mut u32,
     shared_layout: &mut Option<NeutralAtomLayout>,
+    stage_acc: &mut QecStageAccumulator,
 ) -> Result<RoundScheduleParts, NaPipelineError<AtomVertexId>> {
     if round.z_cnot_count > round.entangling.len() {
         return Err(NaPipelineError::InvalidZCnotCount {
@@ -241,6 +289,7 @@ fn schedule_round(
             opts,
             next_interaction_id,
             shared_layout,
+            stage_acc,
         )?;
         layers.extend(phase_layers);
         interactions.extend(phase_interactions);
@@ -257,6 +306,7 @@ fn schedule_round(
             opts,
             next_interaction_id,
             shared_layout,
+            stage_acc,
         )?;
         layers.extend(phase_layers);
         interactions.extend(phase_interactions);
@@ -284,6 +334,7 @@ fn schedule_cnot_phase(
     opts: NaScheduleOptions,
     next_interaction_id: &mut u32,
     shared_layout: &mut Option<NeutralAtomLayout>,
+    stage_acc: &mut QecStageAccumulator,
 ) -> Result<CnotScheduleParts, NaPipelineError<AtomVertexId>> {
     let (round_interactions, round_ids) = cnots_to_interactions(cnots, next_interaction_id)?;
     let segment = InteractionSegment {
@@ -291,37 +342,36 @@ fn schedule_cnot_phase(
         interactions: round_ids.clone(),
     };
     let graph = cnot_graph(all_atoms, &round_interactions, segment)?;
+
+    let stage_started = Instant::now();
     let req = schedule_from_graph(graph)?;
+    let schedule_from_graph_us = elapsed_us(stage_started);
+
     let max_pairs = na.interaction.max_parallel_entangling_pairs;
+    let stage_started = Instant::now();
     let scheduled = schedule_entangling_layers(req, max_pairs)?;
-    let mut round_req = GraphScheduleRequest {
+    let entangling_layers_us = elapsed_us(stage_started);
+
+    let round_req = GraphScheduleRequest {
         graph: scheduled.request.graph,
         layers: scheduled.request.layers,
         layout: shared_layout.clone(),
     };
 
-    round_req = match opts.backend {
-        NaBackendKind::Zoned => {
-            let arch = zoned_architecture(na);
-            schedule_zoned_with_aware_params(round_req, &arch, opts.placer, opts.aware_search)?
-                .request
-        }
-        NaBackendKind::FlatAod => {
-            if round_req.layout.is_none() {
-                round_req = place(round_req, opts.placement)?.request;
-            }
-            let params = movement_params(na);
-            plan_aod_movement(round_req, &params)?.request
-        }
-    };
+    // Shared place/AOD (or zoned) backend stage — issue #317. Same entry
+    // point as `pipeline::finish_pipeline`.
+    let (planned_req, backend_info) = plan_backend(round_req, na, opts)?;
+
+    stage_acc.accumulate_phase(schedule_from_graph_us, entangling_layers_us, &backend_info);
+
     if opts.dump_ir {
         eprintln!(
             "--- QEC CX phase after movement ---\nlayers={}",
-            round_req.layers.len()
+            planned_req.layers.len()
         );
     }
-    *shared_layout = round_req.layout.clone();
-    Ok((round_req.layers, round_interactions, round_ids))
+    *shared_layout = planned_req.layout.clone();
+    Ok((planned_req.layers, round_interactions, round_ids))
 }
 
 fn append_local_gate_layers(layers: &mut Vec<ScheduleLayer>, ops: &[quon_qec::RoundLocalOp]) {
