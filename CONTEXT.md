@@ -65,7 +65,7 @@ _Avoid_: circ dialect, unitary dialect
 **quantum.dynamic**: The dynamic circuit MLIR dialect. Adds measurement (`!qubit → !bit`), reset, feed-forward (`cf.cond_br` on `!bit`), and barrier ops. Unitary sub-circuits are embedded as `unitary_region` blocks containing only `quantum.circ` ops.
 _Avoid_: dynamic dialect, measurement dialect
 
-**quantum.physical**: Not a separate dialect — `quantum.dynamic` ops annotated with hardware attributes (`phys_qubit`, `native_gate`, `fidelity`). Routing and scheduling modify these attributes in place.
+**quantum.physical**: Not a separate dialect — `quantum.dynamic` ops annotated with hardware attributes (`phys_qubit`, `native_gate`, `fidelity`). For the Fixed path, **SSA qubit wiring is the canonical layout identity** (ADR-0034): SABRE rewrites operands and inserts SWAPs, and both OpenQASM emit and depth scheduling derive qubit identity from this SSA wiring (WireTracker roots). The `phys_qubit` attr is a derived annotation (written by SABRE from its `Layout`), never a second source of truth — corrupting it after routing leaves emit and scheduling unchanged. Neutral-atom scheduling is separate (`quantum.na` / `ScheduleSpec`, ADR-0007/0011).
 _Avoid_: physical dialect, hardware dialect
 
 ### Backend
