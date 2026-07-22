@@ -54,7 +54,7 @@ fn circ_fixpoint_cancels_hh_without_quonc() {
 
 #[test]
 fn fixed_physical_runs_on_emptyish_module() {
-    // Dynamic + physical on a circ-only module: monadic lowering is out of scope
+    // Dynamic + physical on a circ-only module: lowering is out of scope
     // here; just ensure the physical orchestration entry point is callable.
     let context = context();
     let module = Module::new(Location::unknown(&context));

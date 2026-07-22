@@ -1,6 +1,10 @@
 // Measurement deferral test (issue #22).
 //
-// RUN: %monadic-lower < %s | %measurement-defer | FileCheck %s
+// The staging dialect was collapsed (#213 / ADR-0037): `lower` now emits
+// `quantum.dynamic` IR directly, so this fixture is already in the dynamic
+// form the old `quantum.circ.run` staging + monadic-lowering pass produced.
+//
+// RUN: %measurement-defer < %s | FileCheck %s
 
 module {
   // CHECK-NOT: "quantum.dynamic.if"
@@ -22,10 +26,13 @@ module {
   %meas = "test.qubit"() : () -> !quantum.qubit
   %tgt = "test.qubit"() : () -> !quantum.qubit
 
-  "quantum.circ.run"(%meas, %tgt) ({
-  ^bb0(%q0: !quantum.qubit, %q1: !quantum.qubit):
-    %b = "quantum.circ.measure"(%q0) : (!quantum.qubit) -> !quantum.bit
-    %out = "quantum.circ.cond_apply"(%b, %q1) {else_callee = "identity_1", then_callee = "X_1"} : (!quantum.bit, !quantum.qubit) -> !quantum.qubit
-    "quantum.circ.yield"(%out) : (!quantum.qubit) -> ()
-  }) : (!quantum.qubit, !quantum.qubit) -> ()
+  %b = "quantum.dynamic.measure"(%meas) : (!quantum.qubit) -> !quantum.bit
+  %out = "quantum.dynamic.if"(%b, %tgt) ({
+  ^bb0(%q0: !quantum.qubit):
+    %x = "quantum.circ.gate"(%q0) {clifford = true, depth_contribution = 1 : i64, gate_name = "X"} : (!quantum.qubit) -> !quantum.qubit
+    "quantum.dynamic.yield"(%x) : (!quantum.qubit) -> ()
+  }, {
+  ^bb0(%q1: !quantum.qubit):
+    "quantum.dynamic.yield"(%q1) : (!quantum.qubit) -> ()
+  }) : (!quantum.bit, !quantum.qubit) -> !quantum.qubit
 }

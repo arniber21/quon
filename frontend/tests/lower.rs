@@ -127,7 +127,7 @@ fn controlled_unsupported_body_is_diagnostic() {
 }
 
 #[test]
-fn qec_repetition_lowers_to_staging_ops() {
+fn qec_repetition_lowers_to_dynamic_ops() {
     let src = r#"
 fn main(): Q<Bit> = run {
   b <- repetition_code<3>()
@@ -137,25 +137,30 @@ fn main(): Q<Bit> = run {
 "#;
     let text = lower_text(src);
     assert!(
-        text.contains("quantum.circ.qec_construct"),
+        text.contains("quantum.dynamic.qec_construct"),
         "missing construct: {text}"
     );
     assert!(
-        text.contains("quantum.circ.qec_memory_round"),
+        text.contains("quantum.dynamic.qec_memory_round"),
         "missing memory_round: {text}"
     );
     assert!(
-        text.contains("quantum.circ.qec_measure_logical"),
+        text.contains("quantum.dynamic.qec_measure_logical"),
         "missing measure: {text}"
     );
     assert!(text.contains(r#"family = "repetition""#), "{text}");
     assert!(text.contains("distance = 3"), "{text}");
+    // No staging ops survive lowering (#213 / ADR-0037).
+    assert!(!text.contains("quantum.circ.run"), "staging run op leaked: {text}");
+    assert!(
+        !text.contains("quantum.circ.qec_"),
+        "staging qec op leaked: {text}"
+    );
 }
 
 #[test]
-fn qec_workload_extracts_after_monadic_lowering() {
+fn qec_workload_extracts_after_lowering() {
     use mlir_bridge::collect_qec_workload;
-    use mlir_bridge::passes::monadic_lowering;
     use quon_qec::{CodeFamily, LogicalBasis, LogicalQubitId, SourceFamily, WorkloadOp};
 
     let src = r#"
@@ -168,7 +173,6 @@ fn main(): Q<Bit> = run {
 "#;
     let context = Context::new();
     let module = lower_program(&context, src).expect("lower");
-    monadic_lowering::run_on_module(&context, &module).expect("monadic");
     let workload = collect_qec_workload(&module).expect("collect");
     assert_eq!(workload.blocks.len(), 1);
     assert_eq!(workload.blocks[0].family, SourceFamily::Repetition);
@@ -189,7 +193,6 @@ fn main(): Q<Bit> = run {
 #[test]
 fn qec_surface_workload_extracts_with_logical_cx() {
     use mlir_bridge::collect_qec_workload;
-    use mlir_bridge::passes::monadic_lowering;
     use quon_qec::{CodeFamily, LogicalBasis, LogicalQubitId, SourceFamily, WorkloadOp};
 
     let src = r#"
@@ -204,7 +207,6 @@ fn main(): Q<(Bit, Bit)> = run {
 "#;
     let context = Context::new();
     let module = lower_program(&context, src).expect("lower");
-    monadic_lowering::run_on_module(&context, &module).expect("monadic");
     let workload = collect_qec_workload(&module).expect("collect");
     assert_eq!(workload.blocks.len(), 2);
     let a = &workload.blocks[0];
@@ -246,4 +248,56 @@ fn main(): Q<(Bit, Bit)> = run {
             },
         ]
     );
+}
+
+/// Collapsing the staging dialect (#213 / ADR-0037) means `lower` emits
+/// `quantum.dynamic` IR directly — no `quantum.circ.run` / `qreg` / `apply` /
+/// `cond_apply` / `yield` staging ops should ever reach the module.
+#[test]
+fn lowered_ir_has_no_staging_ops() {
+    let src = r#"
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit { H @0 |> CNOT @(0, 1) }
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- bell_state() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+}
+"#;
+    let text = lower_text(src);
+    // Dynamic IR is produced directly.
+    assert!(text.contains("quantum.dynamic.unitary_region"), "{text}");
+    assert_eq!(text.matches("quantum.dynamic.measure").count(), 2, "{text}");
+    assert!(text.contains("test.qubit"), "{text}");
+    // No staging ops survive lowering.
+    for staging in [
+        "quantum.circ.run",
+        "quantum.circ.qreg",
+        "quantum.circ.apply",
+        "quantum.circ.cond_apply",
+        "quantum.circ.yield",
+        "quantum.circ.measure",
+    ] {
+        assert!(!text.contains(staging), "{staging} leaked into lowered IR: {text}");
+    }
+}
+
+/// Feed-forward (`if cond then C else D @ q`) lowers to a `quantum.dynamic.if`
+/// with both branches inlined as circ-only `unitary_region`-style bodies.
+#[test]
+fn conditional_application_lowers_to_dynamic_if() {
+    let src = r#"
+fn x_gate(): Circuit<1, 1, 1, Clifford> = circuit { X @0 }
+fn id_one(): Circuit<1, 1, 1, Clifford> = circuit { I @0 }
+fn main(): Q<Bit> = run {
+    (q, r) <- qreg(2)
+    b <- measure(q)
+    c <- (if b then x_gate() else id_one()) @ r
+    measure(c)
+}
+"#;
+    let text = lower_text(src);
+    assert!(text.contains("quantum.dynamic.if"), "{text}");
+    assert!(!text.contains("quantum.circ.cond_apply"), "{text}");
+    assert!(!text.contains("quantum.circ.run"), "{text}");
 }

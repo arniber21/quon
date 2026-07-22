@@ -56,7 +56,7 @@ pub enum EmitError {
     InvalidProgram(#[from] qasm::QasmError),
 }
 
-// ─── Melior helpers (mirror monadic_lowering.rs) ─────────────────────────────
+// ─── Melior helpers (mirror lowering.rs) ─────────────────────────────
 
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
     operation
@@ -98,7 +98,7 @@ fn qubit_operands<'c, 'a>(operation: OperationRef<'c, 'a>) -> Vec<Value<'c, 'a>>
 }
 
 /// True iff `operation` allocates fresh qubits: no operands, ≥1 result, all
-/// results qubit-typed (the shape monadic lowering's `test.qubit` / a future
+/// results qubit-typed (the shape lowering's `test.qubit` / a future
 /// `qreg` op produces).
 fn is_allocation<'c, 'a>(operation: OperationRef<'c, 'a>) -> bool {
     let results: Vec<_> = operation.results().collect();
@@ -324,7 +324,7 @@ fn thread_results(
     }
 }
 
-/// Reify a monadic-lowered `quantum.dynamic` module into a typed [`Program`].
+/// Reify a lowered `quantum.dynamic` module into a typed [`Program`].
 pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitError> {
     let Some(top) = module
         .as_operation()
@@ -442,7 +442,7 @@ pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitErr
     Ok(program)
 }
 
-/// Emit OpenQASM 3.0 text for a monadic-lowered module on `target`.
+/// Emit OpenQASM 3.0 text for a lowered module on `target`.
 pub fn emit(module: &Module, target: &BackendTarget) -> Result<String, EmitError> {
     Ok(qasm::render(&reify(module, target)?))
 }

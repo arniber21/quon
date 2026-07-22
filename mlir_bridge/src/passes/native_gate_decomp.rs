@@ -248,7 +248,7 @@ fn decompose_gate<'c, 'a>(
 /// boundaries (see the analogous walk in `sabre_routing`/`depth_scheduling`).
 ///
 /// This must reach the module's own top-level block, not just named
-/// `quantum.circ.func`s: after `monadic_lowering`, the executed program's body
+/// `quantum.circ.func`s: after lowering, the executed program's body
 /// (originally the `main` run block) is bare top-level ops, not wrapped in a
 /// func — only leftover, since-inlined circuit function *definitions* still
 /// use `quantum.circ.func`.

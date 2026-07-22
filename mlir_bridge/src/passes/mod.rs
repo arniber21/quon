@@ -12,7 +12,7 @@
 //!   4. compiler_uncomputation
 //!   5. zx_simplification
 //!
-//! monadic_lowering → quantum.dynamic:
+//! lower → quantum.dynamic (direct; no staging pass — #213 / ADR-0037):
 //!   6. measurement_deferral
 //!   7. classical_region_fusion
 //!
@@ -39,7 +39,6 @@ pub mod dynamic_linearity_verifier;
 pub mod gate_cancellation;
 pub mod linearity_verifier;
 pub mod measurement_deferral;
-pub mod monadic_lowering;
 pub mod native_gate_decomp;
 pub mod phase_polynomial;
 pub(crate) mod qubit_wiring;

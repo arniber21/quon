@@ -1,6 +1,6 @@
 //! Circuit metrics collection from lowered MLIR modules.
 //!
-//! Walks the executed top-level program path (post-`monadic_lowering`) with
+//! Walks the executed top-level program path (post-lowering) with
 //! [`crate::dynamic_walk`], the same shared walker
 //! [`crate::passes::depth_scheduling`] uses. For programs with
 //! `quantum.dynamic.if`, **both** branches are counted (conservative upper
@@ -139,7 +139,7 @@ pub fn collect_module_metrics(module: &Module<'_>, _target: &BackendTarget) -> C
     let visits = visits_from_module(module);
     let mut metrics = aggregate_visits(&visits, true);
     // Symbolic depth bounds live on dead `quantum.circ.func` wrappers; the
-    // executed program after monadic lowering has no meaningful bound.
+    // executed program after lowering has no meaningful bound.
     metrics.depth_bound = None;
     metrics
 }

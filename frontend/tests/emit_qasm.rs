@@ -1,23 +1,21 @@
 //! End-to-end backend tests (issues #27, #29).
 //!
 //! These check the **tree**: compiling real source through frontend lowering →
-//! monadic lowering → `reify` must produce an exact `quon_core::qasm::Program`,
-//! asserted by object comparison. Codegen — turning a `Program` into OpenQASM
-//! text — is tested separately as exact-string assertions in `quon_core::qasm`.
-//! Together they pin both halves of emission independently.
+//! `reify` must produce an exact `quon_core::qasm::Program`, asserted by object
+//! comparison. Codegen — turning a `Program` into OpenQASM text — is tested
+//! separately as exact-string assertions in `quon_core::qasm`. Together they pin
+//! both halves of emission independently.
 //!
 //! Reify builds registry-backed [`QasmGate::Std1`] / [`Std2`] forms (issue #209).
 
 use backend::generic_openqasm;
 use mlir_bridge::emit::openqasm3;
-use mlir_bridge::passes::monadic_lowering;
 use quon_core::qasm::{Expr, Program, QasmError, QasmGate, Stmt};
 
 /// Compile a Quon source string to the reified QASM syntax tree.
 fn reify(src: &str) -> Program {
     let context = melior::Context::new();
     let module = frontend::lower::lower_program(&context, src).expect("lower program");
-    monadic_lowering::run_on_module(&context, &module).expect("monadic lowering");
     openqasm3::reify(&module, &generic_openqasm::target(8)).expect("reify")
 }
 
