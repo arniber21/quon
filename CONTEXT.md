@@ -46,7 +46,7 @@ _Avoid_: tensor, parallel, par
 _Avoid_: monomorphization, template instantiation
 
 
-**CircIr**: The Melior-free flat gate+wire IR produced by extracting a `quantum.circ` region and consumed by unitary optimization kernels (ZX rewriting, Clifford+T). Rebuilt back to verified `quantum.circ` ops. Owned by the `quon_circ` crate; `mlir_bridge` only adapts Melior ↔ CircIr. Distinct from the source-elaboration **SpecializedCircuit** and from **ZX-graph** (spider algebra on petgraph).
+**CircIr**: The Melior-free flat gate+wire IR produced by extracting a `quantum.circ` region and consumed by unitary optimization kernels (ZX rewriting, Clifford+T). Rebuilt back to verified `quantum.circ` ops. The extract/rebuild seam lives in `mlir_bridge::circ_extract` (ADR-0033, #320): `extract` tracks logical wire indices through SSA via `WireTracker`, canonicalizes gate names through the gate registry (#209), and **fails closed** (returns `Err`) on unsupported constructs — never silent drop. ZX (#75) and Clifford+T (#96) call this seam; they do not own Melior walking. Distinct from the source-elaboration **SpecializedCircuit** and from **ZX-graph** (spider algebra on petgraph).
 _Avoid_: extracted circuit, pass IR, gate list (unqualified)
 
 **SpecializedCircuit**: The Melior-free first-order gate tree (enum: Compose / GateApp / Adjoint / Par / …) produced by parametric specialization in the frontend. Lower’s input after classical parameters are gone. Lives in the frontend crate; not CircIr.

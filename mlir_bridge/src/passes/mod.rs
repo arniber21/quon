@@ -23,6 +23,10 @@
 //!  11. depth_scheduling
 //! ```
 //!
+//! `zx_simplification` (#4) and the future `clifford_t_opt` (#5) both extract
+//! `quantum.circ.func` bodies through the shared [`crate::circ_extract`] seam
+//! (ADR-0033, #320) — they do not own Melior walking.
+//!
 //! See SPEC.md §7.1 for the normative pipeline description; physical steps 8–10
 //! in the SPEC text differ slightly from the implemented pre-route decomp +
 //! post-SWAP decomp sequence above — callers must use [`crate::pipeline`].
