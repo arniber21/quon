@@ -1,7 +1,15 @@
 //! Compile metrics wire types, snapshot persistence, and regression comparison.
 //!
-//! This module is MLIR-free so snapshot/compare logic can be unit-tested without
-//! linking LLVM.
+//! This module is the **snapshot/regression DTO** of the compiler — the
+//! `MetricsSnapshot` / `ComparisonReport` wire types, the `MetricTolerances`
+//! regression gate, and the pure snapshot save/load/compare logic. It is
+//! MLIR-free so snapshot/compare can be unit-tested without linking LLVM.
+//!
+//! The *metric collector* — the pass that walks the IR to populate
+//! [`CircuitMetrics`] — does **not** live here; it lives in `mlir_bridge`,
+//! next to the IR it inspects. `quon_core::metrics` owns only the DTO and its
+//! pure tests; collecting, emit, and CLI wiring stay in their owning crates.
+//! See the `quon_core` glossary entry in CONTEXT.md.
 
 use std::collections::HashSet;
 use std::fmt;
