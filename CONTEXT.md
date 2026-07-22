@@ -130,7 +130,7 @@ _Avoid_: transversal CX (for this op), lattice surgery (unqualified as the whole
 **Logical qubit**: A backend/IR-level identifier for one encoded logical qubit after QEC lowering, used to track its expansion into atoms. Owned as `quon_qec::LogicalQubitId` and re-exported from `quon_na` (graph / qec). Distinct from the source-level `QecBlock` (the typed resource) and from bare `Qubit`.
 _Avoid_: QEC qubit
 
-**Atom**: A single physical site occupant in the neutral-atom architecture-aware schedule — the physical unit that a code block expands into. Exists only in the neutral-atom backend (`quon_na`), below the frontend's linear type system.
+**Atom**: A single physical site occupant in the neutral-atom architecture-aware schedule — the physical unit that a code block expands into. Exists only in the neutral-atom backend (`quon_na`), below the frontend's linear type system. The hybrid QEC interaction graph (`qec_schedule`) is atom-indexed via `AtomVertexId`, a newtype distinct from `LogicalQubitId` so placers/schedulers name physical atoms rather than casting (ADR-0029, #318).
 _Avoid_: physical qubit
 
 **Code block**: The backend expansion of a source `QecBlock` into a group of atoms jointly implementing one or more logical qubits under a given code family. Produced during neutral-atom/QEC lowering; not a source-language type.
