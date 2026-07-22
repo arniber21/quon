@@ -5,11 +5,11 @@
 
 mod equiv_harness;
 
-use equiv_harness::circuit_spec::{circuit_strategy, GateInst, GateKind};
+use equiv_harness::CircuitSpec;
+use equiv_harness::circuit_spec::{GateInst, GateKind, circuit_strategy};
 use equiv_harness::extract::extract_func_circuit;
 use equiv_harness::lower::{context, lower_func_module, prop_config, read_func_op};
 use equiv_harness::statevector::{TOL, circuits_equiv};
-use equiv_harness::CircuitSpec;
 
 use mlir_bridge::circ_extract;
 use proptest::prelude::*;

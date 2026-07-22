@@ -146,10 +146,7 @@ fn read_i64_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str)
         .map(|integer| integer.value())
 }
 
-fn read_bool_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
-    operation: &O,
-    key: &str,
-) -> Option<bool> {
+fn read_bool_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str) -> Option<bool> {
     let value = operation.attribute(key).ok()?;
     BoolAttribute::try_from(value)
         .ok()
@@ -194,8 +191,8 @@ pub fn extract<'c, 'a>(func: OperationRef<'c, 'a>) -> Result<CircIr, SeamError> 
             return Err(SeamError::UnsupportedConstruct(name));
         }
 
-        let gate_name =
-            read_string_attr(&current, attr::GATE_NAME).ok_or(SeamError::MissingAttr(attr::GATE_NAME))?;
+        let gate_name = read_string_attr(&current, attr::GATE_NAME)
+            .ok_or(SeamError::MissingAttr(attr::GATE_NAME))?;
         let info = gates::lookup(&gate_name).ok_or(SeamError::UnknownGate(gate_name.clone()))?;
         let operand_count = current.operand_count();
         if operand_count != info.arity {
@@ -210,8 +207,8 @@ pub fn extract<'c, 'a>(func: OperationRef<'c, 'a>) -> Result<CircIr, SeamError> 
         let angle = read_f64_attr(&current, attr::ANGLE);
         let depth_contribution = read_i64_attr(&current, attr::DEPTH_CONTRIBUTION)
             .ok_or(SeamError::MissingAttr(attr::DEPTH_CONTRIBUTION))?;
-        let clifford =
-            read_bool_attr(&current, attr::CLIFFORD).ok_or(SeamError::MissingAttr(attr::CLIFFORD))?;
+        let clifford = read_bool_attr(&current, attr::CLIFFORD)
+            .ok_or(SeamError::MissingAttr(attr::CLIFFORD))?;
 
         gates.push(CircGate {
             name: info.id.to_string(),
@@ -260,10 +257,7 @@ pub fn rebuild<'c, 'a>(
     for gate in &circ.gates {
         for &index in &gate.qubits {
             if index >= n_qubits {
-                return Err(SeamError::WireOutOfRange {
-                    index,
-                    n_qubits,
-                });
+                return Err(SeamError::WireOutOfRange { index, n_qubits });
             }
         }
         if gate.angle.is_some() && gate.qubits.len() != 1 {
@@ -328,8 +322,8 @@ pub fn rebuild<'c, 'a>(
     // Insert the new terminator, then erase the old terminator and gates.
     // The new gates read block arguments only, so erasing the old ops (deepest
     // first) can never strand a live use.
-    let new_return = quantum_circ::r#return(&wires, location)
-        .map_err(|e| SeamError::Build(e.to_string()))?;
+    let new_return =
+        quantum_circ::r#return(&wires, location).map_err(|e| SeamError::Build(e.to_string()))?;
     block.insert_operation_before(return_op, new_return);
     let rewriter = IrRewriter::new(context);
     let base = rewriter.as_rewriter_base();
@@ -361,8 +355,8 @@ pub fn circ_gate_to_gate_ref(gate: &CircGate) -> zx::GateRef {
 /// `depth_contribution` to 1 (one gate per step). Used by the ZX
 /// simplification pass to feed ZX results back through [`rebuild`].
 pub fn gate_ref_to_circ_gate(gate: &zx::GateRef) -> CircGate {
-    let clifford = gates::lookup(&gate.name)
-        .is_some_and(|info| info.class == gates::GateClass::Clifford);
+    let clifford =
+        gates::lookup(&gate.name).is_some_and(|info| info.class == gates::GateClass::Clifford);
     CircGate {
         name: gate.name.clone(),
         qubits: gate.qubits.clone(),
@@ -474,10 +468,26 @@ mod tests {
             &context,
             1,
             &[
-                TestGate { name: "H", qubits: vec![0], angle: None },
-                TestGate { name: "X", qubits: vec![0], angle: None },
-                TestGate { name: "H", qubits: vec![0], angle: None },
-                TestGate { name: "Z", qubits: vec![0], angle: None },
+                TestGate {
+                    name: "H",
+                    qubits: vec![0],
+                    angle: None,
+                },
+                TestGate {
+                    name: "X",
+                    qubits: vec![0],
+                    angle: None,
+                },
+                TestGate {
+                    name: "H",
+                    qubits: vec![0],
+                    angle: None,
+                },
+                TestGate {
+                    name: "Z",
+                    qubits: vec![0],
+                    angle: None,
+                },
             ],
         );
         let func = func_op(&module);
@@ -500,9 +510,21 @@ mod tests {
             &context,
             1,
             &[
-                TestGate { name: "Rz", qubits: vec![0], angle: Some(0.5) },
-                TestGate { name: "Rx", qubits: vec![0], angle: Some(0.3) },
-                TestGate { name: "Rz", qubits: vec![0], angle: Some(0.7) },
+                TestGate {
+                    name: "Rz",
+                    qubits: vec![0],
+                    angle: Some(0.5),
+                },
+                TestGate {
+                    name: "Rx",
+                    qubits: vec![0],
+                    angle: Some(0.3),
+                },
+                TestGate {
+                    name: "Rz",
+                    qubits: vec![0],
+                    angle: Some(0.7),
+                },
             ],
         );
         let func = func_op(&module);
@@ -523,9 +545,21 @@ mod tests {
             &context,
             2,
             &[
-                TestGate { name: "H", qubits: vec![0], angle: None },
-                TestGate { name: "CNOT", qubits: vec![0, 1], angle: None },
-                TestGate { name: "H", qubits: vec![1], angle: None },
+                TestGate {
+                    name: "H",
+                    qubits: vec![0],
+                    angle: None,
+                },
+                TestGate {
+                    name: "CNOT",
+                    qubits: vec![0, 1],
+                    angle: None,
+                },
+                TestGate {
+                    name: "H",
+                    qubits: vec![1],
+                    angle: None,
+                },
             ],
         );
         let func = func_op(&module);
@@ -546,10 +580,26 @@ mod tests {
             &context,
             2,
             &[
-                TestGate { name: "CZ", qubits: vec![0, 1], angle: None },
-                TestGate { name: "H", qubits: vec![0], angle: None },
-                TestGate { name: "H", qubits: vec![1], angle: None },
-                TestGate { name: "CZ", qubits: vec![1, 0], angle: None },
+                TestGate {
+                    name: "CZ",
+                    qubits: vec![0, 1],
+                    angle: None,
+                },
+                TestGate {
+                    name: "H",
+                    qubits: vec![0],
+                    angle: None,
+                },
+                TestGate {
+                    name: "H",
+                    qubits: vec![1],
+                    angle: None,
+                },
+                TestGate {
+                    name: "CZ",
+                    qubits: vec![1, 0],
+                    angle: None,
+                },
             ],
         );
         let func = func_op(&module);
@@ -567,10 +617,26 @@ mod tests {
             &context,
             3,
             &[
-                TestGate { name: "SWAP", qubits: vec![0, 1], angle: None },
-                TestGate { name: "CNOT", qubits: vec![1, 2], angle: None },
-                TestGate { name: "SWAP", qubits: vec![2, 0], angle: None },
-                TestGate { name: "H", qubits: vec![1], angle: None },
+                TestGate {
+                    name: "SWAP",
+                    qubits: vec![0, 1],
+                    angle: None,
+                },
+                TestGate {
+                    name: "CNOT",
+                    qubits: vec![1, 2],
+                    angle: None,
+                },
+                TestGate {
+                    name: "SWAP",
+                    qubits: vec![2, 0],
+                    angle: None,
+                },
+                TestGate {
+                    name: "H",
+                    qubits: vec![1],
+                    angle: None,
+                },
             ],
         );
         let func = func_op(&module);
@@ -606,8 +672,16 @@ mod tests {
             &context,
             2,
             &[
-                TestGate { name: "CNOT", qubits: vec![0, 1], angle: None },
-                TestGate { name: "H", qubits: vec![1], angle: None },
+                TestGate {
+                    name: "CNOT",
+                    qubits: vec![0, 1],
+                    angle: None,
+                },
+                TestGate {
+                    name: "H",
+                    qubits: vec![1],
+                    angle: None,
+                },
             ],
         );
         let func = func_op(&module);
@@ -625,10 +699,26 @@ mod tests {
             &context,
             3,
             &[
-                TestGate { name: "H", qubits: vec![0], angle: None },
-                TestGate { name: "CNOT", qubits: vec![0, 1], angle: None },
-                TestGate { name: "CNOT", qubits: vec![1, 2], angle: None },
-                TestGate { name: "H", qubits: vec![2], angle: None },
+                TestGate {
+                    name: "H",
+                    qubits: vec![0],
+                    angle: None,
+                },
+                TestGate {
+                    name: "CNOT",
+                    qubits: vec![0, 1],
+                    angle: None,
+                },
+                TestGate {
+                    name: "CNOT",
+                    qubits: vec![1, 2],
+                    angle: None,
+                },
+                TestGate {
+                    name: "H",
+                    qubits: vec![2],
+                    angle: None,
+                },
             ],
         );
         let func = func_op(&module);
@@ -649,7 +739,11 @@ mod tests {
         let module = build_module(
             &context,
             2,
-            &[TestGate { name: "CX", qubits: vec![0, 1], angle: None }],
+            &[TestGate {
+                name: "CX",
+                qubits: vec![0, 1],
+                angle: None,
+            }],
         );
         let func = func_op(&module);
         let circ = extract(func).expect("extract");
@@ -666,7 +760,11 @@ mod tests {
         let module = build_module(
             &context,
             1,
-            &[TestGate { name: "FOO", qubits: vec![0], angle: None }],
+            &[TestGate {
+                name: "FOO",
+                qubits: vec![0],
+                angle: None,
+            }],
         );
         let func = func_op(&module);
         let result = extract(func);
@@ -785,7 +883,10 @@ mod tests {
             }],
         };
         let result = rebuild(&context, func, &bad_circ);
-        assert!(matches!(result, Err(SeamError::WireOutOfRange { index: 5, .. })));
+        assert!(matches!(
+            result,
+            Err(SeamError::WireOutOfRange { index: 5, .. })
+        ));
     }
 
     #[test]

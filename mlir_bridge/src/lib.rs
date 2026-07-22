@@ -4,8 +4,8 @@
 
 #![allow(dead_code)]
 
-pub mod diagnostics;
 pub mod circ_extract;
+pub mod diagnostics;
 pub mod dialect;
 pub mod dynamic_walk;
 pub mod emit;
