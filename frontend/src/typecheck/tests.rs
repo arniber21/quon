@@ -6,6 +6,7 @@
 //! span-level and end-to-end behaviour is covered additionally in `tests/typecheck.rs`.
 
 use super::*;
+use crate::ast::CliffordClass;
 use crate::parse_program;
 
 /// Synthesize the body type of the last function in `src` (ignoring its return annotation).
