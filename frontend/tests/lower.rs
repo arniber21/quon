@@ -151,7 +151,10 @@ fn main(): Q<Bit> = run {
     assert!(text.contains(r#"family = "repetition""#), "{text}");
     assert!(text.contains("distance = 3"), "{text}");
     // No staging ops survive lowering (#213 / ADR-0037).
-    assert!(!text.contains("quantum.circ.run"), "staging run op leaked: {text}");
+    assert!(
+        !text.contains("quantum.circ.run"),
+        "staging run op leaked: {text}"
+    );
     assert!(
         !text.contains("quantum.circ.qec_"),
         "staging qec op leaked: {text}"
@@ -278,7 +281,10 @@ fn main(): Q<(Bit, Bit)> = run {
         "quantum.circ.yield",
         "quantum.circ.measure",
     ] {
-        assert!(!text.contains(staging), "{staging} leaked into lowered IR: {text}");
+        assert!(
+            !text.contains(staging),
+            "{staging} leaked into lowered IR: {text}"
+        );
     }
 }
 

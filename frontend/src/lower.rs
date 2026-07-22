@@ -8,8 +8,7 @@ use melior::Context;
 use melior::ir::attribute::{BoolAttribute, StringAttribute};
 use melior::ir::operation::{OperationBuilder, OperationLike};
 use melior::ir::{
-    Block, BlockLike, Identifier, Location, Module, Operation, Region, RegionLike,
-    Value, ValueLike,
+    Block, BlockLike, Identifier, Location, Module, Operation, Region, RegionLike, Value, ValueLike,
 };
 use mlir_bridge::dialect::qec_dynamic;
 use mlir_bridge::dialect::quantum_circ as qc;
@@ -722,21 +721,23 @@ impl<'c> LoweringCtx<'c> {
         input_qubits: &[Value<'c, 'c>],
         yield_terminator: bool,
     ) -> Result<(Region<'c>, FuncMeta), LowerError> {
-        let meta = self
-            .func_meta
-            .get(callee)
-            .cloned()
-            .ok_or_else(|| LowerError::UnknownCallee { name: callee.to_string() })?;
+        let meta =
+            self.func_meta
+                .get(callee)
+                .cloned()
+                .ok_or_else(|| LowerError::UnknownCallee {
+                    name: callee.to_string(),
+                })?;
         let body = self
             .bodies
             .get(callee)
             .cloned()
-            .ok_or_else(|| LowerError::UnknownCallee { name: callee.to_string() })?;
+            .ok_or_else(|| LowerError::UnknownCallee {
+                name: callee.to_string(),
+            })?;
         let qubit = qc::qubit_type(self.context);
         let location = self.location;
-        let arg_types: Vec<_> = (0..input_qubits.len())
-            .map(|_| (qubit, location))
-            .collect();
+        let arg_types: Vec<_> = (0..input_qubits.len()).map(|_| (qubit, location)).collect();
         let mut block = Block::new(&arg_types);
         let mut wires: Vec<Value<'c, 'c>> = Vec::with_capacity(block.argument_count());
         for i in 0..block.argument_count() {
@@ -813,8 +814,13 @@ impl<'c> LoweringCtx<'c> {
     ) -> Result<Vec<Value<'c, 'c>>, LowerError> {
         let block_val = single_value(self.eval(arg, env)?)?;
         let logical_id = self.qec_id_of(block_val)?;
-        let op =
-            qec_dynamic::qec_measure_logical(self.context, block_val, basis, logical_id, self.location)?;
+        let op = qec_dynamic::qec_measure_logical(
+            self.context,
+            block_val,
+            basis,
+            logical_id,
+            self.location,
+        )?;
         self.append_dynamic_op(op, 1)
     }
 

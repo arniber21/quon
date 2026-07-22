@@ -15,7 +15,10 @@ use melior::{Context, ContextRef, IrRewriter};
 use mlir_sys::mlirOperationSetAttributeByName;
 use quon_core::DepthExpr;
 
-use crate::dialect::{quantum_circ::{self, attr}, quantum_dynamic};
+use crate::dialect::{
+    quantum_circ::{self, attr},
+    quantum_dynamic,
+};
 
 #[derive(Clone, Copy)]
 struct GateRef<'c, 'a> {
