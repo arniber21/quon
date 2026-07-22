@@ -6,8 +6,8 @@
 //! (see also [`crate::passes`] module docs):
 //!
 //! 1. **Circ fixpoint** ([`run_circ_passes_to_fixpoint`]) — `gate_cancellation`,
-//!    `rotation_merging`, `compiler_uncomputation`, `zx_simplification` to
-//!    fixpoint. `clifford_t_opt` is reserved for #96 and is **not** run (#214).
+//!    `rotation_merging`, `clifford_t_opt`, `compiler_uncomputation`,
+//!    `zx_simplification` to fixpoint (ADR-0013 / #96).
 //! 2. **Monadic lowering** — call [`crate::passes::monadic_lowering::run_on_module`]
 //!    (circ → dynamic).
 //! 3. **Dynamic passes** ([`run_dynamic_passes`]) — `measurement_deferral`,
@@ -33,8 +33,10 @@ use melior::ir::Module;
 
 use crate::emit::openqasm3;
 use crate::passes::{
-    classical_region_fusion, compiler_uncomputation, gate_cancellation, measurement_deferral,
-    rotation_merging, zx_simplification,
+    classical_region_fusion, clifford_t_opt, compiler_uncomputation, depth_scheduling,
+    gate_cancellation, measurement_deferral, native_gate_decomp, rotation_merging,
+    sabre_routing::{self, SabreCost},
+    zx_simplification,
 };
 
 // The Fixed physical pipeline (decomp → route → decomp → schedule) and its
@@ -42,16 +44,19 @@ use crate::passes::{
 // Fixed physical layout (ADR-0034). Re-exported here for call-site stability.
 pub use crate::fixed_physical::{FixedPhysicalResult, run_fixed_physical};
 
-/// Runs `quantum.circ` optimization passes to fixpoint (SPEC §7.1 passes 1–4).
+/// Runs `quantum.circ` optimization passes to fixpoint (SPEC §7.1, ADR-0013).
 ///
-/// `clifford_t_opt` is intentionally absent: #214 removed the shallow alias that
-/// only re-ran `gate_cancellation`. Real Clifford+T is #96.
+/// Fixpoint order: `gate_cancellation` → `rotation_merging` → `clifford_t_opt`
+/// → `compiler_uncomputation` → `zx_simplification`. The `clifford_t_opt` pass
+/// performs non-adjacent Clifford simplification (stabilizer tableau) and
+/// T-count reduction (phase polynomial) — see ADR-0013 / #96.
 pub fn run_circ_passes_to_fixpoint(context: &Context, module: &Module<'_>) {
     const MAX_ROUNDS: usize = 10;
     for _ in 0..MAX_ROUNDS {
         let before = module.as_operation().to_string();
         gate_cancellation::run_on_module(context, module);
         rotation_merging::run_on_module(context, module);
+        clifford_t_opt::run_on_module(context, module);
         compiler_uncomputation::run_on_module(context, module);
         zx_simplification::run_on_module(context, module);
         let after = module.as_operation().to_string();

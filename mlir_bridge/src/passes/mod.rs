@@ -8,9 +8,9 @@
 //! quantum.circ (fixpoint):
 //!   1. gate_cancellation
 //!   2. rotation_merging
-//!   3. compiler_uncomputation
-//!   4. zx_simplification
-//!   5. clifford_t_opt — RESERVED for #96 (not implemented; do not alias)
+//!   3. clifford_t_opt — phase polynomial + stabilizer tableau (#96, ADR-0013)
+//!   4. compiler_uncomputation
+//!   5. zx_simplification
 //!
 //! monadic_lowering → quantum.dynamic:
 //!   6. measurement_deferral
@@ -32,6 +32,7 @@
 //! post-SWAP decomp sequence above — callers must use [`crate::pipeline`].
 
 pub mod classical_region_fusion;
+pub mod clifford_t_opt;
 pub mod compiler_uncomputation;
 pub mod depth_scheduling;
 pub mod dynamic_linearity_verifier;
@@ -40,7 +41,9 @@ pub mod linearity_verifier;
 pub mod measurement_deferral;
 pub mod monadic_lowering;
 pub mod native_gate_decomp;
+pub mod phase_polynomial;
 pub(crate) mod qubit_wiring;
 pub mod rotation_merging;
 pub mod sabre_routing;
+pub mod stabilizer_tableau;
 pub mod zx_simplification;
