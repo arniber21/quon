@@ -19,8 +19,8 @@ use crate::compaction::{
 };
 use crate::entangling_schedule::schedule_entangling_layers;
 use crate::graph::{
-    DEFAULT_GAMMA, Interaction, InteractionGraph, InteractionId, InteractionSegment,
-    LogicalQubitId, SegmentKind,
+    AtomVertexId, DEFAULT_GAMMA, Interaction, InteractionEdge, InteractionGraph, InteractionId,
+    InteractionSegment, LogicalQubitId, SegmentKind,
 };
 use crate::layout::{AtomId, NeutralAtomLayout};
 use crate::movement::plan_aod_movement;
@@ -48,7 +48,7 @@ pub fn run_from_qec_workload(
     workload: &QecWorkload,
     na: &NeutralAtomTarget,
     opts: NaScheduleOptions,
-) -> Result<NaScheduleArtifacts, NaPipelineError> {
+) -> Result<NaScheduleArtifacts, NaPipelineError<AtomVertexId>> {
     validate_speed_model(na).map_err(NaPipelineError::InvalidTarget)?;
     let expanded = expand_workload(workload)?;
     schedule_expanded(&expanded, na, opts)
@@ -58,13 +58,13 @@ fn schedule_expanded(
     expanded: &ExpandedWorkload,
     na: &NeutralAtomTarget,
     opts: NaScheduleOptions,
-) -> Result<NaScheduleArtifacts, NaPipelineError> {
+) -> Result<NaScheduleArtifacts, NaPipelineError<AtomVertexId>> {
     let code_blocks = code_blocks_from_expanded(expanded);
     let all_atoms = all_physical_atoms(expanded);
     let logical_qubits = expanded.blocks.len() as u64;
 
     let mut all_layers: Vec<ScheduleLayer> = Vec::new();
-    let mut combined_interactions: Vec<Interaction> = Vec::new();
+    let mut combined_interactions: Vec<Interaction<AtomVertexId>> = Vec::new();
     let mut combined_segments: Vec<InteractionSegment> = Vec::new();
     let mut next_interaction_id = 0u32;
     let mut shared_layout: Option<NeutralAtomLayout> = None;
@@ -107,7 +107,7 @@ fn schedule_expanded(
         layer.cycle = i as u32;
     }
 
-    let vertices: Vec<LogicalQubitId> = all_atoms.iter().map(|a| LogicalQubitId(a.0)).collect();
+    let vertices: Vec<AtomVertexId> = all_atoms.iter().copied().map(AtomVertexId::from).collect();
     let graph = InteractionGraph::from_interactions(
         vertices,
         combined_interactions,
@@ -178,6 +178,8 @@ fn schedule_expanded(
     // mandatory, so this always applies once a target is available.
     let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
 
+    let req = project_request_to_logical(req);
+
     Ok(NaScheduleArtifacts {
         layers: req.layers.clone(),
         resource_report: report,
@@ -192,12 +194,16 @@ fn schedule_expanded(
 /// Layers, interactions, and the optional trailing segment produced for one round.
 type RoundScheduleParts = (
     Vec<ScheduleLayer>,
-    Vec<Interaction>,
+    Vec<Interaction<AtomVertexId>>,
     Option<InteractionSegment>,
 );
 
 /// Layers, interactions, and interaction ids produced for one CNOT phase.
-type CnotScheduleParts = (Vec<ScheduleLayer>, Vec<Interaction>, Vec<InteractionId>);
+type CnotScheduleParts = (
+    Vec<ScheduleLayer>,
+    Vec<Interaction<AtomVertexId>>,
+    Vec<InteractionId>,
+);
 
 /// Place→move (or zoned) *inside* one physical round with Z-then-X phases, then
 /// append locals / terminals.
@@ -211,7 +217,7 @@ fn schedule_round(
     opts: NaScheduleOptions,
     next_interaction_id: &mut u32,
     shared_layout: &mut Option<NeutralAtomLayout>,
-) -> Result<RoundScheduleParts, NaPipelineError> {
+) -> Result<RoundScheduleParts, NaPipelineError<AtomVertexId>> {
     if round.z_cnot_count > round.entangling.len() {
         return Err(NaPipelineError::InvalidZCnotCount {
             z_cnot_count: round.z_cnot_count,
@@ -278,7 +284,7 @@ fn schedule_cnot_phase(
     opts: NaScheduleOptions,
     next_interaction_id: &mut u32,
     shared_layout: &mut Option<NeutralAtomLayout>,
-) -> Result<CnotScheduleParts, NaPipelineError> {
+) -> Result<CnotScheduleParts, NaPipelineError<AtomVertexId>> {
     let (round_interactions, round_ids) = cnots_to_interactions(cnots, next_interaction_id)?;
     let segment = InteractionSegment {
         kind: SegmentKind::CommutationGroup,
@@ -391,10 +397,10 @@ fn map_basis(basis: quon_qec::LogicalBasis) -> MeasurementBasis {
 
 fn cnot_graph(
     all_atoms: &[PhysicalAtomId],
-    interactions: &[Interaction],
+    interactions: &[Interaction<AtomVertexId>],
     segment: InteractionSegment,
-) -> Result<InteractionGraph, NaPipelineError> {
-    let vertices: Vec<LogicalQubitId> = all_atoms.iter().map(|a| LogicalQubitId(a.0)).collect();
+) -> Result<InteractionGraph<AtomVertexId>, NaPipelineError<AtomVertexId>> {
+    let vertices: Vec<AtomVertexId> = all_atoms.iter().copied().map(AtomVertexId::from).collect();
     InteractionGraph::from_interactions(
         vertices,
         interactions.to_vec(),
@@ -407,7 +413,7 @@ fn cnot_graph(
 fn cnots_to_interactions(
     cnots: &[PhysicalCnot],
     next_interaction_id: &mut u32,
-) -> Result<(Vec<Interaction>, Vec<InteractionId>), NaPipelineError> {
+) -> Result<(Vec<Interaction<AtomVertexId>>, Vec<InteractionId>), NaPipelineError<AtomVertexId>> {
     let mut interactions = Vec::with_capacity(cnots.len());
     let mut ids = Vec::with_capacity(cnots.len());
     for cnot in cnots {
@@ -416,8 +422,8 @@ fn cnots_to_interactions(
             .checked_add(1)
             .ok_or(NaPipelineError::InteractionIdOverflow)?;
         let mut qubits = vec![
-            LogicalQubitId(cnot.control.0),
-            LogicalQubitId(cnot.target.0),
+            AtomVertexId::from_atom(cnot.control),
+            AtomVertexId::from_atom(cnot.target),
         ];
         qubits.sort();
         interactions.push(Interaction {
@@ -430,6 +436,57 @@ fn cnots_to_interactions(
         ids.push(id);
     }
     Ok((interactions, ids))
+}
+
+/// Project the atom-indexed hybrid request to the canonical emit representation
+/// (`LogicalQubitId` vertices) at the schedule-artifact boundary (#318).
+///
+/// By this point atom identity is baked into the schedule layers as `AtomId`
+/// actions, so the graph vertex id is just a label; relabeling
+/// `AtomVertexId -> LogicalQubitId(index)` loses no information.
+fn project_request_to_logical(
+    req: GraphScheduleRequest<AtomVertexId>,
+) -> GraphScheduleRequest<LogicalQubitId> {
+    GraphScheduleRequest {
+        graph: project_graph_to_logical(req.graph),
+        layers: req.layers,
+        layout: req.layout,
+    }
+}
+
+fn project_graph_to_logical(
+    graph: InteractionGraph<AtomVertexId>,
+) -> InteractionGraph<LogicalQubitId> {
+    InteractionGraph {
+        vertices: graph
+            .vertices
+            .iter()
+            .map(|v| LogicalQubitId(v.index()))
+            .collect(),
+        interactions: graph
+            .interactions
+            .into_iter()
+            .map(|i| Interaction {
+                id: i.id,
+                qubits: i.qubits.iter().map(|q| LogicalQubitId(q.index())).collect(),
+                gate_name: i.gate_name,
+                dag_layer: i.dag_layer,
+                on_critical_path: i.on_critical_path,
+            })
+            .collect(),
+        edges: graph
+            .edges
+            .into_iter()
+            .map(|e| InteractionEdge {
+                a: LogicalQubitId(e.a.index()),
+                b: LogicalQubitId(e.b.index()),
+                weight: e.weight,
+                interactions: e.interactions,
+            })
+            .collect(),
+        segments: graph.segments,
+        gamma: graph.gamma,
+    }
 }
 
 /// Barrier cuts at durable Wait markers (and Reset→next as a safety net).

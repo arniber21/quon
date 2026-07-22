@@ -176,7 +176,8 @@ fn place_preserves_graph_and_layers() {
 
 #[test]
 fn place_rejects_empty_graph() {
-    let graph = InteractionGraph::from_interactions(vec![], vec![], vec![], DEFAULT_GAMMA).unwrap();
+    let graph: InteractionGraph =
+        InteractionGraph::from_interactions(vec![], vec![], vec![], DEFAULT_GAMMA).unwrap();
     let req = schedule_from_graph(graph).unwrap();
     let err = place(req, PlacementStrategy::RowMajor).unwrap_err();
     assert!(matches!(err, quon_na::PlacementError::EmptyGraph));
