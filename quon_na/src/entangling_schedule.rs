@@ -258,11 +258,15 @@ fn asap_buckets<'a, V>(interactions: &[&'a Interaction<V>]) -> Vec<Vec<&'a Inter
         .collect()
 }
 
+/// Misra–Gries color classes for one commutation group: per-color buckets
+/// of borrowed interactions, plus the maximum degree Δ.
+type ColorClasses<'a, V> = (Vec<Vec<&'a Interaction<V>>>, u32);
+
 /// Misra–Gries color a 2Q commutation group; return color classes (sorted by color)
 /// and Δ.
 fn color_commutation_group<'a, V: VertexId>(
     interactions: &[&'a Interaction<V>],
-) -> Result<(Vec<Vec<&'a Interaction<V>>>, u32), EntanglingScheduleError<V>> {
+) -> Result<ColorClasses<'a, V>, EntanglingScheduleError<V>> {
     let mut pair_to_interaction: BTreeMap<(V, V), &'a Interaction<V>> = BTreeMap::new();
     let mut vertices: BTreeSet<V> = BTreeSet::new();
 

@@ -410,10 +410,13 @@ fn cnot_graph(
     .map_err(|e| NaPipelineError::ScheduleFromGraph(e.into()))
 }
 
+/// CNOT interactions built from physical CNOTs, atom-indexed (#318).
+type CnotInteractions = (Vec<Interaction<AtomVertexId>>, Vec<InteractionId>);
+
 fn cnots_to_interactions(
     cnots: &[PhysicalCnot],
     next_interaction_id: &mut u32,
-) -> Result<(Vec<Interaction<AtomVertexId>>, Vec<InteractionId>), NaPipelineError<AtomVertexId>> {
+) -> Result<CnotInteractions, NaPipelineError<AtomVertexId>> {
     let mut interactions = Vec::with_capacity(cnots.len());
     let mut ids = Vec::with_capacity(cnots.len());
     for cnot in cnots {
@@ -686,6 +689,86 @@ mod tests {
         b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
             .unwrap();
         b.finish()
+    }
+
+    /// Type-level guarantee (#318): the hybrid QEC interaction graph is indexed
+    /// by `AtomVertexId` (physical atoms), not `LogicalQubitId`. If someone
+    /// reintroduces a `LogicalQubitId(atom.0)` cast in `cnot_graph` /
+    /// `cnots_to_interactions`, the explicit `InteractionGraph<AtomVertexId>` /
+    /// `Vec<Interaction<AtomVertexId>>` annotations below stop compiling — the
+    /// missing seam between "logical qubit" and "atom" must not come back.
+    #[test]
+    fn hybrid_graph_is_atom_indexed() {
+        let atoms = [
+            PhysicalAtomId(0),
+            PhysicalAtomId(1),
+            PhysicalAtomId(2),
+            PhysicalAtomId(3),
+        ];
+        let cnots = [
+            PhysicalCnot {
+                control: PhysicalAtomId(0),
+                target: PhysicalAtomId(1),
+            },
+            PhysicalCnot {
+                control: PhysicalAtomId(2),
+                target: PhysicalAtomId(3),
+            },
+        ];
+        let mut next_id = 0u32;
+        let (interactions, ids): (Vec<Interaction<AtomVertexId>>, Vec<InteractionId>) =
+            cnots_to_interactions(&cnots, &mut next_id).expect("interactions");
+        // Atoms — not logical qubits — label the interaction qubits.
+        assert_eq!(
+            interactions[0].qubits,
+            vec![AtomVertexId(0), AtomVertexId(1)]
+        );
+        assert_eq!(
+            interactions[1].qubits,
+            vec![AtomVertexId(2), AtomVertexId(3)]
+        );
+
+        let segment = InteractionSegment {
+            kind: SegmentKind::CommutationGroup,
+            interactions: ids,
+        };
+        let graph: InteractionGraph<AtomVertexId> =
+            cnot_graph(&atoms, &interactions, segment).expect("graph");
+        // Vertex set is the atom set, relabeled AtomVertexId 1:1 with atoms.
+        assert_eq!(
+            graph.vertices,
+            vec![
+                AtomVertexId(0),
+                AtomVertexId(1),
+                AtomVertexId(2),
+                AtomVertexId(3)
+            ]
+        );
+        // AtomVertexId is a distinct type from LogicalQubitId — the cast that
+        // previously hid the missing seam must not collapse the two.
+        assert_ne!(
+            std::any::TypeId::of::<AtomVertexId>(),
+            std::any::TypeId::of::<LogicalQubitId>()
+        );
+    }
+
+    /// The hybrid schedule artifact projects to the canonical emit
+    /// representation (`LogicalQubitId` vertices) at the boundary — atom identity
+    /// is already baked into the schedule layers as `AtomId` actions, so the
+    /// graph vertex id is just a label there (#318).
+    #[test]
+    fn hybrid_artifact_request_is_logical_qubit_indexed() {
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            compact: false,
+            dump_ir: false,
+            ..Default::default()
+        };
+        let artifacts = run_from_qec_workload(&d3_workload(), &na, opts).expect("schedule");
+        // The emit-boundary graph is LogicalQubitId-typed (the projection).
+        let _: &InteractionGraph<LogicalQubitId> = &artifacts.request.graph;
+        // Resource report logical-qubit count stays block-level, not atom-level.
+        assert_eq!(artifacts.resource_report.logical_qubits, 1);
     }
 
     #[test]
