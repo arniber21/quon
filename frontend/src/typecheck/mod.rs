@@ -29,7 +29,7 @@ mod error;
 mod exhaust;
 mod linear;
 mod monad;
-pub(crate) mod obligation;
+mod obligation;
 mod unify;
 
 #[cfg(test)]

@@ -24,7 +24,7 @@ Carve all refinement / Z3 obligation logic into one judgment module: `frontend/s
 | `TypeChecker::check_termination` / `RecCall` | Well-founded recursion measure (`arg + 1 ≤ p`, `0 ≤ arg`) |
 | `TypeChecker::push_arm_refinement` | `match`-arm pattern equalities/disequalities pushed/popped as Z3 assumptions |
 | `TypeChecker::numeric` | Deferred `Int`/`Float` numeric-type obligations |
-| `RefinementState` | Per-scope assumption stack + deferred-obligation buffer |
+| `assumptions` / `numeric` fields | Per-scope assumption stack and deferred-obligation buffer — remain on the `TypeChecker` facade struct, accessed by this module's `pub(super)` methods |
 
 ### What stays
 
