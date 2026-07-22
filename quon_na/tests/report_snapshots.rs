@@ -12,13 +12,14 @@
 
 use backend::{NeutralAtomErrorModel, NeutralAtomFidelity};
 use quon_na::{
-    AodTrapRef, AtomId, AtomMove, BottleneckKind, CodeBlockId, CodeFamily, LogicalQubitId,
-    MeasurementBasis, MovementGroup, NaScheduleOptions, NetRate, NeutralAtomAction,
+    AodTrapRef, AtomId, AtomMove, BottleneckKind, CodeBlock, CodeBlockId, CodeFamily,
+    LogicalQubitId, MeasurementBasis, MovementGroup, NaScheduleOptions, NetRate, NeutralAtomAction,
     RESOURCE_REPORT_EVIDENCE_DISCLAIMER, RESOURCE_REPORT_EVIDENCE_KIND, ResourceReport,
-    ScheduleLayer, SiteId, TransferDirection, TrapTransfer, build_resource_report,
-    expand_code_block, resource_report_to_json, resource_report_to_markdown, run_from_qec_workload,
+    ScheduleLayer, SiteId, TransferDirection, TrapTransfer, atoms_per_logical,
+    build_resource_report, code_blocks_from_expanded, resource_report_to_json,
+    resource_report_to_markdown, run_from_qec_workload,
 };
-use quon_qec::{LogicalBasis, SourceFamily, WorkloadBuilder};
+use quon_qec::{LogicalBasis, SourceFamily, WorkloadBuilder, expand_workload};
 use serde_json::Value;
 
 fn atom(id: u32) -> AtomId {
@@ -34,6 +35,41 @@ fn aod() -> AodTrapRef {
         aod_id: 0,
         row: 1,
         col: 2,
+    }
+}
+
+/// Build report `CodeBlock`s from the production expansion IR (ADR-0030):
+/// `WorkloadBuilder → expand_workload → code_blocks_from_expanded`. Replaces
+/// the retired `expand_code_block` toy expander for distance-bearing families.
+fn repetition_code_blocks(distances: &[u32]) -> Vec<CodeBlock> {
+    let mut builder = WorkloadBuilder::new();
+    for (i, &distance) in distances.iter().enumerate() {
+        builder
+            .construct(
+                SourceFamily::Repetition,
+                distance,
+                LogicalBasis::Z,
+                LogicalQubitId(i as u32),
+            )
+            .expect("construct repetition block");
+    }
+    let expanded = expand_workload(&builder.finish()).expect("expand workload");
+    code_blocks_from_expanded(&expanded)
+}
+
+/// Build a sizing-only `CodeBlock` for a family with no physical round
+/// expansion (qLDPC / abstract) directly from the `quon_qec` sizing formula
+/// (`atoms_per_logical`). Report-sizing path for families without an
+/// expansion IR (ADR-0030); there is no toy expander.
+fn sizing_only_block(family: CodeFamily, n_logicals: usize) -> CodeBlock {
+    let per = atoms_per_logical(&family).expect("atoms_per_logical");
+    let total = usize::try_from(per).expect("atoms per logical fits usize") * n_logicals;
+    let logicals: Vec<LogicalQubitId> = (0..n_logicals).map(|i| LogicalQubitId(i as u32)).collect();
+    CodeBlock {
+        id: CodeBlockId(0),
+        family,
+        logical_qubits: logicals,
+        atoms: (0..total).map(|i| AtomId(i as u32)).collect(),
     }
 }
 
@@ -251,17 +287,8 @@ fn toy_move_entangle_measure() {
 
 #[test]
 fn qec_repetition_d3() {
-    let block = expand_code_block(
-        CodeBlockId(0),
-        CodeFamily::RepetitionCodeToy { distance: 3 },
-        vec![LogicalQubitId(0)],
-        0,
-    );
-    let block = match block {
-        Ok(b) => b,
-        Err(e) => panic!("expand: {e}"),
-    };
-    let report = match build_resource_report(&[], Some(&[block]), None) {
+    let blocks = repetition_code_blocks(&[3]);
+    let report = match build_resource_report(&[], Some(&blocks), None) {
         Ok(r) => r,
         Err(e) => panic!("build: {e}"),
     };
@@ -435,22 +462,15 @@ fn qec_surface_d3_hybrid_schedule_report() {
 
 #[test]
 fn qec_qldpc_144_12_12_rate() {
-    let logicals: Vec<_> = (0..12).map(LogicalQubitId).collect();
-    let block = expand_code_block(
-        CodeBlockId(0),
+    let block = sizing_only_block(
         CodeFamily::HighRateQldpcLike {
             net_rate: NetRate {
                 numerator: 1,
                 denominator: 24,
             },
         },
-        logicals,
-        0,
+        12,
     );
-    let block = match block {
-        Ok(b) => b,
-        Err(e) => panic!("expand: {e}"),
-    };
     let layers = toy_move_entangle_measure_layers();
     let report = match build_resource_report(&layers, Some(&[block]), None) {
         Ok(r) => r,
@@ -520,22 +540,15 @@ fn toy_with_fidelity_estimate() {
 
 #[test]
 fn markdown_headline_matches_json_for_qldpc() {
-    let logicals: Vec<_> = (0..12).map(LogicalQubitId).collect();
-    let block = expand_code_block(
-        CodeBlockId(0),
+    let block = sizing_only_block(
         CodeFamily::HighRateQldpcLike {
             net_rate: NetRate {
                 numerator: 1,
                 denominator: 24,
             },
         },
-        logicals,
-        0,
+        12,
     );
-    let block = match block {
-        Ok(b) => b,
-        Err(e) => panic!("expand: {e}"),
-    };
     let report = match build_resource_report(&[], Some(&[block]), None) {
         Ok(r) => r,
         Err(e) => panic!("build: {e}"),

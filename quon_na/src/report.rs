@@ -1118,11 +1118,12 @@ mod tests {
     use super::*;
     use crate::graph::LogicalQubitId;
     use crate::layout::{AodTrapRef, AtomId, SiteId};
-    use crate::qec::{CodeBlockId, NetRate, expand_code_block};
+    use crate::qec::{CodeBlockId, NetRate, code_blocks_from_expanded};
     use crate::schedule::{
         AtomMove, MeasurementBasis, MovementGroup, NeutralAtomAction, ScheduleLayer,
         TransferDirection, TrapTransfer,
     };
+    use quon_qec::{LogicalBasis, SourceFamily, WorkloadBuilder, expand_workload};
 
     fn atom(id: u32) -> AtomId {
         AtomId(id)
@@ -1137,6 +1138,42 @@ mod tests {
             aod_id: 0,
             row: 1,
             col: 2,
+        }
+    }
+    /// Build report [`CodeBlock`]s from the production expansion IR
+    /// (ADR-0015 / ADR-0030): `WorkloadBuilder → expand_workload →
+    /// code_blocks_from_expanded`. Replaces the retired `expand_code_block`
+    /// toy expander for distance-bearing families (`Repetition` / `Surface`).
+    fn repetition_code_blocks(distances: &[u32]) -> Vec<CodeBlock> {
+        let mut builder = WorkloadBuilder::new();
+        for (i, &distance) in distances.iter().enumerate() {
+            builder
+                .construct(
+                    SourceFamily::Repetition,
+                    distance,
+                    LogicalBasis::Z,
+                    LogicalQubitId(i as u32),
+                )
+                .expect("construct repetition block");
+        }
+        let expanded = expand_workload(&builder.finish()).expect("expand workload");
+        code_blocks_from_expanded(&expanded)
+    }
+
+    /// Build a sizing-only [`CodeBlock`] for a family with no physical round
+    /// expansion (qLDPC / abstract) directly from the `quon_qec` sizing
+    /// formula (`atoms_per_logical`). This is the report-sizing path for
+    /// families without an expansion IR (ADR-0030); there is no toy expander.
+    fn sizing_only_block(family: CodeFamily, n_logicals: usize) -> CodeBlock {
+        let per = atoms_per_logical(&family).expect("atoms_per_logical");
+        let total = usize::try_from(per).expect("atoms per logical fits usize") * n_logicals;
+        let logicals: Vec<LogicalQubitId> =
+            (0..n_logicals).map(|i| LogicalQubitId(i as u32)).collect();
+        CodeBlock {
+            id: CodeBlockId(0),
+            family,
+            logical_qubits: logicals,
+            atoms: (0..total).map(|i| AtomId(i as u32)).collect(),
         }
     }
 
@@ -1391,17 +1428,8 @@ mod tests {
 
     #[test]
     fn with_code_blocks_repetition_d3() {
-        let block = expand_code_block(
-            CodeBlockId(0),
-            CodeFamily::RepetitionCodeToy { distance: 3 },
-            vec![LogicalQubitId(0)],
-            0,
-        );
-        let block = match block {
-            Ok(b) => b,
-            Err(e) => panic!("expand: {e}"),
-        };
-        let report = match ResourceReport::from_layers(&[]).with_code_blocks(&[block]) {
+        let blocks = repetition_code_blocks(&[3]);
+        let report = match ResourceReport::from_layers(&[]).with_code_blocks(&blocks) {
             Ok(r) => r,
             Err(e) => panic!("with_code_blocks: {e}"),
         };
@@ -1413,22 +1441,15 @@ mod tests {
 
     #[test]
     fn with_code_blocks_qldpc_rate_one_over_twenty_four() {
-        let logicals: Vec<_> = (0..12).map(LogicalQubitId).collect();
-        let block = expand_code_block(
-            CodeBlockId(0),
+        let block = sizing_only_block(
             CodeFamily::HighRateQldpcLike {
                 net_rate: NetRate {
                     numerator: 1,
                     denominator: 24,
                 },
             },
-            logicals,
-            0,
+            12,
         );
-        let block = match block {
-            Ok(b) => b,
-            Err(e) => panic!("expand: {e}"),
-        };
         assert_eq!(block.atoms.len(), 288);
         let report = match ResourceReport::from_layers(&[]).with_code_blocks(&[block]) {
             Ok(r) => r,
@@ -1442,27 +1463,10 @@ mod tests {
 
     #[test]
     fn mixed_code_families_leave_optional_rows_unset() {
-        let a = expand_code_block(
-            CodeBlockId(0),
-            CodeFamily::RepetitionCodeToy { distance: 3 },
-            vec![LogicalQubitId(0)],
-            0,
-        );
-        let b = expand_code_block(
-            CodeBlockId(1),
-            CodeFamily::RepetitionCodeToy { distance: 5 },
-            vec![LogicalQubitId(1)],
-            100,
-        );
-        let a = match a {
-            Ok(b) => b,
-            Err(e) => panic!("expand a: {e}"),
-        };
-        let b = match b {
-            Ok(b) => b,
-            Err(e) => panic!("expand b: {e}"),
-        };
-        let report = match ResourceReport::from_layers(&[]).with_code_blocks(&[a, b]) {
+        // Two repetition blocks at different distances share no single family
+        // (distance differs) → the report leaves optional QEC rows unset.
+        let blocks = repetition_code_blocks(&[3, 5]);
+        let report = match ResourceReport::from_layers(&[]).with_code_blocks(&blocks) {
             Ok(r) => r,
             Err(e) => panic!("with_code_blocks: {e}"),
         };
@@ -1480,17 +1484,8 @@ mod tests {
 
     #[test]
     fn build_resource_report_prefers_qec_over_physical_hint() {
-        let block = expand_code_block(
-            CodeBlockId(0),
-            CodeFamily::RepetitionCodeToy { distance: 3 },
-            vec![LogicalQubitId(0)],
-            0,
-        );
-        let block = match block {
-            Ok(b) => b,
-            Err(e) => panic!("expand: {e}"),
-        };
-        let report = match build_resource_report(&[], Some(&[block]), Some(99)) {
+        let blocks = repetition_code_blocks(&[3]);
+        let report = match build_resource_report(&[], Some(&blocks), Some(99)) {
             Ok(r) => r,
             Err(e) => panic!("build: {e}"),
         };
@@ -1610,17 +1605,8 @@ mod tests {
 
     #[test]
     fn markdown_includes_qec_rows_when_set() {
-        let block = expand_code_block(
-            CodeBlockId(0),
-            CodeFamily::RepetitionCodeToy { distance: 3 },
-            vec![LogicalQubitId(0)],
-            0,
-        );
-        let block = match block {
-            Ok(b) => b,
-            Err(e) => panic!("expand: {e}"),
-        };
-        let report = match ResourceReport::from_layers(&[]).with_code_blocks(&[block]) {
+        let blocks = repetition_code_blocks(&[3]);
+        let report = match ResourceReport::from_layers(&[]).with_code_blocks(&blocks) {
             Ok(r) => r,
             Err(e) => panic!("with_code_blocks: {e}"),
         };
