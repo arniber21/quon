@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+pub mod circ_extract;
 pub mod diagnostics;
 pub mod dialect;
 pub mod dynamic_walk;
