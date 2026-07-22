@@ -169,9 +169,7 @@ impl SpecializedCircuit {
         let nat_env: HashMap<String, DepthExpr> = callee_env
             .iter()
             .filter_map(|(k, v)| match v {
-                elaborate::Value::Int(i) if *i >= 0 => {
-                    Some((k.clone(), DepthExpr::Nat(*i as u64)))
-                }
+                elaborate::Value::Int(i) if *i >= 0 => Some((k.clone(), DepthExpr::Nat(*i as u64))),
                 _ => None,
             })
             .collect();
@@ -272,9 +270,7 @@ pub(crate) fn flatten_app<'a>(
 /// unwraps to its trailing expression (an empty block is the identity sentinel
 /// and yields no placements); a `GateApp` is a single placement. Anything else
 /// is not a gate sequence.
-pub(crate) fn collect_gate_placements(
-    expr: &Sp<Expr>,
-) -> Result<Vec<GatePlacement>, ElabError> {
+pub(crate) fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<GatePlacement>, ElabError> {
     match &expr.0 {
         Expr::CircuitBlock(stmts) => {
             let Some(Stmt::Expr(last)) = stmts.last().map(|s| &s.0) else {
@@ -654,7 +650,7 @@ mod tests {
         prop_oneof![
             (0i64..4).prop_map(|q| gate1("H", q)),
             (0i64..4, 0i64..4).prop_map(|(a, b)| gate2("CNOT", a, b)),
-            (0f64..6.28, 0i64..4).prop_map(|(a, q)| rz(a, q)),
+            (0f64..6.0, 0i64..4).prop_map(|(a, q)| rz(a, q)),
         ]
     }
 
@@ -664,8 +660,7 @@ mod tests {
         } else {
             prop_oneof![
                 arb_gate().boxed(),
-                (arb_tree(depth - 1), arb_tree(depth - 1))
-                    .prop_map(|(l, r)| compose(l, r)),
+                (arb_tree(depth - 1), arb_tree(depth - 1)).prop_map(|(l, r)| compose(l, r)),
             ]
             .boxed()
         }
