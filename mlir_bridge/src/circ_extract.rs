@@ -365,4 +365,3 @@ pub fn gate_ref_to_circ_gate(gate: &zx::GateRef) -> CircGate {
         clifford,
     }
 }
-
