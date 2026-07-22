@@ -1,17 +1,22 @@
-//! Bidirectional type checker — classical (unrestricted) fragment (issue #9, SPEC §3.8).
+//! Bidirectional type checker facade — dispatches into one judgment module per form
+//! (issue #9, SPEC §3.8; epic #207). The **classical Γ** judgment (synth/check, unify
+//! coordination, exhaustiveness, patterns) lives in [`classical`]; the **Circuit**
+//! judgment lives in [`circuit`] (#323, ADR-0028); first-order unification in [`unify`]
+//! (`Table`); exhaustiveness/reachability in [`exhaust`]; the linear context `Δ` in
+//! [`linear`]. The quantum monad (`Q<τ>`, `<-` binds, `run { }`), the borrow block, and
+//! the Z3 refinement bridge stay here as slices #325 and #326.
 //!
-//! Judgment form (this issue uses only the unrestricted context):
+//! Judgment form:
 //!
 //! ```text
-//!   Γ ⊢ e ⇒ τ      synthesis: read the type off the term bottom-up
-//!   Γ ⊢ e ⇐ τ      checking:  push an expected type top-down
+//!   Γ ; Δ ⊢ e ⇒ τ      synthesis: read the type off the term bottom-up
+//!   Γ ; Δ ⊢ e ⇐ τ      checking:  push an expected type top-down
 //! ```
 //!
-//! Where `Γ` (here `Env`) maps names to types. The linear context `Δ`, the quantum
-//! forms (`circuit`/`run`/`borrow`/gates), and the symbolic depth/Clifford machinery
-//! arrive with later issues (#10–#15); every such form is reported here as a clean
-//! [`TypeError::Unsupported`] rather than mishandled or panicked on, so the checker is
-//! *total* over the whole parser output — which the fuzz target relies on.
+//! Where `Γ` (here `Env`) maps names to types and `Δ` (`Delta`) tracks linear resources
+//! consumed exactly once. Every form the checker does not yet handle is reported as a
+//! clean [`TypeError::Unsupported`] rather than mishandled or panicked on, so the checker
+//! is *total* over the whole parser output — which the fuzz target relies on.
 //!
 //! ## Design
 //!
