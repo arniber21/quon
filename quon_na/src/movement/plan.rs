@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::geometry::ordered_pair;
+use crate::graph::VertexId;
 use crate::layout::{AtomBinding, AtomId, SiteId, TrapBinding};
 use crate::movement::bank::{ensure_interaction_pairs, site_position_map};
 use crate::movement::duals::{AodGrid, generate_duals, select_duals_sortis};
@@ -26,10 +27,10 @@ use crate::schedule_entry::GraphScheduleRequest;
 
 /// Expand entangling layers with AOD-legal movement (Quon pair-bank duals +
 /// Enola-inspired conflict types / greedy longest-first IS; see B9).
-pub fn plan_aod_movement(
-    mut req: GraphScheduleRequest,
+pub fn plan_aod_movement<V: VertexId>(
+    mut req: GraphScheduleRequest<V>,
     params: &MovementParams,
-) -> Result<MovementPlanResult, MovementPlanError> {
+) -> Result<MovementPlanResult<V>, MovementPlanError> {
     params.validate()?;
     let layout = req
         .layout

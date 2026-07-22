@@ -130,7 +130,7 @@ _Avoid_: transversal CX (for this op), lattice surgery (unqualified as the whole
 **Logical qubit**: A backend/IR-level identifier for one encoded logical qubit after QEC lowering, used to track its expansion into atoms. Owned as `quon_qec::LogicalQubitId` and re-exported from `quon_na` (graph / qec). Distinct from the source-level `QecBlock` (the typed resource) and from bare `Qubit`.
 _Avoid_: QEC qubit
 
-**Atom**: A single physical site occupant in the neutral-atom architecture-aware schedule — the physical unit that a code block expands into. Exists only in the neutral-atom backend (`quon_na`), below the frontend's linear type system.
+**Atom**: A single physical site occupant in the neutral-atom architecture-aware schedule — the physical unit that a code block expands into. Exists only in the neutral-atom backend (`quon_na`), below the frontend's linear type system. The hybrid QEC interaction graph (`qec_schedule`) is atom-indexed via `AtomVertexId`, a newtype distinct from `LogicalQubitId` so placers/schedulers name physical atoms rather than casting (ADR-0029, #318).
 _Avoid_: physical qubit
 
 **Code block**: The backend sizing view of a logical qubit's physical expansion — a group of atoms jointly implementing one or more logical qubits under a given code family. Derived solely from the production expansion IR (`quon_qec::ExpandedWorkload` via `quon_qec::expand_workload` → `quon_na::qec::code_blocks_from_expanded`); for sizing-only families with no physical round expansion (qLDPC / abstract), sized directly from the `quon_qec` family formula. There is a single expansion narrative (ADR-0030): the retired `LogicalOp` / `expand_code_block` toy expander no longer exists. Not a source-language type.

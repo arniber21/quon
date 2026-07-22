@@ -14,7 +14,7 @@
 //! After coloring / ASAP bucketing, oversized parallel sets are split so each
 //! emitted [`ScheduleLayer`] has at most `max_parallel_entangling_pairs`
 //! entangling actions. Scheduling is **graph-only**: `layout` is ignored and
-//! left unchanged; atom identity is `AtomId(LogicalQubitId.0)` (same as
+//! left unchanged; atom identity is `AtomId(vertex.index())` (same as
 //! placement #104).
 //!
 //! References: [Enola] Sec. 3 / Theorem 1; Misra & Gries, "A constructive proof
@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::graph::{GraphError, Interaction, InteractionId, LogicalQubitId, SegmentKind};
+use crate::graph::{GraphError, Interaction, InteractionId, LogicalQubitId, SegmentKind, VertexId};
 use crate::layout::AtomId;
 use crate::schedule::{NeutralAtomAction, ScheduleError, ScheduleLayer};
 use crate::schedule_entry::GraphScheduleRequest;
@@ -47,8 +47,8 @@ pub struct LayerUtilization {
 /// Result of [`schedule_entangling_layers`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct EntanglingScheduleResult {
-    pub request: GraphScheduleRequest,
+pub struct EntanglingScheduleResult<V = LogicalQubitId> {
+    pub request: GraphScheduleRequest<V>,
     pub utilizations: Vec<LayerUtilization>,
     /// Which `ScheduleLayer.cycle` each interaction landed in (issue #298):
     /// lets a post-pass splice 1-qubit gate actions into the right layer
@@ -65,9 +65,9 @@ pub struct EntanglingScheduleResult {
 
 /// Errors from [`schedule_entangling_layers`].
 #[derive(Debug, Error, Clone, PartialEq)]
-pub enum EntanglingScheduleError {
+pub enum EntanglingScheduleError<V = LogicalQubitId> {
     #[error(transparent)]
-    InvalidGraph(#[from] GraphError),
+    InvalidGraph(#[from] GraphError<V>),
     #[error("max_parallel_entangling_pairs must be ≥ 1, got {0}")]
     InvalidCapacity(u32),
     #[error("schedule layer conflict: {0}")]
@@ -77,9 +77,9 @@ pub enum EntanglingScheduleError {
     )]
     MultiQubitCommutation(InteractionId),
     #[error(
-        "duplicate interaction on qubit pair {0:?}–{1:?} in a commutation group; Misra–Gries needs a simple graph"
+        "duplicate interaction on vertex pair {0:?}–{1:?} in a commutation group; Misra–Gries needs a simple graph"
     )]
-    DuplicatePair(LogicalQubitId, LogicalQubitId),
+    DuplicatePair(V, V),
     #[error("unknown interaction {0:?} referenced by a segment")]
     UnknownInteraction(InteractionId),
 }
@@ -102,17 +102,17 @@ pub fn capacity_layer_count(n: u32, cap: u32) -> u32 {
 /// Fill `req.layers` with entangling actions from the interaction graph.
 ///
 /// Always overwrites `layers`. Leaves `layout` unchanged (graph-only; may be
-/// `None`). Atom identity: `AtomId(LogicalQubitId.0)`.
-pub fn schedule_entangling_layers(
-    mut req: GraphScheduleRequest,
+/// `None`). Atom identity: `AtomId(vertex.index())`.
+pub fn schedule_entangling_layers<V: VertexId>(
+    mut req: GraphScheduleRequest<V>,
     max_parallel_entangling_pairs: u32,
-) -> Result<EntanglingScheduleResult, EntanglingScheduleError> {
+) -> Result<EntanglingScheduleResult<V>, EntanglingScheduleError<V>> {
     if max_parallel_entangling_pairs == 0 {
         return Err(EntanglingScheduleError::InvalidCapacity(0));
     }
     req.graph.validate()?;
 
-    let by_id: BTreeMap<InteractionId, &Interaction> =
+    let by_id: BTreeMap<InteractionId, &Interaction<V>> =
         req.graph.interactions.iter().map(|i| (i.id, i)).collect();
 
     let mut layers = Vec::new();
@@ -128,7 +128,7 @@ pub fn schedule_entangling_layers(
             continue;
         }
 
-        let buckets: Vec<Vec<&Interaction>> = match segment.kind {
+        let buckets: Vec<Vec<&Interaction<V>>> = match segment.kind {
             SegmentKind::CommutationGroup => {
                 saw_commutation = true;
                 let (colored, delta) = color_commutation_group(&interactions)?;
@@ -195,10 +195,10 @@ fn format_conflict(err: ScheduleError) -> String {
     err.to_string()
 }
 
-fn resolve_interactions<'a>(
+fn resolve_interactions<'a, V>(
     ids: &[InteractionId],
-    by_id: &BTreeMap<InteractionId, &'a Interaction>,
-) -> Result<Vec<&'a Interaction>, EntanglingScheduleError> {
+    by_id: &BTreeMap<InteractionId, &'a Interaction<V>>,
+) -> Result<Vec<&'a Interaction<V>>, EntanglingScheduleError<V>> {
     let mut out = Vec::with_capacity(ids.len());
     for &id in ids {
         let interaction = by_id
@@ -210,8 +210,12 @@ fn resolve_interactions<'a>(
     Ok(out)
 }
 
-fn entangle_action(interaction: &Interaction) -> NeutralAtomAction {
-    let atoms: Vec<AtomId> = interaction.qubits.iter().map(|q| AtomId(q.0)).collect();
+fn entangle_action<V: VertexId>(interaction: &Interaction<V>) -> NeutralAtomAction {
+    let atoms: Vec<AtomId> = interaction
+        .qubits
+        .iter()
+        .map(|q| AtomId(q.index()))
+        .collect();
     match atoms.as_slice() {
         [a, b] => NeutralAtomAction::Entangle2 {
             atoms: [*a, *b],
@@ -237,8 +241,8 @@ fn count_entangling_actions(actions: &[NeutralAtomAction]) -> u32 {
 }
 
 /// ASAP buckets: group by `dag_layer`, stable by `InteractionId` within a layer.
-fn asap_buckets<'a>(interactions: &[&'a Interaction]) -> Vec<Vec<&'a Interaction>> {
-    let mut by_layer: BTreeMap<u32, Vec<&Interaction>> = BTreeMap::new();
+fn asap_buckets<'a, V>(interactions: &[&'a Interaction<V>]) -> Vec<Vec<&'a Interaction<V>>> {
+    let mut by_layer: BTreeMap<u32, Vec<&Interaction<V>>> = BTreeMap::new();
     for &interaction in interactions {
         by_layer
             .entry(interaction.dag_layer)
@@ -254,14 +258,17 @@ fn asap_buckets<'a>(interactions: &[&'a Interaction]) -> Vec<Vec<&'a Interaction
         .collect()
 }
 
+/// Misra–Gries color classes for one commutation group: per-color buckets
+/// of borrowed interactions, plus the maximum degree Δ.
+type ColorClasses<'a, V> = (Vec<Vec<&'a Interaction<V>>>, u32);
+
 /// Misra–Gries color a 2Q commutation group; return color classes (sorted by color)
 /// and Δ.
-fn color_commutation_group<'a>(
-    interactions: &[&'a Interaction],
-) -> Result<(Vec<Vec<&'a Interaction>>, u32), EntanglingScheduleError> {
-    let mut pair_to_interaction: BTreeMap<(LogicalQubitId, LogicalQubitId), &'a Interaction> =
-        BTreeMap::new();
-    let mut vertices: BTreeSet<LogicalQubitId> = BTreeSet::new();
+fn color_commutation_group<'a, V: VertexId>(
+    interactions: &[&'a Interaction<V>],
+) -> Result<ColorClasses<'a, V>, EntanglingScheduleError<V>> {
+    let mut pair_to_interaction: BTreeMap<(V, V), &'a Interaction<V>> = BTreeMap::new();
+    let mut vertices: BTreeSet<V> = BTreeSet::new();
 
     for &interaction in interactions {
         if interaction.qubits.len() != 2 {
@@ -279,7 +286,7 @@ fn color_commutation_group<'a>(
         }
     }
 
-    let vertex_index: BTreeMap<LogicalQubitId, usize> = vertices
+    let vertex_index: BTreeMap<V, usize> = vertices
         .iter()
         .copied()
         .enumerate()
@@ -295,10 +302,10 @@ fn color_commutation_group<'a>(
     let n_colors = colors.iter().copied().max().map(|c| c + 1).unwrap_or(0);
     debug_assert!(delta == 0 || n_colors <= delta + 1);
 
-    let id_to_interaction: BTreeMap<InteractionId, &Interaction> =
+    let id_to_interaction: BTreeMap<InteractionId, &Interaction<V>> =
         pair_to_interaction.values().map(|i| (i.id, *i)).collect();
 
-    let mut classes: BTreeMap<u32, Vec<&Interaction>> = BTreeMap::new();
+    let mut classes: BTreeMap<u32, Vec<&Interaction<V>>> = BTreeMap::new();
     for (edge_idx, &color) in colors.iter().enumerate() {
         let id = edges[edge_idx].2;
         classes

@@ -92,7 +92,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::graph::InteractionGraph;
+use crate::graph::{InteractionGraph, LogicalQubitId, VertexId};
 use crate::layout::AodTrapRef;
 use crate::layout::{
     AtomBinding, AtomId, AtomSite, NeutralAtomLayout, Position, SiteId, TrapBinding,
@@ -224,8 +224,8 @@ pub enum PlacerMode {
 /// Result of [`schedule_zoned`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ZonedScheduleResult {
-    pub request: GraphScheduleRequest,
+pub struct ZonedScheduleResult<V = LogicalQubitId> {
+    pub request: GraphScheduleRequest<V>,
     pub mode: PlacerMode,
     /// Σ_G √(d_max(G)) over emitted movement groups ([RAP] Eq. (1)).
     pub routing_cost: f64,
@@ -471,23 +471,23 @@ fn zone_id_for_site(layout: &NeutralAtomLayout, arch: &ZonedArchitecture, site: 
 /// movement/transfer actions around those entangles and updates `layout` to a
 /// storage+entanglement site map. Soft-unblocked vs #106: uses RAP-local
 /// greedy move grouping, not Enola sortIS.
-pub fn schedule_zoned(
-    req: GraphScheduleRequest,
+pub fn schedule_zoned<V: VertexId>(
+    req: GraphScheduleRequest<V>,
     arch: &ZonedArchitecture,
     mode: PlacerMode,
-) -> Result<ZonedScheduleResult, ZonedScheduleError> {
+) -> Result<ZonedScheduleResult<V>, ZonedScheduleError> {
     schedule_zoned_with_aware_params(req, arch, mode, AwareSearchParams::default())
 }
 
 /// [`schedule_zoned`], but with explicit [`AwareSearchParams`] for
 /// [`PlacerMode::RoutingAware`]'s A* search (issue #297). Ignored under
 /// [`PlacerMode::RoutingAgnostic`].
-pub fn schedule_zoned_with_aware_params(
-    mut req: GraphScheduleRequest,
+pub fn schedule_zoned_with_aware_params<V: VertexId>(
+    mut req: GraphScheduleRequest<V>,
     arch: &ZonedArchitecture,
     mode: PlacerMode,
     aware_search: AwareSearchParams,
-) -> Result<ZonedScheduleResult, ZonedScheduleError> {
+) -> Result<ZonedScheduleResult<V>, ZonedScheduleError> {
     arch.validate()?;
     if req.layers.is_empty() {
         // Synthesize one layer per commutation/ ASAP is caller's job; allow
@@ -895,8 +895,8 @@ fn push_validated_layer(
 type EntanglePair = (Position, Position);
 type ZonedLayoutParts = (NeutralAtomLayout, Vec<Position>, Vec<EntanglePair>);
 
-fn build_zoned_layout(
-    graph: &InteractionGraph,
+fn build_zoned_layout<V: VertexId>(
+    graph: &InteractionGraph<V>,
     arch: &ZonedArchitecture,
 ) -> Result<ZonedLayoutParts, ZonedScheduleError> {
     let mut sites = Vec::new();
@@ -963,7 +963,7 @@ fn build_zoned_layout(
         let pos = storage_sites[i % storage_sites.len()];
         let site = nearest_site_id_in(&sites, pos);
         bindings.push(AtomBinding {
-            atom: AtomId(q.0),
+            atom: AtomId(q.index()),
             trap: TrapBinding::Slm { site },
         });
     }
