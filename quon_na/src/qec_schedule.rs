@@ -9,8 +9,8 @@
 //! 5. Resource report sized from code blocks + memory-round metadata
 
 use quon_qec::{
-    ExpandedBlock, ExpandedWorkload, PhysicalAtomId, PhysicalCnot, PhysicalRound, QecWorkload,
-    RoundTerminal, expand_workload,
+    ExpandedWorkload, PhysicalAtomId, PhysicalCnot, PhysicalRound, QecWorkload, RoundTerminal,
+    expand_workload,
 };
 
 use crate::compaction::{
@@ -29,7 +29,7 @@ use crate::pipeline::{
     validate_speed_model, zoned_architecture,
 };
 use crate::placement::place;
-use crate::qec::{CodeBlock, CodeBlockId};
+use crate::qec::code_blocks_from_expanded;
 use crate::report::{attach_qec_error_budget, build_resource_report};
 use crate::schedule::{LocalGateKind, MeasurementBasis, NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
@@ -509,19 +509,6 @@ fn lattice_surgery_feedforward_deps(layers: &[ScheduleLayer]) -> Vec<ScheduleDep
         }
     }
     deps
-}
-
-fn code_blocks_from_expanded(expanded: &ExpandedWorkload) -> Vec<CodeBlock> {
-    expanded
-        .blocks
-        .iter()
-        .map(|b: &ExpandedBlock| CodeBlock {
-            id: CodeBlockId(b.logical_id.0),
-            family: b.code_family.clone(),
-            logical_qubits: vec![b.logical_id],
-            atoms: b.atoms.iter().map(|a| AtomId(a.0)).collect(),
-        })
-        .collect()
 }
 
 fn all_physical_atoms(expanded: &ExpandedWorkload) -> Vec<PhysicalAtomId> {

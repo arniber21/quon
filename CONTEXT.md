@@ -133,7 +133,7 @@ _Avoid_: QEC qubit
 **Atom**: A single physical site occupant in the neutral-atom architecture-aware schedule — the physical unit that a code block expands into. Exists only in the neutral-atom backend (`quon_na`), below the frontend's linear type system.
 _Avoid_: physical qubit
 
-**Code block**: The backend expansion of a source `QecBlock` into a group of atoms jointly implementing one or more logical qubits under a given code family. Produced during neutral-atom/QEC lowering; not a source-language type.
+**Code block**: The backend sizing view of a logical qubit's physical expansion — a group of atoms jointly implementing one or more logical qubits under a given code family. Derived solely from the production expansion IR (`quon_qec::ExpandedWorkload` via `quon_qec::expand_workload` → `quon_na::qec::code_blocks_from_expanded`); for sizing-only families with no physical round expansion (qLDPC / abstract), sized directly from the `quon_qec` family formula. There is a single expansion narrative (ADR-0030): the retired `LogicalOp` / `expand_code_block` toy expander no longer exists. Not a source-language type.
 _Avoid_: code patch, logical block, QecBlock (for the backend expansion)
 
 **AOD movement**: The neutral-atom movement model where atoms move in row/column-coupled groups (as driven by acousto-optic deflectors), not freely and independently. The movement constraint that placement-routing scheduling in `quon_na` is built against — deliberately not a free-grid Manhattan-distance simplification, to stay faithful to the reproduced literature.

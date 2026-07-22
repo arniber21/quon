@@ -88,8 +88,8 @@ pub use placement::{
     placement_score,
 };
 pub use qec::{
-    CodeBlock, CodeBlockId, CodeFamily, LogicalOp, NetRate, QecError, atoms_per_logical, ceil_div,
-    expand_code_block, repetition_n, surface_n,
+    CodeBlock, CodeBlockId, CodeFamily, NetRate, QecError, atoms_per_logical, ceil_div,
+    code_blocks_from_expanded, repetition_n, surface_n,
 };
 pub use qec_schedule::{round_barrier_cuts, run_from_qec_workload};
 pub use report::{
