@@ -260,28 +260,28 @@ fn emit_and_scheduling_agree_on_routed_circuit() {
         "expected at least 2 schedule_time entries: {scheduled_ir}"
     );
     // The SWAP (earlier in program order) must not be scheduled after the
-    // CNOT — they share a wire, so SWAP_time < CNOT_time.
+    // CNOT — they share a wire, so SWAP_time < CNOT_time.  Unconditional:
+    // both times MUST be present or the test is vacuous.
     let swap_time =
         parse_schedule_times(&scheduled_ir[..scheduled_ir.find("gate_name = \"CNOT\"").unwrap()])
             .last()
-            .copied();
+            .copied()
+            .expect("SWAP schedule_time must be present");
     let cnot_time =
         parse_schedule_times(&scheduled_ir[scheduled_ir.rfind("gate_name = \"CNOT\"").unwrap()..])
             .first()
-            .copied();
-    if let (Some(s), Some(c)) = (swap_time, cnot_time) {
-        assert!(
-            s < c,
-            "SWAP (time {s}) must be scheduled before CNOT (time {c}) \
-             — they share a qubit wire:\n{scheduled_ir}"
-        );
-    }
+            .copied()
+            .expect("CNOT schedule_time must be present");
+    assert!(
+        swap_time < cnot_time,
+        "SWAP (time {swap_time}) must be scheduled before CNOT (time {cnot_time}) \
+         — they share a qubit wire:\n{scheduled_ir}"
+    );
 
     // Both scheduling and emit derive qubit identity from the same SSA wiring.
-    // Corrupting attrs must not change the schedule (TEST 1) or emit (TEST 2).
-    // This test verifies the agreement directly: the SWAP-CNOT dependency
-    // exists in the schedule because they share an SSA root, and the same
-    // shared wire is what emit threads through its register assignment.
+    // Corrupting phys_qubit attrs must not change the schedule (emit already
+    // never reads phys_qubit — it threads registers from SSA).  This proves
+    // SSA is the single canonical channel (ADR-0034).
     corrupt_phys_qubit_attrs(&context, &module, 999);
     mlir_bridge::passes::depth_scheduling::run_on_module(&context, &target, &module);
     let times_after = parse_schedule_times(&module.as_operation().to_string());
