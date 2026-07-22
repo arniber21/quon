@@ -139,6 +139,9 @@ _Avoid_: code patch, logical block, QecBlock (for the backend expansion)
 **AOD movement**: The neutral-atom movement model where atoms move in row/column-coupled groups (as driven by acousto-optic deflectors), not freely and independently. The movement constraint that placement-routing scheduling in `quon_na` is built against — deliberately not a free-grid Manhattan-distance simplification, to stay faithful to the reproduced literature.
 _Avoid_: grid movement, Manhattan movement
 
+**NA backend stage**: The shared place → AOD-movement (or zoned routing) step that both the bare-qubit pipeline (`pipeline::run_from_graph`) and the hybrid QEC per-round planner (`qec_schedule::schedule_cnot_phase`) call via `quon_na::plan::plan_backend` (ADR-0036). Both paths share the same entry point, options (`NaScheduleOptions`), error mapping (`NaPipelineError<V>`), and stage-stats instrumentation; the hybrid round-loop shell (Wait barriers, serial Z-then-X, shared layout) is not shared — it stays in `qec_schedule` (ADR-0016).
+_Avoid_: backend pass (not a compiler pass), movement planner (that is `plan_aod_movement` specifically)
+
 **Schedule IR**: The `quantum.na` MLIR form of a scheduled neutral-atom program, built via `ScheduleSpec` in `quon_na/src/dialect.rs` — the driver's canonical schedule artifact (ADR-0007, ADR-0011). The JSON schedule emit is a debug/visualization view of it, never a second source of truth.
 _Avoid_: schedule JSON (as the IR), ScheduleSpec (for the concept)
 
