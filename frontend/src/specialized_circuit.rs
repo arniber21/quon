@@ -81,16 +81,6 @@ pub struct SpecializedCircuit {
 }
 
 impl SpecializedCircuit {
-    /// Specialize the parametric circuit function `def` at concrete argument
-    /// values `args` (each classically-evaluable under `classical_env`),
-    /// returning the fully monomorphic gate DAG plus a canonical
-    /// `"name(v0,v1,…)"` cache key for the caller's memoization.
-    ///
-    /// This is the pure (Melior-free) core of what `lower::specialize_named_fn`
-    /// previously inlined: evaluate the classical arguments, elaborate the body
-    /// under the resulting environment, and read the `Circuit<n,m,d,c>` indices
-    /// off `def.ret_ty` after substituting the now-concrete widths. Lower does
-    /// the memoization and MLIR emission around this.
     /// Canonical `"name(v0,v1,…)"` memoization key for a `(name, args)` call
     /// site, evaluating the classical arguments under `classical_env`. Computed
     /// before specialization so `lower` can short-circuit on a cache hit

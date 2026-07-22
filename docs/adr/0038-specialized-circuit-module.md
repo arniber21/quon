@@ -1,6 +1,6 @@
 # SpecializedCircuit module
 
-Status: Accepted · 2026-07-22 · Refs #206, ADR-0028
+Status: Accepted · 2026-07-22 · Refs #206, #201, #209, #213, ADR-0028
 
 ## Context
 
