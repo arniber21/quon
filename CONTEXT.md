@@ -18,8 +18,11 @@ _Avoid_: register, qubit array
 **Quantum Monad**: The type `Q<τ>` — a quantum computation that may perform mid-circuit measurement and return a value of type `τ`. Computations in `Q` are written using `run { }` blocks.
 _Avoid_: Q type, monadic computation
 
-**Linear context**: The typing context `Δ` tracking resources that must be consumed exactly once. Distinct from the unrestricted context `Γ` for classical values. Represented as a `HashMap<Name, Type>` with physical removal on use.
+**Linear context**: The typing context `Δ` tracking resources that must be consumed exactly once. Distinct from the unrestricted context `Γ` for classical values. Represented as a `HashMap<Name, Type>` with physical removal on use. The **frontend adapter** of the no-cloning / linear-use judgment — paired with the **IR adapter** `Linearity (SSA)`; the two share vocabulary but not a type, and neither subsumes the other.
 _Avoid_: linear environment, usage context
+
+**Linearity (SSA)**: The MLIR-free use-count kernels in `quon_core::linearity` (SPEC §6.2–§6.3) — `LINEAR_USE_COUNT`, `classify_use_count`, `is_reuse_after_measure`, and the `barrier` / `if` / `unitary_region` qubit-threading checks. The **IR adapter** of the no-cloning / linear-use judgment: after lowering, source names are gone and "consume exactly once" is re-expressed as "every `!qubit` SSA value has exactly one use", checked by region verifier passes against these kernels. Paired with the frontend adapter `Linear context` (`Δ`); the two adapters stay as separate types in their owning crates (`frontend` vs `quon_core`) and share only vocabulary. Distinct from `quantum.circ`'s "every `!qubit` SSA value has exactly one use" rule, which *is* what these kernels check.
+_Avoid_: linear environment, usage context, linearity check (unqualified)
 
 **DepthExpr**: A symbolic arithmetic expression over static `Nat` literals and runtime `Int` variables representing a circuit's gate depth bound. Operators: addition, multiplication, max, saturating subtraction, division (constant divisor only), and exponentiation (constant exponent only) — the latter three exist for recursive value-dependent kernels (QFT's `2^(i+1)` angle, Shor's register arithmetic) rather than the core composition algebra. Defined once in the MLIR-free `quon_core` crate and shared by both `frontend` and `mlir_bridge` — the literal variant is `Nat`, the composition algebra is `seq` (sequential, `+`) / `par` (parallel, `max`) / `repeat` (`*`) / `controlled` (`+1`), and it serializes to S-expressions for MLIR attributes. Distinct from the surface `NatExpr` (full `Nat` arithmetic with holes), which the type checker normalizes into a `DepthExpr`.
 _Avoid_: depth expression, depth annotation, depth index
@@ -48,6 +51,11 @@ _Avoid_: extracted circuit, pass IR, gate list (unqualified)
 
 **SpecializedCircuit**: The Melior-free first-order gate tree (enum: Compose / GateApp / Adjoint / Par / …) produced by parametric specialization in the frontend. Lower’s input after classical parameters are gone. Lives in the frontend crate; not CircIr.
 _Avoid_: monomorphized Expr, elaborated AST (unqualified)
+
+### Workspace crates
+
+**quon_core**: The MLIR-free shared kernel of the Quon workspace — the single home for domain types that cross the frontend↔IR seam and must not pull in Melior/LLVM. Organized as named domain modules, not a junk drawer: `depth` (`DepthExpr`, the Circuit index algebra and the crate's **center of gravity**), `optimization` (depth-algebra invariant kernels — companions to `depth`), `gates` (the single gate-metadata source — see `Gate registry`), `qasm` (the emit-domain OpenQASM 3.0 syntax tree + total renderer, MLIR-free by necessity since emit is a pure string fold), `linearity` (the SSA use-count adapter — see `Linearity (SSA)`), and `metrics` (the snapshot/regression DTO; the collector itself lives in `mlir_bridge`). A type belongs here iff both `frontend` and `mlir_bridge` (or another non-MLIR crate) need to construct or inspect it *and* it has no Melior dependency. `qasm` and `metrics` stay here rather than splitting into a `quon_qasm` / metrics crate: neither split would remove a dependency, and the workspace keeps `quon_core` as the crossing-seam home. `CircIr` (owned by `quon_circ`) and `SpecializedCircuit` (owned by `frontend`) deliberately do *not* live here.
+_Avoid_: core (unqualified), shared types crate, common (for this kernel)
 
 ### IR dialects
 

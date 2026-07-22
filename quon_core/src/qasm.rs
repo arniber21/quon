@@ -30,6 +30,18 @@
 //!    [`operand_arity_ok`] checks the IR's operand count at the boundary.
 //!
 //! This crate is MLIR-free; [`render`] is pure string production.
+//!
+//! # Why this module lives in `quon_core`
+//!
+//! This is the compiler's **emit-domain AST** — MLIR-free *by necessity*, not
+//! by coincidence. `mlir_bridge::reify` builds a [`Program`] once (the single
+//! fallible stage), and [`render`] is a pure fold that produces text from a
+//! tree that cannot represent invalid OpenQASM. Pulling it out into a
+//! `quon_qasm` crate would add a workspace edge without removing a dependency:
+//! nothing here pulls in Melior/LLVM, and the tree is consumed only by emit.
+//! It stays in `quon_core` and consumes the [`crate::gates`] registry via
+//! [`from_gate_info`], so a new registry-backed stdgate is emittable with no
+//! second match arm in emit. See the `quon_core` glossary entry in CONTEXT.md.
 
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -1,8 +1,32 @@
 //! Linear qubit SSA invariants (SPEC §6.2–§6.3).
 //!
-//! Pure, MLIR-free kernels shared by `mlir_bridge` verifiers/passes and Flux
-//! refinement proofs. Every `!qubit` SSA value must have exactly one use; a value
-//! consumed by `quantum.dynamic.measure` must not appear at any other use site.
+//! This module is the **IR adapter** of the no-cloning / linear-use judgment —
+//! the rule that *every qubit resource is consumed exactly once*. It hosts the
+//! pure, MLIR-free SSA use-count kernels shared by `mlir_bridge` verifiers /
+//! passes and Flux refinement proofs. After lowering, source names are gone: a
+//! `!qubit` SSA value must have exactly one use, and a value consumed by
+//! `quantum.dynamic.measure` must not appear at any other use site.
+//!
+//! # Δ ⇄ SSA: two adapters of one judgment
+//!
+//! The compiler enforces the no-cloning judgment at two distinct stages, with
+//! two adapters that share vocabulary but **not** a type:
+//!
+//! * **Frontend adapter — `Δ` (linear context).** `frontend`'s typing context
+//!   `Δ : HashMap<Name, Type>` records named qubit resources and physically
+//!   removes a name from `Δ` when it is consumed in the term; a second use is
+//!   a *scope* error caught statically at the source language. Lives in the
+//!   `frontend` crate — see the `Linear context` glossary entry in CONTEXT.md.
+//! * **IR adapter — this module.** Names are gone post-lowering; the judgment
+//!   is re-expressed as "every `!qubit` SSA value has exactly
+//!   [`LINEAR_USE_COUNT`] use" and checked by region verifier passes against
+//!   these kernels.
+//!
+//! The two adapters deliberately stay as separate types in their owning
+//! crates. `Δ` operates on source names before lowering; the SSA use-count
+//! kernels operate on post-lowering values. Neither subsumes the other, and
+//! there is no plan to unify them into a shared data type — only the
+//! *vocabulary* (linear use, no-cloning, exactly-once consumption) is shared.
 
 use std::fmt;
 
