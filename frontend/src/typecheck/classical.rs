@@ -65,8 +65,8 @@
 use crate::ast::{BinOp, Expr, LitPat, Pat, Type};
 use crate::lexer::{SimpleSpan, Sp};
 use crate::refinement::Assumption;
-use quon_core::DepthExpr;
 use crate::types::Ty;
+use quon_core::DepthExpr;
 
 use super::error::TypeError;
 use super::exhaust;
@@ -679,9 +679,9 @@ mod tests {
     //! and pattern-matrix reachability are covered by the [`exhaust`] module's own tests; the
     //! classical judgment *coordinates* them, so these tests cover the classical-specific glue.
 
-    use super::*;
     use super::super::TypeChecker;
     use super::super::builtins;
+    use super::*;
     use crate::ast::{LitPat, Name, Pat};
 
     /// Build a `Sp<T>` with a dummy zero span.
@@ -708,7 +708,9 @@ mod tests {
     fn as_function_invents_dom_cod_for_metavar() {
         let mut tc = TypeChecker::new();
         let m = tc.table.fresh();
-        let (dom, cod) = tc.as_function(&m, span()).expect("metavariable unified to function");
+        let (dom, cod) = tc
+            .as_function(&m, span())
+            .expect("metavariable unified to function");
         // After unification the metavar resolves to a function whose dom/cod are the fresh vars.
         let resolved = tc.table.resolve(&m);
         assert!(matches!(resolved, Ty::Fn(_, _)));
@@ -775,11 +777,15 @@ mod tests {
         let map_scheme = builtins::lookup("map").expect("map is a builtin");
         let ty = tc.instantiate(&map_scheme);
         // `map : (A -> B, List<A>) -> List<B>` instantiates to a curried function.
-        let (dom, cod) = tc.as_function(&ty, span()).expect("map instantiates to a function");
+        let (dom, cod) = tc
+            .as_function(&ty, span())
+            .expect("map instantiates to a function");
         // Domain is itself a function `A -> B`.
         assert!(matches!(tc.table.resolve(&dom), Ty::Fn(_, _)));
         // Codomain is `List<A> -> List<B>` — peel the second arrow.
-        let (dom2, cod2) = tc.as_function(&cod, span()).expect("map codomain is curried");
+        let (dom2, cod2) = tc
+            .as_function(&cod, span())
+            .expect("map codomain is curried");
         assert!(matches!(tc.table.resolve(&dom2), Ty::List(_))); // List<A>
         assert!(matches!(tc.table.resolve(&cod2), Ty::List(_))); // List<B>
     }
@@ -787,8 +793,7 @@ mod tests {
     #[test]
     fn instantiate_monomorphic_scheme_is_unchanged() {
         let mut tc = TypeChecker::new();
-        let range_scheme =
-            builtins::lookup("range").expect("range is a builtin");
+        let range_scheme = builtins::lookup("range").expect("range is a builtin");
         let ty = tc.instantiate(&range_scheme);
         // `range : Int -> List<Int>` — no quantified vars, so the body is returned as-is.
         let (dom, cod) = tc.as_function(&ty, span()).expect("range is a function");
