@@ -997,9 +997,9 @@ quantum.physical passes (after physical lowering):
   10. depth-optimal-scheduling
 ```
 
-Passes 1–2 and 4–5 run to fixpoint today. Pass 3 is reserved (see note) and will join that fixpoint when #96 ships. Passes 8–10 run in strict order.
+Passes 1–5 run to fixpoint. Passes 8–10 run in strict order.
 
-> **Implementation note (#214 / #96 / ADR-0013):** Pass 3 (`clifford-t-optimization`) is specified above but **not shipped and not invoked**. A prior shallow alias that only re-ran gate cancellation was removed in #214. Real Clifford+T remains #96: Reed–Muller / phase-polynomial T-count reduction plus Aaronson–Gottesman canonical Clifford resynthesis (see §7.2). Do not reintroduce a pass named `clifford_t_opt` that merely forwards to `gate_cancellation`. When shipped, fixpoint order is cancel → merge → **clifford_t_opt** → uncompute → ZX so optimizer-inserted open `borrow`s can be closed by uncomputation in the same round.
+> **Implementation note (#96 / ADR-0013 / ADR-0039):** Pass 3 (`clifford-t-optimization`) ships two MLIR-free algorithms: phase-polynomial T-count reduction for `clifford = false` circuits (non-adjacent T-merging via parity tracking through CNOTs) and Aaronson–Gottesman stabilizer tableau identity/Pauli detection for `clifford = true` circuits. Fixpoint order is cancel → merge → **clifford_t_opt** → uncompute → ZX so optimizer-inserted open `borrow`s can be closed by uncomputation in the same round. See §7.2.
 ### 7.2 `quantum.circ` Passes
 
 #### Gate Cancellation
@@ -1340,7 +1340,9 @@ quon/
 │       │   ├── rotation_merging.rs
 │       │   ├── compiler_uncomputation.rs
 │       │   ├── zx_simplification.rs  # Calls into zx crate directly (no FFI)
-│       │   ├── clifford_t_opt.rs     # Reserved for #96 — MLIR glue only (see ADR-0013)
+│       │   ├── clifford_t_opt.rs     # Phase poly + stabilizer tableau dispatch (#96, ADR-0013/0039)
+│       │   ├── stabilizer_tableau.rs  # Aaronson-Gottesman CHP tableau (#96)
+│       │   ├── phase_polynomial.rs    # CNOT+T phase polynomial extraction/synthesis (#96)
 │       │   ├── measurement_deferral.rs
 │       │   ├── classical_region_fusion.rs
 │       │   ├── sabre_routing.rs
