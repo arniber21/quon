@@ -257,7 +257,7 @@ fn isolated_qubit_appears_in_vertices() {
 
 #[test]
 fn top_level_program_ignores_leftover_circ_func() {
-    // Simulates post-monadic-lowering: executed program on the module body
+    // Simulates post-lowering: executed program on the module body
     // plus a leftover inlined `quantum.circ.func` callee. Extract must not
     // merge both (pre-#112 bug: Bell reported 4 logical qubits / 2 CXs).
     let context = dynamic_context();

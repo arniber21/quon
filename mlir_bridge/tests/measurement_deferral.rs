@@ -6,7 +6,7 @@ use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike, Value};
 
 use mlir_bridge::dialect::quantum_circ as qc;
 use mlir_bridge::dialect::quantum_dynamic as qd;
-use mlir_bridge::passes::{measurement_deferral, monadic_lowering};
+use mlir_bridge::passes::measurement_deferral;
 use quon_core::DepthExpr;
 
 use support::{append_foreign_qubit, dynamic_context};
@@ -51,12 +51,13 @@ fn count_op(text: &str, op: &str) -> usize {
 }
 
 fn lower_teleport_module(context: &melior::Context) -> Module<'_> {
-    use mlir_bridge::dialect::monadic_staging as staging;
-
     let location = Location::unknown(context);
     let module = Module::new(location);
     let body = module.body();
 
+    // Circuit-function definitions (preserved as dead code after inlining —
+    // `lower` inlines their bodies into `unitary_region`/`if` regions now that
+    // the staging dialect is gone, #213 / ADR-0037).
     body.append_operation(gate_func(
         context,
         "bell_state",
@@ -98,72 +99,126 @@ fn lower_teleport_module(context: &melior::Context) -> Module<'_> {
         location,
     ));
 
-    let qubit = qc::qubit_type(context);
     let msg = append_foreign_qubit(context, &body, location);
     let alice = append_foreign_qubit(context, &body, location);
     let bob = append_foreign_qubit(context, &body, location);
 
-    let run_block = Block::new(&[(qubit, location), (qubit, location), (qubit, location)]);
-    let r_msg = Value::from(run_block.argument(0).unwrap());
-    let r_alice = Value::from(run_block.argument(1).unwrap());
-    let r_bob = Value::from(run_block.argument(2).unwrap());
+    // ent = bell_state(alice, bob) inlined into a unitary_region.
+    let ent = body.append_operation(
+        qd::unitary_region(
+            context,
+            &[alice, bob],
+            &DepthExpr::Nat(2),
+            true,
+            unitary_body(context, 2, &[("H", &[0]), ("CNOT", &[0, 1])], location),
+            location,
+        )
+        .unwrap(),
+    );
+    let a = Value::from(ent.result(0).unwrap());
+    let b = Value::from(ent.result(1).unwrap());
 
-    let entangle = run_block.append_operation(staging::apply(
-        context,
-        "bell_state",
-        &[r_alice, r_bob],
-        location,
-    ));
-    let a = Value::from(entangle.result(0).unwrap());
-    let b = Value::from(entangle.result(1).unwrap());
+    // unent = adjoint_bell(msg, a) inlined.
+    let unent = body.append_operation(
+        qd::unitary_region(
+            context,
+            &[msg, a],
+            &DepthExpr::Nat(2),
+            true,
+            unitary_body(context, 2, &[("CNOT", &[0, 1]), ("H", &[0])], location),
+            location,
+        )
+        .unwrap(),
+    );
+    let m2 = Value::from(unent.result(0).unwrap());
 
-    let unentangle = run_block.append_operation(staging::apply(
-        context,
-        "adjoint_bell",
-        &[r_msg, a],
-        location,
-    ));
-    let m2 = Value::from(unentangle.result(0).unwrap());
-
-    let x_measure = run_block.append_operation(staging::measure(context, m2, location));
+    let x_measure = body.append_operation(qd::measure(context, m2, location).unwrap());
     let x_bit = Value::from(x_measure.result(0).unwrap());
-
-    let z_measure = run_block.append_operation(staging::measure(context, a, location));
+    let z_measure = body.append_operation(qd::measure(context, a, location).unwrap());
     let z_bit = Value::from(z_measure.result(0).unwrap());
 
-    let x_correct = run_block.append_operation(staging::cond_apply(
-        context,
-        x_bit,
-        "X_1",
-        "identity_1",
-        &[b],
-        location,
-    ));
+    // Feed-forward corrections: each measure bit drives one `if`.
+    let x_correct = body.append_operation(
+        qd::r#if(
+            context,
+            x_bit,
+            &[b],
+            branch_body(context, &[("X", &[0])], location),
+            branch_body(context, &[], location),
+            location,
+        )
+        .unwrap(),
+    );
     let b2 = Value::from(x_correct.result(0).unwrap());
 
-    let z_correct = run_block.append_operation(staging::cond_apply(
-        context,
-        z_bit,
-        "Z_1",
-        "identity_1",
-        &[b2],
-        location,
-    ));
-    let b3 = Value::from(z_correct.result(0).unwrap());
+    let z_correct = body.append_operation(
+        qd::r#if(
+            context,
+            z_bit,
+            &[b2],
+            branch_body(context, &[("Z", &[0])], location),
+            branch_body(context, &[], location),
+            location,
+        )
+        .unwrap(),
+    );
+    let _b3 = Value::from(z_correct.result(0).unwrap());
 
-    run_block.append_operation(staging::r#yield(&[b3], location));
-
-    let run_region = Region::new();
-    run_region.append_block(run_block);
-    body.append_operation(staging::run(
-        context,
-        &[msg, alice, bob],
-        run_region,
-        location,
-    ));
-
-    monadic_lowering::run_on_module(context, &module).expect("lower teleport");
     module
+}
+
+/// A `quantum.dynamic.unitary_region` body region: an `n`-qubit block running
+/// `gates` and terminated by `quantum.circ.return` (mirrors `gate_func`'s body,
+/// inlined straight into the dynamic IR by `lower`).
+fn unitary_body<'c>(
+    context: &'c melior::Context,
+    n: usize,
+    gates: &[(&str, &[usize])],
+    location: Location<'c>,
+) -> Region<'c> {
+    let qubit = qc::qubit_type(context);
+    let block = Block::new(&(0..n).map(|_| (qubit, location)).collect::<Vec<_>>());
+    let mut wires: Vec<Value<'c, '_>> = (0..n)
+        .map(|i| Value::from(block.argument(i).expect("arg")))
+        .collect();
+    for (gate_name, targets) in gates {
+        let operands: Vec<Value<'c, '_>> = targets.iter().map(|idx| wires[*idx]).collect();
+        let op = block.append_operation(
+            qc::gate(context, gate_name, 1, true, &operands, location).expect("gate"),
+        );
+        for (i, target) in targets.iter().enumerate() {
+            wires[*target] = Value::from(op.result(i).expect("result"));
+        }
+    }
+    block.append_operation(qc::r#return(&wires, location).expect("return"));
+    let region = Region::new();
+    region.append_block(block);
+    region
+}
+
+/// A `quantum.dynamic.if` branch body region: a 1-qubit block running `gates`
+/// (empty for the identity correction) terminated by `quantum.dynamic.yield`.
+fn branch_body<'c>(
+    context: &'c melior::Context,
+    gates: &[(&str, &[usize])],
+    location: Location<'c>,
+) -> Region<'c> {
+    let qubit = qc::qubit_type(context);
+    let block = Block::new(&[(qubit, location)]);
+    let mut wires: Vec<Value<'c, '_>> = vec![Value::from(block.argument(0).expect("arg"))];
+    for (gate_name, targets) in gates {
+        let operands: Vec<Value<'c, '_>> = targets.iter().map(|idx| wires[*idx]).collect();
+        let op = block.append_operation(
+            qc::gate(context, gate_name, 1, true, &operands, location).expect("gate"),
+        );
+        for (i, target) in targets.iter().enumerate() {
+            wires[*target] = Value::from(op.result(i).expect("result"));
+        }
+    }
+    block.append_operation(qd::r#yield(&wires, location).expect("yield"));
+    let region = Region::new();
+    region.append_block(block);
+    region
 }
 
 #[test]

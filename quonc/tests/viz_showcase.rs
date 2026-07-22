@@ -247,7 +247,7 @@ fn qft_depth_goldens_match_regeneration() {
     let after = extract_stage(
         &dump,
         "--- after circ passes ---",
-        "--- after monadic lowering ---",
+        "--- after dynamic passes ---",
     );
 
     assert_eq!(

@@ -236,9 +236,9 @@ every flag.
 Quon source
   -> parse / desugar / typecheck
   -> elaborate parametric circuits
-  -> lower to quantum.circ
+  -> lower to quantum.circ + quantum.dynamic (run blocks lower straight
+     to dynamic IR; no staging dialect — #213 / ADR-0037)
   -> circuit simplification passes
-  -> monadic lowering to quantum.dynamic
   -> dynamic passes
   -> fixed OpenQASM path OR neutral-atom schedule path
 ```

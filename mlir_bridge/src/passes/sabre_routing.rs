@@ -685,7 +685,7 @@ fn route_module<'c, 'a>(
     };
 
     // One shared `RouteState` for the module's own top-level block (the real,
-    // executed program after `monadic_lowering` — see `native_gate_decomp`'s
+    // executed program after lowering — see `native_gate_decomp`'s
     // `decompose_block` doc comment for why this must be walked directly, not
     // just each named `quantum.circ.func`).
     let mut top_level_state = RouteState::new(target.num_qubits);

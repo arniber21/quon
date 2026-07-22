@@ -1189,27 +1189,27 @@ fn print_pass_list() {
 quonc pass stages
 ─────────────────
 Shared front-end
-  1. lower            Quon → quantum.circ
+  1. lower            Quon → quantum.dynamic (circ funcs + dynamic IR;
+                      staging dialect collapsed in #213 / ADR-0037)
   2. circ fixpoint    gate_cancellation, rotation_merging,
                       clifford_t_opt (phase polynomial + stabilizer tableau),
                       compiler_uncomputation, zx_simplification
-  3. monadic_lowering quantum.circ → quantum.dynamic
-  4. dynamic          measurement_deferral, classical_region_fusion
+  3. dynamic          measurement_deferral, classical_region_fusion
 
 Fixed (OpenQASM) path
-  5. native_gate_decomp
-  6. sabre_routing
-  7. native_gate_decomp (post-SWAP)
-  8. depth_scheduling
-  9. emit OpenQASM 3.0
+  4. native_gate_decomp
+  5. sabre_routing
+  6. native_gate_decomp (post-SWAP)
+  7. depth_scheduling
+  8. emit OpenQASM 3.0
 
 Neutral-atom path
-  5. extract_interaction_graph
-  6. schedule_entangling_layers (Misra–Gries / ASAP)
-  7. schedule_zoned (default)  OR  place + plan_aod_movement (--na-backend flat)
-  8. compact_schedule (unless --no-na-compact)
-  9. lower to quantum.na MLIR (canonical schedule IR, ADR-0011)
- 10. build_resource_report / schedule JSON (debug views)
+  4. extract_interaction_graph
+  5. schedule_entangling_layers (Misra–Gries / ASAP)
+  6. schedule_zoned (default)  OR  place + plan_aod_movement (--na-backend flat)
+  7. compact_schedule (unless --no-na-compact)
+  8. lower to quantum.na MLIR (canonical schedule IR, ADR-0011)
+  9. build_resource_report / schedule JSON (debug views)
 "
     );
 }

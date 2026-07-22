@@ -1,7 +1,7 @@
 //! Shells out to `lit` to run the IR-level FileCheck suite in `test/lit/`
 //! (issue #28, PRD story 38). `cargo test` alone can't drive this suite: the
 //! oracle binaries `test/lit/lit.cfg.py` substitutes in (`circ_lower`,
-//! `monadic_lower`, `sabre_route`, ...) live under `examples/` in `frontend`
+//! `sabre_route`, ...) live under `examples/` in `frontend`
 //! and `mlir_bridge`, and plain `cargo test`/`cargo build` don't build
 //! examples — CI / `just ci-rust` run `cargo build --examples --workspace`
 //! first. Locally, where that's easy to forget, this test skips (rather than
@@ -31,7 +31,6 @@ const ORACLE_BINARIES: &[&str] = &[
     "na_roundtrip",
     "circ_lower",
     "dynamic_roundtrip",
-    "monadic_lower",
     "gate_cancel",
     "rotation_merge",
     "measurement_defer",

@@ -8,22 +8,22 @@
 //! 1. **Circ fixpoint** ([`run_circ_passes_to_fixpoint`]) — `gate_cancellation`,
 //!    `rotation_merging`, `clifford_t_opt`, `compiler_uncomputation`,
 //!    `zx_simplification` to fixpoint (ADR-0013 / #96).
-//! 2. **Monadic lowering** — call [`crate::passes::monadic_lowering::run_on_module`]
-//!    (circ → dynamic).
-//! 3. **Dynamic passes** ([`run_dynamic_passes`]) — `measurement_deferral`,
-//!    `classical_region_fusion`.
-//! 4. **Fixed physical** ([`run_fixed_physical`] in [`crate::fixed_physical`]) —
+//! 2. **Dynamic passes** ([`run_dynamic_passes`]) — `measurement_deferral`,
+//!    `classical_region_fusion`. (`frontend::lower` already emits
+//!    `quantum.dynamic` IR directly — the staging dialect / lowering pass was
+//!    collapsed in #213 / ADR-0037.)
+//! 3. **Fixed physical** ([`run_fixed_physical`] in [`crate::fixed_physical`]) —
 //!    strict order: `native_gate_decomp` → `sabre_routing` →
 //!    `native_gate_decomp` (post-SWAP) → `depth_scheduling`. T-count is sampled
 //!    after SABRE and before the second decomp (same hook as the historical
 //!    `quonc` driver). SSA wiring is the canonical layout channel; `phys_qubit`
 //!    is a derived annotation (ADR-0034).
-//! 5. **OpenQASM emit** ([`emit_openqasm`]) — orchestration hook over
+//! 4. **OpenQASM emit** ([`emit_openqasm`]) — orchestration hook over
 //!    [`crate::emit::openqasm3`].
 //!
 //! Neutral-atom scheduling after dynamic IR lives in `quon_na::pipeline`.
 //!
-//! QEC: after monadic lowering, [`crate::collect_qec_workload`] builds MLIR-free
+//! QEC: after lowering, [`crate::collect_qec_workload`] builds MLIR-free
 //! workload IR (#251). Calling it from this pipeline / expanding to `quantum.na`
 //! is issue #248.
 
@@ -66,7 +66,7 @@ pub fn run_circ_passes_to_fixpoint(context: &Context, module: &Module<'_>) {
     }
 }
 
-/// Runs `quantum.dynamic` passes after monadic lowering (SPEC §7.1 passes 6–7).
+/// Runs `quantum.dynamic` passes after lowering (SPEC §7.1 passes 6–7).
 pub fn run_dynamic_passes(context: &Context, module: &Module<'_>) {
     measurement_deferral::run_on_module(context, module);
     classical_region_fusion::run_on_module(context, module);

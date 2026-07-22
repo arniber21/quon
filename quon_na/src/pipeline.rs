@@ -2,7 +2,7 @@
 //!
 //! # Stages
 //!
-//! Callable without `quonc`. After monadic lowering + dynamic passes:
+//! Callable without `quonc`. After lowering + dynamic passes:
 //!
 //! 1. **Extract** interaction graph from the MLIR module (`mlir` feature)
 //! 2. **`schedule_from_graph`** → **`schedule_entangling_layers`**

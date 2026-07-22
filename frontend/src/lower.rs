@@ -6,12 +6,11 @@ use std::collections::HashMap;
 
 use melior::Context;
 use melior::ir::attribute::{BoolAttribute, StringAttribute};
-use melior::ir::operation::OperationBuilder;
+use melior::ir::operation::{OperationBuilder, OperationLike};
 use melior::ir::{
-    Block, BlockLike, Identifier, Location, Module, Operation, OperationRef, Region, RegionLike,
-    Value, ValueLike,
+    Block, BlockLike, Identifier, Location, Module, Operation, Region, RegionLike, Value, ValueLike,
 };
-use mlir_bridge::dialect::monadic_staging as staging;
+use mlir_bridge::dialect::qec_dynamic;
 use mlir_bridge::dialect::quantum_circ as qc;
 use mlir_bridge::dialect::quantum_dynamic as qd;
 use quon_core::DepthExpr;
@@ -194,9 +193,10 @@ impl<'c> LoweringCtx<'c> {
             }
         }
 
-        // Run-block (`Q<τ>`) functions lower to a `quantum.circ.run` staging op,
-        // which the monadic-lowering pass (#17) rewrites to `quantum.dynamic`.
-        // Circuit funcs are lowered first so `apply` callees already exist.
+        // Run-block (`Q<τ>`) functions lower straight into `quantum.dynamic`
+        // top-level IR (circuit callees inlined into `unitary_region` / `if`
+        // bodies). No staging dialect — see ADR-0037 / #213. Circuit funcs are
+        // lowered first so `apply` callees already exist.
         for decl in decls {
             if let Decl::Fn {
                 name,
@@ -445,12 +445,15 @@ impl<'c> LoweringCtx<'c> {
         self.emit_specialized(&synth_name, &circuit)?;
         Ok(synth_name)
     }
-
-    /// Lower a quantum-monad (`Q<τ>`) function into a `quantum.circ.run` staging
-    /// op. The desugared body is a `Bind`/`Let`/`Return` chain (issue #8); we walk
-    /// it, emitting `monadic_staging` ops (`qreg`/`apply`/`measure`/`yield`) into
-    /// the run region's entry block. The monadic-lowering pass (#17) then rewrites
-    /// those to `quantum.dynamic` IR.
+    /// Lower a quantum-monad (`Q<τ>`) function straight into `quantum.dynamic`
+    /// top-level IR. The desugared body is a `Bind`/`Let`/`Return` chain
+    /// (issue #8); we walk it, emitting `quantum.dynamic` ops
+    /// (`test.qubit` allocations, `measure`/`reset`, `unitary_region`/`if`
+    /// with inlined circuit callees, QEC ops) directly into the module's
+    /// top-level block. There is no staging dialect: the former
+    /// `monadic_staging` ops and `monadic_lowering` pass were collapsed in
+    /// #213 (ADR-0037) — `lower` now produces the dynamic IR the erasure pass
+    /// used to.
     fn lower_run_fn(
         &mut self,
         name: &Name,
@@ -468,31 +471,24 @@ impl<'c> LoweringCtx<'c> {
             return Err(LowerError::ParametricRunFn { name: name.clone() });
         }
 
-        let region = Region::new();
-        let mut block = Block::new(&[]);
         let mut env: HashMap<Name, Vec<Value<'c, 'c>>> = HashMap::new();
-        let outputs = self.lower_monadic(body, &mut block, &mut env)?;
-        block.append_operation(staging::r#yield(&outputs, self.location));
-        region.append_block(block);
-        self.module
-            .body()
-            .append_operation(staging::run(self.context, &[], region, self.location));
+        self.lower_monadic(body, &mut env)?;
         Ok(())
     }
 
-    /// Walk a monadic expression, emitting staging ops and returning the SSA
-    /// values it produces (the monadic result).
+    /// Walk a monadic expression, emitting `quantum.dynamic` ops into the
+    /// module's top-level block and returning the SSA values it produces
+    /// (the monadic result).
     fn lower_monadic(
         &mut self,
         expr: &Sp<Expr>,
-        block: &mut Block<'c>,
         env: &mut HashMap<Name, Vec<Value<'c, 'c>>>,
     ) -> Result<Vec<Value<'c, 'c>>, LowerError> {
         match &expr.0 {
             Expr::Bind { rhs, param, body } => {
-                let results = self.eval(rhs, block, env)?;
+                let results = self.eval(rhs, env)?;
                 env.insert(param.0.clone(), results);
-                self.lower_monadic(body, block, env)
+                self.lower_monadic(body, env)
             }
             // `let (hi, lo) = split(k, q)` (SPEC §5, Shor's modular
             // exponentiation): splits a register's *wire list* into two
@@ -513,7 +509,7 @@ impl<'c> LoweringCtx<'c> {
                         construct: "split() count must be a literal integer",
                     });
                 };
-                let qubits = self.eval(&q_expr, block, env)?;
+                let qubits = self.eval(&q_expr, env)?;
                 if k < 0 || k as usize > qubits.len() {
                     return Err(LowerError::Unsupported {
                         construct: "split() count out of range",
@@ -522,28 +518,28 @@ impl<'c> LoweringCtx<'c> {
                 let (hi, lo) = qubits.split_at(k as usize);
                 bind_pattern(&pats[0], hi.to_vec(), env)?;
                 bind_pattern(&pats[1], lo.to_vec(), env)?;
-                self.lower_monadic(body, block, env)
+                self.lower_monadic(body, env)
             }
             Expr::Let { pat, rhs, body } => {
-                let values = self.eval(rhs, block, env)?;
+                let values = self.eval(rhs, env)?;
                 bind_pattern(pat, values, env)?;
-                self.lower_monadic(body, block, env)
+                self.lower_monadic(body, env)
             }
-            Expr::Return(inner) => self.eval(inner, block, env),
+            Expr::Return(inner) => self.eval(inner, env),
             // A trailing monadic action used as the block's result expression.
-            _ => self.eval(expr, block, env),
+            _ => self.eval(expr, env),
         }
     }
 
-    /// Evaluate a run-block expression to the SSA values it produces, emitting any
-    /// staging ops it performs. Circuit application (`<-`), pure value forms
-    /// (`let` rhs, `@` operands, `return`), and measurement all flow through here;
-    /// the monad's purity distinction is erased at the IR level since every form
-    /// either threads qubit wires or produces classical bits.
+    /// Evaluate a run-block expression to the SSA values it produces, emitting
+    /// `quantum.dynamic` ops directly into the module's top-level block.
+    /// Circuit application (`<-`), pure value forms (`let` rhs, `@` operands,
+    /// `return`), and measurement all flow through here; the monad's purity
+    /// distinction is erased at the IR level since every form either threads
+    /// qubit wires or produces classical bits.
     fn eval(
         &mut self,
         expr: &Sp<Expr>,
-        block: &mut Block<'c>,
         env: &mut HashMap<Name, Vec<Value<'c, 'c>>>,
     ) -> Result<Vec<Value<'c, 'c>>, LowerError> {
         match &expr.0 {
@@ -553,44 +549,50 @@ impl<'c> LoweringCtx<'c> {
             Expr::Tuple(items) => {
                 let mut out = Vec::new();
                 for item in items {
-                    out.extend(self.eval(item, block, env)?);
+                    out.extend(self.eval(item, env)?);
                 }
                 Ok(out)
             }
             // `circuit @ qubits` — apply a circuit to qubits. A direct callee
-            // lowers to `apply`; an `if cond then C1 else C2` head lowers to the
-            // feed-forward `cond_apply`.
+            // inlines into a `quantum.dynamic.unitary_region`; an
+            // `if cond then C1 else C2` head inlines both branches into a
+            // `quantum.dynamic.if` (feed-forward on a measurement bit).
             Expr::GateApp { gate, qubits } => {
-                let qs = self.eval(qubits, block, env)?;
+                let qs = self.eval(qubits, env)?;
                 if let Expr::If { cond, then, else_ } = &gate.0 {
-                    let condition = single_value(self.eval(cond, block, env)?)?;
+                    let condition = single_value(self.eval(cond, env)?)?;
                     let then_callee = circuit_callee(then).ok_or(LowerError::Unsupported {
                         construct: "conditional `then` branch must be a named circuit",
                     })?;
                     let else_callee = circuit_callee(else_).ok_or(LowerError::Unsupported {
                         construct: "conditional `else` branch must be a named circuit",
                     })?;
-                    let op = block.append_operation(staging::cond_apply(
+                    let then_region = self.inline_callee_region(&then_callee, &qs, true)?.0;
+                    let else_region = self.inline_callee_region(&else_callee, &qs, true)?.0;
+                    let op = qd::r#if(
                         self.context,
                         condition,
-                        &then_callee,
-                        &else_callee,
                         &qs,
+                        then_region,
+                        else_region,
                         self.location,
-                    ));
-                    return collect_results(op, qs.len());
+                    )?;
+                    return self.append_dynamic_op(op, qs.len());
                 }
                 let callee = match circuit_callee(gate) {
                     Some(name) => name,
                     None => self.resolve_circuit_callee(gate)?,
                 };
-                let op = block.append_operation(staging::apply(
+                let (region, meta) = self.inline_callee_region(&callee, &qs, false)?;
+                let op = qd::unitary_region(
                     self.context,
-                    &callee,
                     &qs,
+                    &meta.depth,
+                    meta.clifford,
+                    region,
                     self.location,
-                ));
-                collect_results(op, qs.len())
+                )?;
+                self.append_dynamic_op(op, qs.len())
             }
             Expr::App(f, x) => {
                 let (head, args) = flatten_app(f, x);
@@ -608,90 +610,83 @@ impl<'c> LoweringCtx<'c> {
                     let distance = nat_lit(&targs[0]).ok_or(LowerError::Unsupported {
                         construct: "QEC constructor distance must be a literal Nat",
                     })?;
-                    return self.lower_qec_construct(family, basis, distance, block);
+                    return self.lower_qec_construct(family, basis, distance);
                 }
                 if let Expr::Var(fname) = &head.0 {
                     match fname.as_str() {
-                        // `qreg(n)` — allocate `n` fresh qubits.
+                        // `qreg(n)` — allocate `n` fresh qubits as `test.qubit`
+                        // ops (the dynamic-IR allocation point).
                         "qreg" if args.len() == 1 => {
                             if let Expr::Int(count) = &args[0].0 {
-                                let op = block.append_operation(staging::qreg(
-                                    self.context,
-                                    *count,
-                                    self.location,
-                                ));
-                                return collect_results(op, *count as usize);
+                                let mut qubits = Vec::with_capacity(*count as usize);
+                                for _ in 0..*count {
+                                    let op = self.foreign_qubit()?;
+                                    qubits.extend(self.append_dynamic_op(op, 1)?);
+                                }
+                                return Ok(qubits);
                             }
                         }
                         // `measure(q)` — consume one qubit, produce one bit.
                         "measure" if args.len() == 1 => {
-                            let qubit = single_value(self.eval(args[0], block, env)?)?;
-                            let op = block.append_operation(staging::measure(
-                                self.context,
-                                qubit,
-                                self.location,
-                            ));
-                            return collect_results(op, 1);
+                            let qubit = single_value(self.eval(args[0], env)?)?;
+                            let op = qd::measure(self.context, qubit, self.location)?;
+                            return self.append_dynamic_op(op, 1);
                         }
                         // `a `tensored` b` (SPEC §5): concatenate two
                         // registers' wire lists into one, `QReg<n+m>`. No
                         // MLIR op of its own — the wires are already live
                         // SSA values, so this is exactly list concatenation.
                         "tensored" if args.len() == 2 => {
-                            let mut wires = self.eval(args[0], block, env)?;
-                            wires.extend(self.eval(args[1], block, env)?);
+                            let mut wires = self.eval(args[0], env)?;
+                            wires.extend(self.eval(args[1], env)?);
                             return Ok(wires);
                         }
                         // `measure_all(qs)` — measure every qubit, producing one
                         // bit each (Bernstein–Vazirani readout).
                         "measure_all" if args.len() == 1 => {
-                            let qubits = self.eval(args[0], block, env)?;
+                            let qubits = self.eval(args[0], env)?;
                             let mut bits = Vec::with_capacity(qubits.len());
                             for qubit in qubits {
-                                let op = block.append_operation(staging::measure(
-                                    self.context,
-                                    qubit,
-                                    self.location,
-                                ));
-                                bits.extend(collect_results(op, 1)?);
+                                let op = qd::measure(self.context, qubit, self.location)?;
+                                bits.extend(self.append_dynamic_op(op, 1)?);
                             }
                             return Ok(bits);
                         }
                         "memory_round" if args.len() == 1 => {
-                            let block_val = single_value(self.eval(args[0], block, env)?)?;
+                            let block_val = single_value(self.eval(args[0], env)?)?;
                             let logical_id = self.qec_id_of(block_val)?;
-                            let op = block.append_operation(staging::qec_memory_round(
+                            let op = qec_dynamic::qec_memory_round(
                                 self.context,
                                 block_val,
                                 logical_id,
                                 self.location,
-                            )?);
-                            let results = collect_results(op, 1)?;
+                            )?;
+                            let results = self.append_dynamic_op(op, 1)?;
                             if let Some(result) = results.first() {
                                 self.qec_logical_ids.insert(value_key(result), logical_id);
                             }
                             return Ok(results);
                         }
                         "measure_logical_z" if args.len() == 1 => {
-                            return self.lower_qec_measure(args[0], "z", block, env);
+                            return self.lower_qec_measure(args[0], "z", env);
                         }
                         "measure_logical_x" if args.len() == 1 => {
-                            return self.lower_qec_measure(args[0], "x", block, env);
+                            return self.lower_qec_measure(args[0], "x", env);
                         }
                         "logical_cx" if args.len() == 2 => {
-                            let control = single_value(self.eval(args[0], block, env)?)?;
-                            let target = single_value(self.eval(args[1], block, env)?)?;
+                            let control = single_value(self.eval(args[0], env)?)?;
+                            let target = single_value(self.eval(args[1], env)?)?;
                             let control_id = self.qec_id_of(control)?;
                             let target_id = self.qec_id_of(target)?;
-                            let op = block.append_operation(staging::qec_logical_cx(
+                            let op = qec_dynamic::qec_logical_cx(
                                 self.context,
                                 control,
                                 target,
                                 control_id,
                                 target_id,
                                 self.location,
-                            )?);
-                            let results = collect_results(op, 2)?;
+                            )?;
+                            let results = self.append_dynamic_op(op, 2)?;
                             if results.len() == 2 {
                                 self.qec_logical_ids
                                     .insert(value_key(&results[0]), control_id);
@@ -713,24 +708,98 @@ impl<'c> LoweringCtx<'c> {
         }
     }
 
+    /// Build a region inlining circuit function `callee`'s body over
+    /// `input_qubits`, for a `quantum.dynamic.unitary_region` body
+    /// (`yield_terminator = false`, terminated by `quantum.circ.return`) or a
+    /// `quantum.dynamic.if` branch (`yield_terminator = true`, terminated by
+    /// `quantum.dynamic.yield`). The callee's body is re-lowered from its
+    /// recorded AST so the inlined gates match the emitted `quantum.circ.func`
+    /// definition exactly — one source of truth for circuit-body lowering.
+    fn inline_callee_region(
+        &mut self,
+        callee: &str,
+        input_qubits: &[Value<'c, 'c>],
+        yield_terminator: bool,
+    ) -> Result<(Region<'c>, FuncMeta), LowerError> {
+        let meta =
+            self.func_meta
+                .get(callee)
+                .cloned()
+                .ok_or_else(|| LowerError::UnknownCallee {
+                    name: callee.to_string(),
+                })?;
+        let body = self
+            .bodies
+            .get(callee)
+            .cloned()
+            .ok_or_else(|| LowerError::UnknownCallee {
+                name: callee.to_string(),
+            })?;
+        let qubit = qc::qubit_type(self.context);
+        let location = self.location;
+        let arg_types: Vec<_> = (0..input_qubits.len()).map(|_| (qubit, location)).collect();
+        let mut block = Block::new(&arg_types);
+        let mut wires: Vec<Value<'c, 'c>> = Vec::with_capacity(block.argument_count());
+        for i in 0..block.argument_count() {
+            let arg = block
+                .argument(i)
+                .map_err(|_| LowerError::Internal("missing unitary body block argument"))?;
+            wires.push(Value::from(arg));
+        }
+        match &body.0 {
+            Expr::CircuitBlock(stmts) => self.lower_circuit_block(stmts, &mut block, &mut wires)?,
+            other => self.lower_circuit_body_expr(other, &mut block, &mut wires)?,
+        }
+        if yield_terminator {
+            block.append_operation(qd::r#yield(&wires, location)?);
+        } else {
+            block.append_operation(qc::r#return(&wires, location)?);
+        }
+        let region = Region::new();
+        region.append_block(block);
+        Ok((region, meta))
+    }
+
+    /// Append a freshly-built `quantum.dynamic` op to the module's top-level
+    /// block, returning its first `result_count` SSA values. Results are
+    /// extracted from the owned operation *before* it is parented so they carry
+    /// the context lifetime and can be threaded through the run-block
+    /// environment across later appends.
+    fn append_dynamic_op(
+        &mut self,
+        op: Operation<'c>,
+        result_count: usize,
+    ) -> Result<Vec<Value<'c, 'c>>, LowerError> {
+        let results = result_values(&op, result_count)?;
+        self.module.body().append_operation(op);
+        Ok(results)
+    }
+
+    /// Builds a `test.qubit` op — the dynamic-IR qubit allocation point (one
+    /// fresh `!quantum.qubit`). Unregistered, so no dialect verifier runs.
+    fn foreign_qubit(&self) -> Result<Operation<'c>, qc::BuildError> {
+        Ok(OperationBuilder::new("test.qubit", self.location)
+            .add_results(&[qc::qubit_type(self.context)])
+            .build()?)
+    }
+
     fn lower_qec_construct(
         &mut self,
         family: &'static str,
         basis: &'static str,
         distance: i64,
-        block: &mut Block<'c>,
     ) -> Result<Vec<Value<'c, 'c>>, LowerError> {
         let logical_id = self.next_logical_id;
         self.next_logical_id += 1;
-        let op = block.append_operation(staging::qec_construct(
+        let op = qec_dynamic::qec_construct(
             self.context,
             family,
             distance,
             basis,
             logical_id,
             self.location,
-        )?);
-        let results = collect_results(op, 1)?;
+        )?;
+        let results = self.append_dynamic_op(op, 1)?;
         if let Some(result) = results.first() {
             self.qec_logical_ids.insert(value_key(result), logical_id);
         }
@@ -741,19 +810,18 @@ impl<'c> LoweringCtx<'c> {
         &mut self,
         arg: &Sp<Expr>,
         basis: &'static str,
-        block: &mut Block<'c>,
         env: &mut HashMap<Name, Vec<Value<'c, 'c>>>,
     ) -> Result<Vec<Value<'c, 'c>>, LowerError> {
-        let block_val = single_value(self.eval(arg, block, env)?)?;
+        let block_val = single_value(self.eval(arg, env)?)?;
         let logical_id = self.qec_id_of(block_val)?;
-        let op = block.append_operation(staging::qec_measure_logical(
+        let op = qec_dynamic::qec_measure_logical(
             self.context,
             block_val,
             basis,
             logical_id,
             self.location,
-        )?);
-        collect_results(op, 1)
+        )?;
+        self.append_dynamic_op(op, 1)
     }
 
     fn qec_id_of(&self, value: Value<'c, 'c>) -> Result<i64, LowerError> {
@@ -1179,16 +1247,15 @@ fn qec_constructor_meta(name: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
-/// Collect the first `count` results of a freshly-appended staging op as values.
-fn collect_results<'c>(
-    op: OperationRef<'c, 'c>,
-    count: usize,
-) -> Result<Vec<Value<'c, 'c>>, LowerError> {
+/// Collect the first `count` results of a freshly-built (still-unparented)
+/// operation as context-lifetime values, so they can be threaded through the
+/// run-block environment before the op is appended to the module body.
+fn result_values<'c>(op: &Operation<'c>, count: usize) -> Result<Vec<Value<'c, 'c>>, LowerError> {
     (0..count)
         .map(|i| {
             op.result(i)
                 .map(Value::from)
-                .map_err(|_| LowerError::Internal("missing staging op result"))
+                .map_err(|_| LowerError::Internal("missing dynamic op result"))
         })
         .collect()
 }

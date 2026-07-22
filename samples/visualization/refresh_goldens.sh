@@ -85,7 +85,7 @@ DUMP="$(mktemp)"
 "$QUONC" --emit-qasm --dump-ir -q test/verify/qft.qn > /dev/null 2> "$DUMP"
 awk '/^--- after lowering ---$/{flag=1; next} /^--- after circ passes ---$/{flag=0} flag' \
   "$DUMP" > "$OUT_ROOT/qft_depth/before_optimization.mlir"
-awk '/^--- after circ passes ---$/{flag=1; next} /^--- after monadic lowering ---$/{flag=0} flag' \
+awk '/^--- after circ passes ---$/{flag=1; next} /^--- after dynamic passes ---$/{flag=0} flag' \
   "$DUMP" > "$OUT_ROOT/qft_depth/after_optimization.mlir"
 rm -f "$DUMP"
 "$QUONC" --metrics-json - -q test/verify/qft.qn 2>/dev/null \

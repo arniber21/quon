@@ -6,7 +6,7 @@
 //! `quantum.circ.gate` ops become interactions. ASAP layers and critical-path
 //! marks follow Enola's ordered-DAG case; edge weights use Atomique `γ^l`.
 //!
-//! Prefer the module top-level body (post-monadic executed program). Named
+//! Prefer the module top-level body (post-lowering executed program). Named
 //! `quantum.circ.func`s are a fallback for standalone circ-only fixtures — never
 //! merged with a non-empty top-level extract (avoids double-counting inlined
 //! callees). Logical qubit ids are densified to `0..n` after extraction.
@@ -110,7 +110,7 @@ pub fn extract_interaction_graph_and_local_gates_with_gamma<'c>(
     let mut used_qubits = BTreeSet::new();
     let mut numbering = RootNumbering::default();
 
-    // Top-level executed program (post-monadic-lowering), same as metrics.
+    // Top-level executed program (post-lowering), same as metrics.
     // After inlining, leftover `quantum.circ.func` callees are dead code — do
     // **not** merge them into the same graph (that double-counted interactions
     // and mixed block-arg ids with SSA-pointer roots).

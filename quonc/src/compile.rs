@@ -1,7 +1,7 @@
 //! Front-to-back compile adapter: frontend lower → library pipelines → metrics.
 //!
 //! Pass order and Fixed/NA orchestration live in `mlir_bridge::pipeline` and
-//! `quon_na::pipeline`. After monadic lowering, QEC-backed programs
+//! `quon_na::pipeline`. After lowering, QEC-backed programs
 //! (`collect_qec_workload` non-empty) take the hybrid round-expansion path
 //! (ADR-0016 / #248); bare-qubit NA programs keep `run_from_module`.
 
@@ -22,7 +22,7 @@ use mlir_bridge::collect_qec_workload;
 use mlir_bridge::emit::openqasm3;
 use mlir_bridge::metrics;
 use mlir_bridge::passes::{
-    dynamic_linearity_verifier, linearity_verifier, monadic_lowering, sabre_routing::SabreCost,
+    dynamic_linearity_verifier, linearity_verifier, sabre_routing::SabreCost,
 };
 use mlir_bridge::pipeline::{
     dump_ir_stage, emit_openqasm, run_circ_passes_to_fixpoint, run_dynamic_passes,
@@ -218,10 +218,8 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
     }
     dump_ir_stage(request.dump_ir, "after circ passes", &module);
 
-    monadic_lowering::run_on_module(&context, &module)
-        .map_err(|e| format!("monadic lowering failed: {e}"))?;
-    dump_ir_stage(request.dump_ir, "after monadic lowering", &module);
-
+    // `lower_program` already emits `quantum.dynamic` IR directly (the staging
+    // dialect was collapsed in #213 / ADR-0037) — no separate lowering pass.
     run_dynamic_passes(&context, &module);
     if request.verify_linear {
         verify_dynamic_linearity(&module).map_err(|e| e.to_string())?;

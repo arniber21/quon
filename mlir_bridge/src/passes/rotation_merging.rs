@@ -12,7 +12,10 @@ use melior::{Context, ContextRef, IrRewriter, StringRef};
 use mlir_sys::mlirOperationSetAttributeByName;
 use quon_core::DepthExpr;
 
-use crate::dialect::quantum_circ::{self, attr};
+use crate::dialect::{
+    quantum_circ::{self, attr},
+    quantum_dynamic,
+};
 
 #[derive(Clone, Copy)]
 struct GateRef<'c, 'a> {
@@ -291,10 +294,31 @@ fn merge_module<'c, 'a>(context: &'c Context, module: OperationRef<'c, 'a>) {
     };
     let mut op = body.first_operation();
     while let Some(current) = op {
-        if op_name(&current) == quantum_circ::op::FUNC {
-            merge_in_func(context, current);
-        }
         op = current.next_in_block();
+        let name = op_name(&current);
+        if name == quantum_circ::op::FUNC {
+            merge_in_func(context, current);
+        } else if name == quantum_dynamic::op::UNITARY_REGION {
+            // Circ gates now live in `unitary_region`/`if` bodies after the
+            // staging-dialect collapse (#213 / ADR-0037).
+            if let Some(block) = current
+                .region(0)
+                .ok()
+                .and_then(|region| region.first_block())
+            {
+                merge_in_block(context, block);
+            }
+        } else if name == quantum_dynamic::op::IF {
+            for region_index in 0..2 {
+                if let Some(block) = current
+                    .region(region_index)
+                    .ok()
+                    .and_then(|region| region.first_block())
+                {
+                    merge_in_block(context, block);
+                }
+            }
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 //! MLIR-free QEC workload IR (ADR-0015).
 //!
-//! Collected from `quantum.dynamic` QEC ops after monadic lowering. Hybrid
+//! Collected from `quantum.dynamic` QEC ops after lowering. Hybrid
 //! schedule expansion into `quantum.na` lives in [`crate::expand`] (#248).
 
 use std::collections::HashSet;

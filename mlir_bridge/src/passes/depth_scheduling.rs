@@ -217,7 +217,7 @@ fn schedule_module<'c, 'a>(
     };
 
     // The module's own top-level block is the real, executed program after
-    // `monadic_lowering` (see `native_gate_decomp::decompose_block`'s doc
+    // `lowering` (see `native_gate_decomp::decompose_block`'s doc
     // comment) — a `quantum.circ.func` may no longer wrap it at all.
     schedule_gates(context, target, collect_gates(body));
 

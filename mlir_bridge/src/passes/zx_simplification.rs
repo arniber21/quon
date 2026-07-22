@@ -12,7 +12,10 @@ use melior::{Context, ContextRef};
 use zx::{GateRef, circuit_to_zx, simplify, zx_to_circuit};
 
 use crate::circ_extract;
-use crate::dialect::quantum_circ;
+use crate::dialect::{
+    quantum_circ::{self, attr},
+    quantum_dynamic,
+};
 
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
     operation
@@ -117,10 +120,15 @@ fn simplify_module<'c, 'a>(context: &'c Context, module: OperationRef<'c, 'a>) {
     };
     let mut op = body.first_operation();
     while let Some(current) = op {
-        if op_name(&current) == quantum_circ::op::FUNC {
+        op = current.next_in_block();
+        let name = op_name(&current);
+        if name == quantum_circ::op::FUNC || name == quantum_dynamic::op::UNITARY_REGION {
+            // `simplify_func` operates on any op whose region(0) is a
+            // circ-only body terminated by `quantum.circ.return` — after the
+            // staging-dialect collapse (#213 / ADR-0037) that includes
+            // `quantum.dynamic.unitary_region` bodies, not just `func` defs.
             simplify_func(context, current);
         }
-        op = current.next_in_block();
     }
 }
 

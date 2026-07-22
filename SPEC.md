@@ -870,12 +870,14 @@ Quon's IR is a three-dialect MLIR stack. Each dialect enforces a distinct set of
 ```
 [ Quon Source ]
       |
-      | Rust: parse → typecheck → monomorphize → build MLIR in-memory (C API)
+      | Rust: parse → typecheck → monomorphize → build MLIR in-memory (C API).
+      | `run { }` blocks lower straight to quantum.dynamic (no staging
+      | dialect — #213 / ADR-0037).
       v
 [ quantum.circ ]     Purely unitary. No measurement. Clifford and depth
                      as op attributes. ZX-calculus rewriting lives here.
       |
-      | Monadic lowering pass (Rust, MLIR C API external pass)
+      | (direct lowering — circ funcs inlined into unitary_region / if bodies)
       v
 [ quantum.dynamic ]  Dynamic circuits. Measurement ops consume !qubit,
                      produce !bit. Classical SSA regions model feed-forward.
@@ -1406,7 +1408,7 @@ cargo build --release
 |---|---|---|
 | 1 — Dialect Foundation | `quantum.circ` and `quantum.dynamic` dialect registration via MLIR C API in Rust (`mlir_bridge`), op verifier callbacks, round-trip FileCheck tests | MLIR C API, dialect design, Rust FFI patterns |
 | 2 — Frontend | Rust lexer, parser, bidirectional type checker with split linear context, Circuit type with symbolic depth, Z3 refinement bridge | Linear type theory, refinement types, Rust |
-| 3 — Lowering | AST-to-`quantum.circ` lowering (building MLIR in-memory via C API), monadic lowering external pass, conversion pass infrastructure | MLIR C API op construction, progressive lowering |
+| 3 — Lowering | AST-to-`quantum.circ` + `quantum.dynamic` lowering (building MLIR in-memory via C API; `run { }` blocks lower straight to dynamic IR — #213 / ADR-0037), conversion pass infrastructure | MLIR C API op construction, progressive lowering |
 | 4 — `quantum.circ` Passes | Gate cancellation, rotation merging, ZX-calculus rewriting (Rust `zx` crate, no FFI boundary), Clifford+T optimization, uncomputation; all as `mlirRegisterExternalPass` passes | Algebraic circuit optimization, graph rewriting, ZX-calculus, MLIR pass infrastructure |
 | 5 — Physical Layer | Rust `backend` crate with `BackendTarget`/`NoiseModel`, JSON loader (`serde_json`), depth-aware SABRE routing, native gate decomposition (KAK), noise-weighted scheduling | Hardware-aware compilation, routing algorithms, decomposition theory |
 | 6 — Emission + Verification | OpenQASM 3.0 emitter (walks IR via `mlirOperationWalk`), `quon_aer.py` Qiskit bridge, end-to-end test suite across all reference algorithms | End-to-end integration, simulation verification |
