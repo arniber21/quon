@@ -21,8 +21,10 @@ use std::time::Instant;
 
 use crate::graph::VertexId;
 use crate::movement::plan_aod_movement;
+use crate::pipeline::{
+    NaBackendKind, NaPipelineError, NaScheduleOptions, movement_params, zoned_architecture,
+};
 use crate::placement::{PlacementStrategy, place};
-use crate::pipeline::{NaBackendKind, NaPipelineError, NaScheduleOptions, movement_params, zoned_architecture};
 use crate::schedule_entry::GraphScheduleRequest;
 use crate::stats::SearchDiagnostics;
 use crate::zoned::{PlacerMode, schedule_zoned_with_aware_params};

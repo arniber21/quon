@@ -1263,4 +1263,109 @@ mod tests {
         let schedule = module.body().first_operation().expect("schedule op");
         qna::verify(&schedule).expect("verify na");
     }
+
+    /// Both the bare-qubit path (`run_from_graph` → `finish_pipeline`) and the
+    /// hybrid QEC path (`schedule_cnot_phase`) call the same [`plan_backend`]
+    /// for the place/AOD/zoned step (issue #317). This test verifies the
+    /// structural guarantee functionally: a direct `plan_backend` call produces
+    /// the same layers as `run_from_graph` (which calls it internally).
+    #[test]
+    fn both_paths_share_plan_backend_entry_point() {
+        use crate::entangling_schedule::schedule_entangling_layers;
+        use crate::graph::{
+            DEFAULT_GAMMA, Interaction, InteractionGraph, InteractionId, InteractionSegment,
+            LogicalQubitId, SegmentKind,
+        };
+        use crate::pipeline::run_from_graph;
+        use crate::plan::plan_backend;
+        use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
+
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            compact: false,
+            dump_ir: false,
+            ..Default::default()
+        };
+
+        // Build a simple 2-qubit interaction graph.
+        let vertices = vec![LogicalQubitId(0), LogicalQubitId(1)];
+        let interaction = Interaction {
+            id: InteractionId(0),
+            qubits: vec![LogicalQubitId(0), LogicalQubitId(1)],
+            gate_name: "cx".into(),
+            dag_layer: 0,
+            on_critical_path: false,
+        };
+        let segment = InteractionSegment {
+            kind: SegmentKind::CommutationGroup,
+            interactions: vec![InteractionId(0)],
+        };
+        let graph = InteractionGraph::from_interactions(
+            vertices,
+            vec![interaction],
+            vec![segment],
+            DEFAULT_GAMMA,
+        )
+        .expect("graph");
+
+        // Direct call to the shared plan_backend (the entry point both pipelines use).
+        let req = schedule_from_graph(graph.clone()).expect("schedule_from_graph");
+        let max_pairs = na.interaction.max_parallel_entangling_pairs;
+        let scheduled = schedule_entangling_layers(req, max_pairs).expect("entangling");
+        let req_for_backend = GraphScheduleRequest {
+            graph: scheduled.request.graph.clone(),
+            layers: scheduled.request.layers.clone(),
+            layout: None,
+        };
+        let (planned_req, _info) = plan_backend(req_for_backend, &na, opts).expect("plan_backend");
+
+        // Bare path: run_from_graph → finish_pipeline → plan_backend (no compaction).
+        let bare_artifacts = run_from_graph(graph, &na, opts, None).expect("run_from_graph");
+
+        // Both go through the same plan_backend → layers must be identical.
+        assert_eq!(
+            planned_req.layers, bare_artifacts.layers,
+            "bare path (run_from_graph) and direct plan_backend call must produce \
+             identical layers — they share the same place/AOD entry point (#317)"
+        );
+    }
+
+    /// The hybrid QEC path now populates stage stats (`NaStats`) the same way
+    /// as `run_from_graph` — not `None` (issue #317 / #307).
+    #[test]
+    fn qec_path_populates_stage_stats() {
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            compact: true,
+            dump_ir: false,
+            ..Default::default()
+        };
+        let artifacts = run_from_qec_workload(&d3_workload(), &na, opts).expect("schedule");
+        let stats = artifacts
+            .stats
+            .as_ref()
+            .expect("QEC path must populate NaStats (not None) — #317/#307");
+
+        // Stage timings are populated (not all zero) — the per-round entangle +
+        // plan_backend calls were timed.
+        assert_eq!(stats.kind, crate::stats::NA_STATS_KIND);
+        assert_eq!(stats.schema_version, crate::stats::NA_STATS_SCHEMA_VERSION);
+        assert!(
+            stats.stage_timings_us.total_us > 0,
+            "total_us must be > 0 (QEC path timed the pipeline)"
+        );
+        // The zoned backend (default) should have zoned_schedule_us populated.
+        assert!(
+            stats.stage_timings_us.zoned_schedule_us.is_some(),
+            "zoned backend must report zoned_schedule_us"
+        );
+        // Effective config echoes the backend.
+        assert_eq!(
+            stats.config.backend,
+            crate::pipeline::NaBackendKind::Zoned,
+            "config must echo the zoned backend"
+        );
+        // Compaction was requested and applied.
+        assert!(stats.config.compaction.applied, "compaction was applied");
+    }
 }

@@ -28,9 +28,7 @@ use crate::report::{ResourceReport, attach_qec_error_budget, build_resource_repo
 use crate::schedule::ScheduleLayer;
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
 use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, StageTimingsUs};
-use crate::zoned::{
-    AwareSearchParams, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture,
-};
+use crate::zoned::{AwareSearchParams, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture};
 
 /// Wall-clock elapsed microseconds since `start` (saturating on overflow —
 /// not reachable in practice, but keeps this instrumentation infallible).
