@@ -133,7 +133,7 @@ fn no_span() -> SimpleSpan {
 ///
 /// Total for the supported fragment: recursion in the source language is only
 /// ever over a structurally decreasing `Nat` (already proved terminating by
-/// the type checker's `check_termination`, `frontend/src/typecheck/mod.rs`),
+/// the type checker's `check_termination`, `frontend/src/typecheck/obligation.rs`),
 /// `fold`/`for` ranges are finite lists, and `fuel` is a defensive backstop
 /// against a bug in that reasoning surfacing here as an infinite recursion
 /// instead of a clean diagnostic.
@@ -424,7 +424,7 @@ pub fn elaborate_circuit_body(
                     Pat::Lit(_) => continue,
                     // A wildcard/var arm binds nothing new for the *value* —
                     // per the type checker's `push_arm_refinement`
-                    // (`frontend/src/typecheck/mod.rs`), only a proof-context
+                    // (`frontend/src/typecheck/obligation.rs`), only a proof-context
                     // refinement (e.g. `n != 0`) is added there; `n` itself
                     // stays the same outer binding, so `Var` re-binds it to
                     // its own already-known value (a no-op) rather than
