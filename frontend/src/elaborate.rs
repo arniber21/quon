@@ -35,8 +35,8 @@ use thiserror::Error;
 
 use crate::ast::{BinOp, Expr, LitPat, Pat, Stmt};
 use crate::lexer::Sp;
-use crate::typecheck::circuit;
 use crate::specialized_circuit::{flatten_app, reverse_and_invert};
+use crate::typecheck::circuit;
 
 #[derive(Debug, Error)]
 pub enum ElabError {

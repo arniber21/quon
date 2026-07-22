@@ -34,6 +34,8 @@ pub mod analysis;
 pub mod desugar;
 #[cfg(feature = "analyze")]
 pub mod elaborate;
+#[cfg(feature = "full")]
+pub mod lower;
 #[cfg(feature = "analyze")]
 pub mod refinement;
 #[cfg(feature = "analyze")]
@@ -42,8 +44,6 @@ pub mod specialized_circuit;
 pub mod typecheck;
 #[cfg(feature = "analyze")]
 pub mod types;
-#[cfg(feature = "full")]
-pub mod lower;
 
 #[cfg(feature = "analyze")]
 pub use analysis::DocumentAnalysis;

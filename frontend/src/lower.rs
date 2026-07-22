@@ -21,13 +21,13 @@ use crate::ast::{CliffordClass, Decl, Expr, Name, NatExpr, Pat, Stmt, Type as As
 use crate::diagnostics::Diagnostic;
 use crate::elaborate;
 use crate::lexer::Sp;
+use crate::specialized_circuit::{
+    SpecializationError, SpecializedCircuit, collect_gate_placements, flatten_app,
+    inverse_gate_name, qubit_targets,
+};
 use crate::typecheck::circuit;
 use crate::typecheck::{TypeChecker, TypeError};
 use crate::types::Ty;
-use crate::specialized_circuit::{
-    SpecializedCircuit, SpecializationError, collect_gate_placements, flatten_app,
-    inverse_gate_name, qubit_targets,
-};
 
 /// Errors raised while lowering a well-typed program to `quantum.circ`.
 #[derive(Debug, Error)]
