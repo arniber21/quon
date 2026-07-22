@@ -19,40 +19,48 @@ pub mod lexer;
 pub mod parser;
 pub mod pretty;
 
-// Gate heavy pipeline modules on `full` (not `not(parser-only)`): Cargo unifies
-// features across the workspace, so enabling `parser-only` for `quonfmt` must not
-// strip analysis/typecheck from `quon_lsp` when another crate still enables `full`.
-#[cfg(feature = "full")]
+// The Melior-free frontend pipeline (parse → desugar → typecheck → elaborate →
+// specialize) gates on `analyze`, which pulls in only `quon_core` / `z3` — no
+// `mlir_bridge` / `melior`. `specialized_circuit` (issue #206) is the typed
+// boundary between `elaborate` and `lower`. `lower` — the `quantum.circ` MLIR
+// adapter — is the only module that needs `full` (Melior). Cargo unifies
+// features across the workspace, so `quonfmt`'s `default-features = false`
+// (parser only) never strips these from `quon_lsp` / `quonc` (`full`), and
+// specialization is buildable/testable under `--features analyze` without
+// linking LLVM/MLIR.
+#[cfg(feature = "analyze")]
 pub mod analysis;
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub mod desugar;
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub mod elaborate;
 #[cfg(feature = "full")]
 pub mod lower;
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub mod refinement;
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
+pub mod specialized_circuit;
+#[cfg(feature = "analyze")]
 pub mod typecheck;
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub mod types;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub use analysis::DocumentAnalysis;
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub use analysis::TypedProgram;
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub use analysis::analyze_program;
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub use analysis::analyze_with_rich;
 
 use crate::ast::Decl;
 use crate::diagnostics::Diagnostic;
 use crate::lexer::Sp;
 
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub use crate::diagnostics::fixes::apply_fixes;
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub use crate::diagnostics::{
     AnalysisResult, DiagnosticCode, DiagnosticSeverity, QuickFix, QuickFixKind, RelatedInfo,
     RichDiagnostic, TextEdit,
@@ -60,7 +68,7 @@ pub use crate::diagnostics::{
 
 /// IDE-oriented analysis: lex → parse → desugar → typecheck. Does not lower to MLIR.
 /// Accumulates errors from the first failing stage; never panics on partial source.
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub fn analyze(source: &str) -> AnalysisResult {
     analyze_with_rich(source)
 }
@@ -79,14 +87,14 @@ pub fn parse_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
 }
 
 /// Parse `src` and run the `run { }` desugaring pass (issue #8).
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub fn desugar_program(src: &str) -> Result<Vec<Sp<Decl>>, Vec<Diagnostic>> {
     let decls = parse_program(src)?;
     desugar::desugar_decls(decls)
 }
 
 /// Parse, desugar, and type-check a program (issues #9–#14).
-#[cfg(feature = "full")]
+#[cfg(feature = "analyze")]
 pub fn check_program(src: &str) -> Result<(), Vec<Diagnostic>> {
     let result = analyze(src);
     if result.diagnostics.is_empty() {

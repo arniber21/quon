@@ -35,6 +35,7 @@ use thiserror::Error;
 
 use crate::ast::{BinOp, Expr, LitPat, Pat, Stmt};
 use crate::lexer::Sp;
+use crate::specialized_circuit::{flatten_app, reverse_and_invert};
 use crate::typecheck::circuit;
 
 #[derive(Debug, Error)]
@@ -53,7 +54,7 @@ pub enum ElabError {
 }
 
 impl ElabError {
-    fn unsupported(construct: &'static str, span: SimpleSpan) -> Self {
+    pub(crate) fn unsupported(construct: &'static str, span: SimpleSpan) -> Self {
         Self::Unsupported { construct, span }
     }
 
@@ -1265,94 +1266,6 @@ fn rotation_gate_app(
     )
 }
 
-/// Builds the adjoint of an already-elaborated, fully concrete circuit body:
-/// reverse gate order and invert each gate (mirrors `lower.rs`'s
-/// `inline_inverted_body`, at the AST level so it composes with elaboration).
-fn reverse_and_invert(expr: &Sp<Expr>) -> Result<Sp<Expr>, ElabError> {
-    if is_empty_circuit(expr) {
-        return Ok(expr.clone());
-    }
-    let placements = collect_gate_placements(expr)?;
-    let span = expr.1;
-    let mut result: Option<Sp<Expr>> = None;
-    for (gate, qubits) in placements.into_iter().rev() {
-        let inv_gate = match &gate.0 {
-            Expr::Var(name) => (Expr::Var(inverse_gate_name(name)), gate.1),
-            // A rotation (`Rz(theta)`, from a source rotation gate or a
-            // decomposed `Rzz`/`controlled(Rz(..))`): its adjoint is the same
-            // gate at the negated angle (`Rz(θ)† = Rz(-θ)`), not a different
-            // gate name.
-            Expr::App(f, x) => {
-                let (head, args) = flatten_app(f, x);
-                let (Expr::Var(name), [angle]) = (&head.0, args.as_slice()) else {
-                    return Err(ElabError::unsupported(
-                        "adjoint of an unrecognized rotation gate",
-                        gate.1,
-                    ));
-                };
-                (
-                    Expr::App(
-                        Box::new((Expr::Var(name.clone()), head.1)),
-                        Box::new(negate_angle(angle)),
-                    ),
-                    gate.1,
-                )
-            }
-            _ => {
-                return Err(ElabError::unsupported(
-                    "adjoint of a non-primitive gate",
-                    gate.1,
-                ));
-            }
-        };
-        let step = (
-            Expr::GateApp {
-                gate: Box::new(inv_gate),
-                qubits: Box::new(qubits),
-            },
-            span,
-        );
-        result = Some(match result {
-            None => step,
-            Some(acc) => (Expr::Compose(Box::new(acc), Box::new(step)), span),
-        });
-    }
-    result.ok_or(ElabError::unsupported("adjoint of an empty circuit", span))
-}
-
-type GatePlacement = (Sp<Expr>, Sp<Expr>);
-
-fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<GatePlacement>, ElabError> {
-    match &expr.0 {
-        Expr::Compose(lhs, rhs) => {
-            let mut out = collect_gate_placements(lhs)?;
-            out.extend(collect_gate_placements(rhs)?);
-            Ok(out)
-        }
-        Expr::GateApp { gate, qubits } => Ok(vec![(*gate.clone(), *qubits.clone())]),
-        Expr::CircuitBlock(stmts) if stmts.is_empty() => Ok(Vec::new()),
-        _ => Err(ElabError::unsupported(
-            "adjoint of a non-gate-sequence circuit",
-            expr.1,
-        )),
-    }
-}
-
-fn inverse_gate_name(name: &str) -> String {
-    quon_core::gates::inverse_or_self(name)
-}
-
-fn flatten_app<'a>(f: &'a Sp<Expr>, x: &'a Sp<Expr>) -> (&'a Sp<Expr>, Vec<&'a Sp<Expr>>) {
-    let mut args = vec![x];
-    let mut head = f;
-    while let Expr::App(inner_f, inner_x) = &head.0 {
-        args.push(inner_x);
-        head = inner_f;
-    }
-    args.reverse();
-    (head, args)
-}
-
 /// A fresh, deterministic fuel budget for one top-level elaboration.
 pub fn fresh_fuel() -> u32 {
     FUEL_START
@@ -1361,6 +1274,7 @@ pub fn fresh_fuel() -> u32 {
 #[cfg(test)]
 mod controlled_tests {
     use super::*;
+    use crate::specialized_circuit::collect_gate_placements;
     use backend::unitary::{
         Complex, M2, M4, gate_unitary, mul4, rotation_unitary, tensor, two_qubit_gate_unitary,
         unitary_distance,
