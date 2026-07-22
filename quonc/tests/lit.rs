@@ -39,6 +39,7 @@ const ORACLE_BINARIES: &[&str] = &[
     "native_gate_decomp",
     "sabre_route",
     "depth_schedule",
+    "clifford_t_opt",
 ];
 
 fn workspace_root() -> PathBuf {
