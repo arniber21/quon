@@ -49,7 +49,7 @@ _Avoid_: monomorphization, template instantiation
 **CircIr**: The Melior-free flat gate+wire IR produced by extracting a `quantum.circ` region and consumed by unitary optimization kernels (ZX rewriting, Clifford+T). Rebuilt back to verified `quantum.circ` ops. Owned by the `quon_circ` crate; `mlir_bridge` only adapts Melior ↔ CircIr. Distinct from the source-elaboration **SpecializedCircuit** and from **ZX-graph** (spider algebra on petgraph).
 _Avoid_: extracted circuit, pass IR, gate list (unqualified)
 
-**SpecializedCircuit**: The Melior-free first-order gate tree (enum: Compose / GateApp / Adjoint / Par / …) produced by parametric specialization in the frontend. Lower’s input after classical parameters are gone. Lives in the frontend crate; not CircIr.
+**SpecializedCircuit**: The Melior-free typed first-order gate DAG (`frontend/src/specialized_circuit.rs`, ADR-0038) — the interface between `elaborate` and `lower`. Wraps the elaborated `Compose`/`GateApp`/`Adjoint` `Expr` tree with the resolved `Circuit<n,m,d,C>` indices (in/out widths, depth, Clifford class); no classical parameters remain. Built by `SpecializedCircuit::specialize` (a parametric call site) or `::anonymous` (a compound circuit expression); `lower`’s `quantum.circ` adapter (`emit_specialized`) is its only consumer. The shared inverse/placement/`flatten_app`/adjoint-normalization helpers live once here, so specialization is buildable and testable under the `analyze` feature without linking LLVM/MLIR. Lives in the frontend crate; not CircIr (the `quon_circ` flat IR for unitary optimization).
 _Avoid_: monomorphized Expr, elaborated AST (unqualified)
 
 ### Workspace crates
