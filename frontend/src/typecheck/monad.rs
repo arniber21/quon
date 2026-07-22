@@ -526,6 +526,9 @@ mod tests {
         // Issue #180: `measure(a)` alone is valid borrow cleanup (not only structural
         // reset/discard). ADR-0003's structural-only terminal is superseded.
         let src = "fn f(): Q<Bit> = run {\n  borrow a: Qubit in {\n    measure(a)\n  }\n}";
-        assert!(check_run(src).is_ok(), "measure-only cleanup must type-check");
+        assert!(
+            check_run(src).is_ok(),
+            "measure-only cleanup must type-check"
+        );
     }
 }
