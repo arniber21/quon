@@ -63,7 +63,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::graph::InteractionId;
+use crate::graph::{InteractionId, LogicalQubitId, VertexId};
 use crate::layout::{AodTrapRef, AtomId, NeutralAtomLayout, Position, TrapBinding};
 use crate::schedule::{NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::GraphScheduleRequest;
@@ -115,8 +115,8 @@ pub struct CriticalPathReport {
 /// Result of exclusive-cycle ASAP and optional greedy compaction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CompactionResult {
-    pub request: GraphScheduleRequest,
+pub struct CompactionResult<V = LogicalQubitId> {
+    pub request: GraphScheduleRequest<V>,
     pub asap_makespan_cycles: u32,
     pub compacted_makespan_cycles: u32,
     pub critical_path: CriticalPathReport,
@@ -263,10 +263,10 @@ pub fn feed_forward_dependencies(
 /// chain, exclusive-cycle and true ASAP coincide numerically with the critical-path
 /// lower bound; that is coincidence from lack of independent work, not an
 /// Enola-optimality claim for this algorithm.
-pub fn asap_schedule_layers(
-    req: GraphScheduleRequest,
+pub fn asap_schedule_layers<V: VertexId>(
+    req: GraphScheduleRequest<V>,
     deps: &[ScheduleDependency],
-) -> Result<CompactionResult, CompactionError> {
+) -> Result<CompactionResult<V>, CompactionError> {
     if req.layers.is_empty() {
         return Err(CompactionError::EmptySchedule);
     }
@@ -287,11 +287,11 @@ pub fn asap_schedule_layers(
 }
 
 /// Exclusive-cycle ASAP then greedy merge within allowed classes; re-verify legality.
-pub fn compact_schedule(
-    req: GraphScheduleRequest,
+pub fn compact_schedule<V: VertexId>(
+    req: GraphScheduleRequest<V>,
     deps: &[ScheduleDependency],
     opts: &CompactionOptions,
-) -> Result<CompactionResult, CompactionError> {
+) -> Result<CompactionResult<V>, CompactionError> {
     if req.layers.is_empty() {
         return Err(CompactionError::EmptySchedule);
     }
@@ -1145,13 +1145,13 @@ fn apply_merge(
 /// Runs exclusive-cycle ASAP, then tries to merge layers `i` and `j` without the
 /// greedy search. Used by acceptance tests to assert HardFail paths
 /// (`DependencyViolation`, `ForbiddenMergeClass`, …).
-pub fn force_merge_layers(
-    req: GraphScheduleRequest,
+pub fn force_merge_layers<V: VertexId>(
+    req: GraphScheduleRequest<V>,
     deps: &[ScheduleDependency],
     i: usize,
     j: usize,
     opts: &CompactionOptions,
-) -> Result<CompactionResult, CompactionError> {
+) -> Result<CompactionResult<V>, CompactionError> {
     let merged_deps = merge_deps(&req.layers, deps)?;
     let (mut layers, asap_makespan, mut lineage) = exclusive_cycle_asap(&req.layers, &merged_deps)?;
     match try_merge_pair(&layers, &lineage, &merged_deps, &req.layout, opts, i, j)? {

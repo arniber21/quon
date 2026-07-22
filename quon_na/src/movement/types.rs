@@ -13,6 +13,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::graph::LogicalQubitId;
 use crate::layout::{AtomId, SiteId};
 use crate::schedule_entry::GraphScheduleRequest;
 
@@ -117,8 +118,8 @@ impl MovementParams {
 /// Result of [`super::plan_aod_movement`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MovementPlanResult {
-    pub request: GraphScheduleRequest,
+pub struct MovementPlanResult<V = LogicalQubitId> {
+    pub request: GraphScheduleRequest<V>,
     pub rearrangement_steps: u64,
     pub rearrangement_time_us: u64,
     pub trap_transfers: u64,

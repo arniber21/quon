@@ -1,8 +1,10 @@
 //! Initial placement of logical qubits onto SLM sites (issue #104).
 //!
-//! Three heuristics map [`crate::graph::LogicalQubitId`] values from an
+//! Three heuristics map vertex ids (`LogicalQubitId` on the bare path, or
+//! `AtomVertexId` on the hybrid QEC path, #318) from an
 //! [`crate::graph::InteractionGraph`] onto a compact rectangular grid of
-//! [`crate::layout::AtomSite`]s and fill [`crate::schedule_entry::GraphScheduleRequest::layout`].
+//! [`crate::layout::AtomSite`]s and fill
+//! [`crate::schedule_entry::GraphScheduleRequest::layout`].
 //!
 //! Strategies are **inspired by** [Atomique] Sec. III-B (load-balance / spiral
 //! fill; MAX-k-Cut array mapper Alg. 1), adapted to a single flat grid — not
@@ -17,11 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::graph::{GraphError, InteractionGraph, LogicalQubitId};
+use crate::graph::{GraphError, InteractionGraph, LogicalQubitId, VertexId};
 use crate::layout::{
     AtomBinding, AtomId, AtomSite, NeutralAtomLayout, Position, SiteId, TrapBinding,
 };
-use crate::schedule_entry::GraphScheduleRequest;
 
 /// SLM lattice pitch in micrometres (relative scale; cancels in strategy comparisons).
 pub const SITE_PITCH_UM: f64 = 5.0;
@@ -40,10 +41,13 @@ pub enum PlacementStrategy {
 }
 
 /// Result of [`place`]: filled request plus score metadata.
+///
+/// Generic over the vertex label `V` (default [`LogicalQubitId`]); see
+/// [`InteractionGraph`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlacementResult {
-    pub request: GraphScheduleRequest,
+pub struct PlacementResult<V = LogicalQubitId> {
+    pub request: crate::schedule_entry::GraphScheduleRequest<V>,
     /// Lower is better: `Σ w · √d` over interaction edges.
     pub score: f64,
     pub strategy: PlacementStrategy,
@@ -52,25 +56,28 @@ pub struct PlacementResult {
 }
 
 /// Errors from placement.
+///
+/// Generic over the vertex label `V` (default [`LogicalQubitId`]); the graph
+/// sub-error and the missing-binding variant carry `V`.
 #[derive(Debug, Error, Clone, PartialEq)]
-pub enum PlacementError {
+pub enum PlacementError<V = LogicalQubitId> {
     #[error(transparent)]
-    InvalidGraph(#[from] GraphError),
+    InvalidGraph(#[from] GraphError<V>),
     #[error("empty interaction graph: no vertices to place")]
     EmptyGraph,
     #[error("placement produced overlapping or incomplete site bindings")]
     InvalidBindings,
-    #[error("layout is missing a binding for logical qubit {0:?}")]
-    MissingBinding(LogicalQubitId),
+    #[error("layout is missing a binding for vertex {0:?}")]
+    MissingBinding(V),
 }
 
 /// Place qubits onto a square-ish SLM grid and fill `req.layout`.
 ///
 /// Leaves `req.layers` unchanged. Overwrites any existing layout.
-pub fn place(
-    mut req: GraphScheduleRequest,
+pub fn place<V: VertexId>(
+    mut req: crate::schedule_entry::GraphScheduleRequest<V>,
     strategy: PlacementStrategy,
-) -> Result<PlacementResult, PlacementError> {
+) -> Result<PlacementResult<V>, PlacementError<V>> {
     req.graph.validate()?;
     if req.graph.vertices.is_empty() {
         return Err(PlacementError::EmptyGraph);
@@ -91,10 +98,10 @@ pub fn place(
 }
 
 /// Score an existing layout against the graph: `Σ w · √(euclidean_µm)`.
-pub fn placement_score(
-    graph: &InteractionGraph,
+pub fn placement_score<V: VertexId>(
+    graph: &InteractionGraph<V>,
     layout: &NeutralAtomLayout,
-) -> Result<f64, PlacementError> {
+) -> Result<f64, PlacementError<V>> {
     let positions = binding_positions(graph, layout)?;
     let mut score = 0.0;
     for edge in &graph.edges {
@@ -109,10 +116,10 @@ pub fn placement_score(
     Ok(score)
 }
 
-fn build_layout(
-    graph: &InteractionGraph,
+fn build_layout<V: VertexId>(
+    graph: &InteractionGraph<V>,
     strategy: PlacementStrategy,
-) -> Result<NeutralAtomLayout, PlacementError> {
+) -> Result<NeutralAtomLayout, PlacementError<V>> {
     let n = graph.vertices.len();
     let (rows, cols) = grid_dims(n);
     let sites = make_sites(rows, cols);
@@ -139,7 +146,7 @@ fn build_layout(
     let mut initial_bindings = Vec::with_capacity(n);
     for (qubit, &site) in qubit_order.iter().zip(site_order.iter()) {
         initial_bindings.push(AtomBinding {
-            atom: AtomId(qubit.0),
+            atom: AtomId(qubit.index()),
             trap: TrapBinding::Slm { site },
         });
     }
@@ -236,8 +243,8 @@ fn spiral_sites(rows: usize, cols: usize) -> Vec<SiteId> {
     order
 }
 
-fn weighted_degrees(graph: &InteractionGraph) -> BTreeMap<LogicalQubitId, f64> {
-    let mut deg: BTreeMap<LogicalQubitId, f64> = graph.vertices.iter().map(|&v| (v, 0.0)).collect();
+fn weighted_degrees<V: VertexId>(graph: &InteractionGraph<V>) -> BTreeMap<V, f64> {
+    let mut deg: BTreeMap<V, f64> = graph.vertices.iter().map(|&v| (v, 0.0)).collect();
     for edge in &graph.edges {
         *deg.entry(edge.a).or_insert(0.0) += edge.weight;
         *deg.entry(edge.b).or_insert(0.0) += edge.weight;
@@ -245,7 +252,7 @@ fn weighted_degrees(graph: &InteractionGraph) -> BTreeMap<LogicalQubitId, f64> {
     deg
 }
 
-fn order_by_weighted_degree(graph: &InteractionGraph) -> Vec<LogicalQubitId> {
+fn order_by_weighted_degree<V: VertexId>(graph: &InteractionGraph<V>) -> Vec<V> {
     let deg = weighted_degrees(graph);
     let mut verts = graph.vertices.clone();
     verts.sort_by(|a, b| {
@@ -260,7 +267,7 @@ fn order_by_weighted_degree(graph: &InteractionGraph) -> Vec<LogicalQubitId> {
 
 /// Agglomerative clustering: assign degree-descending qubits to the cluster that
 /// maximizes intra-cluster weight, then pack clusters into row-major bands.
-fn order_by_clustering(graph: &InteractionGraph, cols: usize) -> Vec<LogicalQubitId> {
+fn order_by_clustering<V: VertexId>(graph: &InteractionGraph<V>, cols: usize) -> Vec<V> {
     let n = graph.vertices.len();
     if n == 0 {
         return Vec::new();
@@ -270,15 +277,14 @@ fn order_by_clustering(graph: &InteractionGraph, cols: usize) -> Vec<LogicalQubi
     let deg_order = order_by_weighted_degree(graph);
 
     // Adjacency for weight lookups.
-    let mut adj: BTreeMap<(LogicalQubitId, LogicalQubitId), f64> = BTreeMap::new();
+    let mut adj: BTreeMap<(V, V), f64> = BTreeMap::new();
     for edge in &graph.edges {
         adj.insert((edge.a, edge.b), edge.weight);
         adj.insert((edge.b, edge.a), edge.weight);
     }
-    let weight =
-        |a: LogicalQubitId, b: LogicalQubitId| -> f64 { adj.get(&(a, b)).copied().unwrap_or(0.0) };
+    let weight = |a: V, b: V| -> f64 { adj.get(&(a, b)).copied().unwrap_or(0.0) };
 
-    let mut clusters: Vec<Vec<LogicalQubitId>> = vec![Vec::new(); k];
+    let mut clusters: Vec<Vec<V>> = vec![Vec::new(); k];
 
     for (i, &q) in deg_order.iter().enumerate() {
         if i < k {
@@ -325,10 +331,7 @@ fn order_by_clustering(graph: &InteractionGraph, cols: usize) -> Vec<LogicalQubi
     ordered
 }
 
-fn cluster_internal_weight(
-    members: &[LogicalQubitId],
-    weight: &dyn Fn(LogicalQubitId, LogicalQubitId) -> f64,
-) -> f64 {
+fn cluster_internal_weight<V: VertexId>(members: &[V], weight: &dyn Fn(V, V) -> f64) -> f64 {
     let mut total = 0.0;
     for i in 0..members.len() {
         for j in (i + 1)..members.len() {
@@ -338,10 +341,10 @@ fn cluster_internal_weight(
     total
 }
 
-fn validate_bindings(
-    graph: &InteractionGraph,
+fn validate_bindings<V: VertexId>(
+    graph: &InteractionGraph<V>,
     layout: &NeutralAtomLayout,
-) -> Result<(), PlacementError> {
+) -> Result<(), PlacementError<V>> {
     let mut sites_used = BTreeSet::new();
     let mut atoms_used = BTreeSet::new();
     for binding in &layout.initial_bindings {
@@ -355,21 +358,24 @@ fn validate_bindings(
     if layout.initial_bindings.len() != graph.vertices.len() {
         return Err(PlacementError::InvalidBindings);
     }
-    let vertex_atoms: BTreeSet<AtomId> = graph.vertices.iter().map(|q| AtomId(q.0)).collect();
+    let vertex_atoms: BTreeSet<AtomId> = graph.vertices.iter().map(|q| AtomId(q.index())).collect();
     if atoms_used != vertex_atoms {
         return Err(PlacementError::InvalidBindings);
     }
     Ok(())
 }
 
-fn binding_positions(
-    graph: &InteractionGraph,
+fn binding_positions<V: VertexId>(
+    graph: &InteractionGraph<V>,
     layout: &NeutralAtomLayout,
-) -> Result<BTreeMap<LogicalQubitId, Position>, PlacementError> {
+) -> Result<BTreeMap<V, Position>, PlacementError<V>> {
     let site_pos: BTreeMap<SiteId, Position> =
         layout.sites.iter().map(|s| (s.id, s.position)).collect();
-    let atom_to_qubit: BTreeMap<AtomId, LogicalQubitId> =
-        graph.vertices.iter().map(|&q| (AtomId(q.0), q)).collect();
+    let atom_to_qubit: BTreeMap<AtomId, V> = graph
+        .vertices
+        .iter()
+        .map(|&q| (AtomId(q.index()), q))
+        .collect();
 
     let mut positions = BTreeMap::new();
     for binding in &layout.initial_bindings {
@@ -394,10 +400,10 @@ fn binding_positions(
     Ok(positions)
 }
 
-fn count_axis_aligned(
-    graph: &InteractionGraph,
+fn count_axis_aligned<V: VertexId>(
+    graph: &InteractionGraph<V>,
     layout: &NeutralAtomLayout,
-) -> Result<u32, PlacementError> {
+) -> Result<u32, PlacementError<V>> {
     let positions = binding_positions(graph, layout)?;
     let mut count = 0u32;
     for edge in &graph.edges {

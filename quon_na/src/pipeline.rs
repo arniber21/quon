@@ -21,7 +21,7 @@ use crate::compaction::{
     CompactionError, CompactionOptions, LegalityLimits, compact_schedule, infer_atom_dependencies,
 };
 use crate::entangling_schedule::schedule_entangling_layers;
-use crate::graph::InteractionGraph;
+use crate::graph::{InteractionGraph, LogicalQubitId};
 use crate::movement::{MovementParams, plan_aod_movement};
 use crate::placement::{PlacementStrategy, place};
 use crate::report::{ResourceReport, attach_qec_error_budget, build_resource_report};
@@ -111,8 +111,12 @@ pub struct NaScheduleArtifacts {
 }
 
 /// Errors from the NA schedule pipeline.
+///
+/// Generic over the vertex label `V` (default [`LogicalQubitId`]); the vertex
+/// sub-errors carry `V`. The bare Quon-program path uses the default; the
+/// hybrid QEC path (#318) uses `NaPipelineError<AtomVertexId>`.
 #[derive(Debug, Error)]
-pub enum NaPipelineError {
+pub enum NaPipelineError<V = LogicalQubitId> {
     #[error("{0}")]
     InvalidTarget(String),
     #[cfg(feature = "mlir")]
@@ -121,13 +125,13 @@ pub enum NaPipelineError {
     #[error("QEC hybrid expansion failed: {0}")]
     QecExpand(#[from] quon_qec::ExpandError),
     #[error("schedule_from_graph failed: {0}")]
-    ScheduleFromGraph(#[from] crate::schedule_entry::ScheduleFromGraphError),
+    ScheduleFromGraph(#[from] crate::schedule_entry::ScheduleFromGraphError<V>),
     #[error("entangling-layer scheduling failed: {0}")]
-    Entangling(#[from] crate::entangling_schedule::EntanglingScheduleError),
+    Entangling(#[from] crate::entangling_schedule::EntanglingScheduleError<V>),
     #[error("zoned scheduling failed: {0}")]
     Zoned(#[from] crate::zoned::ZonedScheduleError),
     #[error("placement failed: {0}")]
-    Placement(#[from] crate::placement::PlacementError),
+    Placement(#[from] crate::placement::PlacementError<V>),
     #[error("AOD movement planning failed: {0}")]
     Movement(#[from] crate::movement::MovementPlanError),
     #[error("schedule compaction failed: {0}")]

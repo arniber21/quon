@@ -1,13 +1,19 @@
 //! Interaction graph for neutral-atom compilation (issue #103).
 //!
-//! Vertices are logical qubits (future code-block scheduling units). Edges are
-//! undirected pairwise interactions weighted with Atomique's layer-decayed
-//! gate-frequency formula `Σ γ^l` ([Atomique] Sec. III-A; default
-//! [`DEFAULT_GAMMA`] = 0.8). Segments preserve Enola's distinction between
-//! commutation groups and ordered dependency DAGs ([Enola] Sec. 3) so later
-//! Misra–Gries edge-coloring (#105) can apply the right bound.
+//! Vertices are logical qubits (future code-block scheduling units) — or, in
+//! the hybrid QEC path (#318), **physical atoms** indexed by [`AtomVertexId`].
+//! The graph is generic over a thin [`VertexId`] label `V` (default
+//! [`LogicalQubitId`]) so the bare Quon-program path compiles unchanged while
+//! the hybrid QEC schedule feeds atom identities without a
+//! `LogicalQubitId(atom.0)` numeric cast. Edges are undirected pairwise
+//! interactions weighted with Atomique's layer-decayed gate-frequency formula
+//! `Σ γ^l` ([Atomique] Sec. III-A; default [`DEFAULT_GAMMA`] = 0.8). Segments
+//! preserve Enola's distinction between commutation groups and ordered
+//! dependency DAGs ([Enola] Sec. 3) so later Misra–Gries edge-coloring (#105)
+//! can apply the right bound.
 //!
-//! See `docs/neutral_atom/architecture_model.md` §4.
+//! See `docs/neutral_atom/architecture_model.md` §4 and
+//! `docs/adr/0029-atom-indexed-hybrid-interaction-graph.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,6 +25,94 @@ use thiserror::Error;
 /// Owned by [`quon_qec::LogicalQubitId`] (CONTEXT "Logical qubit"); re-exported
 /// here so the interaction-graph layer shares one newtype with the QEC workload IR.
 pub use quon_qec::LogicalQubitId;
+use quon_qec::PhysicalAtomId;
+
+/// Vertex identity carried by an [`InteractionGraph`]: a thin, densely-indexed
+/// label whose [`VertexId::index`] is the value the NA layout / schedule layer
+/// uses as `AtomId(self.index())`.
+///
+/// The bound mirrors exactly what the graph and its schedule-request DTOs
+/// require — copyable, orderable, hashable, and serde round-trippable — so
+/// [`InteractionGraph<V>`], [`Interaction<V>`], [`InteractionEdge<V>`], and
+/// the request/results that hold them stay serializable for any `V`.
+///
+/// Implemented for [`LogicalQubitId`] (the bare Quon-program path; the default
+/// `V`) and [`AtomVertexId`] (the hybrid QEC path, #318). See ADR-0029.
+pub trait VertexId:
+    Copy
+    + Clone
+    + std::fmt::Debug
+    + PartialEq
+    + Eq
+    + PartialOrd
+    + Ord
+    + std::hash::Hash
+    + Serialize
+    + serde::de::DeserializeOwned
+{
+    /// Dense `u32` index — `AtomId(self.index())` in the NA layout / schedule.
+    fn index(self) -> u32;
+}
+
+impl VertexId for LogicalQubitId {
+    #[inline]
+    fn index(self) -> u32 {
+        self.0
+    }
+}
+
+/// Atom identity as a vertex in the hybrid QEC interaction graph (#318).
+///
+/// Distinct from [`LogicalQubitId`]: the hybrid QEC schedule feeds *physical
+/// atoms* (post-[`quon_qec::expand_workload`] [`PhysicalAtomId`]s) into the
+/// interaction graph, not logical qubits. This newtype names that physical
+/// identity at the place/entangle seam so placers/schedulers operate on atoms
+/// directly instead of through a `LogicalQubitId(atom.0)` numeric cast — the
+/// cast hid a missing seam between "logical qubit" and "atom" (CONTEXT).
+///
+/// Structurally identical to `LogicalQubitId(pub u32)`; the two never share a
+/// call site because the hybrid path fixes `V = AtomVertexId` while the bare
+/// path keeps the default `V = LogicalQubitId`. At the schedule-artifact
+/// boundary the hybrid path projects `AtomVertexId -> LogicalQubitId` (the
+/// vertex id is just a label by then — atom identity is baked into the
+/// schedule actions as `AtomId`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AtomVertexId(pub u32);
+
+impl AtomVertexId {
+    /// Wrap a physical atom id as a graph vertex.
+    #[inline]
+    pub fn from_atom(atom: PhysicalAtomId) -> Self {
+        Self(atom.0)
+    }
+
+    /// Recover the physical atom id this vertex labels.
+    #[inline]
+    pub fn atom(self) -> PhysicalAtomId {
+        PhysicalAtomId(self.0)
+    }
+
+    /// Dense `u32` index (== [`VertexId::index`]).
+    #[inline]
+    pub fn index(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<PhysicalAtomId> for AtomVertexId {
+    #[inline]
+    fn from(atom: PhysicalAtomId) -> Self {
+        Self(atom.0)
+    }
+}
+
+impl VertexId for AtomVertexId {
+    #[inline]
+    fn index(self) -> u32 {
+        self.0
+    }
+}
 
 /// Dense identifier for one multi-qubit entangling interaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -26,12 +120,16 @@ pub use quon_qec::LogicalQubitId;
 pub struct InteractionId(pub u32);
 
 /// One multi-qubit entangling interaction (arity ≥ 2).
+///
+/// Generic over the vertex label `V` (default [`LogicalQubitId`]); see
+/// [`InteractionGraph`]. `qubits` carries `V` ids, so the hybrid QEC path
+/// (#318) stores [`AtomVertexId`]s here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Interaction {
+pub struct Interaction<V = LogicalQubitId> {
     pub id: InteractionId,
-    /// Canonical sorted unique qubit ids (len ≥ 2).
-    pub qubits: Vec<LogicalQubitId>,
+    /// Canonical sorted unique vertex ids (len ≥ 2).
+    pub qubits: Vec<V>,
     pub gate_name: String,
     /// ASAP dependency-DAG layer index within the enclosing segment (0-based).
     pub dag_layer: u32,
@@ -53,6 +151,9 @@ pub enum SegmentKind {
 }
 
 /// A barrier-bounded (or synthetic) group of interactions.
+///
+/// Non-generic: interaction ids are dense `u32` labels independent of the
+/// vertex label `V`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InteractionSegment {
@@ -61,11 +162,14 @@ pub struct InteractionSegment {
 }
 
 /// Undirected pairwise edge with Atomique-style layer-decayed weight.
+///
+/// Generic over the vertex label `V` (default [`LogicalQubitId`]); `a`/`b`
+/// carry `V` ids.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct InteractionEdge {
-    pub a: LogicalQubitId,
-    pub b: LogicalQubitId,
+pub struct InteractionEdge<V = LogicalQubitId> {
+    pub a: V,
+    pub b: V,
     /// `Σ_g γ^{dag_layer(g)}` over interactions that touch both endpoints.
     pub weight: f64,
     /// Interaction ids that contributed to this edge.
@@ -73,12 +177,17 @@ pub struct InteractionEdge {
 }
 
 /// Weighted interaction graph extracted from a circuit or built synthetically.
+///
+/// Generic over the vertex label `V` (default [`LogicalQubitId`]). The bare
+/// Quon-program path uses the default; the hybrid QEC path (#318) uses
+/// `InteractionGraph<AtomVertexId>` so placers/schedulers name physical atoms,
+/// not logical qubits. See ADR-0029.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct InteractionGraph {
-    pub vertices: Vec<LogicalQubitId>,
-    pub interactions: Vec<Interaction>,
-    pub edges: Vec<InteractionEdge>,
+pub struct InteractionGraph<V = LogicalQubitId> {
+    pub vertices: Vec<V>,
+    pub interactions: Vec<Interaction<V>>,
+    pub edges: Vec<InteractionEdge<V>>,
     pub segments: Vec<InteractionSegment>,
     /// Decay base used for weights; recorded for reproducibility.
     pub gamma: f64,
@@ -88,22 +197,25 @@ pub struct InteractionGraph {
 pub const DEFAULT_GAMMA: f64 = 0.8;
 
 /// Structural problems with an [`InteractionGraph`].
+///
+/// Generic over the vertex label `V` (default [`LogicalQubitId`]); the
+/// vertex-carrying variants hold `V`.
 #[derive(Debug, Error, Clone, PartialEq)]
-pub enum GraphError {
+pub enum GraphError<V = LogicalQubitId> {
     #[error("interaction {0:?} has fewer than 2 qubits")]
     Arity(InteractionId),
     #[error("interaction {0:?} has unsorted or duplicate qubits")]
     UncanonicalQubits(InteractionId),
-    #[error("duplicate logical qubit id {0:?}")]
-    DuplicateVertex(LogicalQubitId),
-    #[error("interaction {0:?} references unknown qubit {1:?}")]
-    UnknownQubit(InteractionId, LogicalQubitId),
+    #[error("duplicate vertex id {0:?}")]
+    DuplicateVertex(V),
+    #[error("interaction {0:?} references unknown vertex {1:?}")]
+    UnknownQubit(InteractionId, V),
     #[error("edge endpoints not in vertex set: {0:?}, {1:?}")]
-    UnknownEndpoint(LogicalQubitId, LogicalQubitId),
+    UnknownEndpoint(V, V),
     #[error("self-loop on {0:?}")]
-    SelfLoop(LogicalQubitId),
+    SelfLoop(V),
     #[error("edge endpoints must be ordered a < b, got {0:?}, {1:?}")]
-    UnorderedEdge(LogicalQubitId, LogicalQubitId),
+    UnorderedEdge(V, V),
     #[error("duplicate interaction id {0:?}")]
     DuplicateInteraction(InteractionId),
     #[error("segment references unknown interaction {0:?}")]
@@ -118,17 +230,17 @@ pub enum GraphError {
     InvalidCubicOrder(u32),
 }
 
-impl InteractionGraph {
+impl<V: VertexId> InteractionGraph<V> {
     /// Build a graph from interactions, computing pairwise edges with `γ^l` weights.
     ///
     /// For k-qubit gates (k > 2), every unordered pair among the k qubits receives
     /// the interaction's weight contribution (complete subgraph).
     pub fn from_interactions(
-        vertices: Vec<LogicalQubitId>,
-        interactions: Vec<Interaction>,
+        vertices: Vec<V>,
+        interactions: Vec<Interaction<V>>,
         segments: Vec<InteractionSegment>,
         gamma: f64,
-    ) -> Result<Self, GraphError> {
+    ) -> Result<Self, GraphError<V>> {
         let edges = aggregate_edges(&interactions, gamma)?;
         let graph = Self {
             vertices,
@@ -142,7 +254,7 @@ impl InteractionGraph {
     }
 
     /// Validate structural invariants.
-    pub fn validate(&self) -> Result<(), GraphError> {
+    pub fn validate(&self) -> Result<(), GraphError<V>> {
         if !(self.gamma > 0.0 && self.gamma <= 1.0) {
             return Err(GraphError::InvalidGamma(self.gamma));
         }
@@ -226,12 +338,12 @@ impl InteractionGraph {
 
     /// Export as an undirected DOT graph.
     ///
-    /// Node labels are qubit ids; edge labels are weights (3 decimal places).
-    /// Edges with any critical-path contributor are drawn thicker.
+    /// Node labels are vertex indices; edge labels are weights (3 decimal
+    /// places). Edges with any critical-path contributor are drawn thicker.
     pub fn to_dot(&self) -> String {
         let mut out = String::from("graph InteractionGraph {\n");
         for v in &self.vertices {
-            out.push_str(&format!("  q{} [label=\"{}\"];\n", v.0, v.0));
+            out.push_str(&format!("  q{} [label=\"{}\"];\n", v.index(), v.index()));
         }
         let critical: BTreeSet<InteractionId> = self
             .interactions
@@ -246,7 +358,11 @@ impl InteractionGraph {
             } else {
                 format!("label=\"{:.3}\"", edge.weight)
             };
-            out.push_str(&format!("  q{} -- q{} [{attrs}];\n", edge.a.0, edge.b.0));
+            out.push_str(&format!(
+                "  q{} -- q{} [{attrs}];\n",
+                edge.a.index(),
+                edge.b.index()
+            ));
         }
         out.push_str("}\n");
         out
@@ -254,16 +370,15 @@ impl InteractionGraph {
 }
 
 /// Aggregate pairwise edges from interactions using Atomique `γ^l` weights.
-pub fn aggregate_edges(
-    interactions: &[Interaction],
+pub fn aggregate_edges<V: VertexId>(
+    interactions: &[Interaction<V>],
     gamma: f64,
-) -> Result<Vec<InteractionEdge>, GraphError> {
+) -> Result<Vec<InteractionEdge<V>>, GraphError<V>> {
     if !(gamma > 0.0 && gamma <= 1.0) {
         return Err(GraphError::InvalidGamma(gamma));
     }
 
-    let mut acc: BTreeMap<(LogicalQubitId, LogicalQubitId), (f64, Vec<InteractionId>)> =
-        BTreeMap::new();
+    let mut acc: BTreeMap<(V, V), (f64, Vec<InteractionId>)> = BTreeMap::new();
 
     for interaction in interactions {
         if interaction.qubits.len() < 2 {
@@ -304,7 +419,7 @@ pub fn aggregate_edges(
 ///
 /// ASAP layers are assumed already stored on each interaction. A gate is on the
 /// critical path iff `asap[g] + longest_suffix[g] == global_max_depth`.
-pub fn mark_critical_path(interactions: &mut [Interaction]) {
+pub fn mark_critical_path<V: VertexId>(interactions: &mut [Interaction<V>]) {
     let n = interactions.len();
     if n == 0 {
         return;
@@ -312,7 +427,7 @@ pub fn mark_critical_path(interactions: &mut [Interaction]) {
 
     let mut preds: Vec<Vec<usize>> = vec![vec![]; n];
     let mut succs: Vec<Vec<usize>> = vec![vec![]; n];
-    let mut last_on_qubit: BTreeMap<LogicalQubitId, usize> = BTreeMap::new();
+    let mut last_on_qubit: BTreeMap<V, usize> = BTreeMap::new();
 
     for (index, gate) in interactions.iter().enumerate() {
         for &q in &gate.qubits {
@@ -364,7 +479,7 @@ pub fn mark_critical_path(interactions: &mut [Interaction]) {
 }
 
 /// Assign ASAP `dag_layer` and critical-path flags for a dependency-DAG segment.
-pub fn schedule_dependency_segment(interactions: &mut [Interaction]) {
+pub fn schedule_dependency_segment<V: VertexId>(interactions: &mut [Interaction<V>]) {
     mark_critical_path(interactions);
 }
 
@@ -373,7 +488,8 @@ pub fn schedule_dependency_segment(interactions: &mut [Interaction]) {
 /// `n` must be even and ≥ 4. Uses a circular-ladder (prism) construction that
 /// is always 3-regular. All interactions sit in one [`SegmentKind::CommutationGroup`]
 /// with `dag_layer = 0` and `on_critical_path = false` (critical path is
-/// meaningless in a pure commutation group).
+/// meaningless in a pure commutation group). Returns the default-vertex
+/// (`LogicalQubitId`) graph.
 pub fn cubic_commutation_graph(n: u32) -> Result<InteractionGraph, GraphError> {
     if n < 4 || !n.is_multiple_of(2) {
         return Err(GraphError::InvalidCubicOrder(n));
@@ -421,6 +537,8 @@ fn order_pair(a: usize, b: usize) -> (usize, usize) {
 }
 
 /// Build an Erdős–Rényi-style simple graph as a commutation-group interaction graph.
+///
+/// Returns the default-vertex (`LogicalQubitId`) graph.
 pub fn erdos_renyi_commutation_graph(
     n: u32,
     edges: &[(u32, u32)],
