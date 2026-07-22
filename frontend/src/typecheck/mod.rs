@@ -43,7 +43,7 @@ mod tests;
 
 pub use error::TypeError;
 
-use crate::ast::{BinOp, Decl, Expr, Kind, Name, NatExpr, Pat, Stmt, Type};
+use crate::ast::{BinOp, Decl, Expr, Kind, Name, NatExpr, Stmt, Type};
 use crate::lexer::{SimpleSpan, Sp};
 use crate::refinement::{Assumption, RefinementCtx};
 use crate::types::{CodeFamilyTy, Ty};
@@ -1137,7 +1137,6 @@ impl TypeChecker {
         }
     }
 
-
     // ── Checking (⇐) ───────────────────────────────────────────────────────────
 
     /// Check `expr` against the expected type `expected` under `env`/`delta`.
@@ -1222,7 +1221,6 @@ impl TypeChecker {
             _ => self.subsume(env, delta, expr, expected),
         }
     }
-
 
     fn unsupported(&self, expr: &Expr, span: SimpleSpan) -> TypeError {
         TypeError::Unsupported {

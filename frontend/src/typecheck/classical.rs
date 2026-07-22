@@ -62,11 +62,9 @@
 //! [`super::exhaust`]; this module *coordinates* them from the classical judgment, it does
 //! not re-implement them.
 
-use crate::ast::{BinOp, Expr, LitPat, Pat, Type};
+use crate::ast::{BinOp, Expr, Pat, Type};
 use crate::lexer::{SimpleSpan, Sp};
-use crate::refinement::Assumption;
 use crate::types::Ty;
-use quon_core::DepthExpr;
 
 use super::error::TypeError;
 use super::exhaust;
@@ -115,37 +113,6 @@ impl super::TypeChecker {
             }
             (found, _) => Err(TypeError::NotNumeric { found, span }),
         }
-    }
-
-    /// Resolve `t` and require it to be `Int` or `Float`. An unsolved metavariable defers:
-    /// the obligation is recorded and the metavariable is returned unchanged, so surrounding
-    /// context can still solve it. [`Self::finalize_numeric`] discharges the obligation
-    /// (defaulting a still-unsolved variable to `Int`) once the body is fully checked.
-    pub(super) fn numeric(&mut self, t: &Ty, span: SimpleSpan) -> Result<Ty, TypeError> {
-        let resolved = self.table.resolve(t);
-        match resolved {
-            Ty::Int => Ok(Ty::Int),
-            Ty::Float => Ok(Ty::Float),
-            Ty::Meta(id) => {
-                self.numeric.push((id, span));
-                Ok(resolved)
-            }
-            other => Err(TypeError::NotNumeric { found: other, span }),
-        }
-    }
-
-    /// Discharge the deferred numeric obligations collected while checking one body: every
-    /// metavariable used arithmetically must resolve to `Int`/`Float`, defaulting to `Int`
-    /// when nothing else constrained it. Clears the obligation list for the next body.
-    pub(super) fn finalize_numeric(&mut self) -> Result<(), TypeError> {
-        for (id, span) in std::mem::take(&mut self.numeric) {
-            match self.table.resolve(&Ty::Meta(id)) {
-                Ty::Int | Ty::Float => {}
-                Ty::Meta(_) => self.table.unify(&Ty::Meta(id), &Ty::Int, span)?,
-                other => return Err(TypeError::NotNumeric { found: other, span }),
-            }
-        }
-        Ok(())
     }
 
     // ── Lists ──────────────────────────────────────────────────────────────────
@@ -375,48 +342,6 @@ impl super::TypeChecker {
     /// Check a `match`. When `expected` is `Some`, every arm is checked against it;
     /// otherwise arm bodies are synthesized and unified to a common type. Exhaustiveness
     /// and reachability are validated against the scrutinee's type either way.
-    /// Push the refinement assumptions that a `match` arm's pattern implies about a `Nat`
-    /// scrutinee (issue #59). Only a scrutinee that is statically `Int`/`Nat` *and* lowers to a
-    /// [`DepthExpr`] (a variable, literal, or arithmetic over them — not, say, a function call)
-    /// carries refinement; everything else pushes nothing. The caller records the pre-push length
-    /// and truncates back to it, so this never has to undo its own work.
-    ///
-    /// - A literal arm `k =>` (`LitPat::Int`) asserts `scrut = k`.
-    /// - A wildcard/variable arm asserts `scrut ≠ kᵢ` for each *sibling* `Int` literal `kᵢ`. With
-    ///   the solver's global Nat domain (`≥ 0`), a `{0, _}` match yields `scrut ≥ 1` in the `_`
-    ///   arm — exactly what licenses `scrut - 1` as a non-saturating predecessor.
-    fn push_arm_refinement(
-        &mut self,
-        scrut_ty: &Ty,
-        scrutinee: &Sp<Expr>,
-        pat: &Sp<Pat>,
-        arms: &[(Sp<Pat>, Sp<Expr>)],
-    ) {
-        if !matches!(self.table.resolve(scrut_ty), Ty::Int) {
-            return;
-        }
-        let Ok(scrut) = self.depth_of(scrutinee) else {
-            return;
-        };
-        match &pat.0 {
-            Pat::Lit(LitPat::Int(k)) if *k >= 0 => {
-                self.assumptions
-                    .push(Assumption::Eq(scrut, DepthExpr::Nat(*k as u64)));
-            }
-            Pat::Wildcard | Pat::Var(_) => {
-                for (p, _) in arms {
-                    if let Pat::Lit(LitPat::Int(k)) = &p.0
-                        && *k >= 0
-                    {
-                        self.assumptions
-                            .push(Assumption::Ne(scrut.clone(), DepthExpr::Nat(*k as u64)));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
     pub(super) fn check_match(
         &mut self,
         env: &Env,
@@ -724,49 +649,6 @@ mod tests {
         let mut tc = TypeChecker::new();
         let err = tc.as_function(&Ty::Int, span());
         assert!(matches!(err, Err(TypeError::NotAFunction { .. })));
-    }
-
-    // ── numeric / finalize_numeric: deferred obligation defaulting ─────────────
-
-    #[test]
-    fn numeric_resolves_int_and_float() {
-        let mut tc = TypeChecker::new();
-        assert_eq!(tc.numeric(&Ty::Int, span()).unwrap(), Ty::Int);
-        assert_eq!(tc.numeric(&Ty::Float, span()).unwrap(), Ty::Float);
-        // No obligations recorded for solved types.
-        assert!(tc.numeric.is_empty());
-    }
-
-    #[test]
-    fn numeric_defers_metavar_then_finalize_defaults_to_int() {
-        let mut tc = TypeChecker::new();
-        let m = tc.table.fresh();
-        let returned = tc.numeric(&m, span()).unwrap();
-        // The metavariable is returned unchanged, and one obligation is recorded.
-        assert!(matches!(returned, Ty::Meta(_)));
-        assert_eq!(tc.numeric.len(), 1);
-        // Finalize defaults the unsolved metavariable to Int.
-        tc.finalize_numeric().unwrap();
-        assert!(tc.numeric.is_empty());
-        assert_eq!(tc.table.resolve(&m), Ty::Int);
-    }
-
-    #[test]
-    fn finalize_numeric_keeps_a_metavar_solved_to_float() {
-        let mut tc = TypeChecker::new();
-        let m = tc.table.fresh();
-        tc.numeric(&m, span()).unwrap();
-        // A later unification solves the metavariable to Float.
-        tc.table.unify(&m, &Ty::Float, span()).unwrap();
-        tc.finalize_numeric().unwrap();
-        assert_eq!(tc.table.resolve(&m), Ty::Float);
-    }
-
-    #[test]
-    fn numeric_rejects_non_numeric() {
-        let mut tc = TypeChecker::new();
-        let err = tc.numeric(&Ty::Bool, span());
-        assert!(matches!(err, Err(TypeError::NotNumeric { .. })));
     }
 
     // ── instantiate: prelude scheme instantiation ─────────────────────────────
