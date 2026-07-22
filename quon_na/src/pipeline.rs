@@ -22,16 +22,13 @@ use crate::compaction::{
 };
 use crate::entangling_schedule::schedule_entangling_layers;
 use crate::graph::{InteractionGraph, LogicalQubitId};
-use crate::movement::{MovementParams, plan_aod_movement};
-use crate::placement::{PlacementStrategy, place};
+use crate::movement::MovementParams;
+use crate::placement::PlacementStrategy;
 use crate::report::{ResourceReport, attach_qec_error_budget, build_resource_report};
 use crate::schedule::ScheduleLayer;
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
-use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, SearchDiagnostics, StageTimingsUs};
-use crate::zoned::{
-    AwareSearchParams, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture,
-    schedule_zoned_with_aware_params,
-};
+use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, StageTimingsUs};
+use crate::zoned::{AwareSearchParams, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture};
 
 /// Wall-clock elapsed microseconds since `start` (saturating on overflow —
 /// not reachable in practice, but keeps this instrumentation infallible).
@@ -104,9 +101,10 @@ pub struct NaScheduleArtifacts {
     pub logical_qubits: u64,
     pub request: GraphScheduleRequest,
     /// Per-stage timings / search diagnostics / config echo (issue #307).
-    /// `Some` from [`run_from_graph`] / [`run_from_module`]; `None` from
-    /// [`crate::qec_schedule::run_from_qec_workload`], whose per-round loop
-    /// is a distinct pipeline shape not yet instrumented.
+    /// `Some` from all three entry points ([`run_from_graph`],
+    /// [`run_from_module`], [`crate::qec_schedule::run_from_qec_workload`])
+    /// — the bare and hybrid paths share the same `plan_backend` stage
+    /// (#317), so stage stats are populated uniformly.
     pub stats: Option<NaStats>,
 }
 
@@ -567,78 +565,18 @@ fn finish_pipeline(
     schedule_from_graph_us: u64,
     entangling_layers_us: u64,
 ) -> Result<NaScheduleArtifacts, NaPipelineError> {
-    // Only set for the zoned backend; overlaid onto the resource report
-    // below (issue #111 review finding — makes a routing-aware search's
-    // silent fallback to the greedy assignment visible instead of
-    // indistinguishable from "no routing contention").
-    let mut aware_search_status: Option<(u64, u64)> = None;
-    let mut search_diagnostics = SearchDiagnostics::default();
-    let mut zoned_schedule_us = None;
-    let mut placement_us = None;
-    let mut movement_us = None;
-    let mut placer_mode = None;
-    let mut placement_strategy = None;
-
-    req = match opts.backend {
-        NaBackendKind::Zoned => {
-            placer_mode = Some(opts.placer);
-            let arch = zoned_architecture(na);
-            let stage_started = Instant::now();
-            let zoned =
-                schedule_zoned_with_aware_params(req, &arch, opts.placer, opts.aware_search)?;
-            zoned_schedule_us = Some(elapsed_us(stage_started));
-            aware_search_status = Some((
-                zoned.aware_search_completed_layers,
-                zoned.aware_search_budget_exceeded_layers
-                    + zoned.aware_search_no_legal_assignment_layers,
-            ));
-            search_diagnostics = SearchDiagnostics {
-                aware_search_completed_layers: Some(zoned.aware_search_completed_layers),
-                aware_search_budget_exceeded_layers: Some(
-                    zoned.aware_search_budget_exceeded_layers,
-                ),
-                aware_search_no_legal_assignment_layers: Some(
-                    zoned.aware_search_no_legal_assignment_layers,
-                ),
-                aware_search_node_expansions: Some(zoned.aware_search_node_expansions),
-                aware_search_node_budget: Some(opts.aware_search.node_budget as u64),
-                aware_search_deepening_factor: Some(opts.aware_search.deepening_factor),
-                aware_search_deepening_value: Some(opts.aware_search.deepening_value),
-                aware_search_pruning_window: Some(opts.aware_search.pruning_window as u64),
-            };
-            if opts.dump_ir {
-                eprintln!(
-                    "--- after zoned schedule ---\nlayers={} routing_cost={:.4} rearrangements={} transfers={} \
-                     aware_search_completed={} aware_search_fell_back={}",
-                    zoned.request.layers.len(),
-                    zoned.routing_cost,
-                    zoned.rearrangement_steps,
-                    zoned.trap_transfers,
-                    zoned.aware_search_completed_layers,
-                    zoned.aware_search_budget_exceeded_layers
-                        + zoned.aware_search_no_legal_assignment_layers,
-                );
-            }
-            zoned.request
-        }
-        NaBackendKind::FlatAod => {
-            placement_strategy = Some(opts.placement);
-            let stage_started = Instant::now();
-            let placed = place(req, opts.placement)?;
-            placement_us = Some(elapsed_us(stage_started));
-            let params = movement_params(na);
-            let stage_started = Instant::now();
-            let moved = plan_aod_movement(placed.request, &params)?;
-            movement_us = Some(elapsed_us(stage_started));
-            if opts.dump_ir {
-                eprintln!(
-                    "--- after flat AOD movement ---\nlayers={}",
-                    moved.request.layers.len()
-                );
-            }
-            moved.request
-        }
-    };
+    // Shared place/AOD (or zoned) backend stage — issue #317. Both the bare
+    // path (here, via `finish_pipeline`) and the hybrid QEC path
+    // (`qec_schedule::schedule_cnot_phase`) call `plan_backend`.
+    let (planned_req, backend_info) = crate::plan::plan_backend(req, na, opts)?;
+    req = planned_req;
+    let aware_search_status = backend_info.aware_search_status;
+    let search_diagnostics = backend_info.search_diagnostics;
+    let zoned_schedule_us = backend_info.zoned_schedule_us;
+    let placement_us = backend_info.placement_us;
+    let movement_us = backend_info.movement_us;
+    let placer_mode = backend_info.placer_mode;
+    let placement_strategy = backend_info.placement_strategy;
 
     let mut compaction_config = CompactionConfig {
         requested: opts.compact,

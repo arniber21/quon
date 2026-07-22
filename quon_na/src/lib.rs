@@ -50,6 +50,7 @@ pub mod movement;
 pub mod native_gate_decomp;
 pub mod pipeline;
 pub mod placement;
+pub mod plan;
 pub mod qec;
 pub mod qec_schedule;
 pub mod report;
@@ -87,6 +88,7 @@ pub use placement::{
     PlacementError, PlacementResult, PlacementStrategy, SITE_PITCH_UM, grid_dims, place,
     placement_score,
 };
+pub use plan::{BackendStageInfo, plan_backend};
 pub use qec::{
     CodeBlock, CodeBlockId, CodeFamily, NetRate, QecError, atoms_per_logical, ceil_div,
     code_blocks_from_expanded, repetition_n, surface_n,
