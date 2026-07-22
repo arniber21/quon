@@ -29,6 +29,7 @@ mod error;
 mod exhaust;
 mod linear;
 mod monad;
+pub(crate) mod obligation;
 mod unify;
 
 #[cfg(test)]
@@ -36,12 +37,13 @@ mod tests;
 
 pub use error::TypeError;
 
-use crate::ast::{BinOp, Decl, Expr, Kind, LitPat, Name, NatExpr, Pat, Stmt, Type};
+use crate::ast::{BinOp, Decl, Expr, Kind, Name, NatExpr, Pat, Stmt, Type};
 use crate::lexer::{SimpleSpan, Sp};
-use crate::refinement::{Assumption, DepthError, RefinementCtx};
+use crate::refinement::{Assumption, RefinementCtx};
 use crate::types::{CodeFamilyTy, Ty};
 use builtins::Scheme;
 use linear::Delta;
+use obligation::RecCall;
 use std::collections::{BTreeSet, HashMap};
 use unify::Table;
 
@@ -58,17 +60,6 @@ type Env = HashMap<Name, Ty>;
 struct AliasDef {
     params: Vec<(Name, Kind)>,
     body: Sp<Type>,
-}
-
-/// A captured self-recursive call site (issue #60): the value substitution it applies to the
-/// current function's `Nat` parameters (keyed by parameter name), and the refinement assumptions
-/// in force there. Collected while checking a body, then replayed after to verify a well-founded
-/// decreasing measure exists — some `Nat` parameter `p` whose argument is provably `< p` (and
-/// `≥ 0`) at *every* recursive call.
-#[derive(Clone)]
-struct RecCall {
-    sigma: HashMap<String, DepthExpr>,
-    assumptions: Vec<Assumption>,
 }
 
 /// A top-level function's value-dependency signature (issue #57). Records each parameter's
@@ -255,54 +246,6 @@ impl TypeChecker {
             return self.verify_depth(&ed, &gd, span);
         }
         self.table.unify(expected, got, span)
-    }
-
-    /// Verify an inferred symbolic depth against a user-supplied annotation (issue #13). Depth is
-    /// an **upper bound** (SPEC §3.3): the obligation is `inferred ≤ annotated`, discharged under
-    /// the active refinement assumptions (issue #59). `prove_le` short-circuits on holes,
-    /// structural equivalence, and (assumption-free) constants; only genuinely symbolic
-    /// obligations reach Z3. Maps a [`DepthError`] to a span-accurate [`TypeError`].
-    fn verify_depth(
-        &self,
-        annotated: &DepthExpr,
-        inferred: &DepthExpr,
-        span: SimpleSpan,
-    ) -> Result<(), TypeError> {
-        match self.refine.prove_le(&self.assumptions, inferred, annotated) {
-            Ok(()) => Ok(()),
-            Err(DepthError::Mismatch) => Err(TypeError::DepthMismatch {
-                expected: annotated.to_string(),
-                found: inferred.to_string(),
-                span,
-            }),
-            Err(DepthError::Intractable) => Err(TypeError::DepthIntractable {
-                expr: format!("{inferred} <= {annotated}"),
-                span,
-            }),
-        }
-    }
-
-    /// Verify a circuit width (qubit count) is exactly the expected one (SPEC §3.3: width is the
-    /// invariant physical interface — no subtyping). Equality is discharged under the active
-    /// refinement assumptions, so e.g. an arm producing width `0` satisfies an expected `n` when
-    /// `n = 0` is assumed. Structural/constant fast paths inside `prove_eq` keep the common case
-    /// solver-free.
-    fn verify_width(
-        &self,
-        expected: &DepthExpr,
-        got: &DepthExpr,
-        span: SimpleSpan,
-    ) -> Result<(), TypeError> {
-        match self.refine.prove_eq(&self.assumptions, expected, got) {
-            Ok(()) => Ok(()),
-            // A genuine mismatch *or* an intractable obligation both surface as a width error:
-            // an undecidable width equality is, for the user, an unmet qubit-count requirement.
-            Err(_) => Err(TypeError::QubitCountMismatch {
-                expected: expected.to_string(),
-                found: got.to_string(),
-                span,
-            }),
-        }
     }
 
     /// Type-checks a whole program: collects aliases and function signatures, then checks
@@ -540,46 +483,6 @@ impl TypeChecker {
         self.finalize_numeric()?;
         self.ensure_consumed(&delta, &introduced)?;
         self.check_termination(&name.0, body.1)
-    }
-
-    /// Verify that the recursive calls captured while checking the current body admit a
-    /// well-founded decreasing measure (issue #60, SPEC §3.3 "Recursive circuit functions"): a
-    /// `Nat` parameter `p` whose call-site argument is provably `< p` *and* `≥ 0` at every
-    /// recursive call, under that call's refinement assumptions. The `≥ 0` half is what forces a
-    /// base case — without the `n ≥ 1` a `match { 0 => … }` arm supplies, `n − 1 ≥ 0` is not
-    /// provable at `n = 0`, so the unguarded `f(n) = f(n−1)` is correctly rejected. A function
-    /// with no captured recursive call is non-recursive here and trivially passes.
-    fn check_termination(&self, name: &Name, span: SimpleSpan) -> Result<(), TypeError> {
-        if self.rec_calls.is_empty() {
-            return Ok(());
-        }
-        let Some((_, nat_params)) = &self.current_fn else {
-            return Ok(());
-        };
-        for p in nat_params {
-            let param_var = DepthExpr::Var(p.clone());
-            let decreases = self.rec_calls.iter().all(|call| {
-                let Some(arg) = call.sigma.get(p) else {
-                    return false;
-                };
-                let strictly_less = arg.clone().seq(DepthExpr::Nat(1));
-                // `arg + 1 ≤ p`  (strict decrease)  and  `0 ≤ arg`  (stays in ℕ).
-                self.refine
-                    .prove_le(&call.assumptions, &strictly_less, &param_var)
-                    .is_ok()
-                    && self
-                        .refine
-                        .prove_le(&call.assumptions, &DepthExpr::Nat(0), arg)
-                        .is_ok()
-            });
-            if decreases {
-                return Ok(());
-            }
-        }
-        Err(TypeError::IllFoundedRecursion {
-            name: name.clone(),
-            span,
-        })
     }
 
     /// Reject mutual recursion among *circuit* functions (issue #60). Builds the static call graph
@@ -1260,37 +1163,6 @@ impl TypeChecker {
         }
     }
 
-    /// Resolve `t` and require it to be `Int` or `Float`. An unsolved metavariable defers:
-    /// the obligation is recorded and the metavariable is returned unchanged, so surrounding
-    /// context can still solve it. [`Self::finalize_numeric`] discharges the obligation
-    /// (defaulting a still-unsolved variable to `Int`) once the body is fully checked.
-    fn numeric(&mut self, t: &Ty, span: SimpleSpan) -> Result<Ty, TypeError> {
-        let resolved = self.table.resolve(t);
-        match resolved {
-            Ty::Int => Ok(Ty::Int),
-            Ty::Float => Ok(Ty::Float),
-            Ty::Meta(id) => {
-                self.numeric.push((id, span));
-                Ok(resolved)
-            }
-            other => Err(TypeError::NotNumeric { found: other, span }),
-        }
-    }
-
-    /// Discharge the deferred numeric obligations collected while checking one body: every
-    /// metavariable used arithmetically must resolve to `Int`/`Float`, defaulting to `Int`
-    /// when nothing else constrained it. Clears the obligation list for the next body.
-    fn finalize_numeric(&mut self) -> Result<(), TypeError> {
-        for (id, span) in std::mem::take(&mut self.numeric) {
-            match self.table.resolve(&Ty::Meta(id)) {
-                Ty::Int | Ty::Float => {}
-                Ty::Meta(_) => self.table.unify(&Ty::Meta(id), &Ty::Int, span)?,
-                other => return Err(TypeError::NotNumeric { found: other, span }),
-            }
-        }
-        Ok(())
-    }
-
     fn synth_list(
         &mut self,
         env: &Env,
@@ -1593,48 +1465,6 @@ impl TypeChecker {
     /// Check a `match`. When `expected` is `Some`, every arm is checked against it;
     /// otherwise arm bodies are synthesized and unified to a common type. Exhaustiveness
     /// and reachability are validated against the scrutinee's type either way.
-    /// Push the refinement assumptions that a `match` arm's pattern implies about a `Nat`
-    /// scrutinee (issue #59). Only a scrutinee that is statically `Int`/`Nat` *and* lowers to a
-    /// [`DepthExpr`] (a variable, literal, or arithmetic over them — not, say, a function call)
-    /// carries refinement; everything else pushes nothing. The caller records the pre-push length
-    /// and truncates back to it, so this never has to undo its own work.
-    ///
-    /// - A literal arm `k =>` (`LitPat::Int`) asserts `scrut = k`.
-    /// - A wildcard/variable arm asserts `scrut ≠ kᵢ` for each *sibling* `Int` literal `kᵢ`. With
-    ///   the solver's global Nat domain (`≥ 0`), a `{0, _}` match yields `scrut ≥ 1` in the `_`
-    ///   arm — exactly what licenses `scrut - 1` as a non-saturating predecessor.
-    fn push_arm_refinement(
-        &mut self,
-        scrut_ty: &Ty,
-        scrutinee: &Sp<Expr>,
-        pat: &Sp<Pat>,
-        arms: &[(Sp<Pat>, Sp<Expr>)],
-    ) {
-        if !matches!(self.table.resolve(scrut_ty), Ty::Int) {
-            return;
-        }
-        let Ok(scrut) = self.depth_of(scrutinee) else {
-            return;
-        };
-        match &pat.0 {
-            Pat::Lit(LitPat::Int(k)) if *k >= 0 => {
-                self.assumptions
-                    .push(Assumption::Eq(scrut, DepthExpr::Nat(*k as u64)));
-            }
-            Pat::Wildcard | Pat::Var(_) => {
-                for (p, _) in arms {
-                    if let Pat::Lit(LitPat::Int(k)) = &p.0
-                        && *k >= 0
-                    {
-                        self.assumptions
-                            .push(Assumption::Ne(scrut.clone(), DepthExpr::Nat(*k as u64)));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn check_match(
         &mut self,
         env: &Env,
