@@ -1,7 +1,7 @@
 //! Front-to-back compile adapter: frontend lower → library pipelines → metrics.
 //!
 //! Pass order and Fixed/NA orchestration live in `mlir_bridge::pipeline` and
-//! `quon_na::pipeline`. After monadic lowering, QEC-backed programs
+//! `quon_na::pipeline`. After lowering, QEC-backed programs
 //! (`collect_qec_workload` non-empty) take the hybrid round-expansion path
 //! (ADR-0016 / #248); bare-qubit NA programs keep `run_from_module`.
 
