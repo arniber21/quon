@@ -8,7 +8,15 @@ repository.workspace = true
 
 [features]
 default = ["full"]
-full = ["dep:z3", "dep:quon_core", "dep:mlir_bridge", "dep:melior", "dep:anyhow"]
+# `analyze`: the Melior-free frontend pipeline (parse → desugar → typecheck →
+# elaborate → specialize). `specialized_circuit` and the analysis modules depend
+# only on `quon_core` / `z3` — no `mlir_bridge` / `melior` — so specialization
+# is buildable and testable without linking LLVM/MLIR (ADR-0038, issue #206).
+analyze = ["dep:quon_core", "dep:z3"]
+# `full`: the whole frontend including the `lower` → `quantum.circ` MLIR adapter,
+# which pulls in `mlir_bridge` / `melior`. `quonc` / `quon_lsp` take this by
+# default; `quonfmt` uses `default-features = false` (parser only).
+full = ["analyze", "dep:mlir_bridge", "dep:melior", "dep:anyhow"]
 
 [dependencies]
 chumsky   = { workspace = true }

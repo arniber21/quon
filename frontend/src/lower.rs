@@ -24,8 +24,10 @@ use crate::lexer::Sp;
 use crate::typecheck::circuit;
 use crate::typecheck::{TypeChecker, TypeError};
 use crate::types::Ty;
-
-type GatePlacement = (Sp<Expr>, Sp<Expr>);
+use crate::specialized_circuit::{
+    SpecializedCircuit, SpecializationError, collect_gate_placements, flatten_app,
+    inverse_gate_name, qubit_targets,
+};
 
 /// Errors raised while lowering a well-typed program to `quantum.circ`.
 #[derive(Debug, Error)]
@@ -56,6 +58,16 @@ pub enum LowerError {
     Type(#[from] TypeError),
     #[error("elaborating a parametric circuit call: {0}")]
     Elab(#[from] elaborate::ElabError),
+}
+
+impl From<SpecializationError> for LowerError {
+    fn from(e: SpecializationError) -> Self {
+        match e {
+            SpecializationError::Elab(e) => LowerError::Elab(e),
+            SpecializationError::UnresolvedWidth => LowerError::UnresolvedSpecializationWidth,
+            SpecializationError::BadShape(msg) => LowerError::Unsupported { construct: msg },
+        }
+    }
 }
 
 /// Lowers a desugared, type-checked declaration list into a `quantum.circ` module.
@@ -326,6 +338,23 @@ impl<'c> LoweringCtx<'c> {
         Ok(())
     }
 
+    /// Emit a [`SpecializedCircuit`] as a monomorphic `quantum.circ.func` — the
+    /// Melior adapter half of issue #206 (specialization itself is Melior-free).
+    fn emit_specialized(
+        &mut self,
+        name: &str,
+        circuit: &SpecializedCircuit,
+    ) -> Result<(), LowerError> {
+        self.emit_circuit_func(
+            name,
+            circuit.in_qubits,
+            circuit.out_qubits,
+            &circuit.depth,
+            circuit.clifford,
+            &circuit.body,
+        )
+    }
+
     /// Specializes the parametric circuit function `name` at concrete
     /// argument values `args` (each a classically-evaluable expression —
     /// typically an integer literal, or an expression closed over an
@@ -350,20 +379,7 @@ impl<'c> LoweringCtx<'c> {
                 construct: "parametric circuit call arity mismatch",
             });
         }
-        let mut fuel = elaborate::fresh_fuel();
-        let mut callee_env: HashMap<Name, elaborate::Value> = HashMap::new();
-        let mut cache_key = name.to_string();
-        cache_key.push('(');
-        for (i, (param, arg)) in def.params.iter().zip(args.iter()).enumerate() {
-            let value = elaborate::eval_classical(arg, classical_env, &mut fuel)?;
-            if i > 0 {
-                cache_key.push(',');
-            }
-            cache_key.push_str(&format!("{value:?}"));
-            callee_env.insert(param.clone(), value);
-        }
-        cache_key.push(')');
-
+        let cache_key = SpecializedCircuit::cache_key(name, &def, args, classical_env)?;
         if let Some(existing) = self.specialized.get(&cache_key) {
             return Ok(existing.clone());
         }
@@ -384,40 +400,8 @@ impl<'c> LoweringCtx<'c> {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
         };
-        let elaborated =
-            elaborate::elaborate_circuit_body(&def.body, &callee_env, &ctx, &mut fuel)?;
-
-        let Ty::Circuit { n, m, d, c } = def.ret_ty.clone() else {
-            return Err(LowerError::Unsupported {
-                construct: "specialized function does not return a Circuit",
-            });
-        };
-        let nat_env: HashMap<String, DepthExpr> = callee_env
-            .iter()
-            .filter_map(|(k, v)| match v {
-                elaborate::Value::Int(i) if *i >= 0 => Some((k.clone(), DepthExpr::Nat(*i as u64))),
-                _ => None,
-            })
-            .collect();
-        let in_qubits = n
-            .subst(&nat_env)
-            .as_const()
-            .ok_or(LowerError::UnresolvedSpecializationWidth)? as i64;
-        let out_qubits = m
-            .subst(&nat_env)
-            .as_const()
-            .ok_or(LowerError::UnresolvedSpecializationWidth)? as i64;
-        let depth = d.subst(&nat_env);
-        let clifford = matches!(c, CliffordClass::Clifford);
-
-        self.emit_circuit_func(
-            &synth_name,
-            in_qubits,
-            out_qubits,
-            &depth,
-            clifford,
-            &elaborated,
-        )?;
+        let circuit = SpecializedCircuit::specialize(&def, args, classical_env, &ctx)?;
+        self.emit_specialized(&synth_name, &circuit)?;
         Ok(synth_name)
     }
 
@@ -450,25 +434,15 @@ impl<'c> LoweringCtx<'c> {
                 .collect(),
         };
         let elaborated = elaborate::elaborate_circuit_body(gate, &HashMap::new(), &ctx, &mut fuel)?;
+        let circuit = SpecializedCircuit::anonymous(elaborated)?;
 
-        let width = max_qubit_index(&elaborated)
-            .map(|max| max + 1)
-            .ok_or(LowerError::UnresolvedSpecializationWidth)?;
-        let gate_count = count_gates(&elaborated);
         let synth_name = format!("__anon_circuit{}", self.next_synth_id);
         self.next_synth_id += 1;
         // A conservative depth/Clifford estimate: exact values are optimization
         // bookkeeping (scheduling, Clifford-only rewrites), not semantically
         // load-bearing for the emitted QASM — see mvp-landing-plan.md M1's
         // finding that the emitter never even reads these attributes.
-        self.emit_circuit_func(
-            &synth_name,
-            width as i64,
-            width as i64,
-            &DepthExpr::Nat(gate_count as u64),
-            false,
-            &elaborated,
-        )?;
+        self.emit_specialized(&synth_name, &circuit)?;
         Ok(synth_name)
     }
 
@@ -1083,32 +1057,6 @@ fn circuit_ref_op<'c>(
     Ok(operation)
 }
 
-fn collect_gate_placements(expr: &Sp<Expr>) -> Result<Vec<GatePlacement>, LowerError> {
-    match &expr.0 {
-        Expr::CircuitBlock(stmts) => {
-            let Some(Stmt::Expr(last)) = stmts.last().map(|s| &s.0) else {
-                return Err(LowerError::Unsupported {
-                    construct: "empty circuit block",
-                });
-            };
-            collect_gate_placements(last)
-        }
-        Expr::Compose(lhs, rhs) => {
-            let mut out = collect_gate_placements(lhs)?;
-            out.extend(collect_gate_placements(rhs)?);
-            Ok(out)
-        }
-        Expr::GateApp { gate, qubits } => Ok(vec![(*gate.clone(), *qubits.clone())]),
-        _ => Err(LowerError::Unsupported {
-            construct: "gate placement collection",
-        }),
-    }
-}
-
-fn inverse_gate_name(name: &str) -> String {
-    quon_core::gates::inverse_or_self(name)
-}
-
 fn const_width(depth: &DepthExpr, field: &'static str) -> Result<i64, LowerError> {
     depth
         .as_const()
@@ -1125,59 +1073,6 @@ fn circuit_meta(ty: &Ty) -> (bool, i64) {
         ),
         _ => (true, 1),
     }
-}
-
-fn qubit_targets(qubits: &Sp<Expr>) -> Vec<usize> {
-    match &qubits.0 {
-        Expr::Tuple(es) => es.iter().filter_map(|e| literal_usize(&e.0)).collect(),
-        other => literal_usize(other).into_iter().collect(),
-    }
-}
-
-fn literal_usize(expr: &Expr) -> Option<usize> {
-    match expr {
-        Expr::Int(n) if *n >= 0 => Some(*n as usize),
-        _ => None,
-    }
-}
-
-/// The highest qubit index a fully elaborated (`Compose`/`GateApp`/`Adjoint`)
-/// circuit expression places a gate on, or `None` if it places none — used to
-/// size a synthesized `quantum.circ.func` for an anonymous circuit expression
-/// with no declared `Circuit<n,...>` type of its own to read a width from.
-fn max_qubit_index(expr: &Sp<Expr>) -> Option<usize> {
-    match &expr.0 {
-        Expr::Compose(lhs, rhs) => max_qubit_index(lhs)
-            .into_iter()
-            .chain(max_qubit_index(rhs))
-            .max(),
-        Expr::GateApp { qubits, .. } => qubit_targets(qubits).into_iter().max(),
-        Expr::Adjoint(inner) => max_qubit_index(inner),
-        _ => None,
-    }
-}
-
-/// The number of gate placements in a fully elaborated circuit expression —
-/// a crude but safe depth over-estimate for a synthesized anonymous function
-/// (see `resolve_circuit_callee`).
-fn count_gates(expr: &Sp<Expr>) -> usize {
-    match &expr.0 {
-        Expr::Compose(lhs, rhs) => count_gates(lhs) + count_gates(rhs),
-        Expr::GateApp { .. } => 1,
-        Expr::Adjoint(inner) => count_gates(inner),
-        _ => 0,
-    }
-}
-
-fn flatten_app<'a>(f: &'a Sp<Expr>, x: &'a Sp<Expr>) -> (&'a Sp<Expr>, Vec<&'a Sp<Expr>>) {
-    let mut args = vec![x];
-    let mut head = f;
-    while let Expr::App(inner_f, inner_x) = &head.0 {
-        args.push(inner_x);
-        head = inner_f;
-    }
-    args.reverse();
-    (head, args)
 }
 
 /// Whether `expr` is a call to the `split` builtin (`split(k, q)`) — used to
