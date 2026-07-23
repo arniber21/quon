@@ -5,8 +5,6 @@ sidebar:
   order: 5
 ---
 
-import source from '../../../../../test/verify/grover.qn?raw';
-
 ## What we're building and why
 
 Grover's algorithm is the quantum procedure that finds a marked item in an
@@ -17,7 +15,7 @@ diffusion operator (which reflects about the uniform superposition). Each
 iteration rotates the state vector θ radians closer to the marked state,
 where sin θ = √(M/N) for M marked items.
 
-This fixture uses the exact special case: N = 4 qubits (i.e., N = 2² = 4
+This fixture uses the exact special case: N = 4 (i.e., N = 2² = 4
 candidates), M = 1 marked item, and r = 1 Grover iteration. At this scale,
 θ = arcsin(1/2) = π/6, and after one iteration the rotation is
 (2r+1)θ = 3 × π/6 = π/2 — the state lands *exactly* on the
@@ -33,11 +31,21 @@ depth is multiplied: if the repeated circuit has depth d, then
 `repeat(r, circuit)` has depth r × d. This is how Quon reasons about
 bounded repetition: the depth bound is symbolic and arithmetic.
 
+At n = 2, the oracle and diffusion operator both use a single `CZ` gate. This
+is because a 2-qubit multi-controlled-Z *is* just `CZ` — no Toffoli or CCZ
+decomposition is needed at this size. The oracle phase-flips |11⟩, and
+the diffusion reflects about the uniform superposition, both in a single
+entangling gate.
+
 ## Typed annotations
 
 ```qn
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
     for q in qubits(n) { H q }
+}
+
+fn flip_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { X q }
 }
 
 fn oracle(): Circuit<2, 2, 1, Clifford> = circuit {
@@ -58,6 +66,8 @@ The types reflect the algorithm's structure precisely:
   is the max (1), not the sum (n). This is a crucial distinction: `for`-loop
   bodies over disjoint qubits give depth 1, while `|>` sequential composition
   of the same gates would give depth n.
+- **`flip_all` is `Circuit<n, n, 1, Clifford>`** — same shape as
+  `hadamard_all` but with `X` gates.
 - **`oracle` is `Circuit<2, 2, 1, Clifford>`** — a single `CZ` gate marks
   |11⟩ with a phase flip. At n = 2, a multi-controlled-Z *is* just
   `CZ` — no Toffoli or decomposition needed.
@@ -78,13 +88,52 @@ This page embeds the Aer-tested
 program. A more general frontend form lives at
 [`frontend/tests/fixtures/grover.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/grover.qn).
 
-<pre><code>{source}</code></pre>
+The parametric helpers create layers of identical single-qubit gates. Both
+`hadamard_all` and `flip_all` use `for q in qubits(n)` to iterate over all n
+qubits and apply the same gate to each. Because the gates act on disjoint
+qubits, the elaborator unrolls the loop and the depth is 1 — the maximum over
+all qubits, not the sum. The `oracle` is a single `CZ` gate that phase-flips the
+marked state |11⟩; at n = 2 the multi-controlled-Z reduces to a bare
+`CZ`, so no Toffoli decomposition is needed. The `diffusion` operator reflects
+about the uniform superposition: it transforms back to the computational basis
+with Hadamards, flips all qubits with `X` gates, applies a `CZ`, flips back,
+and Hadamards again.
+
+```qn
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn flip_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { X q }
+}
+
+fn oracle(): Circuit<2, 2, 1, Clifford> = circuit {
+    CZ @(0, 1)
+}
+
+fn diffusion(n: Nat): Circuit<n, n, 5, Clifford> = circuit {
+    hadamard_all(n) |> flip_all(n) |> CZ @(0, 1) |> flip_all(n) |> hadamard_all(n)
+}
+```
 
 The `run` block is compact: allocate 2 qubits, apply `hadamard_all(2)` to create
-the uniform superposition, then `repeat(1, oracle() |> diffusion(2))` to do one
-round of amplitude amplification. The `repeat` construct is syntactic sugar for
-sequential self-composition: `repeat(r, c)` is c |> c |>
-·s (r times). Its depth is r × depth(c).
+the uniform superposition, then `repeat(1, oracle() |> diffusion(2))` to do
+one round of amplitude amplification. The `repeat` construct is syntactic sugar
+for sequential self-composition: `repeat(r, c)` is c |> c |>
+·s (r times). Its depth is r × depth(c). Because this is the
+exact N = 4, M = 1 special case, one iteration rotates the state exactly onto
+the marked item — so the output should be `(1, 1)` with probability 1.0.
+
+```qn
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- hadamard_all(2) @ qreg(2)
+    (r0, r1) <- repeat(1, oracle() |> diffusion(2)) @ (q0, q1)
+    b0       <- measure(r0)
+    b1       <- measure(r1)
+    return (b0, b1)
+}
+```
 
 ## Compile and simulate
 

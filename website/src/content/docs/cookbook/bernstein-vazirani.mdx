@@ -5,8 +5,6 @@ sidebar:
   order: 4
 ---
 
-import source from '../../../../../test/verify/bernstein_vazirani.qn?raw';
-
 ## What we're building and why
 
 The Bernstein–Vazirani algorithm solves a problem that would take n queries
@@ -23,13 +21,15 @@ kickback encodes s into the query qubits' phases. Applying Hadamards again
 converts those phases back to computational-basis bits. Measuring yields s
 directly — in a single shot, deterministically.
 
-This fixture hides s = 110 (qubit 0 and 1 are `1`, qubit 2 is `0`). The oracle
-applies `CNOT @(0, anc)` and `CNOT @(1, anc)` — one CNOT per set bit. The
-program is monomorphized: the parametric `hadamard_all(n)`, `tensored`/`split`,
-and circuit-valued oracles of the general algorithm are flattened into one
-concrete circuit. This is how Quon handles parameterized algorithms: the
-elaborator partially evaluates `Nat` arguments, unrolls `for` loops, and
-produces a fixed circuit that the typechecker and optimizer can analyze fully.
+This fixture hides s = 110 (qubit 0 and 1 are `1`, qubit 2 is `0`): n = 3
+query qubits plus one ancilla. The oracle applies `CNOT @(0, anc)` and
+`CNOT @(1, anc)` — one CNOT per set bit of s. A single shot recovers s
+exactly. The program is monomorphized: the parametric `hadamard_all(n)`,
+`tensored`/`split`, and circuit-valued oracles of the general algorithm are
+flattened into one concrete circuit. This is how Quon handles parameterized
+algorithms: the elaborator partially evaluates `Nat` arguments, unrolls `for`
+loops, and produces a fixed circuit that the typechecker and optimizer can
+analyze fully.
 
 ## Typed annotations
 
@@ -72,12 +72,44 @@ The embedded source is
 the typechecker reference is
 [`frontend/tests/fixtures/bernstein_vazirani.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/bernstein_vazirani.qn).
 
-<pre><code>{source}</code></pre>
+The oracle circuit encodes the full algorithm for the secret string s = 110.
+The initial `X @3` sets the ancilla to |−⟩. The first batch of Hadamards
+puts all three query qubits into |+⟩ and the ancilla into |−⟩ — the phase
+kickback eigenstate. The two CNOTs implement the oracle: one CNOT from query
+qubit 0 to the ancilla, and one from query qubit 1, because s = 110 means bits
+0 and 1 are set and bit 2 is not. A CNOT for each set bit is the oracle's
+definition. The final Hadamards on the query qubits convert the phase
+information back into computational-basis bits, so that measuring yields s
+directly. The ancilla does not get a final Hadamard — it was only needed to
+make the phase kickback work during the CNOTs.
 
-The `run` block applies the oracle to a 4-qubit register, then measures all four
+```qn
+fn bv_oracle_s110(): Circuit<4, 4, 10, Clifford> = circuit {
+    X @3
+    |> H @0 |> H @1 |> H @2 |> H @3
+    |> CNOT @(0, 3) |> CNOT @(1, 3)
+    |> H @0 |> H @1 |> H @2
+}
+```
+
+The `run` block applies the oracle to a 4-qubit register and measures all four
 qubits. The first three bits `(b0, b1, b2)` are the query results — they equal
-the hidden string s = 110. The ancilla bit `anc_bit` is irrelevant to the
-answer but is included in the output tuple.
+the hidden string s = 110. The ancilla bit is irrelevant to the answer but is
+included in the output tuple because the register has four qubits and every
+qubit must be measured (the linear type system requires no leaks). A single
+shot recovers the secret deterministically: the measurement result is
+`(1, 1, 0, ancilla)` where `ancilla` is don't-care.
+
+```qn
+fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, anc) <- bv_oracle_s110() @ qreg(4)
+    b0  <- measure(q0)
+    b1  <- measure(q1)
+    b2  <- measure(q2)
+    anc_bit <- measure(anc)
+    return (b0, b1, b2, anc_bit)
+}
+```
 
 ## Compile and simulate
 
