@@ -33,7 +33,7 @@ a program that simultaneously uses recursion, register algebra, adjoint
 synthesis, and bounded repetition, and produce a well-defined output
 distribution. The verifier checks: compilation succeeds, two runs with the
 same seed produce identical results, and all control-register outcomes lie in
-{00, 01} — the signature of a correct wiring, not a linearity bug that
+`{00, 01}` — the signature of a correct wiring, not a linearity bug that
 would spread outcomes across all four states. It is the last of the five
 universal reference algorithms and the only one exercising `tensored`/`split`
 (register concatenation/splitting) together with recursion, `controlled(Rz)`,
@@ -247,7 +247,7 @@ circuit does not collapse. The optimizer does find some local optimizations
    drops the target register, which the linear type system permits because
    the target has already been used by `mod_exp` and is no longer needed.
 5. **Deterministic output structure.** The verifier checks that all
-   control-register outcomes lie in {00, 01}. This is not a mathematical
+   control-register outcomes lie in `{00, 01}`. This is not a mathematical
    claim about Shor's algorithm (the schematic `modmul` has no real period) —
    it is a *wiring correctness* claim: if the type system's register algebra
    were wrong, the outcome would spread across all four states, which is the
