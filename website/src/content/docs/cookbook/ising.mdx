@@ -7,10 +7,78 @@ sidebar:
 
 import source from '../../../../../test/verify/ising.qn?raw';
 
-The program factors a first-order Trotter step into nearest-neighbor `Rzz`
-interactions and single-qubit `Rx` rotations, then repeats that step. It
-demonstrates [parameterized circuits, loops, composition, and depth
-bounds](/language/#parameterized-circuits-and-depth).
+## What we're building and why
+
+The transverse-field Ising model is the simplest non-trivial many-body
+Hamiltonian: H = -J · Σᵢ ZᵢZᵢ₊₁ - h · Σᵢ Xᵢ, where J is the
+nearest-neighbor coupling and h is the transverse field strength. Simulating
+its time evolution e^(-iHt) is a canonical task for quantum computers — it is
+the gateway to quantum chemistry, lattice gauge theories, and condensed-matter
+physics. Because H is a sum of non-commuting terms (Z Z and X), the
+evolution cannot be implemented exactly in a single gate; instead, it is
+* Trotterized*.
+
+First-order Trotterization approximates e^-iHt ≈ (e^-iH_ZZ
+τ · e^-iH_X τ)^n where τ = t/n is the step size
+and n is the number of Trotter steps. Each step factors into a `zz_layer`
+(nearest-neighbor `Rzz` interactions) and an `x_layer` (single-qubit `Rx`
+rotations). The `Rzz` gate is decomposed by the elaborator into `CNOT + Rz +
+CNOT` — the standard circuit identity for an Ising coupling. The approximation
+improves as n → ∞, but the circuit depth grows linearly with n.
+
+This fixture deliberately sets t = 0, making every rotation angle exactly zero.
+At t = 0, the evolution is the identity — regardless of J, h, or n,
+because R_z(0) = I unconditionally. This is the PRD's stated Ising acceptance
+criterion: a *boundary* test that verifies the compiler pipeline and the model's
+zero-time limit. It does not validate nonzero-time Ising dynamics; it validates
+that the compiler correctly produces, composes, and simulates a parametric
+Trotter circuit that is mathematically the identity at this parameter value.
+
+## Typed annotations
+
+```qn
+fn zz_layer(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Rzz(-2.0 * j * tau) @(i, i + 1) }
+}
+
+fn x_layer(n: Nat, h: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(-2.0 * h * tau) q }
+}
+
+fn trotter_step(n: Nat, j: Float, h: Float, tau: Float): Circuit<n, n, n, Universal> = circuit {
+    zz_layer(n, j, tau) |> x_layer(n, h, tau)
+}
+
+fn ising_evolve(n: Nat, j: Float, h: Float, t: Float, n_steps: Int): Circuit<n, n, n_steps * n, Universal> =
+    let tau = t / float(n_steps)
+    in repeat(n_steps, trotter_step(n, j, h, tau))
+```
+
+The types encode the Trotter structure:
+
+- **`zz_layer` is `Circuit<n, n, n - 1, Universal>`** — n-1 `Rzz` gates, one
+  for each nearest-neighbor pair in a chain of n qubits. The depth is n-1
+  because the gates are applied sequentially via `for i in range(n-1)`. (These
+  could overlap on different qubit pairs — qubits i and i+1 — but the
+  `for` loop composes them sequentially under `|>`, so depth adds.) The class
+  is `Universal` because `Rzz` decomposes to `CNOT + Rz + CNOT`, and `Rz` is not
+  Clifford for general angles.
+- **`x_layer` is `Circuit<n, n, 1, Universal>`** — `Rx` on all n qubits via
+  `for q in qubits(n)`. Depth 1 because all rotations act on different qubits
+  and the `for` loop recognizes disjoint qubits.
+- **`trotter_step` is `Circuit<n, n, n, Universal>`** — `zz_layer` (depth n-1)
+  `|>` `x_layer` (depth 1) = depth n. The sequential composition adds depths.
+- **`ising_evolve` is `Circuit<n, n, n_steps * n, Universal>`** — the depth
+  bound is `n_steps * n`, which is a *symbolic* expression in the `Int`
+  parameter `n_steps`. The typechecker proves this arithmetically: `repeat(k,
+  circuit)` has depth k × depth(circuit), so the total is
+  n\_steps × n. For the fixture's call with `n = 4`, `n_steps = 3`,
+  the depth is 3 × 4 = 12.
+
+The `let tau = t / float(n_steps) in ...` binding is a value definition inside
+a circuit expression. The typechecker evaluates this at compile time (partial
+evaluation of `Float` values) and substitutes the result into the rotation
+angles. At t = 0, every angle becomes 0, and the circuit becomes the identity.
 
 ## Source
 
@@ -21,12 +89,69 @@ the executable adaptation of
 
 <pre><code>{source}</code></pre>
 
+The `main` function calls `ising_evolve(4, 1.0, 1.0, 0.0, 3)` — 4 qubits,
+coupling J = 1.0, field h = 1.0, time t = 0.0, and 3 Trotter steps. Since
+t = 0, τ = 0/3 = 0, and every `Rzz` and `Rx` angle is exactly zero.
+
 ## Compile and simulate
 
 ```sh
 ./target/release/quonc test/verify/ising.qn --emit-qasm > /tmp/ising.qasm
 QUONC=target/release/quonc python test/verify/ising.py
 ```
+
+## `--dump-ir` MLIR excerpts
+
+After elaboration, each `Rzz(θ)` is decomposed into `CNOT + Rz(θ) + CNOT`:
+
+```mlir
+// Rzz(θ) @(i, i+1) lowers to:
+//   CNOT @(i, i+1) |> Rz(θ) @(i+1) |> CNOT @(i, i+1)
+//
+// At t = 0, θ = 0, so Rz(0) is the identity.
+// The fixpoint pipeline sees:
+//
+// gate_cancellation:
+//   CNOT @(i, i+1) |> Rz(0) @(i+1) |> CNOT @(i, i+1)
+//   → CNOT @(i, i+1) |> CNOT @(i, i+1)   [Rz(0) erased as identity]
+//   → I                                   [CNOT·CNOT = I, adjacent, same wires]
+//
+// rotation_merging:
+//   In the x_layer, Rx(0) on each qubit → identity. These are single-qubit
+//   rotations that merge with adjacent rotations, but at θ = 0 they are
+//   simply erased.
+//
+// After fixpoint: the entire circuit (all zz_layers and x_layers across
+// all 3 Trotter steps) cancels to identity. Every CNOT pair cancels, every
+// Rz(0) and Rx(0) is erased.
+```
+
+The optimizer's `rotation_merging` pass also applies across Trotter steps: if
+two consecutive steps produce `Rz(θ)` on the same qubit (from the `Rzz`
+decomposition), the pass merges them into `Rz(2θ)`. At t = 0, both angles are
+zero, so the merge produces `Rz(0)` which is then erased. For nonzero t, this
+merging can reduce the gate count between Trotter steps — a real optimization
+that the compiler performs automatically.
+
+## What the compiler proves
+
+1. **Symbolic depth arithmetic.** The depth bound `n_steps * n` is a symbolic
+   expression in the `Int` parameter `n_steps`. The typechecker proves that
+   `repeat(n_steps, trotter_step(n, j, h, tau))` has depth exactly
+   `n_steps * depth(trotter_step)` = `n_steps * n`. This is verified, not
+   estimated.
+2. **Partial evaluation of `Float` values.** The `let tau = t / float(n_steps)`
+   binding is evaluated at compile time. At t = 0, the typechecker substitutes
+   τ = 0 into all rotation angles, producing `Rz(0)` and `Rx(0)` — which
+   the optimizer then recognizes as identities.
+3. **`Rzz` decomposition is correct.** The elaborator's `decompose_rzz` produces
+   the standard `CNOT + Rz + CNOT` identity. The typechecker verifies the
+   decomposed circuit has the correct arity and depth, and the optimizer's
+   `gate_cancellation` can exploit the `CNOT·CNOT` pairs at t = 0.
+4. **Linear use of the qubit register.** The 4-qubit register is allocated,
+   threaded through the entire Trotter evolution (which is a single circuit
+   value applied via `@`), and measured. The `repeat` construct consumes and
+   reproduces the register at each step, maintaining linear typing throughout.
 
 ## Expected result
 
@@ -36,3 +161,20 @@ more than 99% fidelity. This verifies the compiler pipeline and the model's
 zero-time boundary; it does not validate nonzero-time Ising dynamics. See
 [`ising.py`](https://github.com/arniber21/quon/blob/main/test/verify/ising.py)
 for the exact assertion.
+
+## What to try next
+
+- **Set t > 0.** Change `t = 0.0` to a small nonzero value like `t = 0.1`.
+  The output will no longer be all-zeros — the Trotter evolution will actually
+  rotate the state. (No exact assertion can be made without comparing to a
+  classical simulation, but the distribution should change.)
+- **Vary the Trotter steps.** Keep t fixed and increase `n_steps`. The
+  approximation should improve (the state converges), but the circuit depth
+  grows linearly — the typechecker will report `n_steps * n` as the new depth.
+- **Watch `rotation_merging` across steps.** With nonzero t, add `--dump-ir`
+  and look for `Rz` gates merging across Trotter step boundaries — the
+  optimizer combines adjacent same-axis rotations even across the `repeat`
+  boundary.
+
+→ Next: [QAOA MaxCut](./qaoa/) — favor optimal cuts of the triangle graph with
+  a variational circuit.

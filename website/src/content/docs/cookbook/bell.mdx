@@ -7,9 +7,53 @@ sidebar:
 
 import source from '../../../../../test/verify/bell.qn?raw';
 
-This smallest example introduces a [circuit, sequential composition, circuit
-application, and measurement](/language/#circuits-and-composition). `H` puts
-the first qubit into a superposition; `CNOT` correlates the second qubit with it.
+## What we're building and why
+
+A Bell state is the simplest entangled quantum state: two qubits whose
+outcomes are perfectly correlated even when measured independently. It is the
+canonical resource for quantum information — teleportation, superdense coding,
+entanglement swapping, and every Bell-test experiment all start with one. In a
+compiler, it is the smallest circuit that exercises sequential composition,
+two-qubit gate application, and measurement in one program.
+
+The circuit itself is trivially short: a Hadamard creates superposition on one
+qubit, then a CNOT entangles the second qubit with the first. After these two
+gates the state is (1/√2)(|00⟩ + |11⟩) — the
+maximally entangled Bell pair. Measuring both qubits always yields either `00`
+or `11`, never `01` or `10`. That correlation *is* the entanglement: each qubit
+alone is a fair coin, but the two coins always agree.
+
+What makes this a worthwhile first compiler example is not the physics — it is
+that every piece of Quon's machinery shows up in three lines of code. The
+circuit is a *value* with a *type* that tells you how many qubits it touches and
+how deep it is. The `run` block consumes that value, allocates qubits, applies
+the circuit, and measures. The typechecker proves the qubits are used exactly
+once. The optimizer looks at the result and confirms it is already minimal.
+
+## Typed annotations
+
+```qn
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1)
+}
+```
+
+The type `Circuit<2, 2, 2, Clifford>` carries four pieces of information that the
+compiler verifies before a single gate is lowered:
+
+- **`2` inputs, `2` outputs** — the circuit transforms a 2-qubit register into a
+  2-qubit register. No qubits are created or destroyed. The linear type system
+  enforces this: the register returned by `bell_state @ qreg(2)` has exactly the
+  qubits the circuit type promised.
+- **depth bound `2`** — the sequential composition `H |> CNOT` has depth
+  1 + 1 = 2. The typechecker computes this symbolically from the `|>`
+  operator: depth adds. This is an *upper bound* the compiler proves, not a
+  runtime estimate.
+- **`Clifford` class** — both `H` and `CNOT` are Clifford gates, and the
+  Clifford class is closed under sequential composition (Clifford ⊑ Clifford).
+  The typechecker infers this bottom-up and writes it into the type. This means
+  the circuit can be efficiently simulated on a stabilizer tableau — a fact the
+  optimizer's `clifford_t_opt` pass can exploit later.
 
 ## Source
 
@@ -22,6 +66,13 @@ verifier supplies the statistical assertion; the frontend reference is
 
 <pre><code>{source}</code></pre>
 
+The program defines `bell_state` as a standalone circuit value, then invokes it
+inside a `run` block that allocates a 2-qubit register, applies the circuit, and
+measures both qubits. The `return (b0, b1)` makes the two classical bits the
+program's output. Notice how `q0` and `q1` are *consumed* by `measure` — after
+measurement they no longer exist as quantum values, which the linear type system
+enforces.
+
 ## Compile and simulate
 
 From the repository root:
@@ -31,8 +82,71 @@ From the repository root:
 QUONC=target/release/quonc python test/verify/bell.py
 ```
 
+## `--dump-ir` MLIR excerpts
+
+The circuit lowers to MLIR in the `quantum.circ` dialect, where `H` and `CNOT`
+become operations on SSA qubit wires. After the circ fixpoint pipeline runs —
+`gate_cancellation` → `rotation_merging` → `clifford_t_opt` →
+`compiler_uncomputation` → `zx_simplification`, iterated to fixpoint — the
+optimizer examines the two-gate body:
+
+```mlir
+// Before optimization (schematic):
+quantum.circ.func @bell_state(%q0, %q1) -> (%q0', %q1') {
+  %h = quantum.h %q0
+  %cnot = quantum.cnot %h, %q1
+  quantum.return %cnot_q0, %cnot_q1
+}
+
+// After optimization: unchanged.
+// gate_cancellation finds no adjacent self-inverse pair (H·H, CNOT·CNOT).
+// rotation_merging finds no consecutive same-axis rotation.
+// clifford_t_opt: already pure Clifford — no T gates to merge or cancel.
+```
+
+The optimizer leaves the circuit exactly as written. `gate_cancellation` looks for
+adjacent self-inverse pairs like `H·H` or `CNOT·CNOT` — there are none here. The
+Bell circuit is already minimal: two gates, depth two, and the compiler can prove
+it. This is the ideal case — the optimizer confirms what you wrote and does
+nothing, which is itself a guarantee that no further simplification exists.
+
+## What the compiler proves
+
+Running `quonc` on this program produces four distinct guarantees before any
+QASM is emitted:
+
+1. **Linear use of all qubits.** The `run` block allocates two qubits via
+   `qreg(2)`, splits them into `q0` and `q1`, applies the circuit, and measures
+   each one exactly once. No qubit is used twice (no cloning) and none is left
+   unmeasured (no resource leak). The linear context Δ tracks this through every
+   bind and consume.
+2. **Depth bound ≤ 2.** The typechecker proves the circuit's depth is at most 2
+   by composing `H` (depth 1) with `CNOT` (depth 1) under `|>` (depth adds). This
+   bound is written into the type and checked, not estimated.
+3. **Clifford classification verified.** The type system infers `Clifford` from
+   the gate set and the subtyping rule `Clifford ⊑ Universal`. This is not just
+   a label — it means the stabilizer tableau simulation path is sound for this
+   circuit, and the optimizer's Clifford-specific passes are applicable.
+4. **No-cloning.** Because qubits are linear, there is no way to duplicate `q0`
+   or `q1` inside the circuit or the `run` block. Any attempt to use the same
+   qubit twice is a *type error*, caught before lowering.
+
 ## Expected result
 
 Aer should report only `00` and `11`, with each outcome close to half of 4096
 shots and no `01` or `10` leakage. Randomness chooses which correlated result
 appears; the absence of mismatched bits demonstrates the entanglement.
+
+## What to try next
+
+- **Change the initial state.** Add `X @1` before the `H @0` to prepare
+  |β₀₁⟩ = (1/√2)(|01⟩ + |10⟩) instead.
+  Watch the measurement distribution flip.
+- **Add a redundant gate pair.** Write `H @0 |> H @0 |> CNOT @(0, 1)` and run
+  with `--dump-ir` — `gate_cancellation` should erase the `H·H` pair, reducing
+  the circuit back to the original.
+- **Break the depth bound.** Try annotating the circuit as `Circuit<2, 2, 1,
+  Clifford>` — the typechecker should reject it, since the true depth is 2.
+
+→ Next: [Quantum teleportation](./teleportation/) — use a Bell pair to transfer
+  a state with classical feed-forward.

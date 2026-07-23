@@ -7,9 +7,63 @@ sidebar:
 
 import source from '../../../../../test/verify/bernstein_vazirani.qn?raw';
 
-This concrete oracle hides `s = 110`. Hadamard gates turn the oracle's phase
-kickback into three measurable bits. The program also shows a fixed-width
-[`Circuit` applied inside a `run` block](/language/#circuits-and-quantum-computations).
+## What we're building and why
+
+The Bernstein–Vazirani algorithm solves a problem that would take n queries
+classically but only *one* quantum query: given an oracle that computes
+s · x (mod 2) for an unknown n-bit string s, recover s entirely.
+It is the textbook demonstration of *phase kickback* — the mechanism where a
+computational-basis query gets transformed into a phase that carries information
+about s, which Hadamard gates then convert into measurable bits.
+
+The algorithm is elegantly simple. Prepare n query qubits in |+⟩^⊗n
+(all Hadamards), prepare one ancilla in |−⟩ = |1⟩ after `H`, then
+apply the oracle as CNOT gates from each query qubit to the ancilla. The phase
+kickback encodes s into the query qubits' phases. Applying Hadamards again
+converts those phases back to computational-basis bits. Measuring yields s
+directly — in a single shot, deterministically.
+
+This fixture hides s = 110 (qubit 0 and 1 are `1`, qubit 2 is `0`). The oracle
+applies `CNOT @(0, anc)` and `CNOT @(1, anc)` — one CNOT per set bit. The
+program is monomorphized: the parametric `hadamard_all(n)`, `tensored`/`split`,
+and circuit-valued oracles of the general algorithm are flattened into one
+concrete circuit. This is how Quon handles parameterized algorithms: the
+elaborator partially evaluates `Nat` arguments, unrolls `for` loops, and
+produces a fixed circuit that the typechecker and optimizer can analyze fully.
+
+## Typed annotations
+
+```qn
+fn bv_oracle_s110(): Circuit<4, 4, 10, Clifford> = circuit {
+    X @3
+    |> H @0 |> H @1 |> H @2 |> H @3
+    |> CNOT @(0, 3) |> CNOT @(1, 3)
+    |> H @0 |> H @1 |> H @2
+}
+```
+
+The type `Circuit<4, 4, 10, Clifford>` encodes the algorithm's structure:
+
+- **`4` qubits in and out** — three query qubits plus one ancilla. The circuit
+  transforms all four; none are discarded. The depth of 10 counts each gate
+  sequentially under `|>`.
+- **Depth bound `10`** — `X @3` (depth 1) plus four Hadamards (depth 4) plus
+  two CNOTs (depth 2) plus three Hadamards (depth 3) = 1 + 4 + 2 + 3 = 10.
+  Note that these gates act on different qubits but are composed sequentially
+  with `|>`, so their depths sum rather than take a maximum. A `par`
+  composition would reduce this, but the algorithm's structure requires the
+  phases to accumulate in order.
+- **`Clifford` class** — every gate here (`X`, `H`, `CNOT`) is Clifford. The
+  typechecker infers this and the entire algorithm is efficiently simulable on
+  a stabilizer tableau. This also means `clifford_t_opt` could apply non-adjacent
+  simplification, but there are no T gates to optimize.
+
+The oracle embeds the entire algorithm in one circuit: the initial `X @3` sets
+the ancilla to |1⟩, the first round of Hadamards creates the
+|+⟩^⊗ 3 ⊗ |-⟩ state, the CNOTs encode the phase
+kickback, and the final Hadamards on the query qubits convert phases to bits.
+The ancilla's final Hadamard is not applied — it is not needed for the
+measurement, only for the phase kickback during the CNOT.
 
 ## Source
 
@@ -20,12 +74,63 @@ the typechecker reference is
 
 <pre><code>{source}</code></pre>
 
+The `run` block applies the oracle to a 4-qubit register, then measures all four
+qubits. The first three bits `(b0, b1, b2)` are the query results — they equal
+the hidden string s = 110. The ancilla bit `anc_bit` is irrelevant to the
+answer but is included in the output tuple.
+
 ## Compile and simulate
 
 ```sh
 ./target/release/quonc test/verify/bernstein_vazirani.qn --emit-qasm > /tmp/bernstein_vazirani.qasm
 QUONC=target/release/quonc python test/verify/bernstein_vazirani.py
 ```
+
+## `--dump-ir` MLIR excerpts
+
+After lowering to `quantum.circ`, the ten-gate sequence runs through the fixpoint
+optimization pipeline. `gate_cancellation` scans for adjacent self-inverse gate
+pairs on the same qubit wire:
+
+```mlir
+// The oracle has a sandwich structure on each query qubit:
+// H(q_i) |> CNOT(q_i, anc) [if s_i = 1] |> H(q_i)
+//
+// gate_cancellation: no adjacent H·H pair on the same wire — the CNOT
+// sits between them. The H·CNOT·H sandwich is the standard phase-kickback
+// pattern; it does NOT cancel.
+//
+// rotation_merging: no consecutive same-axis rotations — the CNOTs break
+// any rotation chain.
+//
+// clifford_t_opt: stabilizer tableau analysis could in principle find
+// non-adjacent Clifford identities, but the oracle is structurally minimal
+// for this secret string — two CNOTs, one per set bit.
+```
+
+The optimizer leaves the circuit unchanged. The H · CNOT · H
+sandwich on each query qubit is the irreducible phase-kickback pattern — the
+Hadamards cannot cancel because the CNOT sits between them, and the CNOTs
+themselves are on different qubit pairs. The circuit is already the minimal
+encoding of "query s = 110".
+
+## What the compiler proves
+
+1. **Linear use of all four qubits.** The register is allocated, the circuit is
+   applied, and all four qubits are measured. No qubit is left unmeasured or
+   used twice. The linear type system tracks the context through the entire
+   `run` block.
+2. **Depth bound ≤ 10.** The typechecker proves the circuit depth is at most 10
+   by summing the depths of the sequentially composed gates. This bound is
+   verified, not estimated.
+3. **Clifford classification verified.** The type system infers `Clifford` from
+   the gate set (`X`, `H`, `CNOT` are all Clifford) and the composition rule
+   (Clifford ⊑ Clifford under `|>`). This means the entire algorithm is
+   efficiently classically simulable — a fact that is true of Bernstein–Vazirani
+   and is faithfully reflected in the type.
+4. **No-cloning enforced.** The four qubits are allocated once and consumed
+   once. Any attempt to reuse a measured qubit or copy a quantum value would be
+   a type error caught before lowering.
 
 ## Expected result
 
@@ -34,3 +139,17 @@ ancilla measurement is irrelevant. The
 [`bernstein_vazirani.py`](https://github.com/arniber21/quon/blob/main/test/verify/bernstein_vazirani.py)
 verifier checks that the set of recovered query-bit triples contains exactly
 the hidden string.
+
+## What to try next
+
+- **Change the secret string.** Modify the oracle to hide s = 101 by adding
+  `CNOT @(2, 3)` and removing `CNOT @(1, 3)`. The measurement should recover
+  `(1, 0, 1)`.
+- **Parametrize the oracle.** Write a version that takes the secret string as a
+  `List<Bit>` and builds the oracle with a `for` loop, then call it with
+  different strings.
+- **Insert redundant gates.** Add `H @0 |> H @0` after the oracle and watch
+  `gate_cancellation` erase the pair, leaving the output unchanged.
+
+→ Next: [Grover search](./grover/) — amplify the marked state with one
+  iteration in the exact two-qubit case.

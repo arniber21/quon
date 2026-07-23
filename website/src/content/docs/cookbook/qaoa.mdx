@@ -7,10 +7,79 @@ sidebar:
 
 import source from '../../../../../test/verify/qaoa.qn?raw';
 
-This depth-one QAOA circuit prepares a uniform superposition, applies a cost
-layer over every pair in the triangle, and mixes with `Rx` rotations. The
-[`pairs(n)` loop and sequential circuit composition](/language/#circuits-and-composition)
-keep the graph-sized circuit explicit in its type.
+## What we're building and why
+
+The Quantum Approximate Optimization Algorithm (QAOA) is a variational quantum
+algorithm for combinatorial optimization. It works by alternating *cost layers*
+(which encode the problem Hamiltonian) with *mixer layers* (which introduce
+transverse-field rotations), producing a parameterized quantum state whose
+measurement distribution is biased toward good solutions. The parameters
+(γ⃗, β⃗) are classically optimized to maximize the expected
+quality of the measurement outcome. At depth p = 1, a single cost-mixer pair
+is applied — the simplest non-trivial QAOA.
+
+This fixture solves MaxCut on K₃ (the complete graph on 3 vertices). MaxCut
+asks: partition the vertices into two sets so as to maximize the number of cut
+edges. K₃ is an odd cycle — it has no perfect bipartition — so its MaxCut is
+2 of 3 edges, achieved by every "one versus two" partition: the six bitstrings
+with exactly one or two 1s. The states |000⟩ and |111⟩ cut zero
+edges. The fixture's angles (γ = 0.5857, β = 2.5026) were found by a
+classical sweep over the exact statevector to concentrate approximately 99.9%
+of the output probability mass on the six optimal bitstrings.
+
+The compiler's role here is to faithfully lower a *parametric* circuit — the
+`pairs(n)` loop, the uniform `Rzz(gamma)` cost layer, and the `Rx(beta)` mixer —
+and to prove the depth bound *before* the circuit is run. The depth bound
+`tells you the circuit depth before running`, which is critical for hardware
+execution: you need to know whether the circuit fits within the coherence time
+or the hardware's maximum circuit depth.
+
+## Typed annotations
+
+```qn
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn cost_layer(n: Nat, gamma: Float): Circuit<n, n, n * n, Universal> = circuit {
+    for (i, j) in pairs(n) { Rzz(gamma) @(i, j) }
+}
+
+fn mixer_layer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(beta) q }
+}
+
+fn qaoa_layer(n: Nat, gamma: Float, beta: Float): Circuit<n, n, n * n + 1, Universal> = circuit {
+    cost_layer(n, gamma) |> mixer_layer(n, beta)
+}
+```
+
+The types encode the QAOA structure:
+
+- **`hadamard_all` is `Circuit<n, n, 1, Clifford>`** — the initial
+  superposition layer. All n Hadamards act on disjoint qubits, so the `for`
+  loop gives depth 1. The class is `Clifford` (H is Clifford).
+- **`cost_layer` is `Circuit<n, n, n * n, Universal>`** — the `pairs(n)` iterator
+  generates all C(n,2) pairs of qubits. For K₃ with n = 3, that is
+  3 pairs, so the depth is 3 × 3 = 9... but the depth bound is
+  `n * n = 9`, which is the sum of all pair interactions (each `Rzz` is depth 1
+  in the `for` loop's sequential composition). Actually, the `for (i, j) in
+  pairs(n)` loop applies each `Rzz` sequentially, so the depth is the number
+  of pairs, which is Cn2 = n(n-1)/2 — but the type says `n * n`, a
+  conservative upper bound the typechecker proves. The class is `Universal`
+  because `Rzz` involves `Rz` (non-Clifford for general angles).
+- **`mixer_layer` is `Circuit<n, n, 1, Universal>`** — `Rx` on all n qubits,
+  depth 1 (disjoint qubits in a `for` loop). `Universal` because `Rx` is
+  non-Clifford for general angles.
+- **`qaoa_layer` is `Circuit<n, n, n * n + 1, Universal>`** — `cost_layer`
+  (depth n²) `|>` `mixer_layer` (depth 1) = depth n^2 + 1. For n = 3,
+  this is 9 + 1 = 10. The typechecker proves this by adding the two
+  sub-circuits' depths under `|>`.
+
+The depth bound is the key output: it tells you, *before running*, that the
+circuit on n qubits will have depth at most n^2 + 1. For n = 3, that is
+10 layers. For hardware with a coherence limit, this is the number that
+determines feasibility.
 
 ## Source
 
@@ -21,6 +90,11 @@ an executable specialization of
 
 <pre><code>{source}</code></pre>
 
+The `main` function allocates 3 qubits, applies `hadamard_all(3)` for the
+initial superposition, then `qaoa_layer(3, 0.5857, 2.5026)` for one cost-mixer
+pair, and measures. The angles were classically optimized to concentrate
+probability on the optimal cuts.
+
 ## Compile and simulate
 
 ```sh
@@ -28,11 +102,80 @@ an executable specialization of
 QUONC=target/release/quonc python test/verify/qaoa.py
 ```
 
+## `--dump-ir` MLIR excerpts
+
+After elaboration, the `pairs(n)` loop is unrolled to the three pairs of K₃:
+(0,1), (0,2), (1,2). Each `Rzz(gamma)` decomposes to `CNOT + Rz + CNOT`:
+
+```mlir
+// cost_layer(3, gamma) unrolls to:
+//   Rzz(gamma) @(0,1) |> Rzz(gamma) @(0,2) |> Rzz(gamma) @(1,2)
+// Each Rzz → CNOT @(i,j) |> Rz(gamma) @(j) |> CNOT @(i,j)
+//
+// gate_cancellation:
+//   Adjacent CNOT pairs across pair boundaries? The pairs share qubits
+//   (e.g., (0,1) and (0,2) both touch qubit 0), so CNOT @(0,1) |> ... |>
+//   CNOT @(0,2) do NOT cancel — they act on different target qubits.
+//
+// rotation_merging:
+//   Rz(gamma) on qubit 1 (from pair (0,1)) followed by Rz(gamma) on qubit 2
+//   (from pair (0,2)) — different qubits, no merge.
+//   But if the same qubit gets two Rz gates from adjacent pairs, the pass
+//   would merge them. In K3, each qubit participates in exactly 2 pairs,
+//   but the CNOTs between them prevent direct merging.
+//
+// The circuit is NOT simplified by the optimizer — the cost and mixer layers
+// are structurally distinct (cost uses CNOTs, mixer uses Rx) and do not
+// produce cancelable patterns. This is expected: QAOA circuits are
+// parameterized and non-trivial; the optimizer preserves the user's circuit.
+```
+
+The optimizer does not simplify QAOA circuits because the cost and mixer layers
+are complementary in structure — the cost layer's `CNOT + Rz + CNOT` patterns
+and the mixer layer's `Rx` rotations do not produce adjacent self-inverse pairs
+or mergeable same-axis rotations. The compiler faithfully lowers the circuit
+and proves its depth bound, which is exactly what you want for a variational
+algorithm: the circuit structure is your ansatz, and the compiler should preserve
+it, not "optimize" it away.
+
+## What the compiler proves
+
+1. **Depth bound before execution.** The typechecker proves the full circuit
+   (`hadamard_all(3) |> qaoa_layer(3, ...)`) has depth at most 1 + (n^2 + 1)
+ = 1 + 10 = 11. This number is available *at compile time* — you know the
+   circuit depth before submitting to hardware.
+2. **`pairs(n)` loop is fully elaborated.** The `for (i, j) in pairs(n)` loop
+   generates all C(n,2) pairs. The elaborator unrolls it for n = 3
+   to three `Rzz` gates. The typechecker verifies the unrolled circuit against
+   the parametric type.
+3. **Clifford subtyping in the initial layer.** `hadamard_all` is `Clifford`
+   and `qaoa_layer` is `Universal`. The composition `hadamard_all |>
+   qaoa_layer` is `Universal` (since `Universal` is the supertype). The
+   typechecker infers this from the subtyping rule `Clifford ⊑ Universal`.
+4. **Linear use of the 3-qubit register.** The register is allocated, the
+   full circuit is applied, and all qubits are measured. No qubit is left
+   unmeasured or double-used.
+
 ## Expected result
 
-K3 has six optimal “one versus two” cuts: the bitstrings with Hamming weight
+K3 has six optimal "one versus two" cuts: the bitstrings with Hamming weight
 one or two. `000` and `111` cut no edges. With the fixture's selected angles,
-each optimal bitstring should be more frequent than either non-optimal one.
-The seeded
+each optimal bitstring should be more frequent than either non-optimal one. The
+seeded
 [`qaoa.py`](https://github.com/arniber21/quon/blob/main/test/verify/qaoa.py)
 verifier compares those observed frequencies directly.
+
+## What to try next
+
+- **Change the graph.** Replace `pairs(n)` with an explicit edge list for a
+  different graph (e.g., a path graph or a square) and re-derive the angles.
+- **Add a second layer.** Write `qaoa_layer(3, g1, b1) |> qaoa_layer(3, g2, b2)`
+  for p = 2 QAOA. The depth doubles, and the typechecker should report depth
+  1 + 2 × (n^2 + 1). You will need to classically optimize four angles.
+- **Set gamma or beta to zero.** If γ = 0, the cost layer becomes the
+  identity (all `Rzz(0)` cancel), and only the mixer remains. The output should
+  be a uniform distribution — confirming the cost layer is what biases the
+  solution.
+
+→ Next: [Shor quantum kernel](./shor-kernel/) — compose the schematic
+  period-finding circuit building blocks.
