@@ -5,8 +5,6 @@ sidebar:
   order: 7
 ---
 
-import source from '../../../../../test/verify/ising.qn?raw';
-
 ## What we're building and why
 
 The transverse-field Ising model is the simplest non-trivial many-body
@@ -16,7 +14,7 @@ its time evolution e^(-iHt) is a canonical task for quantum computers — it is
 the gateway to quantum chemistry, lattice gauge theories, and condensed-matter
 physics. Because H is a sum of non-commuting terms (Z Z and X), the
 evolution cannot be implemented exactly in a single gate; instead, it is
-* Trotterized*.
+*Trotterized*.
 
 First-order Trotterization approximates e^-iHt ≈ (e^-iH_ZZ
 τ · e^-iH_X τ)^n where τ = t/n is the step size
@@ -27,12 +25,14 @@ CNOT` — the standard circuit identity for an Ising coupling. The approximation
 improves as n → ∞, but the circuit depth grows linearly with n.
 
 This fixture deliberately sets t = 0, making every rotation angle exactly zero.
-At t = 0, the evolution is the identity — regardless of J, h, or n,
-because R_z(0) = I unconditionally. This is the PRD's stated Ising acceptance
-criterion: a *boundary* test that verifies the compiler pipeline and the model's
-zero-time limit. It does not validate nonzero-time Ising dynamics; it validates
-that the compiler correctly produces, composes, and simulates a parametric
-Trotter circuit that is mathematically the identity at this parameter value.
+At t = 0, τ = t/n_steps = 0, so every `Rzz` and `Rx` rotation angle is exactly
+zero — the whole evolution is the identity regardless of any sign or
+angle-convention question, because `Rz(0) = I` unconditionally. This is the
+PRD's stated Ising acceptance criterion: a *boundary* test that verifies the
+compiler pipeline and the model's zero-time limit. It does not validate
+nonzero-time Ising dynamics; it validates that the compiler correctly produces,
+composes, and simulates a parametric Trotter circuit that is mathematically the
+identity at this parameter value.
 
 ## Typed annotations
 
@@ -80,6 +80,12 @@ a circuit expression. The typechecker evaluates this at compile time (partial
 evaluation of `Float` values) and substitutes the result into the rotation
 angles. At t = 0, every angle becomes 0, and the circuit becomes the identity.
 
+This program uses `repeat` instead of `fold` over a circuit accumulator, which
+the elaborator does not yet support. Since the Trotter step does not depend on
+the fold's list element — only on the fixed per-step `tau` —
+`repeat(n_steps, trotter_step(..))` is exactly equivalent and needs no new
+elaborator feature.
+
 ## Source
 
 This is
@@ -87,11 +93,49 @@ This is
 the executable adaptation of
 [`frontend/tests/fixtures/ising.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/ising.qn).
 
-<pre><code>{source}</code></pre>
+The circuit layers are genuinely parametric, exercising `for`-loop elaboration
+and the `Rzz` decomposition. `zz_layer` applies an `Rzz` gate to each
+nearest-neighbor pair in a chain of n qubits, with the angle determined by the
+coupling strength J and the Trotter step size τ. The `Rzz` gate is decomposed by
+the elaborator into the standard `CNOT + Rz + CNOT` identity — the circuit
+representation of an Ising interaction. `x_layer` applies a single-qubit `Rx`
+rotation to every qubit, representing the transverse-field term. Each gate's
+angle is `-2.0 * h * tau`, so at t = 0 the angle is zero and the rotation is the
+identity. The `trotter_step` composes these two layers sequentially — one
+Trotter step is a `zz_layer` followed by an `x_layer`.
 
-The `main` function calls `ising_evolve(4, 1.0, 1.0, 0.0, 3)` — 4 qubits,
-coupling J = 1.0, field h = 1.0, time t = 0.0, and 3 Trotter steps. Since
-t = 0, τ = 0/3 = 0, and every `Rzz` and `Rx` angle is exactly zero.
+```qn
+fn zz_layer(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Rzz(-2.0 * j * tau) @(i, i + 1) }
+}
+
+fn x_layer(n: Nat, h: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(-2.0 * h * tau) q }
+}
+
+fn trotter_step(n: Nat, j: Float, h: Float, tau: Float): Circuit<n, n, n, Universal> = circuit {
+    zz_layer(n, j, tau) |> x_layer(n, h, tau)
+}
+```
+
+The evolution function ties it together: it computes the step size `tau` from
+the total time `t` and the number of steps `n_steps`, then repeats the Trotter
+step that many times. The `main` function calls `ising_evolve(4, 1.0, 1.0, 0.0,
+3)` — 4 qubits, coupling J = 1.0, field h = 1.0, time t = 0.0, and 3 Trotter
+steps. Since t = 0, τ = 0/3 = 0, and every `Rzz` and `Rx` angle is exactly zero.
+Measuring the default |0000⟩ initial state must give all zeros with
+probability 1.0.
+
+```qn
+fn ising_evolve(n: Nat, j: Float, h: Float, t: Float, n_steps: Int): Circuit<n, n, n_steps * n, Universal> =
+    let tau = t / float(n_steps)
+    in repeat(n_steps, trotter_step(n, j, h, tau))
+
+fn main(): Q<List<Bit>> = run {
+    q <- ising_evolve(4, 1.0, 1.0, 0.0, 3) @ qreg(4)
+    measure_all(q)
+}
+```
 
 ## Compile and simulate
 
