@@ -5,8 +5,6 @@ sidebar:
   order: 2
 ---
 
-import source from '../../../../../test/verify/bell.qn?raw';
-
 ## What we're building and why
 
 A Bell state is the simplest entangled quantum state: two qubits whose
@@ -29,6 +27,13 @@ circuit is a *value* with a *type* that tells you how many qubits it touches and
 how deep it is. The `run` block consumes that value, allocates qubits, applies
 the circuit, and measures. The typechecker proves the qubits are used exactly
 once. The optimizer looks at the result and confirms it is already minimal.
+
+This program is the end-to-end emission and Aer verification entry point for the
+compiler: it compiles to OpenQASM 3.0 via `quonc --emit-qasm`, and the emitted
+QASM is fed to Qiskit Aer with a fixed seed so the measurement histogram can be
+checked against the theoretical prediction. Two outcomes, `00` and `11`, should
+each appear close to half the shots; the `01` and `10` outcomes should never
+appear. That statistical assertion is the whole correctness contract.
 
 ## Typed annotations
 
@@ -64,14 +69,36 @@ fixture. Its
 verifier supplies the statistical assertion; the frontend reference is
 [`frontend/tests/fixtures/bell_state.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/bell_state.qn).
 
-<pre><code>{source}</code></pre>
+The program defines `bell_state` as a standalone circuit value — a function
+that returns a `Circuit` typed with its qubit arity and depth, decoupling the
+circuit's definition from any particular register it will later be applied to.
+The body is a single sequential composition: a Hadamard on qubit 0 creates the
+superposition, then a CNOT from qubit 0 to qubit 1 entangles the pair.
 
-The program defines `bell_state` as a standalone circuit value, then invokes it
-inside a `run` block that allocates a 2-qubit register, applies the circuit, and
-measures both qubits. The `return (b0, b1)` makes the two classical bits the
-program's output. Notice how `q0` and `q1` are *consumed* by `measure` — after
+```qn
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1)
+}
+```
+
+That circuit value is then consumed by a `run` block, which is where quantum
+execution happens. The `run` block allocates a 2-qubit register with `qreg(2)`,
+binds the two qubits to the names `q0` and `q1`, applies `bell_state` to the
+register with the `@` operator, measures each qubit, and returns the pair of
+classical bits. Notice how `q0` and `q1` are *consumed* by `measure` — after
 measurement they no longer exist as quantum values, which the linear type system
-enforces.
+enforces. The `return (b0, b1)` makes the two classical bits the program's
+output. The expected Aer result is that the two bits are perfectly correlated:
+`00` and `11` each roughly half the shots, with no `01` or `10` leakage.
+
+```qn
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- bell_state() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+}
+```
 
 ## Compile and simulate
 

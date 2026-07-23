@@ -5,8 +5,6 @@ sidebar:
   order: 6
 ---
 
-import source from '../../../../../test/verify/qft.qn?raw';
-
 ## What we're building and why
 
 The Quantum Fourier Transform (QFT) is the quantum analogue of the discrete
@@ -29,11 +27,15 @@ identity(0), _ => ... qft(n-1) ... }` is elaborated by partial evaluation.
 
 The verification strategy is a *round-trip test*: apply `qft(n) |> adjoint(qft(n))`
 and check that any computational-basis input is returned unchanged. A measurement
-histogram cannot directly observe QFT's output phases, but the round trip
-verifies that the QFT and its adjoint are exact inverses — which exercises the
-same recursive, `on_high`, `swap_reverse`, and controlled-rotation machinery as
-`qft` alone. If the round trip returns the input with probability 1.0, the
-recursive structure is correct.
+histogram cannot directly observe QFT's output phases, so this is the documented
+deviation from the original "matches theoretical DFT" acceptance criterion — the
+round trip is the only checkable proxy. It verifies that the QFT and its adjoint
+are exact inverses — which exercises the same recursive, `on_high`,
+`swap_reverse`, and controlled-rotation machinery as `qft` alone. If the round
+trip returns the input with probability 1.0, the recursive structure is correct.
+In practice the optimizer proves this structurally: `gate_cancellation` and
+`rotation_merging`, running to fixpoint, cancel the entire `qft |> adjoint(qft)`
+sequence down to nothing.
 
 ## Typed annotations
 
@@ -90,14 +92,64 @@ The page embeds
 [`test/verify/qft.qn`](https://github.com/arniber21/quon/blob/main/test/verify/qft.qn).
 Unlike the typechecker stress fixture
 [`frontend/tests/fixtures/corpus/recursive_qft.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/corpus/recursive_qft.qn),
-this program uses geometrically decreasing controlled-rotation angles.
+this program uses geometrically decreasing controlled-rotation angles — the
+fixture's angle is genuinely `PI / 2^(i+1)` as a physical QFT requires, not the
+`PI/4` constant the typechecker-only stress test fixes purely to exercise the
+value-dependent machinery.
 
-<pre><code>{source}</code></pre>
+The recursive QFT is built from three helpers. `apply_hadamard` puts a Hadamard
+on qubit 0 — the "first" qubit of the register. `controlled_rotations` then
+applies a sequence of controlled `Rz` rotations from qubit 0 to each higher
+qubit, with the rotation angle decreasing geometrically: the i-th rotation has
+angle π/2^(i+1). This is the defining structure of the QFT — the
+geometrically decreasing angles produce the interference pattern that encodes
+the frequency content. The `qft` function itself is recursive: the base case
+`qft(0)` is the identity on zero qubits, and the recursive case composes the
+Hadamard, the controlled rotations, a smaller `qft(n-1)` embedded into the high
+qubits via `on_high`, and a `swap_reverse` permutation to fix the bit-reversed
+output ordering.
 
-The `prep_101` function prepares |101⟩ by applying `X` to qubits 0 and
-2 — an asymmetric, non-trivial basis state that is a stronger check than
-|000⟩ (which every unitary trivially fixes up to global phase). The
-round trip `qft_roundtrip(3)` should return |101⟩ with probability 1.0.
+```qn
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / (2.0 ^ (i + 1)))) @(0, i + 1) }
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+```
+
+The verification program prepares a specific computational-basis state and runs
+the round trip through it. `prep_101` applies `X` to qubits 0 and 2, preparing
+the asymmetric basis state |101⟩ — a deliberately non-trivial input that
+is a stronger check than |000⟩, which every unitary trivially fixes up to
+global phase. The `qft_roundtrip` function composes `qft(n)` with its adjoint
+`adjoint(qft(n))`, which the compiler synthesizes by reversing the gate order and
+negating all rotation angles. If the implementation is correct, this round trip
+is the identity and |101⟩ is returned unchanged with probability 1.0.
+
+```qn
+fn prep_101(): Circuit<3, 3, 2, Clifford> = circuit {
+    X @0 |> X @2
+}
+
+fn qft_roundtrip(n: Nat): Circuit<n, n, 4 * n * n, Universal> = circuit {
+    qft(n) |> adjoint(qft(n))
+}
+
+fn main(): Q<List<Bit>> = run {
+    q  <- prep_101() @ qreg(3)
+    q2 <- qft_roundtrip(3) @ q
+    measure_all(q2)
+}
+```
 
 ## Compile and simulate
 

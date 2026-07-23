@@ -5,8 +5,6 @@ sidebar:
   order: 11
 ---
 
-import source from '../../../../../test/na/qaoa_graph.qn?raw';
-
 ## What we're building and why
 
 The neutral-atom (NA) backend is Quon's flagship compilation target for
@@ -24,7 +22,8 @@ a 3-regular graph MaxCut cost layer: six `Rzz` edges on 4 qubits (a complete gra
 K₄, which is 3-regular). The interaction graph has maximum degree Δ = 3,
 which means the entangling-layer scheduler (Misra–Gries edge coloring, after
 [Enola] Theorem 1) needs at most S_opt + 1 Rydberg stages — very few for
-this small graph. This makes it an ideal first NA example: the schedule is small
+this small graph, since Δ ≈ 3 means only a few Misra–Gries stages are needed.
+This makes it an ideal first NA example: the schedule is small
 enough to inspect by hand, but exercises the full NA pipeline: interaction graph
 extraction, entangling layer scheduling, movement planning, compaction, and
 resource reporting.
@@ -40,20 +39,20 @@ Rydberg stage count, rearrangement steps, and estimated total time.
 
 ```qn
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
-    for q in (qubits n) { H q }
+    for q in qubits(n) { H q }
 }
 
 fn maxcut_cost_4(gamma: Float): Circuit<4, 4, 6, Universal> = circuit {
-    (Rzz(gamma)) @(0,1) |> (Rzz(gamma)) @(1,2) |> (Rzz(gamma)) @(2,3)
-    |> (Rzz(gamma)) @(3,0) |> (Rzz(gamma)) @(0,2) |> (Rzz(gamma)) @(1,3)
+    Rzz(gamma) @(0, 1) |> Rzz(gamma) @(1, 2) |> Rzz(gamma) @(2, 3)
+    |> Rzz(gamma) @(3, 0) |> Rzz(gamma) @(0, 2) |> Rzz(gamma) @(1, 3)
 }
 
 fn mixer_4(beta: Float): Circuit<4, 4, 1, Universal> = circuit {
-    for q in (qubits 4) { Rx(beta, q) }
+    for q in qubits(4) { Rx(beta) q }
 }
 
 fn qaoa_layer(gamma: Float, beta: Float): Circuit<4, 4, 8, Universal> = circuit {
-    hadamard_all 4 |> maxcut_cost_4(gamma) |> mixer_4(beta)
+    hadamard_all(4) |> maxcut_cost_4(gamma) |> mixer_4(beta)
 }
 ```
 
@@ -67,7 +66,7 @@ The types tell you the circuit's shape before any backend processing:
   because `Rzz` involves `Rz` (non-Clifford for general angles).
 - **`mixer_4` is `Circuit<4, 4, 1, Universal>`** — `Rx` on all 4 qubits, depth 1
   (disjoint qubits in a `for` loop).
-- **`qaoa_layer` is `Circuit<4, 4, 8, Universal>`** — `hadamard_all 4` (depth 1)
+- **`qaoa_layer` is `Circuit<4, 4, 8, Universal>`** — `hadamard_all(4)` (depth 1)
   `|>` `maxcut_cost_4(gamma)` (depth 6) `|>` `mixer_4(beta)` (depth 1) = depth 8.
 
 The depth bound of 8 tells you the *logical* circuit depth. The NA backend then
@@ -81,13 +80,45 @@ atoms into the entanglement zone.
 The embedded program is
 [`test/na/qaoa_graph.qn`](https://github.com/arniber21/quon/blob/main/test/na/qaoa_graph.qn).
 
-<pre><code>{source}</code></pre>
+The circuit layers mirror the QAOA MaxCut page but are fixed to 4 qubits and the
+K₄ interaction graph. `hadamard_all` creates the initial uniform superposition
+across all qubits. `maxcut_cost_4` applies an `Rzz(gamma)` gate to each of the
+six edges of K₄ — every pair of the four vertices — with a uniform weight,
+just like the QAOA cost layer. `mixer_4` applies an `Rx(beta)` rotation to each
+qubit, the transverse-field mixer. The `qaoa_layer` composes all three: Hadamard
+preparation, the cost layer, and the mixer, for a single QAOA layer.
+
+```qn
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn maxcut_cost_4(gamma: Float): Circuit<4, 4, 6, Universal> = circuit {
+    Rzz(gamma) @(0, 1) |> Rzz(gamma) @(1, 2) |> Rzz(gamma) @(2, 3)
+    |> Rzz(gamma) @(3, 0) |> Rzz(gamma) @(0, 2) |> Rzz(gamma) @(1, 3)
+}
+
+fn mixer_4(beta: Float): Circuit<4, 4, 1, Universal> = circuit {
+    for q in qubits(4) { Rx(beta) q }
+}
+
+fn qaoa_layer(gamma: Float, beta: Float): Circuit<4, 4, 8, Universal> = circuit {
+    hadamard_all(4) |> maxcut_cost_4(gamma) |> mixer_4(beta)
+}
+```
 
 The `run` block applies `qaoa_layer(0.7, 0.3)` to a 4-qubit register and
 measures all qubits. The angles γ = 0.7, β = 0.3 are not classically
 optimized — this is a schedule compilation test, not a MaxCut solver. The goal
 is to produce a valid NA schedule and resource report, not to maximize cut
 quality.
+
+```qn
+fn qaoa_graph(): Q<List<Bit>> = run {
+    reg <- qaoa_layer(0.7, 0.3) @ qreg(4)
+    measure_all(reg)
+}
+```
 
 ## Compile and emit the schedule and resource report
 

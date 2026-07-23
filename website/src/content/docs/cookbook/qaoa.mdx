@@ -5,8 +5,6 @@ sidebar:
   order: 8
 ---
 
-import source from '../../../../../test/verify/qaoa.qn?raw';
-
 ## What we're building and why
 
 The Quantum Approximate Optimization Algorithm (QAOA) is a variational quantum
@@ -24,15 +22,28 @@ edges. K₃ is an odd cycle — it has no perfect bipartition — so its MaxCut 
 2 of 3 edges, achieved by every "one versus two" partition: the six bitstrings
 with exactly one or two 1s. The states |000⟩ and |111⟩ cut zero
 edges. The fixture's angles (γ = 0.5857, β = 2.5026) were found by a
-classical sweep over the exact statevector to concentrate approximately 99.9%
-of the output probability mass on the six optimal bitstrings.
+classical sweep over the exact statevector (not re-derived analytically) to
+concentrate approximately 99.9% of the output probability mass on the six
+optimal bitstrings, versus less than 0.1% on the two non-cut bitstrings 000 and
+111.
 
 The compiler's role here is to faithfully lower a *parametric* circuit — the
 `pairs(n)` loop, the uniform `Rzz(gamma)` cost layer, and the `Rx(beta)` mixer —
 and to prove the depth bound *before* the circuit is run. The depth bound
-`tells you the circuit depth before running`, which is critical for hardware
+tells you the circuit depth before running, which is critical for hardware
 execution: you need to know whether the circuit fits within the coherence time
 or the hardware's maximum circuit depth.
+
+This fixture is adapted from the typechecker fixture
+[`frontend/tests/fixtures/qaoa.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/qaoa.qn),
+which takes a `Matrix<n,n,Float>` cost-weight parameter and folds over a
+`List<(Float,Float)>` of per-layer (gamma, beta) — a circuit-valued `fold`
+accumulator this elaborator does not yet support, and `Matrix` indexing is not
+elaborated either. This fixture sidesteps both by using a single layer (p = 1,
+no fold needed) and a uniform edge weight (every pair in `pairs(n)` gets the
+same `Rzz(gamma)`, the standard unweighted MaxCut cost Hamiltonian — no Matrix
+lookup needed), while still genuinely exercising `pairs(n)` and the same
+`Rzz`/`for`-loop machinery.
 
 ## Typed annotations
 
@@ -88,12 +99,49 @@ The embedded program is
 an executable specialization of
 [`frontend/tests/fixtures/qaoa.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/qaoa.qn).
 
-<pre><code>{source}</code></pre>
+The parametric layers build the QAOA ansatz. `hadamard_all` creates the initial
+uniform superposition — the starting point for any QAOA circuit, where every
+basis state has equal amplitude. `cost_layer` uses the `pairs(n)` iterator, which
+generates all C(n,2) unordered pairs of qubit indices; for K₃ with n = 3, this
+produces the three edges (0,1), (0,2), (1,2). Each edge gets a `Rzz(gamma)` gate
+with a uniform weight — the standard unweighted MaxCut cost Hamiltonian, where
+every edge contributes equally. The mixer layer applies an `Rx(beta)` rotation
+to every qubit, the transverse-field mixer that introduces transitions between
+solution candidates. The `qaoa_layer` composes cost then mixer — one complete
+QAOA layer for p = 1.
+
+```qn
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn cost_layer(n: Nat, gamma: Float): Circuit<n, n, n * n, Universal> = circuit {
+    for (i, j) in pairs(n) { Rzz(gamma) @(i, j) }
+}
+
+fn mixer_layer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(beta) q }
+}
+
+fn qaoa_layer(n: Nat, gamma: Float, beta: Float): Circuit<n, n, n * n + 1, Universal> = circuit {
+    cost_layer(n, gamma) |> mixer_layer(n, beta)
+}
+```
 
 The `main` function allocates 3 qubits, applies `hadamard_all(3)` for the
 initial superposition, then `qaoa_layer(3, 0.5857, 2.5026)` for one cost-mixer
-pair, and measures. The angles were classically optimized to concentrate
-probability on the optimal cuts.
+pair, and measures. The angles were classically optimized via a sweep over the
+exact statevector to concentrate probability on the optimal cuts — the six
+bitstrings with exactly one or two 1s (MaxCut = 2), while suppressing 000 and
+111 (MaxCut = 0).
+
+```qn
+fn main(): Q<List<Bit>> = run {
+    q  <- hadamard_all(3) @ qreg(3)
+    q2 <- qaoa_layer(3, 0.5857, 2.5026) @ q
+    measure_all(q2)
+}
+```
 
 ## Compile and simulate
 

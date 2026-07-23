@@ -5,8 +5,6 @@ sidebar:
   order: 3
 ---
 
-import source from '../../../../../test/verify/teleport.qn?raw';
-
 ## What we're building and why
 
 Quantum teleportation is the protocol that transfers an unknown quantum state
@@ -31,7 +29,16 @@ the `quantum.dynamic` dialect's `cond_apply` operation. The linear type system
 tracks which qubits have been measured (and are therefore classical) versus
 which are still quantum and available for further gates.
 
+This program is deliberately self-contained: `main` prepares the message qubit
+in |1⟩, teleports it to Bob, and measures Bob. The expected result is `1` on
+every shot, deterministically — which means the feed-forward corrections are
+working, because without them Bob's measurement would be a fair coin.
+
 ## Typed annotations
+
+The circuit library is entirely Clifford — the whole protocol is Clifford,
+which is why it is so robust and efficiently simulable on a stabilizer tableau.
+Each helper circuit carries a type that the compiler verifies before lowering:
 
 ```qn
 fn prep(): Circuit<3, 3, 3, Clifford> = circuit { X @0 |> H @1 |> CNOT @(1, 2) }
@@ -41,8 +48,7 @@ fn pauli_z(): Circuit<1, 1, 1, Clifford> = circuit { Z @0 }
 fn id_one(): Circuit<1, 1, 1, Clifford> = circuit { I @0 }
 ```
 
-Every circuit here is `Clifford` — the entire protocol is Clifford, which is
-why it is so robust and efficiently simulable. The types tell a story:
+The types tell a story:
 
 - **`prep` is `Circuit<3, 3, 3, Clifford>`** — three qubits in, three out, depth
   3. The depth comes from `X @0` (depth 1) `|>` `H @1` (depth 1) `|>` `CNOT
@@ -50,12 +56,14 @@ why it is so robust and efficiently simulable. The types tell a story:
   qubits, so they could be parallel — but `|>` is sequential composition, so
   the depth is the *sum*, not the *max*. (Parallel composition via `par` would
   give depth 2, but that is not what this program uses.)
-- **`bell_basis` is `Circuit<2, 2, 2, Clifford>`** — the self-adjoint of Bell
-  preparation. It is written out explicitly rather than using `adjoint(...)` so
-  the lowering needs no adjoint synthesis.
+- **`bell_basis` is `Circuit<2, 2, 2, Clifford>`** — the self-inverse adjoint
+  of the Bell preparation. It is written out explicitly rather than using
+  `adjoint(...)` so the lowering needs no adjoint synthesis. Because it is its
+  own inverse, applying it twice is the identity.
 - **Correction circuits are `Circuit<1, 1, 1, Clifford>`** — each acts on a
   single qubit with depth 1. The `if ... then ... else` selection picks one at
-  runtime, but the typechecker proves all branches have the same type.
+  runtime, but the typechecker proves all branches have the same type. `id_one`
+  is the identity circuit, the "do nothing" branch.
 
 ## Source
 
@@ -64,15 +72,47 @@ This is the executable
 fixture. The broader typechecker example is
 [`frontend/tests/fixtures/teleport.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/teleport.qn).
 
-<pre><code>{source}</code></pre>
+The program begins with five helper circuit definitions. The `prep` circuit
+allocates all three qubits at once and sets up the initial state: `X` on qubit 0
+flips the message to |1⟩, while `H` and `CNOT` entangle the
+Alice–Bob pair (qubits 1 and 2) into a Bell state. The `bell_basis` circuit is
+the self-inverse adjoint of Bell preparation — written out explicitly so the
+lowering needs no adjoint synthesis. The remaining three circuits are the
+Pauli corrections and the identity, each a single-qubit Clifford circuit that
+the `if`-branch will select at runtime.
 
-Read the `run` block carefully. `prep()` allocates all three qubits at once: `X`
-on qubit 0 sets the message to |1⟩, while `H` and `CNOT` entangle the
-Alice–Bob pair (qubits 1 and 2). Then `bell_basis()` measures Alice's two qubits
-in the Bell basis. The `measure` calls consume `m2` and `a2`, producing
-classical bits `x_bit` and `z_bit`. The `if` expressions select a correction
-circuit based on those bits and apply it to `bob`, threading the linear qubit
-through each branch.
+```qn
+fn prep(): Circuit<3, 3, 3, Clifford> = circuit { X @0 |> H @1 |> CNOT @(1, 2) }
+fn bell_basis(): Circuit<2, 2, 2, Clifford> = circuit { CNOT @(0, 1) |> H @0 }
+fn pauli_x(): Circuit<1, 1, 1, Clifford> = circuit { X @0 }
+fn pauli_z(): Circuit<1, 1, 1, Clifford> = circuit { Z @0 }
+fn id_one(): Circuit<1, 1, 1, Clifford> = circuit { I @0 }
+```
+
+The `run` block is where the protocol unfolds. First, `prep` is applied to a
+fresh 3-qubit register, binding the three qubits to `msg`, `alice`, and `bob`.
+Then `bell_basis` measures Alice's two qubits in the Bell basis — this is the
+joint measurement that produces the two classical correction bits. The
+`measure` calls consume `m2` and `a2`, producing classical bits `x_bit` and
+`z_bit`. The `if` expressions then select a correction circuit based on those
+bits and apply it to `bob`, threading the linear qubit through each branch.
+Because these are user-defined Clifford circuits selected by `if`, the lowering
+produces feed-forward `cond_apply` operations: the classical bits condition which
+circuit is applied. Finally, Bob's corrected qubit is measured and returned —
+and since the message was |1⟩, the result should be `1` on every shot.
+
+```qn
+fn main(): Q<Bit> = run {
+    (msg, alice, bob) <- prep() @ qreg(3)
+    (m2, a2)          <- bell_basis() @ (msg, alice)
+    x_bit             <- measure(m2)
+    z_bit             <- measure(a2)
+    b2                <- (if z_bit then pauli_x() else id_one()) @ bob
+    b3                <- (if x_bit then pauli_z() else id_one()) @ b2
+    result            <- measure(b3)
+    return result
+}
+```
 
 ## Compile and simulate
 
