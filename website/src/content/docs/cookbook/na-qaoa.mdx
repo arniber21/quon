@@ -1,0 +1,295 @@
+---
+title: NA QAOA schedule
+description: Compile a QAOA graph through the neutral-atom backend and inspect the schedule.
+sidebar:
+  order: 11
+---
+
+import source from '../../../../../test/na/qaoa_graph.qn?raw';
+
+## What we're building and why
+
+The neutral-atom (NA) backend is Quon's flagship compilation target for
+reconfigurable atom arrays — machines where qubits are physical atoms trapped
+in optical tweezers, and two-qubit gates are performed by bringing atoms within
+the Rydberg blockade radius. Unlike fixed-coupling devices (where connectivity
+is static and SWAP gates are inserted to route interactions), reconfigurable
+arrays achieve arbitrary connectivity by *physically moving atoms* at runtime.
+The compiler's job is to figure out where to place each atom, when to move it,
+and how to schedule entangling gates so that the whole circuit executes within
+the hardware's geometric and timing constraints.
+
+This page compiles a 4-qubit QAOA circuit through the NA backend. The program is
+a 3-regular graph MaxCut cost layer: six `Rzz` edges on 4 qubits (a complete graph
+K₄, which is 3-regular). The interaction graph has maximum degree Δ = 3,
+which means the entangling-layer scheduler (Misra–Gries edge coloring, after
+[Enola] Theorem 1) needs at most S_opt + 1 Rydberg stages — very few for
+this small graph. This makes it an ideal first NA example: the schedule is small
+enough to inspect by hand, but exercises the full NA pipeline: interaction graph
+extraction, entangling layer scheduling, movement planning, compaction, and
+resource reporting.
+
+The key difference from the QAOA MaxCut page is the *backend*. The previous page
+compiled to OpenQASM 3 for a gate-model simulator. This page compiles through
+the NA pipeline, which produces a *schedule* — a sequence of cycles, each
+containing move/transfer/entangle/measure/reset actions on physical atoms at
+specific trap sites — and a *resource report* with analytic metrics like
+Rydberg stage count, rearrangement steps, and estimated total time.
+
+## Typed annotations
+
+```qn
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in (qubits n) { H q }
+}
+
+fn maxcut_cost_4(gamma: Float): Circuit<4, 4, 6, Universal> = circuit {
+    (Rzz(gamma)) @(0,1) |> (Rzz(gamma)) @(1,2) |> (Rzz(gamma)) @(2,3)
+    |> (Rzz(gamma)) @(3,0) |> (Rzz(gamma)) @(0,2) |> (Rzz(gamma)) @(1,3)
+}
+
+fn mixer_4(beta: Float): Circuit<4, 4, 1, Universal> = circuit {
+    for q in (qubits 4) { Rx(beta, q) }
+}
+
+fn qaoa_layer(gamma: Float, beta: Float): Circuit<4, 4, 8, Universal> = circuit {
+    hadamard_all 4 |> maxcut_cost_4(gamma) |> mixer_4(beta)
+}
+```
+
+The types tell you the circuit's shape before any backend processing:
+
+- **`hadamard_all` is `Circuit<n, n, 1, Clifford>`** — the initial superposition
+  layer, depth 1, Clifford class.
+- **`maxcut_cost_4` is `Circuit<4, 4, 6, Universal>`** — six `Rzz` edges on 4
+  qubits, depth 6 (each edge is one `Rzz` composed sequentially). The 3-regular
+  graph has 6 edges (every pair of the 4 vertices). The class is `Universal`
+  because `Rzz` involves `Rz` (non-Clifford for general angles).
+- **`mixer_4` is `Circuit<4, 4, 1, Universal>`** — `Rx` on all 4 qubits, depth 1
+  (disjoint qubits in a `for` loop).
+- **`qaoa_layer` is `Circuit<4, 4, 8, Universal>`** — `hadamard_all 4` (depth 1)
+  `|>` `maxcut_cost_4(gamma)` (depth 6) `|>` `mixer_4(beta)` (depth 1) = depth 8.
+
+The depth bound of 8 tells you the *logical* circuit depth. The NA backend then
+takes this and produces a *physical* schedule where depth is measured in cycles
+of atom movement and Rydberg pulses — typically much more than 8, because each
+`Rzz` decomposes into `CNOT + Rz + CNOT`, and each `CNOT` requires moving two
+atoms into the entanglement zone.
+
+## Source
+
+The embedded program is
+[`test/na/qaoa_graph.qn`](https://github.com/arniber21/quon/blob/main/test/na/qaoa_graph.qn).
+
+<pre><code>{source}</code></pre>
+
+The `run` block applies `qaoa_layer(0.7, 0.3)` to a 4-qubit register and
+measures all qubits. The angles γ = 0.7, β = 0.3 are not classically
+optimized — this is a schedule compilation test, not a MaxCut solver. The goal
+is to produce a valid NA schedule and resource report, not to maximize cut
+quality.
+
+## Compile and emit the schedule and resource report
+
+From the repository root:
+
+```sh
+./target/release/quonc test/na/qaoa_graph.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-schedule schedule.json \
+  --emit-resource-report report.json
+```
+
+This produces two artifacts:
+
+- **`schedule.json`** — the NA schedule view: a JSON document with the
+  `na_schedule_view` schema, containing zone geometry, atom layout, and a list
+  of schedule layers (cycles), each with actions.
+- **`report.json`** — the analytic resource report: schedule metrics (Rydberg
+  stages, rearrangement steps, timing), and optionally QEC sizing and
+  physical error budget.
+
+## The NA pipeline: what happens between source and schedule
+
+The NA backend processes the circuit through several stages:
+
+1. **Interaction graph extraction.** The compiler walks the circuit's MLIR and
+   builds an `InteractionGraph`: vertices are logical qubits, edges are weighted
+   by gate frequency with an exponentially decaying weight Σ γ^l (where
+   l is the layer depth and γ = 0.8 by default, after [Atomique]). For
+   this QAOA program, the graph is K₄: 4 vertices, 6 edges, each from one
+   `Rzz` gate. The graph also records dependency/commutation segments — which
+   gates can be reordered and which must maintain their relative order.
+
+2. **Entangling-layer scheduling (Misra–Gries).** The six `Rzz` edges of K₄
+   are scheduled into Rydberg stages using edge coloring. Each stage is a set
+   of pairwise-disjoint edges (no two share a vertex), because one atom cannot
+   participate in two entangling gates simultaneously. For K₄ with
+   Δ = 3, the Misra–Gries theorem guarantees at most
+   S_opt + 1 stages — typically 3 or 4 for this graph.
+
+3. **Movement planning.** For each Rydberg stage, the planner determines which
+   atoms need to move to the entanglement zone and where to place them. The
+   movement model enforces AOD row/column coupling: rows and columns move as
+   units (constraint M1), cannot cross (M2), and cannot merge (M3). Each move
+   has a time cost t = √(d/a) with a = 2750 m/s², plus 15 µs per trap
+   transfer.
+
+4. **Compaction.** The `compact` pass merges independent schedule layers that
+   can run in parallel, reducing the total cycle count. It uses an
+   exclusive-cycle ASAP baseline with greedy merge of legal entangle-only
+   parallelism.
+
+5. **Resource report generation.** The final schedule is aggregated into
+   metrics: `estimated_cycles` (total layers), `rydberg_stages` (layers with
+   entangling actions), `rearrangement_steps` (move action count),
+   `rearrangement_time_us`, `trap_transfers`, `entangle2_count`,
+   `measurement_rounds`, `wait_time_us`, `total_time_us`, and more.
+
+## Schedule JSON structure
+
+The `--emit-na-schedule` output has the `na_schedule_view` schema:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "na_schedule_view",
+  "meta": {
+    "target_id": "generic_reconfigurable_neutral_atom_v0",
+    "na_backend": "zoned",
+    "na_placer": "routing_aware"
+  },
+  "metrics": { /* same fields as the resource report */ },
+  "zones": [
+    { "zone_id": 0, "kind": "storage", "origin_um": [0.0, 0.0], "rows": 73, "cols": 101, ... },
+    { "zone_id": 1, "kind": "entanglement", "origin_um": [0.0, 310.0], "rows": 10, "cols": 34, ... },
+    { "zone_id": 2, "kind": "readout", "origin_um": [0.0, 430.0], "rows": 16, "cols": 24, ... }
+  ],
+  "layout": { /* initial atom bindings to trap sites */ },
+  "layers": [
+    {
+      "cycle": 0,
+      "actions": [
+        { "Move": { "moves": [ { "atom": 0, "from": ..., "to": ... } ], "duration_us": ... } },
+        { "Transfer": { "atom": 0, "direction": "slm_to_aod", "site": ..., "aod": ..., "duration_us": 15 } },
+        { "Entangle2": { "atoms": [0, 1], "duration_us": 0 } },
+        { "LocalGate": { "atom": 0, "gate": "h", "duration_us": 0 } },
+        { "Measure": { "atom": 0, "basis": "z", "duration_us": 1500 } },
+        { "Reset": { "atom": 0, "duration_us": 1500 } },
+        { "Wait": { "duration_us": ... } }
+      ]
+    }
+  ]
+}
+```
+
+Each `layer` is one cycle (the `cycle` field is a monotonic counter). Each
+`actions` entry is one of: `Move` (a group of atom moves), `Transfer` (SLM↔AOD
+trap transfer), `Entangle2` (a two-atom Rydberg CZ gate), `LocalGate` (single-
+qubit gate like `H` or `Rz`), `GlobalRy` (global Y rotation), `Measure`, `Reset`,
+`Reuse` (ancilla reclaim), or `Wait` (a hard schedule barrier). The
+`duration_us` fields come from the target's `timing` section.
+
+## Resource report fields
+
+The `--emit-resource-report` JSON (the same analytic DTO with evidence labels)
+contains:
+
+| JSON field | Meaning |
+| --- | --- |
+| `evidence_kind` | Always `"analytic"` — not a sampled or threshold claim |
+| `rydberg_stages` | Number of layers with ≥1 entangling action |
+| `rearrangement_steps` | Total move action count |
+| `rearrangement_time_us` | Sum of move durations (√-law) |
+| `trap_transfers` | Total trap-transfer action count |
+| `transfer_time_us` | Sum of transfer durations (15 µs each) |
+| `entangle2_count` | Number of two-atom entangling gates |
+| `measurement_rounds` | Number of layers with measurement |
+| `reset_rounds` | Number of layers with reset |
+| `wait_time_us` | Sum of idle/wait durations |
+| `total_time_us` | Wall-clock proxy: max-per-layer time sum |
+| `estimated_cycles` | Total number of schedule layers |
+| `bottleneck` | The schedule's bottleneck category (e.g., `"rearrangement"`, `"rydberg"`, `"mixed"`) |
+| `logical_qubits` | Number of logical qubits (4 for this program) |
+| `physical_atoms` | Number of physical atoms |
+| `error_budget` | Per-category error contributions (when target has `error_model`) |
+| `gate_fidelity_product` | Analytic fidelity product (Enola Eq. 1) |
+| `estimated_fidelity` | Fidelity with idle decay |
+
+For this non-QEC program, the QEC-specific fields (`atoms_per_logical`,
+`code_family`, `distance`, `memory_rounds`) are omitted. The `error_budget` and
+fidelity estimate sections are included because the target
+(`generic_rna_v0.json`) has both an `error_model` and a `fidelity` model.
+
+## `--dump-ir` MLIR excerpts
+
+After the frontend lowers the circuit to `quantum.circ` MLIR, the NA backend
+pipeline takes over:
+
+```mlir
+// 1. Circ fixpoint: gate_cancellation, rotation_merging, etc. run on the
+//    quantum.circ body. The six Rzz gates are decomposed to CNOT + Rz + CNOT.
+//    rotation_merging may combine consecutive Rz gates on the same wire
+//    across the Rzz decompositions.
+
+// 2. Native gate decomposition: Rzz → CNOT + Rz + CNOT (already done in
+//    elaboration); Rx → GlobalRy or U3 (target-dependent).
+
+// 3. Interaction graph extraction: the six edges of K4 are extracted as
+//    Interaction { qubits: [0,1] }, [1,2], [2,3], [3,0], [0,2], [1,3].
+
+// 4. Entangling-layer scheduling: the six edges are colored into stages.
+//    K4 is 3-regular, so the edge-chromatic number is 3 (for even-order
+//    complete graphs, χ'(K_n) = n-1; K4 has χ' = 3). Three Rydberg stages,
+//    each with two disjoint edges:
+//      Stage 1: (0,1) + (2,3)
+//      Stage 2: (0,2) + (1,3)
+//      Stage 3: (0,3) + (1,2)
+
+// 5. Movement planning: for each stage, move the two pairs into the
+//    entanglement zone. The routing-aware placer minimizes rearrangement
+//    steps by reusing atoms already in position.
+
+// 6. Compaction: merge the H layer and initial single-qubit operations
+//    with the first move cycle where possible.
+```
+
+## What the compiler proves
+
+1. **Linear use of all 4 qubits.** The register is allocated, the circuit is
+   applied, and all qubits are measured. The linear type system enforces this
+   through the `run` block, exactly as on the gate-model path.
+2. **Depth bound ≤ 8 (logical).** The typechecker proves the logical circuit
+   depth is at most 8 before the NA backend processes it. The physical schedule
+   depth (in cycles) will be larger — this is expected, as each `Rzz` decomposes
+   and requires atom movement.
+3. **Movement legality.** The `quantum.na` verifier checks that every movement
+   respects AOD row/column coupling (M1), order preservation (M2), no-merging
+   (M3), static traps stay static (M4), and one-atom-per-site occupancy (M5).
+   Any violation is a compiler error, not a runtime failure.
+4. **Rydberg legality.** The verifier checks that every entangling gate has
+   the two atoms within `rydberg_range_um` (7.5 µm) and that non-interacting
+   atoms are separated by at least `min_rydberg_spacing_um` (18.75 µm).
+5. **No mid-circuit feed-forward on this path.** The NA backend does not yet
+   support branching a later gate on a mid-circuit measurement outcome
+   (feed-forward correction). This program measures only at the end, so the
+   limitation does not apply.
+
+## What to try next
+
+- **Emit the interaction graph.** Add `--emit-na-graph graph.dot` to produce
+  a Graphviz visualization of the interaction graph (K₄ with 6 edges,
+  weighted by gate frequency).
+- **Switch the placer.** The target supports both `routing_agnostic` and
+  `routing_aware` placers. Compare the rearrangement step count and total
+  time between the two — the routing-aware placer should produce fewer
+  moves.
+- **Scale up.** Try the larger NA Ising benchmarks (`test/na/ising_n42.qn` or
+  `ising_n98.qn`) and compare the resource report's `rydberg_stages` and
+  `rearrangement_steps` — these grow with the graph size and degree.
+- **Add `--emit-na-stats`.** This produces per-stage compiler telemetry
+  (search node expansions, placement decisions) for understanding why the
+  scheduler chose a particular schedule.
+
+→ Next: [More samples](./samples/) — the full `samples/` corpus beyond this
+  cookbook.

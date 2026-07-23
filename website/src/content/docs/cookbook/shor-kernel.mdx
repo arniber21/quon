@@ -7,10 +7,86 @@ sidebar:
 
 import source from '../../../../../test/verify/shor.qn?raw';
 
-This kernel combines [recursive value-dependent circuits, `tensored`, `split`,
-and `adjoint`](/language/#registers-and-value-dependent-types). It is useful as
-a compiler integration example, but it is intentionally not a complete
-implementation of Shor's factoring algorithm.
+## What we're building and why
+
+Shor's algorithm is the quantum algorithm that factors integers in polynomial
+time — the headline result that sparked the field of quantum computing. Its
+quantum kernel has three parts: prepare a control register in uniform
+superposition, apply modular exponentiation (repeated modular multiplication
+controlled by each control qubit), and apply an inverse QFT to the control
+register. The inverse QFT converts the phase structure created by modular
+exponentiation into a periodic signal in the computational basis, from which
+the period (and hence the factors) can be extracted classically.
+
+This fixture is **not a factoring implementation**. Its `modmul` is a
+*schematic placeholder* — a sequence of controlled rotations that does not
+perform real modular multiplication. Its gates do not even reference the
+parameters `a` or `nn`. There is no actual period to find, and the program
+cannot factor 15 or any other number. What it *does* do is exercise every
+major feature of the value-dependent type system in one program: recursion
+(`qft(n)`), `tensored` (register concatenation), `split` (register splitting),
+`adjoint` (inverse QFT), `controlled(Rz)` (controlled rotations in `modmul`),
+and `repeat` (modular exponentiation as repeated multiplication).
+
+This makes it a **compiler integration test** — the most feature-complete
+program in the end-to-end test suite. It verifies that the full pipeline
+(parse → typecheck → elaborate → lower to MLIR → optimize → emit) can handle
+a program that simultaneously uses recursion, register algebra, adjoint
+synthesis, and bounded repetition, and produce a well-defined output
+distribution. The verifier checks: compilation succeeds, two runs with the
+same seed produce identical results, and all control-register outcomes lie in
+\00, 01\ — the signature of a correct wiring, not a linearity bug that
+would spread outcomes across all four states.
+
+## Typed annotations
+
+```qn
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+fn modmul(n: Nat, a: Int, nn: Int): Circuit<2 * n, 2 * n, 2 * n, Universal> = circuit {
+    for i in range(n) { controlled(Rz(PI / 4.0)) @(0, n + i) }
+}
+
+fn mod_exp(n: Nat, a: Int, nn: Int): Circuit<2 * n, 2 * n, 2 * n * n, Universal> =
+    repeat(n, modmul(n, a, nn))
+```
+
+The types are the most complex in the cookbook:
+
+- **`qft` is `Circuit<n, n, 2 * n * n, Universal>`** — same recursive QFT as the
+  QFT page, with value-dependent depth 2n². The typechecker proves this by
+  induction.
+- **`modmul` is `Circuit<2 * n, 2 * n, 2 * n, Universal>`** — operates on a
+  2n-qubit register (control register of n qubits `tensored` with a target
+  register of n qubits). The depth is 2n (one controlled rotation per
+  control qubit, each at depth 2). Note: the `a` and `nn` parameters are
+  `Int` values that the typechecker accepts but the schematic `modmul` does not
+  actually use in its gate definitions.
+- **`mod_exp` is `Circuit<2 * n, 2 * n, 2 * n * n, Universal>`** — `repeat(n,
+  modmul(...))` gives depth n × 2n = 2n^2. The typechecker proves this
+  by multiplying the repeat count by the inner circuit's depth.
+
+In the `run` block, the register algebra is explicit:
+
+```qn
+let both       = ctrl `tensored` tgt     -- concatenate 2 + 2 = 4 qubits
+both2         <- mod_exp(2, 7, 15) @ both
+let (ctrl2, _) = split(2, both2)          -- split back into 2 + 2
+est           <- adjoint(qft(2)) @ ctrl2   -- inverse QFT on the control register
+```
+
+The `tensored` operator concatenates two registers into one; `split` divides a
+register at a given index. The typechecker verifies that `tensored` of two
+`Circuit<2, ...>` registers produces a `Circuit<4, ...>` register, and that
+`split(2, ...)` on a 4-qubit register produces two 2-qubit registers. This is
+register algebra at the type level — the compiler proves the wiring is correct.
 
 ## Source
 
@@ -24,12 +100,87 @@ typechecker fixture.
 
 <pre><code>{source}</code></pre>
 
+The program uses `n = 2` (2 control qubits, 2 target qubits, 4 total). The
+control register is initialized with `hadamard_all(2)` (uniform superposition)
+and the target with `init_one(2)` (state |1⟩ via `X @0`). After
+modular exponentiation and the inverse QFT, only the control register is
+measured — the target register is discarded via `split` and the `_` wildcard.
+
 ## Compile and simulate
 
 ```sh
 ./target/release/quonc test/verify/shor.qn --emit-qasm > /tmp/shor.qasm
 QUONC=target/release/quonc python test/verify/shor.py
 ```
+
+## `--dump-ir` MLIR excerpts
+
+The program exercises multiple optimization passes simultaneously:
+
+```mlir
+// 1. Recursive QFT elaboration: qft(2) = H @0 |> CRz(pi/2) @(0,1) |>
+//    [qft(1) on_high 2] |> swap_reverse(2)
+//    where qft(1) = H @1 (embedded into the high qubit)
+//    and swap_reverse(2) = SWAP @(0,1) (bit-reversal permutation)
+
+// 2. adjoint(qft(2)) = adjoint(swap_reverse) |> adjoint(qft(1) on_high 2) |>
+//    adjoint(CRz) |> adjoint(H)
+//    = SWAP @(0,1) |> H @1 |> CRz(-pi/2) @(0,1) |> H @0
+
+// 3. mod_exp(2, 7, 15) = modmul |> modmul (repeat(2, ...))
+//    each modmul = CRz(pi/4) @(0,2) |> CRz(pi/4) @(0,3)
+//    (schematic: controlled rotations on the 4-qubit work register)
+
+// gate_cancellation:
+//   SWAP @(0,1) |> SWAP @(0,1) — if swap_reverse and its adjoint are adjacent,
+//   they cancel. But mod_exp sits between the QFT and its adjoint, so they
+//   are NOT adjacent.
+//
+// rotation_merging:
+//   CRz(pi/4) from the first modmul and CRz(pi/4) from the second modmul
+//   on the same qubit pair → CRz(pi/2). The pass merges consecutive
+//   same-axis controlled rotations.
+//   Also, adjoint(QFT)'s CRz(-pi/2) might merge with mod_exp's CRz(pi/4)
+//   if they are on the same wire — the pass checks for this.
+//
+// The optimizer does NOT cancel the full circuit to identity (unlike the QFT
+// round-trip page), because mod_exp is not the adjoint of the QFT. The
+// circuit retains its structure.
+```
+
+The key difference from the QFT round-trip page: there, `qft |> adjoint(qft)`
+cancels completely because the two circuits are exact inverses. Here, `mod_exp`
+sits *between* the initial state preparation and the inverse QFT, so the
+circuit does not collapse. The optimizer does find some local optimizations
+(`rotation_merging` combines consecutive controlled rotations from the repeated
+`modmul`), but the overall structure is preserved.
+
+## What the compiler proves
+
+1. **Register algebra is well-typed.** `ctrl `tensored` tgt` where both are
+   2-qubit registers produces a 4-qubit register. `split(2, both2)` on a
+   4-qubit register produces two 2-qubit registers. The typechecker proves the
+   arities are consistent at every step — a wiring bug (e.g., applying a
+   3-qubit circuit to a 4-qubit register) would be a type error.
+2. **Recursive depth bound.** `qft(n)` has depth 2n² and `mod_exp(n, ...)`
+   has depth 2n². The typechecker proves these by induction and arithmetic,
+   respectively. For n = 2, the QFT depth is 8 and the mod_exp depth is 8.
+3. **`adjoint` preserves type.** `adjoint(qft(2))` has the same type
+   `Circuit<2, 2, 8, Universal>` as `qft(2)`. The adjoint is the gate-reversed,
+   angle-negated version, and the typechecker proves the depth and arity are
+   preserved.
+4. **Linear use across `tensored`/`split`.** The `ctrl` and `tgt` registers are
+   combined via `tensored`, used by `mod_exp`, and then split. The typechecker
+   tracks the linear context through all of these operations — no qubit is lost
+   or duplicated. The `_` in `let (ctrl2, _) = split(2, both2)` explicitly
+   drops the target register, which the linear type system permits because
+   the target has already been used by `mod_exp` and is no longer needed.
+5. **Deterministic output structure.** The verifier checks that all
+   control-register outcomes lie in \00, 01\. This is not a mathematical
+   claim about Shor's algorithm (the schematic `modmul` has no real period) —
+   it is a *wiring correctness* claim: if the type system's register algebra
+   were wrong, the outcome would spread across all four states, which is the
+   signature of a linearity bug.
 
 ## Expected result
 
@@ -40,3 +191,19 @@ real period-finding peaks or factor `15`. The
 verifier checks the actual contract: compilation and execution succeed, two
 runs with the fixed seed are identical, and all observed control-register
 outcomes lie in `{00, 01}`.
+
+## What to try next
+
+- **Replace `modmul` with a real modular multiplication.** This is a substantial
+  undertaking (controlled additions, modular reductions via Garbage recycling)
+  but would turn the kernel into a genuine factoring attempt for small numbers.
+- **Compare to the QFT round-trip page.** If you remove `mod_exp` and write
+  `qft(2) |> adjoint(qft(2))`, the optimizer should cancel everything to
+  identity — as seen on the QFT page. The Shor kernel's `mod_exp` is what
+  prevents that cancellation.
+- **Vary `n`.** Change `n = 2` to `n = 3` (6-qubit register) and watch the
+  typechecker recompute the depth bounds: `qft(3)` has depth 18, `mod_exp(3,
+  ...)` has depth 18. The `tensored`/`split` arities update to 3 + 3 = 6.
+
+→ Next: [More samples](./samples/) — the full `samples/` corpus beyond this
+  cookbook.

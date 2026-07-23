@@ -7,10 +7,55 @@ sidebar:
 
 import source from '../../../../../test/verify/teleport.qn?raw';
 
-Teleportation combines Bell-pair preparation with measurement-controlled
-corrections. The measured qubits are consumed, while Bob's qubit is threaded
-linearly through the selected correction circuits. See the guide to
-[`run` blocks, linear values, and feed-forward](/language/#quantum-computations).
+## What we're building and why
+
+Quantum teleportation is the protocol that transfers an unknown quantum state
+from one party to another using only a shared Bell pair and two classical bits.
+It is not science-fiction transport — it is the foundational primitive for
+quantum networking, distributed quantum computing, and any architecture that
+needs to move quantum information without physically moving qubits. In a
+compiler, it is also the canonical example of *dynamic circuits*: circuits
+where a measurement outcome classically conditions later gates.
+
+The protocol has three phases. First, Alice and Bob share a Bell pair — one
+qubit each, entangled. Second, Alice performs a Bell-basis measurement on her
+message qubit and her half of the pair, obtaining two classical bits. Third,
+Alice sends those bits to Bob, who applies a correction (Pauli `X`, Pauli `Z`,
+both, or neither) to his qubit — which now holds the original message state.
+
+What makes this non-trivial for a compiler is the feed-forward: the correction
+depends on *classical* measurement results that are only known at runtime. The
+circuit cannot be a single static sequence — it must branch. Quon models this
+with `if bit then circuit else circuit` inside a `run` block, which lowers to
+the `quantum.dynamic` dialect's `cond_apply` operation. The linear type system
+tracks which qubits have been measured (and are therefore classical) versus
+which are still quantum and available for further gates.
+
+## Typed annotations
+
+```qn
+fn prep(): Circuit<3, 3, 3, Clifford> = circuit { X @0 |> H @1 |> CNOT @(1, 2) }
+fn bell_basis(): Circuit<2, 2, 2, Clifford> = circuit { CNOT @(0, 1) |> H @0 }
+fn pauli_x(): Circuit<1, 1, 1, Clifford> = circuit { X @0 }
+fn pauli_z(): Circuit<1, 1, 1, Clifford> = circuit { Z @0 }
+fn id_one(): Circuit<1, 1, 1, Clifford> = circuit { I @0 }
+```
+
+Every circuit here is `Clifford` — the entire protocol is Clifford, which is
+why it is so robust and efficiently simulable. The types tell a story:
+
+- **`prep` is `Circuit<3, 3, 3, Clifford>`** — three qubits in, three out, depth
+  3. The depth comes from `X @0` (depth 1) `|>` `H @1` (depth 1) `|>` `CNOT
+  @(1,2)` (depth 1), all sequential. Note `X @0` and `H @1` act on *different*
+  qubits, so they could be parallel — but `|>` is sequential composition, so
+  the depth is the *sum*, not the *max*. (Parallel composition via `par` would
+  give depth 2, but that is not what this program uses.)
+- **`bell_basis` is `Circuit<2, 2, 2, Clifford>`** — the self-adjoint of Bell
+  preparation. It is written out explicitly rather than using `adjoint(...)` so
+  the lowering needs no adjoint synthesis.
+- **Correction circuits are `Circuit<1, 1, 1, Clifford>`** — each acts on a
+  single qubit with depth 1. The `if ... then ... else` selection picks one at
+  runtime, but the typechecker proves all branches have the same type.
 
 ## Source
 
@@ -20,6 +65,14 @@ fixture. The broader typechecker example is
 [`frontend/tests/fixtures/teleport.qn`](https://github.com/arniber21/quon/blob/main/frontend/tests/fixtures/teleport.qn).
 
 <pre><code>{source}</code></pre>
+
+Read the `run` block carefully. `prep()` allocates all three qubits at once: `X`
+on qubit 0 sets the message to |1⟩, while `H` and `CNOT` entangle the
+Alice–Bob pair (qubits 1 and 2). Then `bell_basis()` measures Alice's two qubits
+in the Bell basis. The `measure` calls consume `m2` and `a2`, producing
+classical bits `x_bit` and `z_bit`. The `if` expressions select a correction
+circuit based on those bits and apply it to `bob`, threading the linear qubit
+through each branch.
 
 ## Compile and simulate
 
@@ -33,6 +86,48 @@ The checked-in
 verifier also runs
 [`teleport_plus.qn`](https://github.com/arniber21/quon/blob/main/test/verify/teleport_plus.qn),
 so both the `X` and `Z` correction paths are tested.
+
+## `--dump-ir` MLIR excerpts
+
+The feed-forward `if` expressions lower to the `quantum.dynamic` dialect:
+
+```mlir
+// Schematic: the classical bits condition circuit application.
+%x_bit = quantum.dynamic.measure %m2 : i1
+%z_bit = quantum.dynamic.measure %a2 : i1
+
+// cond_apply: applies the selected circuit to bob's qubit.
+%b2 = quantum.dynamic.cond_apply %z_bit, @pauli_x, @id_one, %bob
+%b3 = quantum.dynamic.cond_apply %x_bit, @pauli_z, @id_one, %b2
+```
+
+The `cond_apply` operation takes a classical condition bit, two circuit values
+(the then-branch and else-branch), and a qubit to apply the result to. After
+lowering, `measurement_deferral` and `classical_region_fusion` passes run on the
+dynamic IR to optimize classical control flow. `gate_cancellation` on the circ
+portion (prep and bell_basis) finds nothing to cancel — the sequence is already
+minimal. The identity circuit `id_one` in the else-branch compiles to a no-op
+that the optimizer can erase, leaving only the active correction.
+
+## What the compiler proves
+
+1. **All three qubits consumed exactly once.** The linear context tracks `msg`,
+   `alice`, and `bob` through every bind. After `bell_basis` consumes `msg` and
+   `alice` (via measurement), only `bob` remains quantum. The corrections
+   consume `bob` and produce a new linear value (`b2`, then `b3`), which is then
+   measured. No qubit leaks or is double-used.
+2. **Correction circuits are Clifford.** Both `pauli_x` and `pauli_z` have type
+   `Circuit<1, 1, 1, Clifford>`. The typechecker proves every branch of the
+   `if` has the same type, so the conditional circuit application is
+   type-safe regardless of the runtime measurement outcome.
+3. **Borrow-free design.** Unlike some teleportation implementations that use
+   `borrow` blocks for ancilla, this program allocates all qubits up front via
+   `qreg(3)` in the `run` block. No ancilla escape is possible — the linear
+   type system ensures the register is fully consumed.
+4. **Classical bits are unrestricted.** `x_bit` and `z_bit` are `Bit` values,
+   not linear quantum values. They can be inspected in `if` conditions, returned
+   in tuples, and duplicated freely — the linear constraint applies only to
+   quantum values (`Qubit`, `QReg`).
 
 ## Expected result
 
@@ -56,3 +151,18 @@ mid-circuit outcome) is still limited on the NA path, so that sample's
 schedule measures and resets every round but never conditions a subsequent
 gate on the outcome — it does not reproduce this page's `X`/`Z`
 corrections.
+
+## What to try next
+
+- **Teleport a superposition.** Change `prep` to prepare `|+>` (use `H @0`
+  instead of `X @0`) and verify the output is still `|+>` after correction.
+- **Add a third correction.** The protocol has four outcomes (00, 01, 10, 11)
+  corresponding to no correction, X, Z, or XZ. The current code nests two `if`
+  expressions to handle all four. Try unrolling it into a `match` or four-way
+  branch if the language supports it.
+- **Measure before correction.** Remove the `if` and just measure `bob` directly
+  — the result will be random, demonstrating that the corrections are
+  essential.
+
+→ Next: [Bernstein–Vazirani](./bernstein-vazirani/) — recover a hidden bit
+  string with a single oracle query.

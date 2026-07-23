@@ -10,8 +10,8 @@ hero:
       link: /getting-started/quickstart/
       icon: right-arrow
       variant: primary
-    - text: Read the compiler pipeline
-      link: /reference/compiler/
+    - text: Read the language guide
+      link: /language/introduction/
       icon: right-arrow
       variant: minimal
     - text: View on GitHub
@@ -22,51 +22,69 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## A compiler toolkit for quantum software engineers
+## A typed quantum compiler
 
-Quon brings the language, compiler, backend model, verification seam, and
-developer tooling into one Rust workspace. It is built around a typed quantum
-frontend, a lowering pipeline through MLIR generic-form IR, and backend
-artifacts that can be inspected, simulated, and regression-tested.
+Quon is a typed quantum compiler. Programs carry depth bounds, Clifford
+classifications, and linear resource ownership in their types — not as comments,
+not as runtime checks, as types the compiler verifies before a single gate is
+lowered.
 
-<CardGrid>
-	<Card title="Typed quantum frontend" icon="document">
-		`Circuit<n, m, d, C>` types, linear `Qubit` / `QReg<n>` values,
-		symbolic depth bounds, Clifford classification, and monadic allocation,
-		measurement, and feed-forward.
-		[Read the language guide ->](/language/)
-	</Card>
-	<Card title="Compiler pipeline" icon="setting">
-		Parsing, desugaring, typechecking, circuit elaboration, MLIR lowering,
-		simplification passes, target adaptation, metrics, and backend emission.
-		[See the pipeline ->](/reference/compiler/)
-	</Card>
-	<Card title="Backend artifacts" icon="puzzle">
-		Fixed gate-model targets emit OpenQASM 3. Reconfigurable neutral-atom
-		targets emit schedule JSON and resource reports from the same compiler
-		driver.
-		[Read the backend guide ->](/guides/backends/)
-	</Card>
-	<Card title="Engineering workflow" icon="rocket">
-		`quonc`, `quonfmt`, `quonlint`, `quon_lsp`, Tree-sitter grammar,
-		editor integrations, Devbox bootstrap, CI-parity recipes, lit/FileCheck
-		tests, fuzz/property tests, and Aer verification.
-		[Install Quon ->](/getting-started/install/)
-	</Card>
-</CardGrid>
+A circuit is a value with a four-parameter type: `Circuit<n, m, d, C>`. The
+type says *this transformation takes `n` qubits in, produces `m` qubits out,
+completes in `d` steps, and belongs to the Clifford class `C`*. The typechecker
+enforces every one of those claims. Compose two circuits with `|>` and the
+depths add; run them in `par` and the depth is the maximum. Break the depth
+budget, mis-count the qubits, use a qubit twice, or forget to measure — and the
+program does not compile.
 
-## One source, target-specific outputs
+This is what a typed Bell pair looks like:
 
 ```kotlin
 fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
     H @0 |> CNOT @(0, 1)
 }
+```
 
-fn main(): Q<(Bit, Bit)> = run {
-    (q0, q1) <- bell_state() @ qreg(2)
-    b0       <- measure(q0)
-    b1       <- measure(q1)
-    return (b0, b1)
+The return type `Circuit<2, 2, 2, Clifford>` is a contract: two qubits in, two
+out, depth exactly two, Clifford class. The compiler checks that `H` followed by
+`CNOT` satisfies all four parameters before it emits a single line of OpenQASM 3.
+
+<CardGrid>
+	<Card title="Learn the language" icon="book-open">
+		Linear qubit types, the `Circuit<n, m, d, C>` contract, the Quantum
+		Monad, classical control, and parametric circuits — explained from first
+		principles.
+		[Start the guide ->](/language/introduction/)
+	</Card>
+	<Card title="Try the quickstart" icon="rocket">
+		Compile a Bell pair to OpenQASM 3, sample it through Qiskit Aer, and emit
+		a neutral-atom schedule — in four commands.
+		[Run it ->](/getting-started/quickstart/)
+	</Card>
+	<Card title="Read the architecture" icon="setting">
+		The compiler pipeline from source text to backend artifact: parsing,
+		typechecking, MLIR lowering, optimization passes, and target-specific
+		emission.
+		[See the pipeline ->](/architecture/compiler-internals/)
+	</Card>
+	<Card title="Explore the cookbook" icon="puzzle">
+		Working `.qn` programs for Bell pairs, teleportation, phase estimation,
+		QEC blocks, and neutral-atom scheduling — each with compiler output.
+		[Browse recipes ->](/cookbook/)
+	</Card>
+</CardGrid>
+
+## One source, target-specific outputs
+
+The same typed program lowers to different backends without source changes. A
+fixed gate-model target receives OpenQASM 3; a reconfigurable neutral-atom
+target receives a movement schedule and a resource report. The types survive the
+entire pipeline — depth bounds and Clifford classifications inform optimization
+passes, not just the frontend.
+
+```kotlin
+fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1)
 }
 ```
 
@@ -84,23 +102,3 @@ cargo run -p quonc -- test/na/bell.qn \
   --emit-na-schedule \
   --emit-resource-report
 ```
-
-## Growing toward production-grade workflows
-
-Quon is a living compiler toolkit with a deliberate hardening path: boring
-installation, reproducible local CI commands, clearer backend artifact
-inspection, stronger benchmark regressions, deeper neutral-atom validation, and
-more static invariants connected to backend legality.
-
-<CardGrid>
-	<Card title="Quickstart" icon="right-arrow">
-		Compile a Bell pair to OpenQASM 3 and run it through the Qiskit Aer
-		verification seam.
-		[Run it ->](/getting-started/quickstart/)
-	</Card>
-	<Card title="Maturation path" icon="list-format">
-		See how the toolkit is being hardened without mixing roadmap work into
-		the feature surface.
-		[Read the roadmap ->](/guides/roadmap/)
-	</Card>
-</CardGrid>

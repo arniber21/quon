@@ -7,9 +7,69 @@ sidebar:
 
 import source from '../../../../../test/verify/grover.qn?raw';
 
-Grover's algorithm alternates a phase oracle with diffusion about the uniform
-superposition. This version uses parameterized `for` loops and `repeat`; see
-[value-dependent circuit widths and bounded repetition](/language/#value-dependent-circuits).
+## What we're building and why
+
+Grover's algorithm is the quantum procedure that finds a marked item in an
+unsorted database of N items in O(√N) queries — a quadratic
+speedup over the classical O(N). It works by *amplitude amplification*:
+alternating a phase oracle (which flips the sign of the marked state) with a
+diffusion operator (which reflects about the uniform superposition). Each
+iteration rotates the state vector θ radians closer to the marked state,
+where sin θ = √(M/N) for M marked items.
+
+This fixture uses the exact special case: N = 4 qubits (i.e., N = 2² = 4
+candidates), M = 1 marked item, and r = 1 Grover iteration. At this scale,
+θ = arcsin(1/2) = π/6, and after one iteration the rotation is
+(2r+1)θ = 3 × π/6 = π/2 — the state lands *exactly* on the
+marked item. The algorithm is deterministic: the marked state |11⟩ is
+returned with probability 1.0. This is the only case where Grover is exact in a
+single shot; larger problems require statistical analysis.
+
+What makes this a good compiler example is the parametric circuit elaboration.
+`hadamard_all(n)` and `flip_all(n)` are genuinely parametric — they use `for q
+in qubits(n) { ... }`, which the elaborator unrolls when called with a concrete
+literal. The `repeat` construct replicates a circuit value r times, and its
+depth is multiplied: if the repeated circuit has depth d, then
+`repeat(r, circuit)` has depth r × d. This is how Quon reasons about
+bounded repetition: the depth bound is symbolic and arithmetic.
+
+## Typed annotations
+
+```qn
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn oracle(): Circuit<2, 2, 1, Clifford> = circuit {
+    CZ @(0, 1)
+}
+
+fn diffusion(n: Nat): Circuit<n, n, 5, Clifford> = circuit {
+    hadamard_all(n) |> flip_all(n) |> CZ @(0, 1) |> flip_all(n) |> hadamard_all(n)
+}
+```
+
+The types reflect the algorithm's structure precisely:
+
+- **`hadamard_all` is `Circuit<n, n, 1, Clifford>`** — a parametric circuit
+  that applies `H` to all n qubits. The depth is 1 because all the Hadamards
+  act on different qubits and are composed within a `for` loop — the elaborator
+  unrolls the loop and recognizes that the gates are independent, so the depth
+  is the max (1), not the sum (n). This is a crucial distinction: `for`-loop
+  bodies over disjoint qubits give depth 1, while `|>` sequential composition
+  of the same gates would give depth n.
+- **`oracle` is `Circuit<2, 2, 1, Clifford>`** — a single `CZ` gate marks
+  |11⟩ with a phase flip. At n = 2, a multi-controlled-Z *is* just
+  `CZ` — no Toffoli or decomposition needed.
+- **`diffusion` is `Circuit<n, n, 5, Clifford>`** — five sequential layers:
+  `hadamard_all` (depth 1) `|>` `flip_all` (depth 1) `|>` `CZ` (depth 1) `|>`
+  `flip_all` (depth 1) `|>` `hadamard_all` (depth 1) = 1+1+1+1+1 = 5. The
+  typechecker computes this by summing depths under `|>`.
+
+The `repeat(1, oracle() |> diffusion(2))` in `main` has depth 1 + 5 = 6 for
+the composed circuit, multiplied by the repeat count of 1 — so the total depth
+is 6. The full circuit (including the initial `hadamard_all(2)`) has depth
+1 + 6 = 7.
 
 ## Source
 
@@ -20,12 +80,68 @@ program. A more general frontend form lives at
 
 <pre><code>{source}</code></pre>
 
+The `run` block is compact: allocate 2 qubits, apply `hadamard_all(2)` to create
+the uniform superposition, then `repeat(1, oracle() |> diffusion(2))` to do one
+round of amplitude amplification. The `repeat` construct is syntactic sugar for
+sequential self-composition: `repeat(r, c)` is c |> c |>
+·s (r times). Its depth is r × depth(c).
+
 ## Compile and simulate
 
 ```sh
 ./target/release/quonc test/verify/grover.qn --emit-qasm > /tmp/grover.qasm
 QUONC=target/release/quonc python test/verify/grover.py
 ```
+
+## `--dump-ir` MLIR excerpts
+
+After the elaborator unrolls the `for` loops and monomorphizes the `Nat`
+parameter `n = 2`, the circuit is fully concrete. The fixpoint pipeline runs:
+
+```mlir
+// After elaboration (schematic):
+// hadamard_all(2) → H @0 |> H @1   (depth 1: both on different qubits)
+// flip_all(2)    → X @0 |> X @1   (depth 1)
+// oracle         → CZ @(0,1)      (depth 1)
+// diffusion(2)   → H @0 |> H @1 |> X @0 |> X @1 |> CZ @(0,1) |> X @0 |> X @1 |> H @0 |> H @1
+//   = hadamard_all |> flip_all |> CZ |> flip_all |> hadamard_all
+
+// gate_cancellation: scans for adjacent self-inverse pairs.
+//   flip_all |> flip_all would cancel (X·X = I), but the CZ sits between
+//   them — no cancellation.
+//   hadamard_all |> hadamard_all would cancel (H·H = I), but flip_all + CZ
+//   sit between them — no cancellation.
+//
+// The oracle (CZ) and diffusion (H·X·CZ·X·H) do not cancel each other.
+// The full circuit is:
+//   H·H (superposition) |> CZ (oracle) |> H·X·CZ·X·H (diffusion)
+// No adjacent self-inverse pairs exist across the oracle/diffusion boundary.
+```
+
+The optimizer leaves the circuit as written. The oracle and diffusion are
+structurally complementary — the diffusion *is* an oracle about the uniform
+superposition — but they do not produce adjacent self-inverse gate pairs. The
+`gate_cancellation` pass finds nothing; `rotation_merging` finds no consecutive
+rotations (there are none — everything is Clifford). The `clifford_t_opt` pass
+with its stabilizer tableau could in principle find a simpler equivalent, but
+the circuit is already at the minimum gate count for this problem size.
+
+## What the compiler proves
+
+1. **Parametric elaboration is correct.** The `for q in qubits(n)` loop is
+   unrolled by the elaborator when `n = 2` is substituted. The typechecker
+   verifies the monomorphized circuit against the expected type, confirming that
+   the unrolled code matches the parametric type `Circuit<n, n, 1, Clifford>`.
+2. **`repeat` depth is exact.** `repeat(r, c)` has depth r ×
+ depth(c). The typechecker proves this arithmetically — it is not an
+   estimate. For `repeat(1, ...)`, the depth is the inner circuit's depth.
+3. **Clifford classification throughout.** Every gate (`H`, `X`, `CZ`) is
+   Clifford, and all compositions preserve the Clifford class. The type system
+   infers `Clifford` bottom-up and the entire Grover iteration is provably
+   simulable on a stabilizer tableau.
+4. **Linear use of qubits.** The 2-qubit register is allocated, the full circuit
+   is applied, and both qubits are measured. The `repeat` consumes and produces
+   the same qubits, threading them linearly through each iteration.
 
 ## Expected result
 
@@ -34,3 +150,18 @@ iteration, this is an exact special case: an ideal run returns `11` with
 probability 1. The
 [`grover.py`](https://github.com/arniber21/quon/blob/main/test/verify/grover.py)
 regression check requires the marked-state frequency to exceed 90%.
+
+## What to try next
+
+- **Change the marked state.** The oracle uses `CZ @(0, 1)` which marks |11⟩.
+  Try `CZ @(0, 1) |> X @0 |> CZ @(0, 1) |> X @0` to mark a different state, and
+  verify the output changes.
+- **Increase the repeat count.** Change `repeat(1, ...)` to `repeat(2, ...)` and
+  observe the amplitude *over-rotate* past the marked state — the output should
+  be less concentrated. This demonstrates that the exact r = 1 case is special.
+- **Watch the depth bound.** With `repeat(2, ...)`, the typechecker should report
+  depth 1 + 2 × 6 = 13. Try annotating it and see the typechecker verify
+  or reject.
+
+→ Next: [Quantum Fourier transform](./qft/) — build a recursive QFT and verify
+  it through an inverse round trip.
