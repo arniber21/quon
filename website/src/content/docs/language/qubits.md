@@ -31,6 +31,27 @@ qubit from one register with a qubit from another. Quon does not let you reach
 into a register by index. Instead it forces you to *destructure* the register
 into named qubits, making ownership explicit at every step.
 
+### `QReg` in `run` blocks
+
+Registers are created inside `run` blocks by the `qreg(n)` allocator, which
+produces a fresh `QReg<n>` of `n` qubits all in `|0⟩`. A circuit is then applied
+to the register with the `@` operator, consuming it and producing a new register
+(or a tuple of individual qubits if the circuit's output width is split):
+
+```kotlin
+fn prepare_and_split(): Q<(Qubit, Qubit)> = run {
+    reg <- bell_state() @ qreg(2)
+    let (q0, q1) = destructure(reg)
+    return (q0, q1)
+}
+```
+
+Here `qreg(2)` allocates the register, `bell_state() @ qreg(2)` applies the
+circuit (consuming the `QReg<2>` and producing a new `QReg<2>`), and
+`destructure` splits that output register into two named qubits. The circuit
+application is the bridge between the typed circuit value and the monadic world:
+it is the only way a circuit touches live qubits.
+
 ## Destructuring and reshaping
 
 `destructure` takes a `QReg<n>` and splits it into `n` individual `Qubit`
@@ -54,6 +75,57 @@ wider register. Together these let you change a register's shape — split it,
 reorder pieces, join pieces from different sources — while preserving linear
 ownership at every step.
 
+### `split`: extracting a prefix
+
+`split(k, reg)` is the operation you reach for when an algorithm needs only part
+of a register — for instance, the data qubit out of a decoded block, leaving the
+syndrome qubits for cleanup. It returns a pair `(QReg<k>, QReg<n - k>)`:
+
+```kotlin
+fn take_first(q: QReg<5>): (QReg<2>, QReg<3>) =
+    let (head, tail) = split(2, q)
+    in (head, tail)
+```
+
+The split point `k` is a compile-time `Nat`, so the result types are statically
+known. You cannot split a `QReg<2>` at position 5 — the typechecker rejects it
+because `5 > 2`.
+
+### `tensored`: joining registers
+
+`tensored` (also written as tuple formation `(a, b)`) combines two registers — or
+a register and a bare qubit, or two bare qubits — into one wider register. This
+is how you assemble a multi-qubit register from parts:
+
+```kotlin
+fn join_up(a: Qubit, b: QReg<2>): QReg<3> = (a, b)
+```
+
+The total width is the sum of the parts. The operation consumes both inputs and
+produces a single linear value — there is no aliasing, because the original
+names are gone from the linear context after the join.
+
+### Reordering by destructuring
+
+A common pattern is to destructure a register, permute the qubits, and re-tensor
+them into a new register with a different wire order. This is how you reverse
+wires in a QFT, or swap which qubit is the control in a two-qubit gate:
+
+```kotlin
+fn swap_wires(q: QReg<2>): QReg<2> =
+    let (a, b) = destructure(q)
+    in (b, a)
+
+fn rotate_three(q: QReg<3>): QReg<3> =
+    let (a, b, c) = destructure(q)
+    in (c, a, b)
+```
+
+Every qubit is accounted for by name at every step. The typechecker tracks each
+one through the linear context: `destructure` removes the register and
+introduces the individual qubits, and the tuple formation re-introduces a single
+register. No qubit is lost, no qubit is duplicated.
+
 ## Why no indexing
 
 A natural question: why not just write `reg[1]` to grab the second qubit? The
@@ -72,6 +144,17 @@ new names. There is no way to hold the register *and* an element of it at the
 same time. This keeps the linear context simple — a `QReg<n>` is always one
 linear value, never a bag of individually borrowable aliases — and it keeps the
 no-cloning guarantee a local, checkable fact rather than a global hope.
+
+### What goes wrong without the restriction
+
+Consider what a hypothetical `reg[i]` operation would have to mean. It would
+produce a `Qubit` while leaving `reg` intact — so the same qubit would have two
+names in the linear context, and the typechecker could not enforce single use.
+You could then pass both names to two different gates, effectively cloning the
+qubit's state, which the no-cloning theorem forbids. By forcing destructuring to
+*consume* the register, Quon makes this error a structural impossibility: after
+`destructure(reg)`, the name `reg` is unbound, so there is nothing left to
+index into.
 
 ## Splitting in practice
 
@@ -97,6 +180,68 @@ later pages. Notice the shape: `encode` widens one qubit into a register,
 decodes it back, and `split(1, decoded)` pulls out the single logical qubit as
 `out` while `_rest` names the auxiliary qubits for discard. Every qubit is
 accounted for by name; nothing is indexed, nothing is aliased.
+
+## Register width mismatch errors
+
+Because `QReg<n>` carries `n` in the type, a width mismatch between a circuit's
+expected input and the register you supply is a *type error*, not a runtime
+check. The typechecker compares the circuit's `n` against the register's `n`
+and rejects mismatches before the elaborator runs:
+
+```kotlin
+fn bad_apply(): Q<QReg<2>> = run {
+    out <- bell_state() @ qreg(3)
+    return out
+}
+```
+
+```
+error: width mismatch in circuit application
+  --> source.qn:2:14
+   |
+ 2 |     out <- bell_state() @ qreg(3)
+   |              ^^^^^^^^^^^    ^^^^^^^
+   |              Circuit expects 2 input qubits, register has 3
+   |
+   = hint: use split(2, qreg(3)) to take the first 2 qubits
+```
+
+The diagnostic points at both the circuit and the register, naming the
+conflicting widths and offering a fix. This is the typechecker doing the work the
+compiler reference calls "width discharge" — a refinement obligation discharged
+by structural equality of the `Nat` arguments, without needing Z3.
+
+## Interaction with circuit application
+
+Circuit application — the `@` operator — is where register types meet circuit
+types. The operator has the typing rule:
+
+```
+c : Circuit<n, m, d, C>    reg : QReg<n>
+------------------------------------------ @
+        c @ reg : Q<QReg<m>>
+```
+
+The input register is consumed (removed from the linear context) and a fresh
+output register is produced. If the circuit is not square (`n ≠ m`), the output
+register has a different width than the input — `encode` takes a `QReg<1>` and
+produces a `QReg<3>`, `decode` reverses it. The typechecker proves the width
+transformation at every application site, so you can chain circuits of different
+widths knowing the interfaces will line up.
+
+When the output width is small, you can destructure immediately:
+
+```kotlin
+fn bell_prepare(): Q<(Qubit, Qubit)> = run {
+    (q0, q1) <- bell_state() @ qreg(2)
+    return (q0, q1)
+}
+```
+
+Here `bell_state() @ qreg(2)` produces a `QReg<2>`, and the pattern `(q0, q1)`
+destructures it in the same binding. The typechecker verifies that the circuit's
+output width (2) matches the pattern's arity (2) — a width mismatch here is the
+same kind of error as the `qreg` mismatch above.
 
 ## Next
 

@@ -47,6 +47,38 @@ language. Because it is a value with a type, the compiler can check it for
 correctness *before* a single qubit exists, and can rewrite it with algebraic
 identities *without* worrying that it will change some hidden global state.
 
+### Parametric circuits: a value for any width
+
+Because a circuit is a value, it can also be *parametric* — written once and
+instantiated at any width. Quon's `Nat` parameters make a circuit a family of
+values indexed by a natural number:
+
+```kotlin
+fn had_one(): Circuit<1, 1, 1, Clifford> = circuit { H @0 }
+
+fn hadamard_layer(n: Nat): Circuit<n, n, 1, Clifford> =
+    par { had_one() } * n
+```
+
+`hadamard_layer` is a function that, given any `n`, returns a circuit over `n`
+qubits with depth 1 — a single parallel layer of Hadamard gates. The type
+`Circuit<n, n, 1, Clifford>` carries a *symbolic* width and depth: the
+typechecker proves the bound holds for every instantiation of `n`, not just a
+specific one. When `hadamard_layer(4)` is called at a concrete site, the
+elaborator partially evaluates the parallel composition into four concrete `H`
+gate placements — but the type-level proof happened earlier, against the
+symbolic form. This is the key difference between a Quon parametric circuit and
+a C++ template or a macro: the symbolic type is checked *before* specialization,
+so a width or depth error is caught at the type level, not after unrolling.
+
+A practical illustration: when you write `hadamard_layer(4)` inside a larger
+program, the elaborator unrolls the `par` into four `H` placements and the
+lowerer emits four `quantum.circ` gate ops. But the typechecker has *already*
+proven, from the symbolic `Circuit<n, n, 1, Clifford>`, that the depth is 1
+regardless of `n`. If you later change the call to `hadamard_layer(8)`, the
+proof still holds — you never need to re-check depth for each width. This is
+what it means for a circuit to be a *typed* value, not a mutable log.
+
 ## Why linear types
 
 Quantum physics imposes two constraints that ordinary programming languages
@@ -68,10 +100,20 @@ never permitted to leave. A program that tries to clone a qubit looks like this,
 and it does not compile:
 
 ```kotlin
--- ERROR: q used twice — violates linearity
 fn clone(q: Qubit): (Qubit, Qubit) =
     let (q1, q2) = (q, q)
     in (q1, q2)
+```
+
+```
+error: linear resource `q` used twice
+  --> source.qn:2:18
+   |
+ 2 |     let (q1, q2) = (q, q)
+   |                      ^   ^ first use consumes `q`
+   |                          second use is unbound — `q` already consumed
+   |
+   = note: quantum values are linear; each must be consumed exactly once
 ```
 
 Later pages show exactly how the linear context tracks each qubit and what the
@@ -118,20 +160,75 @@ certainty, while routing the dynamic parts through the more careful control-flow
 machinery they deserve. When you read a Quon program, the `circuit { }` /
 `run { }` boundary tells you immediately which rules apply where.
 
+The boundary also maps directly onto the compiler's two IR dialects. A
+`circuit { }` block lowers to `quantum.circ` ops — pure unitary gates over `!qubit`
+SSA values, where linearity is enforced at the IR level too. A `run { }` block
+lowers to `quantum.dynamic` ops — `measure`, `reset`, `unitary_region`, and
+`if` conditioned on classical bits. The circ optimization passes can descend
+into `unitary_region` and `if` branch bodies to reach the gates that live there,
+but they never reorder measurements or merge control-flow regions — that is the
+dynamic side's job.
+
 ## From source to artifact
 
 A Quon program does not run directly on hardware. The compiler walks it through
-a fixed pipeline: it parses the surface syntax, typechecks it (the linear
-context, width, depth, and classification rules you are about to learn),
-elaborates parametric loops into concrete circuits, lowers the result to MLIR,
-runs optimization passes, and finally emits a backend artifact. The two worlds
-above map onto that pipeline: `circuit { }` blocks become pure unitary IR that
-the optimizer can rewrite freely, while `run { }` blocks become a dynamic IR
-region that preserves measurement and feed-forward exactly. You do not need the
-pipeline details to write Quon, but it helps to know that the type-level facts
-the frontend establishes — depth bounds, Clifford classification, linear
-consumption — are exactly what the later passes rely on. The full pipeline is
-documented separately in the [compiler reference](/reference/compiler/).
+a fixed pipeline, and every feature in this guide maps onto a stage of it:
+
+1. **Parse and desugar** — Tree-sitter plus a Rust parser turn `.qn` source into
+   the surface AST, then desugar infix combinators and sugar into the core AST.
+   Syntax errors stop here.
+
+2. **Typecheck and elaborate** — the bidirectional linear typechecker validates
+   declarations, quantum ownership (the linear context `Δ`), symbolic depth
+   bounds, register widths, and Clifford classifications. Refinement obligations
+   — is this inferred depth really ≤ the declared bound? are these two widths
+   equal? — are discharged through Z3 when structural equality is not enough.
+   Parametric circuit calls are specialized at concrete call sites via the
+   Melior-free **SpecializedCircuit** module, producing a first-order gate DAG
+   with no classical parameters left.
+
+3. **Lower to MLIR** — the elaborated DAG lowers through verified Rust builders
+   into `quantum.circ` (unitary) and `quantum.dynamic` (measurement,
+   feed-forward) ops. The `Circuit<n, m, d, C>` indices ride along as op
+   attributes, not as MLIR parameterized types.
+
+4. **Optimize** — the circ fixpoint runs gate cancellation, rotation merging,
+   Clifford+T optimization (stabilizer tableau for Clifford circuits, phase
+   polynomial for Universal circuits), compiler uncomputation, and bounded ZX
+   simplification, iterating to a fixpoint. Dynamic passes (measurement
+   deferral, classical-region fusion) normalize the `quantum.dynamic` side.
+
+5. **Emit** — fixed targets run native-gate decomposition, SABRE-style routing,
+   depth scheduling, and OpenQASM 3 emission. Neutral-atom targets extract an
+   atom-indexed interaction graph, schedule entangling layers, plan movement,
+   and build a resource report.
+
+### What the typechecker proves vs. what the optimizer does
+
+It helps to be precise about the division of labor between the frontend and the
+backend, because the type-level facts the frontend establishes are exactly what
+the backend relies on:
+
+- The **typechecker** *proves* static invariants: every qubit is consumed
+  exactly once (linearity), the inferred depth fits the declared bound (symbolic
+  arithmetic, Z3), the width of every composition lines up, and the Clifford
+  classification is correctly inferred bottom-up. These are *theorems* — if the
+  typechecker accepts the program, the invariants hold for every instantiation.
+
+- The **optimizer** *uses* those invariants as licenses to transform. It does
+  not re-derive them; it trusts them. The Clifford classification tells it
+  which kernel to dispatch (stabilizer tableau vs. phase polynomial). The depth
+  bound gives it room to temporarily increase depth (e.g. by unrolling) and
+  then reduce it again, all within the proven bound. The circuit/monad split
+  tells it which regions are safe to rewrite algebraically and which must
+  preserve measurement ordering.
+
+The consequence is that optimization in Quon is *never* a guess. Every rewrite
+the optimizer applies is enabled by a fact the typechecker already proved. If
+the typechecker cannot prove a fact, the program is rejected — it does not reach
+the optimizer in an ambiguous state. The full pipeline is documented in the
+[compiler reference](/reference/compiler/) and explored stage-by-stage in the
+[compiler internals](/architecture/compiler-internals/) page.
 
 ## How to read this guide
 
