@@ -22,7 +22,16 @@ and how the optimization pipeline simplifies (or preserves) the circuit. The
 algorithms are chosen to exercise different features of the language and
 compiler — from simple two-gate Bell circuits to recursive QFT with adjoint
 cancellation, from parametric Trotter steps to the neutral-atom scheduling
-pipeline.
+pipeline. Each recipe is a real program, not a toy snippet: it parses,
+typechecks, elaborates, lowers to MLIR, optimizes, and emits executable QASM
+(or a neutral-atom schedule) that produces a checkable result.
+
+Every recipe is backed by a Python verifier in `test/verify/` (or `test/na/`)
+that runs the compiled program on Qiskit Aer with a fixed random seed and checks
+the measurement histogram against a statistical assertion. This means the
+behavior you read about on each page is not aspirational — it is continuously
+verified by CI. If the compiler regresses on any of these programs, the test
+suite catches it before merge.
 
 ## How to use it
 
@@ -35,16 +44,27 @@ cargo build --release -p quonc
 Each page follows the same structure:
 
 1. **What we're building and why** — the algorithm's context and why it
-   matters.
+   matters, plus the specific design decisions and verification strategy
+   baked into the fixture.
 2. **Typed annotations** — what the `Circuit<n, m, d, C>` type tells you about
-   the algorithm's structure (qubit count, depth, Clifford class).
-3. **Source** — the embedded `.qn` program, which is the exact test fixture.
-4. **Compile and simulate** — the `quonc` and Python verifier commands.
+   the algorithm's structure (qubit count, depth, Clifford class), with each
+   field of the type explained.
+3. **Source** — the complete `.qn` program, broken into logical chunks with
+   prose that explains what each section does and why it is written that way.
+   This is the exact test fixture, shown without comments so the code reads
+   cleanly.
+4. **Compile and simulate** — the `quonc` and Python verifier commands you can
+   run to reproduce the results.
 5. **`--dump-ir` MLIR excerpts** — what the compiler produces after
-   optimization, described in terms of the passes that ran.
+   optimization, described in terms of the passes that ran and what they found
+   (or did not find) to simplify.
 6. **What the compiler proves** — the invariants the typechecker and optimizer
-   guarantee (linear use, depth bound, Clifford classification, no-cloning).
-7. **What to try next** — suggestions for modifying the program.
+   guarantee (linear use, depth bound, Clifford classification, no-cloning) for
+   this specific program.
+7. **Expected result** — what the Aer simulation should produce and what the
+   verifier checks.
+8. **What to try next** — suggestions for modifying the program to explore
+   the compiler's behavior.
 
 Read the pages in order. Each builds on the concepts introduced in the
 previous one. The Bell state introduces circuits and measurement; teleportation
@@ -56,47 +76,113 @@ gate-model cookbook to the neutral-atom scheduling pipeline.
 
 ## Progressive difficulty ordering
 
-The recipes are ordered by increasing language and compiler complexity:
+The recipes are ordered by increasing language and compiler complexity. Each
+one introduces at least one new language feature or compiler concept that the
+previous recipes did not use:
 
 - **Bell state** (order 2) — the smallest circuit: `H |> CNOT`. Introduces
-  circuits as values, sequential composition, and measurement.
-- **Teleportation** (order 3) — adds `run` blocks, classical feed-forward
-  (`if bit then circuit`), and the `quantum.dynamic` dialect.
-- **Bernstein–Vazirani** (order 4) — phase kickback, oracle structure, and
-  Clifford classification of the full algorithm.
-- **Grover search** (order 5) — parametric circuits with `for` loops,
-  `repeat`, and the exact n = 2 special case.
-- **QFT** (order 6) — recursion, value-dependent types, `on_high`,
-  `swap_reverse`, and structural cancellation via `adjoint`.
-- **Ising** (order 7) — Trotterization, partial evaluation of `Float`
-  values, and the `Rzz` decomposition.
-- **QAOA MaxCut** (order 8) — variational circuits, `pairs(n)`, and the depth
-  bound as a feasibility check.
-- **Shor quantum kernel** (order 9) — `tensored`/`split` register algebra,
-  `adjoint`, and the full value-dependent type system in one program.
+  circuits as values, the `Circuit<n, m, d, C>` type, sequential composition
+  with `|>`, and measurement. The optimizer confirms the circuit is already
+  minimal.
+- **Teleportation** (order 3) — adds `run` blocks with multi-qubit
+  allocation, classical feed-forward (`if bit then circuit else circuit`), the
+  `quantum.dynamic` dialect's `cond_apply`, and the distinction between linear
+  quantum values and unrestricted classical bits.
+- **Bernstein–Vazirani** (order 4) — phase kickback, oracle structure as a
+  single monomorphized circuit, and Clifford classification of the full
+  algorithm. Introduces the concept of parametric algorithms flattened into
+  concrete circuits by the elaborator.
+- **Grover search** (order 5) — parametric circuits with `for` loops over
+  qubits, the `repeat` construct for bounded self-composition, and the exact
+  N = 4, M = 1 special case where one iteration is provably sufficient.
+- **QFT** (order 6) — recursion via `match n`, value-dependent types with
+  symbolic depth bounds, `on_high` (embedding a smaller circuit into the high
+  qubits), `swap_reverse` (bit-reversal permutation), and structural
+  cancellation via `adjoint` — the optimizer proves a non-trivial circuit
+  composes with its inverse to identity.
+- **Ising** (order 7) — Trotterization of a many-body Hamiltonian, partial
+  evaluation of `Float` values at compile time, the `Rzz` decomposition into
+  `CNOT + Rz + CNOT`, and the `t = 0` boundary test where every rotation angle
+  is zero.
+- **QAOA MaxCut** (order 8) — variational circuits, the `pairs(n)` iterator for
+  all-to-all interactions, and the depth bound as a hardware feasibility check.
+  Introduces the concept that the optimizer should *preserve* a variational
+  ansatz rather than simplify it.
+- **Shor quantum kernel** (order 9) — `tensored`/`split` register algebra
+  (concatenation and splitting of qubit registers), `adjoint` synthesis, and
+  the full value-dependent type system composed in one program. The most
+  feature-complete recipe — a compiler integration test.
 - **NA QAOA schedule** (order 11) — the neutral-atom backend: interaction
-  graph extraction, Misra–Gries scheduling, movement planning, and resource
-  reporting.
-- **More samples** (order 10) — a pointer to the broader `samples/` corpus.
+  graph extraction, Misra–Gries edge-coloring scheduling, AOD movement
+  planning with geometric constraints, schedule compaction, and analytic
+  resource reporting. A different compilation target producing a schedule
+  instead of QASM.
+- **More samples** (order 10) — a pointer to the broader `samples/` corpus
+  beyond this cookbook.
 
 ## Reference programs
 
+The table below summarizes all ten recipes with their key type signatures and
+the compiler features each one exercises. Use it to find the recipe that
+demonstrates a feature you are interested in.
+
 | Recipe | Type signature | What it demonstrates |
 | --- | --- | --- |
-| [Bell state](./bell/) | `Circuit<2, 2, 2, Clifford>` | Entanglement resource, sequential composition, measurement |
-| [Teleportation](./teleportation/) | `Circuit<3, 3, 3, Clifford>` + feed-forward | Dynamic circuits, `if`-branching, classical-quantum interaction |
-| [Bernstein–Vazirani](./bernstein-vazirani/) | `Circuit<4, 4, 10, Clifford>` | Phase kickback, oracle structure, one-query recovery |
-| [Grover search](./grover/) | `Circuit<2, 2, 1, Clifford>` oracle + `Circuit<n, n, 5, Clifford>` diffusion | Amplitude amplification, `for` loops, `repeat`, exact n = 2 |
-| [QFT](./qft/) | `Circuit<n, n, 2*n*n, Universal>` | Recursion, value-dependent types, `on_high`, `adjoint` cancellation |
-| [Ising](./ising/) | `Circuit<n, n, n_steps*n, Universal>` | Trotterization, partial evaluation, `Rzz` decomposition |
-| [QAOA MaxCut](./qaoa/) | `Circuit<3, 3, n*n+1, Universal>` | Variational circuits, `pairs(n)`, depth as feasibility |
-| [Shor kernel](./shor-kernel/) | `Circuit<2*n, 2*n, 2*n*n, Universal>` | `tensored`/`split`, recursion, `adjoint`, compiler integration test |
-| [NA QAOA schedule](./na-qaoa/) | `Circuit<4, 4, 8, Universal>` → NA schedule | Neutral-atom backend, interaction graphs, movement planning, resource report |
+| [Bell state](./bell/) | `Circuit<2, 2, 2, Clifford>` | Entanglement resource, sequential composition, measurement, optimizer confirms minimality |
+| [Teleportation](./teleportation/) | `Circuit<3, 3, 3, Clifford>` + feed-forward | Dynamic circuits, `if`-branching, `cond_apply`, classical-quantum interaction |
+| [Bernstein–Vazirani](./bernstein-vazirani/) | `Circuit<4, 4, 10, Clifford>` | Phase kickback, oracle structure, one-query recovery, monomorphization |
+| [Grover search](./grover/) | `Circuit<2, 2, 1, Clifford>` oracle + `Circuit<n, n, 5, Clifford>` diffusion | Amplitude amplification, `for` loops, `repeat`, exact n = 2 special case |
+| [QFT](./qft/) | `Circuit<n, n, 2*n*n, Universal>` | Recursion, value-dependent types, `on_high`, `swap_reverse`, `adjoint` cancellation to identity |
+| [Ising](./ising/) | `Circuit<n, n, n_steps*n, Universal>` | Trotterization, partial evaluation of `Float`, `Rzz` decomposition, `t = 0` boundary |
+| [QAOA MaxCut](./qaoa/) | `Circuit<3, 3, n*n+1, Universal>` | Variational circuits, `pairs(n)`, depth as feasibility, ansatz preservation |
+| [Shor kernel](./shor-kernel/) | `Circuit<2*n, 2*n, 2*n*n, Universal>` | `tensored`/`split`, recursion, `adjoint`, `controlled(Rz)`, compiler integration test |
+| [NA QAOA schedule](./na-qaoa/) | `Circuit<4, 4, 8, Universal>` → NA schedule | Neutral-atom backend, interaction graphs, Misra–Gries scheduling, movement planning, resource report |
 | [More samples](./samples/) | — | The `samples/` corpus: learning, algorithms, workflows, NA pedagogy |
+
+## What each recipe teaches about the compiler
+
+Beyond the algorithm itself, each recipe is chosen to demonstrate a specific
+aspect of the Quon compiler. Here is a quick guide to what compiler concept
+each page focuses on:
+
+- **Bell state** — the baseline: circuits as typed values, `|>` as sequential
+  composition, the typechecker proving depth and Clifford class, and the
+  optimizer doing nothing (confirming minimality).
+- **Teleportation** — the `quantum.dynamic` dialect: how classical measurement
+  results condition later gates, how the linear type system distinguishes
+  measured (classical) from unmeasured (quantum) qubits, and how `cond_apply`
+  lowers feed-forward.
+- **Bernstein–Vazirani** — monomorphization: how a parametric algorithm with
+  `Nat` arguments and `for` loops is elaborated into a single concrete circuit
+  that the typechecker and optimizer can fully analyze.
+- **Grover search** — parametric elaboration with `for q in qubits(n)`: how the
+  elaborator unrolls loops over disjoint qubits and recognizes depth 1 (max,
+  not sum), plus the `repeat` construct and its arithmetic depth rule.
+- **QFT** — value-dependent types: how the depth bound `2*n*n` is proved by
+  induction over the `match n` recursion, how `on_high` embeds a smaller
+  circuit into a larger register, and how the optimizer structurally cancels
+  `qft |> adjoint(qft)` to the identity.
+- **Ising** — partial evaluation: how `let tau = t / float(n_steps)` is
+  evaluated at compile time and substituted into rotation angles, and how the
+  `Rzz` decomposition interacts with `gate_cancellation` at `t = 0`.
+- **QAOA MaxCut** — ansatz preservation: why the optimizer deliberately does
+  *not* simplify a variational circuit, and how the `pairs(n)` iterator is
+  elaborated to explicit gate lists.
+- **Shor kernel** — register algebra: how `tensored` concatenates registers and
+  `split` divides them, how the typechecker proves arity consistency at every
+  step, and how all the major language features compose in one program.
+- **NA QAOA schedule** — a different backend: how the same logical circuit is
+  lowered through the neutral-atom pipeline into a physical schedule of atom
+  movements and Rydberg pulses, with a resource report of timing and fidelity
+  metrics.
+
+## Prerequisites
 
 The examples assume familiarity with [circuits, linear quantum values, and
 `run` blocks](/language/). For the formal language definition, see the
 [Quon specification](https://github.com/arniber21/quon/blob/main/SPEC.md).
+The cookbook pages reference specific files in the compiler's test suite —
+follow the links to read the raw `.qn` sources and their Python verifiers.
 
 → Start with: [Bell state](./bell/) — the smallest circuit that exercises
   the full compiler pipeline.
