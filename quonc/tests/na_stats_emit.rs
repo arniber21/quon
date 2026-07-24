@@ -73,6 +73,10 @@ fn zoned_backend_emits_full_shape() {
     );
     assert_eq!(stats["config"]["compaction"]["requested"], true);
     assert_eq!(stats["config"]["compaction"]["applied"], true);
+    assert_eq!(
+        stats["config"]["objective"], "time",
+        "default objective: {stats}"
+    );
 
     let timings = &stats["stage_timings_us"];
     assert!(

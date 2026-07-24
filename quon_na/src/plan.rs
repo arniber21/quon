@@ -27,7 +27,9 @@ use crate::pipeline::{
 use crate::placement::{PlacementStrategy, place};
 use crate::schedule_entry::GraphScheduleRequest;
 use crate::stats::SearchDiagnostics;
-use crate::zoned::{AgnosticPlacerMechanism, PlacerMode, schedule_zoned_with_aware_params};
+use crate::zoned::{
+    AgnosticPlacerMechanism, PlacementCostModel, PlacerMode, schedule_zoned_with_aware_params,
+};
 use backend::NeutralAtomTarget;
 
 /// Wall-clock elapsed microseconds since `start` (saturating on overflow).
@@ -106,9 +108,31 @@ pub fn plan_backend<V: VertexId>(
                 );
             }
             let arch = zoned_architecture(na);
+            // Issue #309: construct the placement cost model from the
+            // objective and target's error_model. Fail-closed if
+            // ErrorBudget is requested without an error_model (mirrors
+            // --emit-resource-report discipline, ADR-0017).
+            let cost_model = match opts.objective {
+                crate::pipeline::NaObjective::Time => PlacementCostModel::Time,
+                crate::pipeline::NaObjective::ErrorBudget => {
+                    let model = na
+                        .error_model
+                        .as_ref()
+                        .ok_or(NaPipelineError::MissingErrorModelForObjective)?;
+                    PlacementCostModel::ErrorBudget {
+                        model: *model,
+                        speed_model: arch.speed_model,
+                    }
+                }
+            };
             let stage_started = Instant::now();
-            let zoned =
-                schedule_zoned_with_aware_params(req, &arch, opts.placer, opts.aware_search)?;
+            let zoned = schedule_zoned_with_aware_params(
+                req,
+                &arch,
+                opts.placer,
+                opts.aware_search,
+                cost_model,
+            )?;
             info.zoned_schedule_us = Some(elapsed_us(stage_started));
             info.aware_search_status = Some((
                 zoned.aware_search_completed_layers,
@@ -383,5 +407,65 @@ mod tests {
         assert_eq!(acc.entangling_layers_us, 10);
         assert_eq!(acc.placement_us, Some(10)); // not re-placed
         assert_eq!(acc.movement_us, Some(50)); // 20 + 30
+    }
+
+    /// Issue #309: requesting `ErrorBudget` objective on a target without an
+    /// `error_model` is a hard error (fail-closed, mirroring
+    /// `--emit-resource-report` discipline — ADR-0017).
+    #[test]
+    fn error_budget_objective_fails_closed_without_error_model() {
+        let path = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../targets/neutral_atom/generic_rna_v0.json"
+        ));
+        let loaded = backend::json::load(path).expect("load target");
+        let mut na = loaded.neutral_atom_target().expect("na target").clone();
+        // Remove the error_model to simulate a target without one.
+        na.error_model = None;
+
+        use crate::graph::{
+            DEFAULT_GAMMA, Interaction, InteractionGraph, InteractionId, InteractionSegment,
+            LogicalQubitId, SegmentKind,
+        };
+        let vertices: Vec<_> = (0..4).map(LogicalQubitId).collect();
+        let interactions = vec![
+            Interaction {
+                id: InteractionId(0),
+                qubits: vec![LogicalQubitId(0), LogicalQubitId(1)],
+                gate_name: "CZ".into(),
+                dag_layer: 0,
+                on_critical_path: false,
+            },
+            Interaction {
+                id: InteractionId(1),
+                qubits: vec![LogicalQubitId(2), LogicalQubitId(3)],
+                gate_name: "CZ".into(),
+                dag_layer: 0,
+                on_critical_path: false,
+            },
+        ];
+        let ids = vec![InteractionId(0), InteractionId(1)];
+        let graph = InteractionGraph::from_interactions(
+            vertices,
+            interactions,
+            vec![InteractionSegment {
+                kind: SegmentKind::CommutationGroup,
+                interactions: ids,
+            }],
+            DEFAULT_GAMMA,
+        )
+        .expect("graph");
+
+        let req = crate::schedule_entry::schedule_from_graph(graph).expect("stub");
+        let opts = NaScheduleOptions {
+            objective: crate::pipeline::NaObjective::ErrorBudget,
+            ..Default::default()
+        };
+        let result = plan_backend(req, &na, opts);
+        assert!(
+            matches!(result, Err(NaPipelineError::MissingErrorModelForObjective)),
+            "ErrorBudget on a target without error_model must fail-closed with \
+             MissingErrorModelForObjective, got: {result:?}"
+        );
     }
 }

@@ -125,9 +125,9 @@ pub use stats::{
 };
 pub use zoned::{
     AWARE_NODE_BUDGET, AgnosticPlacerMechanism, AwareSearchOutcome, AwareSearchParams,
-    MATCHING_FALLBACK_GATE_PAIR_PRODUCT, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture,
-    ZonedScheduleError, ZonedScheduleResult, euclidean_um, routing_cost_eq1, schedule_zoned,
-    schedule_zoned_with_aware_params, sqrt_d_max, toy_zoned_architecture,
+    MATCHING_FALLBACK_GATE_PAIR_PRODUCT, PlacementCostModel, PlacerMode, ZoneKind, ZoneSpec,
+    ZonedArchitecture, ZonedScheduleError, ZonedScheduleResult, euclidean_um, routing_cost_eq1,
+    schedule_zoned, schedule_zoned_with_aware_params, sqrt_d_max, toy_zoned_architecture,
     validate_zone_constraints,
 };
 
@@ -148,6 +148,7 @@ pub use lower::{ScheduleLowerError, ScheduleLowerParams, lower_layers, lower_sch
 #[cfg(feature = "mlir")]
 pub use pipeline::run_from_module;
 pub use pipeline::{
-    NaBackendKind, NaPipelineError, NaScheduleArtifacts, NaScheduleOptions, StatePrepMode,
-    compaction_options, movement_params, run_from_graph, validate_speed_model, zoned_architecture,
+    NaBackendKind, NaObjective, NaPipelineError, NaScheduleArtifacts, NaScheduleOptions,
+    StatePrepMode, compaction_options, movement_params, run_from_graph, validate_speed_model,
+    zoned_architecture,
 };
