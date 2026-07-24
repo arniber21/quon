@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::geometry::{euclidean_um, movement_duration_us, ordered_pair};
+use crate::geometry::{euclidean_um, movement_duration_for_model, ordered_pair};
 use crate::layout::{AodTrapRef, AtomId, Position, SiteId};
 use crate::movement::bank::{pair_occupants, site_position_map};
 use crate::movement::duals::{AodGrid, DualCandidate, pack_legs_greedy};
@@ -353,7 +353,7 @@ impl EmitCtx<'_> {
         self.out_layers.push(load_layer);
         *self.next_cycle = self.next_cycle.saturating_add(1);
 
-        let duration_us = movement_duration_us(d_max, self.params.acceleration_m_s2);
+        let duration_us = movement_duration_for_model(d_max, &self.params.speed_model);
         let move_layer = ScheduleLayer {
             cycle: *self.next_cycle,
             actions: vec![NeutralAtomAction::Move(MovementGroup {

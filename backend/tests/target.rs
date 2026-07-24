@@ -631,6 +631,103 @@ fn neutral_atom_target_round_trips_through_descriptor() {
     assert_eq!(reloaded.neutral_atom_target(), target.neutral_atom_target());
 }
 
+/// Build a jerk-limited variant of the generic RNA target by rewriting the
+/// `movement.speed_model` object in the sample JSON (issue #308).
+fn jerk_limited_sample_json(jerk_m_s3: f64, max_velocity_m_s: f64) -> String {
+    let mut value = neutral_sample_value();
+    let movement = value
+        .get_mut("movement")
+        .and_then(|v| v.as_object_mut())
+        .expect("movement object");
+    movement.insert(
+        "speed_model".into(),
+        serde_json::json!({
+            "kind": "jerk_limited",
+            "acceleration_m_s2": 2750.0,
+            "jerk_m_s3": jerk_m_s3,
+            "max_velocity_m_s": max_velocity_m_s,
+        }),
+    );
+    serde_json::to_string(&value).expect("reserialize jerk-limited target")
+}
+
+#[test]
+fn neutral_atom_jerk_limited_speed_model_loads_and_round_trips() {
+    let src = jerk_limited_sample_json(1.0e8, 0.5);
+    let target = json::from_str(&src).expect("jerk_limited target loads");
+    let na = target.neutral_atom_target().expect("na");
+    assert_eq!(
+        na.movement.speed_model.kind,
+        backend::AodSpeedModelKind::JerkLimited
+    );
+    assert_eq!(na.movement.speed_model.acceleration_m_s2, 2750.0);
+    assert_eq!(na.movement.speed_model.jerk_m_s3, 1.0e8);
+    assert_eq!(na.movement.speed_model.max_velocity_m_s, 0.5);
+
+    // Descriptor round-trip preserves the jerk-limited kind + params.
+    let serialized = serde_json::to_string(&target.to_descriptor()).expect("serialize");
+    let reloaded = json::from_str(&serialized).expect("reload");
+    assert_eq!(
+        reloaded.neutral_atom_target(),
+        target.neutral_atom_target(),
+        "jerk_limited speed model must survive descriptor round-trip"
+    );
+    // The serialized form names the variant in snake_case.
+    assert!(
+        serialized.contains("\"kind\":\"jerk_limited\""),
+        "kind not snake_case: {serialized}"
+    );
+    assert!(serialized.contains("\"jerk_m_s3\""));
+    assert!(serialized.contains("\"max_velocity_m_s\""));
+}
+
+#[test]
+fn neutral_atom_jerk_limited_rejects_nonpositive_jerk() {
+    // jerk_m_s3 <= 0 is invalid for jerk_limited (sqrt ignores the field).
+    let src = jerk_limited_sample_json(0.0, 0.5);
+    let err = json::from_str(&src).unwrap_err();
+    assert!(
+        matches!(err, BackendError::InvalidTargetConfig(_)),
+        "got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("movement.speed_model.jerk_m_s3"),
+        "error should name jerk_m_s3: {err}"
+    );
+}
+
+#[test]
+fn neutral_atom_jerk_limited_rejects_negative_max_velocity() {
+    let src = jerk_limited_sample_json(1.0e8, -0.1);
+    let err = json::from_str(&src).unwrap_err();
+    assert!(
+        matches!(err, BackendError::InvalidTargetConfig(_)),
+        "got {err:?}"
+    );
+    assert!(
+        err.to_string()
+            .contains("movement.speed_model.max_velocity_m_s"),
+        "error should name max_velocity_m_s: {err}"
+    );
+}
+
+#[test]
+fn neutral_atom_sqrt_target_loads_without_jerk_fields() {
+    // Backward compat: the pinned sqrt target JSON carries no jerk_m_s3 /
+    // max_velocity_m_s fields; they default to 0.0 and stay unused under sqrt.
+    let target = json::load(&workspace_path(
+        "../targets/neutral_atom/generic_rna_v0.json",
+    ))
+    .expect("sqrt target loads");
+    let na = target.neutral_atom_target().expect("na");
+    assert_eq!(
+        na.movement.speed_model.kind,
+        backend::AodSpeedModelKind::Sqrt
+    );
+    assert_eq!(na.movement.speed_model.jerk_m_s3, 0.0);
+    assert_eq!(na.movement.speed_model.max_velocity_m_s, 0.0);
+}
+
 #[test]
 fn neutral_atom_negative_zone_extent_is_rejected() {
     let src = neutral_sample_json().replace("\"rows\": 73", "\"rows\": -1");

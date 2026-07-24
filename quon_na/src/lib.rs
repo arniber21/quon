@@ -73,6 +73,10 @@ pub use entangling_schedule::{
     EntanglingScheduleError, EntanglingScheduleResult, LayerUtilization, capacity_layer_count,
     schedule_entangling_layers,
 };
+pub use geometry::{
+    SpeedModel, SpeedModelKind, movement_duration_for_model, movement_duration_us,
+    movement_duration_us_jerk,
+};
 pub use graph::{
     DEFAULT_GAMMA, GraphError, Interaction, InteractionEdge, InteractionGraph, InteractionId,
     InteractionSegment, LogicalQubitId, SegmentKind, aggregate_edges, cubic_commutation_graph,
@@ -121,8 +125,8 @@ pub use stats::{
 pub use zoned::{
     AWARE_NODE_BUDGET, AgnosticPlacerMechanism, AwareSearchOutcome, AwareSearchParams,
     MATCHING_FALLBACK_GATE_PAIR_PRODUCT, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture,
-    ZonedScheduleError, ZonedScheduleResult, euclidean_um, movement_duration_us, routing_cost_eq1,
-    schedule_zoned, schedule_zoned_with_aware_params, sqrt_d_max, toy_zoned_architecture,
+    ZonedScheduleError, ZonedScheduleResult, euclidean_um, routing_cost_eq1, schedule_zoned,
+    schedule_zoned_with_aware_params, sqrt_d_max, toy_zoned_architecture,
     validate_zone_constraints,
 };
 

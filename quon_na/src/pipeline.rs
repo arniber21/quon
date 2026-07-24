@@ -201,7 +201,7 @@ pub fn zoned_architecture(na: &NeutralAtomTarget) -> ZonedArchitecture {
                 pair_gap_um: z.pair_gap_um,
             })
             .collect(),
-        acceleration_m_s2: na.movement.speed_model.acceleration_m_s2,
+        speed_model: crate::geometry::SpeedModel::from(&na.movement.speed_model),
         trap_transfer_us: na.movement.trap_transfer_us.round() as u64,
         require_readout_zone: false,
         rydberg_range_um: na.interaction.rydberg_range_um,
@@ -219,7 +219,7 @@ pub fn movement_params(na: &NeutralAtomTarget) -> MovementParams {
         .and_then(|z| z.pair_gap_um)
         .unwrap_or(2.0);
     MovementParams {
-        acceleration_m_s2: na.movement.speed_model.acceleration_m_s2,
+        speed_model: crate::geometry::SpeedModel::from(&na.movement.speed_model),
         trap_transfer_us: na.movement.trap_transfer_us.round() as u64,
         rydberg_range_um: na.interaction.rydberg_range_um,
         min_rydberg_spacing_um: na.interaction.min_rydberg_spacing_um,
@@ -247,9 +247,30 @@ pub fn compaction_options(na: &NeutralAtomTarget, greedy: bool) -> CompactionOpt
 }
 
 /// Sanity-check that the target's speed model is the one `quon_na` implements.
+///
+/// Both `Sqrt` (default) and `JerkLimited` (issue #308) are implemented. The
+/// jerk-limited variant additionally requires `jerk_m_s3 > 0` and
+/// `max_velocity_m_s >= 0` (the backend descriptor loader enforces the same on
+/// JSON load; this re-checks for in-memory `NeutralAtomTarget`s).
 pub fn validate_speed_model(na: &NeutralAtomTarget) -> Result<(), String> {
     match na.movement.speed_model.kind {
         AodSpeedModelKind::Sqrt => Ok(()),
+        AodSpeedModelKind::JerkLimited => {
+            if na.movement.speed_model.jerk_m_s3 <= 0.0 {
+                return Err(format!(
+                    "movement.speed_model.jerk_m_s3 must be positive for jerk_limited, got {}",
+                    na.movement.speed_model.jerk_m_s3
+                ));
+            }
+            if na.movement.speed_model.max_velocity_m_s < 0.0 {
+                return Err(format!(
+                    "movement.speed_model.max_velocity_m_s must be non-negative for \
+                     jerk_limited, got {}",
+                    na.movement.speed_model.max_velocity_m_s
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
