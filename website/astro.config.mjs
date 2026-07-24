@@ -72,6 +72,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Developer tooling', slug: 'guides/tooling' },
 						{ label: 'Backends and verification', slug: 'guides/backends' },
+						{ label: 'Results and plotting', slug: 'guides/results-and-plotting' },
 						{ label: 'Neutral-atom FT demo', slug: 'guides/na-ft-demo' },
 						{ label: 'Maturation path', slug: 'guides/roadmap' },
 						{ label: 'Application demos', slug: 'guides/applications' },
