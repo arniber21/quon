@@ -1,0 +1,46 @@
+-- Creative sample: the entangled-twins magic trick.
+-- Two pairs of qubits, two opposite predictions -- both guaranteed.
+--
+-- Pair (q0, q1) is the |Phi+> Bell state (1/sqrt(2))(|00> + |11>): the two bits
+-- always *agree* (00 or 11). Pair (q2, q3) is the |Psi+> Bell state
+-- (1/sqrt(2))(|01> + |10>): the two bits always *disagree* (01 or 10). Hold
+-- q0 and q2 ("Alice"); give q1 and q3 to a partner ("Bob"). Alice measures
+-- her two qubits and announces Bob's bits in full -- "your first matches mine,
+-- your second is the opposite of mine" -- and she is right every single time,
+-- even though each of her bits is, on its own, a fair coin.
+--
+-- That is the trick, and it is also the lesson. Entanglement is not "the bits
+-- are the same"; it is "the bits are in a *determined relation*". Whether the
+-- relation is same (|Phi+>) or opposite (|Psi+>) is set entirely by how the
+-- pair was prepared -- here, by whether the CNOT's target started in |0>
+-- (correlated) or |1> (anti-correlated, via the leading X @3). The same two
+-- gates (H, CNOT) build both; an X on one qubit flips the correlation. No
+-- communication happens between Alice and Bob -- the relation was locked in at
+-- preparation time, before they separated.
+--
+-- This extends samples/learning/hello_bell.qn (one correlated pair) and
+-- samples/learning/entanglement.qn (correlated pair vs separable pair) by
+-- showing two *entangled* pairs with *opposite* correlations in one program.
+-- The circuit type Circuit<4, 4, 5, Clifford> says four qubits, five gates
+-- applied in sequence (depth 5), all Clifford -- a stabilizer tableau
+-- simulates this exactly.
+--
+-- Try it, then check both correlations with the seeded Aer checker:
+--   quonc samples/creative/entangled_twins.qn --emit-qasm
+--   QUONC=target/release/quonc python test/verify/entangled_twins.py
+-- Expected: (b0,b1) in {00,11} each ~50%; (b2,b3) in {01,10} each ~50%.
+
+fn twins(): Circuit<4, 4, 5, Clifford> = circuit {
+    -- Pair 0: |Phi+> = (|00>+|11>)/sqrt(2)  ->  b0 == b1  (predict SAME)
+    H @0 |> CNOT @(0, 1)
+    -- Pair 1: |Psi+> = (|01>+|10>)/sqrt(2)  ->  b2 != b3  (predict OPPOSITE)
+    -- The X @3 starts the CNOT target in |1>, flipping the correlation.
+    |> X @3 |> H @2 |> CNOT @(2, 3)
+}
+
+fn main(): Q<List<Bit>> = run {
+    q <- twins() @ qreg(4)
+    measure_all(q)
+    -- Expected (Qiskit high-index-first printing): only {1000, 0100, 1011, 0111}, each ~25%.
+    -- Decode: b0==b1 and b2!=b3, always (pair 0,1 is |Φ+⟩ correlated; pair 2,3 is |Ψ+⟩ anti-correlated).
+}

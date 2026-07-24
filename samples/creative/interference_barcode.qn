@@ -1,0 +1,43 @@
+-- Creative sample: the interference barcode.
+-- A uniform superposition gives a flat histogram. Add a phase and the
+-- histogram bends -- that bending *is* interference, and here it draws a
+-- barcode.
+--
+-- Each qubit gets H |> T |> H: a Hadamard makes |+>, the T gate adds a pi/4
+-- phase to |1>, and a second Hadamard interferes the two paths back together.
+-- Because the phase is not 0 or pi, the paths no longer cancel symmetrically:
+-- P(0) = cos^2(pi/8) ~= 0.854, P(1) = sin^2(pi/8) ~= 0.146. The qubit is
+-- biased toward 0 -- not by a biased coin, but by constructive interference
+-- on |0> and destructive interference on |1>. With three independent qubits
+-- the eight outcomes line up by Hamming weight into a descending fringe:
+--   000 (P~0.62) >> {001,010,100} (P~0.11 each)
+--                >> {011,101,110} (P~0.018 each) >> 111 (P~0.003).
+-- Rendered as ASCII bars, that is a quantum barcode -- a pattern drawn by
+-- phase, not by a lookup table.
+--
+-- The concept is *interference*: superposition alone is random-but-flat
+-- (samples/creative/quantum_dice.qn); a phase between the branches makes the
+-- randomness *structured*. This is the same H-T-H building block that lifts
+-- Clifford circuits toward universality (T is the non-Clifford resource -- see
+-- the Clifford classification language page), here used not for computation but
+-- to shape a distribution. The `for q in qubits(n)` loop places one
+-- H-T-H on each qubit; the typechecker proves depth 3 (three sequential gates
+-- per qubit, max over the disjoint layer).
+--
+-- The Python checker renders the measured histogram as ASCII art and verifies
+-- the fringe is monotone in Hamming weight (the signature of single-qubit
+-- H-T-H interference).
+--
+--   quonc samples/creative/interference_barcode.qn --emit-qasm
+--   QUONC=target/release/quonc python test/verify/interference_barcode.py
+-- Expected: 000 most probable, 111 least, strict descent by popcount.
+
+fn fringe(n: Nat): Circuit<n, n, 3, Universal> = circuit {
+    for q in qubits(n) { H q |> T q |> H q }
+}
+
+fn main(): Q<List<Bit>> = run {
+    q <- fringe(3) @ qreg(3)
+    measure_all(q)
+    -- Expected: a descending fringe by Hamming weight. Interference, as art.
+}

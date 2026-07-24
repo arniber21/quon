@@ -33,6 +33,7 @@ const CATEGORIES: &[&str] = &[
     "applications",
     "research",
     "neutral-atom",
+    "creative",
 ];
 
 #[derive(Debug, Deserialize)]

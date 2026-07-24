@@ -1,0 +1,35 @@
+-- Creative sample: the quantum dice.
+-- Roll a fair n-sided die with n qubits, one Hadamard each. Each qubit lands
+-- in |+> = (|0> + |1>)/sqrt(2), so measuring the register yields a uniformly
+-- random n-bit string -- a face of a 2^n-sided die. The randomness is genuine
+-- (Born rule), not a pseudo-random seed.
+--
+-- The concept on show is *parallel composition*. A `for q in qubits(n)` loop
+-- places one H on each of the n qubits; the typechecker recognizes the
+-- placements act on disjoint qubits and proves depth 1 -- all n Hadamards run
+-- in a single layer. Contrast with writing them as `H @0 |> H @1 |> ...`,
+-- which would chain them sequentially and inflate the depth to n for the same
+-- physics. (The declarative `par { c } * n` spelling of the same layer
+-- typechecks but is not yet lowered; the `for` form is the one that compiles
+-- end to end -- see samples/learning/gates_composition.qn.)
+--
+-- This is the many-qubit cousin of samples/applications/quantum_coin_flip.qn
+-- (one qubit, one bit) and samples/learning/states_measurement.qn (one basis
+-- qubit vs one superposition qubit). The dice generalizes the coin: n
+-- independent fair coins rolled at once, in one depth layer.
+--
+-- Try it, then check the statistics with the seeded Aer checker:
+--   quonc samples/creative/quantum_dice.qn --emit-qasm
+--   QUONC=target/release/quonc python test/verify/quantum_dice.py
+-- Expected: all 2^n faces appear, each roughly 1/2^n of the shots.
+
+fn dice(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn main(): Q<List<Bit>> = run {
+    q <- dice(3) @ qreg(3)
+    measure_all(q)
+    -- Expected: each of 000..111 appears ~1/8 of the time. A fair 8-sided die,
+    -- rolled in a single depth-1 layer of Hadamards.
+}
