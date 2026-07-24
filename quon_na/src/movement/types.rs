@@ -13,6 +13,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::geometry::{SpeedModel, SpeedModelKind};
 use crate::graph::LogicalQubitId;
 use crate::layout::{AtomId, SiteId};
 use crate::schedule_entry::GraphScheduleRequest;
@@ -27,7 +28,12 @@ pub const BANK_ISOLATION_EPS_UM: f64 = 0.01;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MovementParams {
-    pub acceleration_m_s2: f64,
+    /// Movement timing model (issue #308): √-law by default, jerk-limited when
+    /// `kind = JerkLimited`. Replaces the bare `acceleration_m_s2` field; the
+    /// acceleration lives inside the model. `#[serde(default)]` keeps older
+    /// serialized `MovementParams` (none currently round-tripped) tolerant.
+    #[serde(default)]
+    pub speed_model: SpeedModel,
     pub trap_transfer_us: u64,
     pub rydberg_range_um: f64,
     /// R3 isolation: non-partners must be farther than this (generic_rna: 18.75).
@@ -51,7 +57,12 @@ impl MovementParams {
     /// Defaults matching `targets/neutral_atom/generic_rna_v0.json` / architecture §8.6.
     pub fn generic_rna_v0() -> Self {
         Self {
-            acceleration_m_s2: 2750.0,
+            speed_model: SpeedModel {
+                kind: SpeedModelKind::Sqrt,
+                acceleration_m_s2: 2750.0,
+                jerk_m_s3: 0.0,
+                max_velocity_m_s: 0.0,
+            },
             trap_transfer_us: 15,
             rydberg_range_um: 7.5,
             min_rydberg_spacing_um: 18.75,
@@ -66,10 +77,22 @@ impl MovementParams {
     }
 
     pub(crate) fn validate(&self) -> Result<(), MovementPlanError> {
-        if self.acceleration_m_s2 <= 0.0 {
+        if self.speed_model.acceleration_m_s2 <= 0.0 {
             return Err(MovementPlanError::InvalidAcceleration(
-                self.acceleration_m_s2,
+                self.speed_model.acceleration_m_s2,
             ));
+        }
+        // Issue #308: jerk_limited needs a positive jerk and a non-negative
+        // cruise cap (sqrt ignores both).
+        if self.speed_model.kind == SpeedModelKind::JerkLimited {
+            if self.speed_model.jerk_m_s3 <= 0.0 {
+                return Err(MovementPlanError::InvalidJerk(self.speed_model.jerk_m_s3));
+            }
+            if self.speed_model.max_velocity_m_s < 0.0 {
+                return Err(MovementPlanError::InvalidMaxVelocity(
+                    self.speed_model.max_velocity_m_s,
+                ));
+            }
         }
         if self.rydberg_range_um <= 0.0 {
             return Err(MovementPlanError::InvalidRydbergRange(
@@ -140,6 +163,10 @@ pub enum MovementPlanError {
     InvalidRydbergRange(f64),
     #[error("min_rydberg_spacing_um must be positive, got {0}")]
     InvalidMinRydbergSpacing(f64),
+    #[error("jerk_m_s3 must be positive for jerk_limited, got {0}")]
+    InvalidJerk(f64),
+    #[error("max_velocity_m_s must be non-negative for jerk_limited, got {0}")]
+    InvalidMaxVelocity(f64),
     #[error("min_row_col_separation_um must be positive, got {0}")]
     InvalidMinRydbergSeparation(f64),
     #[error("pair_gap_um ({gap}) must be in (0, rydberg_range_um={rb}]")]

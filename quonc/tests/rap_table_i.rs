@@ -166,6 +166,25 @@ fn ising_n42_preflight_gate_and_layer_counts() {
          ([RAP] Table I ising n=42); got report: {report}"
     );
     assert_eq!(u64_field(&report, "logical_qubits"), 42);
+
+    // Issue #308 hard guard: the pinned RAP Table I target MUST keep the √-law
+    // timing model — the Table I reproduction uses the paper's √-law, not the
+    // jerk-limited model (rap_table_i_methodology.md "Timing model"; switching
+    // it would silently stop reproducing this paper's numbers). Assert the kind
+    // directly on the JSON so nobody flips it without failing this CI anchor.
+    let target_json: Value = serde_json::from_str(
+        &std::fs::read_to_string(na_target()).expect("read pinned target JSON"),
+    )
+    .expect("parse pinned target JSON");
+    let kind = target_json
+        .pointer("/movement/speed_model/kind")
+        .and_then(Value::as_str)
+        .expect("pinned target must carry movement.speed_model.kind");
+    assert_eq!(
+        kind, "sqrt",
+        "rap_table_i.json speed_model.kind must stay `sqrt` (the [RAP] Table I √-law); \
+         got `{kind}` — see docs/neutral_atom/rap_table_i_methodology.md"
+    );
 }
 
 /// Dump + Phase-2b enforcement test: records both placers' rearrangement

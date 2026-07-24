@@ -180,12 +180,20 @@ pub enum AodMovementModelDescriptor {
 pub struct AodSpeedModelDescriptor {
     pub kind: AodSpeedModelKindDescriptor,
     pub acceleration_m_s2: f64,
+    /// Jerk limit `J` (m/s³) for `jerk_limited`. Defaults to `0.0` (unused
+    /// under `sqrt`) so existing `sqrt` target JSON keeps loading.
+    #[serde(default)]
+    pub jerk_m_s3: f64,
+    /// Cruise velocity cap `v` (m/s) for `jerk_limited`; `0.0` disables it.
+    #[serde(default)]
+    pub max_velocity_m_s: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AodSpeedModelKindDescriptor {
     Sqrt,
+    JerkLimited,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -365,14 +373,38 @@ fn neutral_atom_from_descriptor(
         speed_model: AodSpeedModel {
             kind: match d.movement.speed_model.kind {
                 AodSpeedModelKindDescriptor::Sqrt => AodSpeedModelKind::Sqrt,
+                AodSpeedModelKindDescriptor::JerkLimited => AodSpeedModelKind::JerkLimited,
             },
             acceleration_m_s2: positive_f64(
                 "movement.speed_model.acceleration_m_s2",
                 d.movement.speed_model.acceleration_m_s2,
             )?,
+            jerk_m_s3: d.movement.speed_model.jerk_m_s3,
+            max_velocity_m_s: d.movement.speed_model.max_velocity_m_s,
         },
         trap_transfer_us: positive_f64("movement.trap_transfer_us", d.movement.trap_transfer_us)?,
     };
+
+    // Issue #308: the jerk-limited timing model needs a positive jerk limit and
+    // a non-negative cruise cap; sqrt ignores both (they default to 0.0).
+    if let AodSpeedModelKind::JerkLimited = movement.speed_model.kind {
+        if !movement.speed_model.jerk_m_s3.is_finite() || movement.speed_model.jerk_m_s3 <= 0.0 {
+            return invalid_config(format!(
+                "movement.speed_model.jerk_m_s3 must be positive and finite for jerk_limited, \
+                 got {}",
+                movement.speed_model.jerk_m_s3
+            ));
+        }
+        if !movement.speed_model.max_velocity_m_s.is_finite()
+            || movement.speed_model.max_velocity_m_s < 0.0
+        {
+            return invalid_config(format!(
+                "movement.speed_model.max_velocity_m_s must be non-negative and finite for \
+                 jerk_limited, got {}",
+                movement.speed_model.max_velocity_m_s
+            ));
+        }
+    }
 
     let max_parallel_entangling_pairs = positive_u32(
         "interaction.max_parallel_entangling_pairs",
@@ -548,8 +580,13 @@ fn neutral_atom_to_descriptor(id: &str, target: &NeutralAtomTarget) -> NeutralAt
             num_aods: i64::from(target.movement.num_aods),
             min_row_col_separation_um: target.movement.min_row_col_separation_um,
             speed_model: AodSpeedModelDescriptor {
-                kind: AodSpeedModelKindDescriptor::Sqrt,
+                kind: match target.movement.speed_model.kind {
+                    AodSpeedModelKind::Sqrt => AodSpeedModelKindDescriptor::Sqrt,
+                    AodSpeedModelKind::JerkLimited => AodSpeedModelKindDescriptor::JerkLimited,
+                },
                 acceleration_m_s2: target.movement.speed_model.acceleration_m_s2,
+                jerk_m_s3: target.movement.speed_model.jerk_m_s3,
+                max_velocity_m_s: target.movement.speed_model.max_velocity_m_s,
             },
             trap_transfer_us: target.movement.trap_transfer_us,
         },

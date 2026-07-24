@@ -92,6 +92,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::geometry::{SpeedModel, SpeedModelKind};
 use crate::graph::{InteractionGraph, LogicalQubitId, VertexId};
 use crate::layout::AodTrapRef;
 use crate::layout::{
@@ -152,7 +153,10 @@ impl ZoneSpec {
 #[serde(deny_unknown_fields)]
 pub struct ZonedArchitecture {
     pub zones: Vec<ZoneSpec>,
-    pub acceleration_m_s2: f64,
+    /// Movement timing model (issue #308): √-law by default, jerk-limited when
+    /// `kind = JerkLimited`. Replaces the bare `acceleration_m_s2` field.
+    #[serde(default)]
+    pub speed_model: SpeedModel,
     pub trap_transfer_us: u64,
     pub require_readout_zone: bool,
     /// Rydberg interaction range (µm) for simultaneous-gate legality.
@@ -197,10 +201,14 @@ impl ZonedArchitecture {
     }
 
     pub fn validate(&self) -> Result<(), ZonedScheduleError> {
-        if self.acceleration_m_s2 <= 0.0 {
+        if self.speed_model.acceleration_m_s2 <= 0.0 {
             return Err(ZonedScheduleError::InvalidAcceleration(
-                self.acceleration_m_s2,
+                self.speed_model.acceleration_m_s2,
             ));
+        }
+        if self.speed_model.kind == SpeedModelKind::JerkLimited && self.speed_model.jerk_m_s3 <= 0.0
+        {
+            return Err(ZonedScheduleError::InvalidJerk(self.speed_model.jerk_m_s3));
         }
         if !self.entanglement_zones().any(|_| true) {
             return Err(ZonedScheduleError::MissingEntanglementZone);
@@ -323,6 +331,8 @@ pub struct ZonedScheduleResult<V = LogicalQubitId> {
 pub enum ZonedScheduleError {
     #[error("acceleration_m_s2 must be positive, got {0}")]
     InvalidAcceleration(f64),
+    #[error("jerk_m_s3 must be positive for jerk_limited, got {0}")]
+    InvalidJerk(f64),
     #[error("zoned architecture requires at least one entanglement zone")]
     MissingEntanglementZone,
     #[error("zoned architecture requires at least one storage zone")]
@@ -364,14 +374,15 @@ pub fn sqrt_d_max(d_max_um: f64) -> f64 {
     }
 }
 
-/// Move duration in µs: t = √(d/a) with d in metres, a in m/s², result ×1e6.
+/// Move duration in µs: `t = √(d/a)` with `d` in metres, `a` in m/s², ×1e6.
+///
+/// Thin re-export of [`crate::geometry::movement_duration_us`] (the √-law is
+/// defined once, in `geometry`); kept here + re-exported from the crate root so
+/// existing callers (`movement_duration_us(d, a)`) keep working. For the
+/// jerk-limited variant or model dispatch use
+/// [`crate::geometry::movement_duration_for_model`] (issue #308).
 pub fn movement_duration_us(d_max_um: f64, acceleration_m_s2: f64) -> u64 {
-    if d_max_um <= 0.0 || acceleration_m_s2 <= 0.0 {
-        return 0;
-    }
-    let d_m = d_max_um * 1e-6;
-    let t_s = (d_m / acceleration_m_s2).sqrt();
-    (t_s * 1e6).ceil() as u64
+    crate::geometry::movement_duration_us(d_max_um, acceleration_m_s2)
 }
 
 /// Sum of √(d_max) over groups — [RAP] Eq. (1) (up to 1/√a).
@@ -720,7 +731,8 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
             let d_max = group.iter().fold(0.0_f64, |d, m| d.max(m.distance_um));
             total_routing_cost += sqrt_d_max(d_max);
             rearrangement_steps += 1;
-            let duration_us = movement_duration_us(d_max, arch.acceleration_m_s2);
+            let duration_us =
+                crate::geometry::movement_duration_for_model(d_max, &arch.speed_model);
             trap_transfers += 2 * group.len() as u64;
 
             let load: Vec<_> = group
@@ -2026,7 +2038,12 @@ pub fn toy_zoned_architecture() -> ZonedArchitecture {
                 pair_gap_um: None,
             },
         ],
-        acceleration_m_s2: 2750.0,
+        speed_model: SpeedModel {
+            kind: SpeedModelKind::Sqrt,
+            acceleration_m_s2: 2750.0,
+            jerk_m_s3: 0.0,
+            max_velocity_m_s: 0.0,
+        },
         trap_transfer_us: 15,
         require_readout_zone: false,
         rydberg_range_um: 7.5,
@@ -2889,5 +2906,109 @@ mod tests {
             validate_zone_constraints(&layers, &layout, &arch),
             Err(ZonedScheduleError::MeasureOutsideReadout(_))
         ));
+    }
+
+    /// Issue #308 acceptance: compiling the same schedule under the √-law and
+    /// jerk-limited timing models must differ *only* in move durations / time
+    /// aggregates — never in placement, layering, or step count. The routing
+    /// cost (Eq. (1) `Σ √d_max`) is model-independent (argmin uses [`sqrt_d_max`]),
+    /// so it and `rearrangement_steps` are identical; only `rearrangement_time_us`
+    /// and per-group `Move.duration_us` change.
+    #[test]
+    fn jerk_limited_model_changes_only_durations_not_structure() {
+        let graph = matching_graph(6);
+        let req = schedule_from_graph(graph).expect("stub");
+        let scheduled = schedule_entangling_layers(req, 340).expect("layers");
+
+        let mut sqrt_arch = toy_zoned_architecture();
+        // toy_zoned_architecture() is already √-law; make it explicit.
+        sqrt_arch.speed_model = crate::geometry::SpeedModel {
+            kind: crate::geometry::SpeedModelKind::Sqrt,
+            acceleration_m_s2: 2750.0,
+            jerk_m_s3: 0.0,
+            max_velocity_m_s: 0.0,
+        };
+        let mut jerk_arch = toy_zoned_architecture();
+        jerk_arch.speed_model = crate::geometry::SpeedModel {
+            kind: crate::geometry::SpeedModelKind::JerkLimited,
+            acceleration_m_s2: 2750.0,
+            // Placeholder jerk/cruise (issue #308): calibrated values are out of
+            // scope; these exercise all three S-curve regimes at toy-arch scale.
+            jerk_m_s3: 1.0e8,
+            max_velocity_m_s: 0.5,
+        };
+
+        let sqrt = schedule_zoned(
+            scheduled.request.clone(),
+            &sqrt_arch,
+            PlacerMode::RoutingAgnostic,
+        )
+        .expect("sqrt zoned");
+        let jerk = schedule_zoned(scheduled.request, &jerk_arch, PlacerMode::RoutingAgnostic)
+            .expect("jerk zoned");
+
+        // Placement / schedule structure is model-independent.
+        assert_eq!(sqrt.rearrangement_steps, jerk.rearrangement_steps);
+        assert_eq!(sqrt.routing_cost, jerk.routing_cost);
+        assert_eq!(sqrt.trap_transfers, jerk.trap_transfers);
+        assert_eq!(sqrt.request.layers.len(), jerk.request.layers.len());
+        for (ls, lj) in sqrt.request.layers.iter().zip(jerk.request.layers.iter()) {
+            assert_eq!(ls.cycle, lj.cycle, "cycle differs (placement diverged)");
+            assert_eq!(ls.actions.len(), lj.actions.len(), "action count differs");
+            for (as_, aj) in ls.actions.iter().zip(lj.actions.iter()) {
+                // Same action kind and (for moves) same atoms/sites — only
+                // duration_us may differ.
+                match (as_, aj) {
+                    (NeutralAtomAction::Move(gs), NeutralAtomAction::Move(gj)) => {
+                        assert_eq!(gs.moves, gj.moves, "move set differs (placement diverged)");
+                    }
+                    (NeutralAtomAction::Transfer(ts), NeutralAtomAction::Transfer(tj)) => {
+                        assert_eq!(ts, tj, "transfer differs");
+                        assert_eq!(ts.duration_us, tj.duration_us, "transfer duration changed");
+                    }
+                    (
+                        NeutralAtomAction::Entangle2 { atoms: a, .. },
+                        NeutralAtomAction::Entangle2 { atoms: b, .. },
+                    ) => {
+                        assert_eq!(a, b, "entangle atoms differ");
+                    }
+                    _ => panic!("action kind mismatch: {as_:?} vs {aj:?}"),
+                }
+            }
+        }
+
+        // And the part that *does* change: at least one move duration differs,
+        // so the aggregated rearrangement time differs between the two models.
+        let sqrt_move_durations: Vec<u64> = sqrt
+            .request
+            .layers
+            .iter()
+            .flat_map(|l| {
+                l.actions.iter().filter_map(|a| match a {
+                    NeutralAtomAction::Move(g) => Some(g.duration_us),
+                    _ => None,
+                })
+            })
+            .collect();
+        let jerk_move_durations: Vec<u64> = jerk
+            .request
+            .layers
+            .iter()
+            .flat_map(|l| {
+                l.actions.iter().filter_map(|a| match a {
+                    NeutralAtomAction::Move(g) => Some(g.duration_us),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert_eq!(sqrt_move_durations.len(), jerk_move_durations.len());
+        assert!(
+            !sqrt_move_durations.is_empty(),
+            "toy fixture must produce at least one move to exercise the timing model"
+        );
+        assert_ne!(
+            sqrt_move_durations, jerk_move_durations,
+            "jerk-limited durations must differ from √-law for the same schedule"
+        );
     }
 }

@@ -381,11 +381,28 @@ pub enum AodMovementModel {
 pub struct AodSpeedModel {
     pub kind: AodSpeedModelKind,
     pub acceleration_m_s2: f64,
+    /// Jerk limit `J` (m/s³) for the [`AodSpeedModelKind::JerkLimited`] timing
+    /// model. Unused (and serializes as `0.0`) under `Sqrt`. Provenance:
+    /// placeholder pending access to the QMAP eval scripts' calibration (see
+    /// `docs/neutral_atom/literature_notes.md`'s [RAP] caveats — the QMAP repo's
+    /// newer eval scripts use a jerk-limited model that differs from the
+    /// paper's √-law except at d = 110 µm); the value is target-specific, not a
+    /// universal constant (architecture_model.md §8.6).
+    pub jerk_m_s3: f64,
+    /// Cruise velocity cap `v` (m/s) for [`AodSpeedModelKind::JerkLimited`].
+    /// `0.0` disables the cap (triangular/S-curve only, no cruise phase). Same
+    /// placeholder provenance as [`AodSpeedModel::jerk_m_s3`].
+    pub max_velocity_m_s: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AodSpeedModelKind {
+    /// √-law `t = √(d/a)` (the reproduced [RAP] Table I timing model; default).
     Sqrt,
+    /// Jerk-limited symmetric S-curve: acceleration ramps at jerk `J` up to
+    /// `acceleration_m_s2`, optionally cruises at `max_velocity_m_s`, then
+    /// decelerates symmetrically. Off by default; flag-gated per issue #308.
+    JerkLimited,
 }
 
 #[derive(Debug, Clone, PartialEq)]
