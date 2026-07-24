@@ -12,5 +12,8 @@ pymatching
 # Local test runner: `pytest python -q` collects the same unittest suites CI
 # runs one-by-one via `python -m unittest` in `just ci-rust`.
 pytest
+# Results & plotting helpers (issue #196): `python/quon_viz.py` bar charts
+# and tables. matplotlib is also used by `python/visualize_na_schedule.py`.
+matplotlib>=3.8
 # Optional (maintainer-only): regenerate IBM snapshots via --backend
 # qiskit-ibm-runtime>=0.20

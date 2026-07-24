@@ -17,6 +17,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 sys.path.insert(0, os.path.join(REPO_ROOT, "python"))
 
 import quon_aer  # noqa: E402
+import quon_viz  # noqa: E402 — results/plotting helpers (#196)
 
 SHOTS = 4096
 SEED = 1234  # pin the Aer sampler so the run is reproducible
@@ -37,12 +38,28 @@ def main() -> int:
         seed=SEED,
         min_fidelity=0.9,
     )
-
     print(f"counts: {result.counts}")
     print(f"P(marked={MARKED}) = {result.fidelity}")
     if not result:
         print(f"FAIL: Grover success probability {result.fidelity} <= 0.9")
         return 1
+    # Render the Grover distribution to a file (headless; #196). Best-effort:
+    # a missing matplotlib must never fail the correctness oracle.
+    out_dir = os.environ.get("QUON_VIZ_DIR") or os.path.join(
+        os.environ.get("TMPDIR", "/tmp"), "quon_viz"
+    )
+    plot_path = os.path.join(out_dir, "grover-histogram.png")
+    try:
+        quon_viz.plot_histogram(
+            result.counts,
+            title=f"Grover (marked={MARKED})",
+            sort="desc",
+            bar_labels=True,
+            filename=plot_path,
+        )
+        print(f"plot: {plot_path}")
+    except Exception as exc:  # noqa: BLE001 — viz must not fail verification
+        print(f"plot: skipped ({exc})", file=sys.stderr)
     print(f"PASS: Grover recovered the marked state |{MARKED}> with P = {result.fidelity}")
     return 0
 

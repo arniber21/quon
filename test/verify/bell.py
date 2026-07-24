@@ -15,6 +15,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 sys.path.insert(0, os.path.join(REPO_ROOT, "python"))
 
 import quon_aer  # noqa: E402
+import quon_viz  # noqa: E402 — results/plotting helpers (#196)
 
 SHOTS = 4096
 SEED = 1234  # pin the Aer sampler so the run is reproducible
@@ -38,12 +39,24 @@ def main() -> int:
         and abs(counts.get("11", 0) - SHOTS / 2) < tol
         and correlated == SHOTS
     )
-
     print(f"counts: {counts}")
     print(f"correlated(00+11)={correlated}/{SHOTS}, leakage(01+10)={leakage}")
     if not ok:
         print("FAIL: distribution is not a 50/50 Bell state")
         return 1
+    # Render the measured distribution to a file (headless; #196). Writing is
+    # best-effort: a missing matplotlib must never fail the correctness oracle.
+    out_dir = os.environ.get("QUON_VIZ_DIR") or os.path.join(
+        os.environ.get("TMPDIR", "/tmp"), "quon_viz"
+    )
+    plot_path = os.path.join(out_dir, "bell-histogram.png")
+    try:
+        quon_viz.plot_histogram(
+            counts, title="Bell state counts", bar_labels=True, filename=plot_path
+        )
+        print(f"plot: {plot_path}")
+    except Exception as exc:  # noqa: BLE001 — viz must not fail verification
+        print(f"plot: skipped ({exc})", file=sys.stderr)
     print("PASS: Bell state verified")
     return 0
 
