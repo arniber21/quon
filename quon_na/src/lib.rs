@@ -45,6 +45,7 @@ pub mod graph;
 pub mod layout;
 #[cfg(feature = "mlir")]
 pub mod lower;
+pub mod matching;
 pub mod movement;
 #[cfg(feature = "mlir")]
 pub mod native_gate_decomp;
@@ -115,10 +116,11 @@ pub use stats::{
     SearchDiagnostics, StageTimingsUs, VersionInfo, na_stats_to_json,
 };
 pub use zoned::{
-    AWARE_NODE_BUDGET, AwareSearchOutcome, AwareSearchParams, PlacerMode, ZoneKind, ZoneSpec,
-    ZonedArchitecture, ZonedScheduleError, ZonedScheduleResult, euclidean_um, movement_duration_us,
-    routing_cost_eq1, schedule_zoned, schedule_zoned_with_aware_params, sqrt_d_max,
-    toy_zoned_architecture, validate_zone_constraints,
+    AWARE_NODE_BUDGET, AgnosticPlacerMechanism, AwareSearchOutcome, AwareSearchParams,
+    MATCHING_FALLBACK_GATE_PAIR_PRODUCT, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture,
+    ZonedScheduleError, ZonedScheduleResult, euclidean_um, movement_duration_us, routing_cost_eq1,
+    schedule_zoned, schedule_zoned_with_aware_params, sqrt_d_max, toy_zoned_architecture,
+    validate_zone_constraints,
 };
 
 #[cfg(feature = "mlir")]

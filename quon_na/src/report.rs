@@ -19,6 +19,7 @@ use thiserror::Error;
 
 use crate::qec::{CodeBlock, CodeFamily, QecError, atoms_per_logical};
 use crate::schedule::{LocalGateKind, NeutralAtomAction, ScheduleLayer};
+use crate::zoned::AgnosticPlacerMechanism;
 
 #[cfg(feature = "flux")]
 use flux_rs::attrs::*;
@@ -264,6 +265,19 @@ pub struct ResourceReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_fell_back_layers: Option<u64>,
 
+    /// Zoned NA backend only (issue #300): which routing-agnostic placement
+    /// mechanism produced the schedule —
+    /// [`AgnosticPlacerMechanism::Matching`] (the #300 min-weight bipartite
+    /// matching default for normal-size layers) or
+    /// [`AgnosticPlacerMechanism::GreedyFallback`] (very-large layers above the
+    /// [`crate::zoned::MATCHING_FALLBACK_GATE_PAIR_PRODUCT`] threshold, or
+    /// matching's conflict-repair failure). `None` for non-zoned compiles and
+    /// for `routing-aware` (the agnostic concept does not apply); under
+    /// `routing-agnostic` it is always `Some`. Mirrors the
+    /// `aware_search_completed_layers` schema-evolution pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
+
     /// Analytic physical error-budget contributions (rate × schedule counts).
     /// Never logical error rates or thresholds (ADR-0017 / ADR-0020).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -393,6 +407,7 @@ impl Default for ResourceReport {
             bottleneck: BottleneckKind::None,
             aware_search_completed_layers: None,
             aware_search_fell_back_layers: None,
+            agnostic_placer_mechanism: None,
             error_budget: None,
             temporal_atom_metrics: TemporalAtomMetrics::default(),
             local_h_count: None,
@@ -823,6 +838,21 @@ impl ResourceReport {
         self.aware_search_fell_back_layers = Some(fell_back_layers);
         self
     }
+
+    /// Overlay which routing-agnostic placement mechanism produced the
+    /// zoned schedule (issue #300). `mechanism` comes from
+    /// [`crate::zoned::ZonedScheduleResult`] (derived there from its
+    /// `agnostic_matching_layers` / `agnostic_greedy_fallback_layers`
+    /// counters); see [`ResourceReport::agnostic_placer_mechanism`] for what
+    /// each variant means. `None` (non-zoned / routing-aware) leaves the field
+    /// at its `from_layers` default of `None`.
+    pub fn with_agnostic_placer_mechanism(
+        mut self,
+        mechanism: Option<AgnosticPlacerMechanism>,
+    ) -> Self {
+        self.agnostic_placer_mechanism = mechanism;
+        self
+    }
 }
 
 /// Build a report from layers with optional QEC or physical-atom sizing.
@@ -996,6 +1026,12 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
         ));
         out.push_str(&format!(
             "| Routing-aware search fell back to greedy (layers) | {fell_back} |\n"
+        ));
+    }
+    if let Some(mechanism) = report.agnostic_placer_mechanism {
+        out.push_str(&format!(
+            "| Routing-agnostic placement mechanism | {} |\n",
+            mechanism.as_str()
         ));
     }
     out.push('\n');
@@ -2160,6 +2196,43 @@ mod tests {
         let md_ok = resource_report_to_markdown(&completed);
         assert!(md_ok.contains("| Routing-aware search fell back to greedy (layers) | 0 |"));
         assert!(!md_ok.contains("not evidence of"));
+    }
+
+    #[test]
+    fn agnostic_placer_mechanism_defaults_to_unset() {
+        let report = ResourceReport::from_layers(&toy_layers());
+        assert_eq!(report.agnostic_placer_mechanism, None);
+        let md = resource_report_to_markdown(&report);
+        assert!(!md.contains("Routing-agnostic placement mechanism"));
+    }
+
+    #[test]
+    fn agnostic_placer_mechanism_overlay_round_trips_through_json() {
+        let report = ResourceReport::from_layers(&toy_layers())
+            .with_agnostic_placer_mechanism(Some(AgnosticPlacerMechanism::Matching));
+        assert_eq!(
+            report.agnostic_placer_mechanism,
+            Some(AgnosticPlacerMechanism::Matching)
+        );
+
+        let value = match serde_json::to_value(&report) {
+            Ok(v) => v,
+            Err(e) => panic!("serialize: {e}"),
+        };
+        assert_eq!(value["agnostic_placer_mechanism"], json!("matching"));
+        let back: ResourceReport = match serde_json::from_value(value) {
+            Ok(r) => r,
+            Err(e) => panic!("deserialize: {e}"),
+        };
+        assert_eq!(back, report);
+
+        // GreedyFallback variant + markdown rendering.
+        let fell_back = ResourceReport::from_layers(&toy_layers())
+            .with_agnostic_placer_mechanism(Some(AgnosticPlacerMechanism::GreedyFallback));
+        let md = resource_report_to_markdown(&fell_back);
+        assert!(md.contains("| Routing-agnostic placement mechanism | greedy_fallback |"));
+        let md_match = resource_report_to_markdown(&report);
+        assert!(md_match.contains("| Routing-agnostic placement mechanism | matching |"));
     }
 
     #[test]
