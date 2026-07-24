@@ -1,0 +1,62 @@
+-- Application demo: MaxCut on a 6-vertex 3-regular graph via p=1 QAOA (#191).
+--
+-- Problem. MaxCut: partition a graph's vertices into two sets so as to
+-- maximize the number of edges crossing the cut. This instance is the
+-- triangular prism -- two triangles (0,1,2) and (3,4,5) joined by a matching
+-- (0,3),(1,4),(2,5) -- a 3-regular graph on 6 vertices with 9 edges. Its
+-- MaxCut is 7 (you can cut 7 of the 9 edges; the two triangles force two
+-- uncut edges), achieved by 6 optimal bitstrings.
+--
+-- Encoding (Quon part). QAOA encodes the cost as a diagonal Hamiltonian
+-- H_C = sum_{(i,j) in E} (1 - Z_i Z_j)/2 and applies one "cost layer"
+-- exp(-i gamma H_C) followed by a transverse-field "mixer layer"
+-- exp(-i beta sum_i X_i). In Quon gate conventions this is exactly:
+--   cost  : for each edge (i,j) -> Rzz(gamma) @(i,j)
+--   mixer : for each qubit      -> Rx(beta)  q
+-- The initial state is the uniform superposition (Hadamard on every qubit).
+--
+-- Classical part (NOT in Quon). The angles (gamma, beta) are variational
+-- parameters: a classical outer loop samples the expectation of the cut
+-- value and runs a classical optimizer (COBYLA/Nelder-Mead) to maximize it.
+-- Quon has no classical optimizer; the angles below were found OFFLINE by a
+-- statevector sweep (see test/verify/maxcut_prism6.py) and baked in as
+-- literals. Quon's job is to faithfully lower this parametric ansatz and
+-- prove its depth bound; the classical optimization is external Python.
+--
+-- Result. With gamma = 2.57126, beta = 5.58682 the expected cut value is
+-- ~5.94 (0.85 of the MaxCut 7) and the six optimal bitstrings are the most
+-- probable outcomes. The seeded Aer checker verifies both.
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+-- The 9 prism edges, spelled out (no Matrix/list iteration in the language
+-- yet): the two triangles plus the matching. Each Rzz is depth 1, so the
+-- sequential `|>` chain has depth 9.
+fn cost_prism6(gamma: Float): Circuit<6, 6, 9, Universal> = circuit {
+    Rzz(gamma) @(0, 1)
+    |> Rzz(gamma) @(1, 2)
+    |> Rzz(gamma) @(2, 0)
+    |> Rzz(gamma) @(3, 4)
+    |> Rzz(gamma) @(4, 5)
+    |> Rzz(gamma) @(5, 3)
+    |> Rzz(gamma) @(0, 3)
+    |> Rzz(gamma) @(1, 4)
+    |> Rzz(gamma) @(2, 5)
+}
+
+fn mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(beta) q }
+}
+
+fn qaoa_layer(gamma: Float, beta: Float): Circuit<6, 6, 10, Universal> = circuit {
+    cost_prism6(gamma) |> mixer(6, beta)
+}
+
+fn main(): Q<List<Bit>> = run {
+    q  <- hadamard_all(6) @ qreg(6)
+    q2 <- qaoa_layer(2.57126, 5.58682) @ q
+    measure_all(q2)
+    -- Expected: the six MaxCut = 7 bitstrings dominate; expected cut ~5.94.
+}

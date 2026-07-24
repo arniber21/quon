@@ -1,0 +1,75 @@
+-- Application demo: toy TSP sketch -- a QAOA-shaped cost circuit (#191).
+--
+-- Problem. The Travelling Salesman Problem (TSP) asks for the shortest tour
+-- visiting every city once and returning to the start. A full TSP encoding
+-- maps one binary variable per (city, position) -- n^2 qubits for n cities --
+-- and a cost Hamiltonian plus heavy one-hot/subtour penalty terms. That is far
+-- beyond a sketch, and Quon has no list/Matrix instance data in the e2e path
+-- yet. This file is therefore a SCHEMATIC, not a real TSP solver: it encodes a
+-- small *TSP-shaped* cost Hamiltonian on 4 qubits (the kind a real TSP-to-Ising
+-- reformulation would emit -- weighted pair couplings from inter-city
+-- distances plus local constraint-penalty fields) and applies one QAOA
+-- cost+mixer layer, exactly the MaxCut/Ising machinery already demonstrated.
+--
+-- Encoding (Quon part). The cost is a weighted Ising objective
+--     C(z) = sum_{i<j} d_ij z_i z_j + sum_i p_i z_i
+-- realized as Rzz(2 gamma d_ij) edges and Rz(2 gamma p_i) local fields, both
+-- in Quon's gate conventions; the mixer is the usual Rx(beta) transverse
+-- field. This is the SAME lowerable machinery as MaxCut/Ising -- the point is
+-- that a TSP-derived cost Hamiltonian has the same circuit shape, so Quon
+-- lowers it the same way.
+--
+-- Classical part (NOT in Quon). Everything TSP-specific is classical Python
+-- and lives outside Quon:
+--   * decoding a measured bitstring back into a city ordering,
+--   * enforcing the "visit each city once" constraint (penalties or
+--     post-selection),
+--   * the classical improvement loop (2-opt / Lin-Kernighan) that refines a
+--     sampled tour.
+-- Quon has none of that; it only prepares a state biased by the cost
+-- Hamiltonian. The checker (test/verify/tsp_sketch.py) verifies the circuit
+-- compiles and emits a properly-shaped, parseable OpenQASM workload -- it
+-- does NOT claim to solve TSP.
+--
+-- The angles below are illustrative, not optimized.
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+-- Weighted pair couplings (inter-"city" distances) -- 6 edges, depth 6.
+fn tsp_cost(gamma: Float): Circuit<4, 4, 6, Universal> = circuit {
+    Rzz(2.0 * gamma * 0.9) @(0, 1)
+    |> Rzz(2.0 * gamma * -0.3) @(0, 2)
+    |> Rzz(2.0 * gamma * 0.5) @(0, 3)
+    |> Rzz(2.0 * gamma * 0.7) @(1, 2)
+    |> Rzz(2.0 * gamma * -0.4) @(1, 3)
+    |> Rzz(2.0 * gamma * 0.6) @(2, 3)
+}
+
+-- Local constraint-penalty fields -- 4 single-qubit rotations, depth 4.
+fn tsp_fields(gamma: Float): Circuit<4, 4, 4, Universal> = circuit {
+    Rz(2.0 * gamma * 0.2) @0
+    |> Rz(2.0 * gamma * -0.1) @1
+    |> Rz(2.0 * gamma * 0.3) @2
+    |> Rz(2.0 * gamma * -0.2) @3
+}
+
+fn tsp_phase(gamma: Float): Circuit<4, 4, 10, Universal> = circuit {
+    tsp_cost(gamma) |> tsp_fields(gamma)
+}
+
+fn mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(beta) q }
+}
+
+fn tsp_layer(gamma: Float, beta: Float): Circuit<4, 4, 11, Universal> = circuit {
+    tsp_phase(gamma) |> mixer(4, beta)
+}
+
+fn main(): Q<List<Bit>> = run {
+    q  <- hadamard_all(4) @ qreg(4)
+    q2 <- tsp_layer(0.8, 0.5) @ q
+    measure_all(q2)
+    -- Schematic only: a TSP-shaped cost Hamiltonian lowered to one QAOA layer.
+}

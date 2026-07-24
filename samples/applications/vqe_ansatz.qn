@@ -1,0 +1,43 @@
+-- Application demo: VQE-shaped ansatz for a 2-qubit model Hamiltonian (#191).
+--
+-- Problem. The Variational Quantum Eigensolver (VQE) approximates the ground
+-- state of a Hamiltonian H by alternating (1) a quantum circuit that
+-- prepares a parameterized trial state |psi(theta)> and (2) a classical
+-- optimizer that minimizes <psi(theta)|H|psi(theta)>. The model target here
+-- is a 2-qubit Hamiltonian with an off-diagonal coupling,
+--     H = 0.5 Z0 + 0.3 Z1 + 0.6 X0 X1 - 0.4 Z0 Z1,
+-- whose ground-state energy is exactly E0 = -1.400 (and whose ground state is
+-- a genuine superposition, NOT a computational basis state, because of the
+-- X0 X1 term -- so a non-trivial ansatz is genuinely needed).
+--
+-- Encoding (Quon part). The "quantum" half of VQE is the ansatz circuit. This
+-- file encodes a hardware-efficient ansatz -- two Ry rotation layers bracketing
+-- a CNOT entangler -- and bakes in the optimized angles
+-- theta = (-1.141552, 7.133346, 4.165269, 1.921203). Quon lowers this parametric
+-- circuit and proves its depth bound (5 for the sequential `|>` chain; the two
+-- same-layer Ry pairs act on disjoint qubits so the *physics* is identical to a
+-- depth-3 parallel spelling -- only the depth bound the typechecker reports
+-- differs).
+--
+-- Classical part (NOT in Quon). Everything around the ansatz is classical:
+--   * evaluating <H> = sum_k c_k <P_k> from measurement data,
+--   * the parameter optimizer (COBYLA/SPSA) that sweeps theta,
+--   * grouping Pauli terms into commuting measurement bases.
+-- None of that lives in Quon. The checker (test/verify/vqe_ansatz.py) plays the
+-- role of the classical outer loop: it extracts the trial state's statevector
+-- from the compiled circuit and computes <H> exactly, asserting the baked
+-- optimum reaches the ground energy E0 = -1.400 (and confirms the measurement
+-- distribution a seeded Aer run produces is consistent with that state).
+--
+-- This is a SKETCH of the VQE structure, not a claim of chemical accuracy: the
+-- Hamiltonian is a pedagogical 2-qubit model, and the angles were found offline.
+
+fn vqe_ansatz(t0: Float, t1: Float, t2: Float, t3: Float): Circuit<2, 2, 5, Universal> = circuit {
+    Ry(t0) @0 |> Ry(t1) @1 |> CNOT @(0, 1) |> Ry(t2) @0 |> Ry(t3) @1
+}
+
+fn main(): Q<List<Bit>> = run {
+    q <- vqe_ansatz(-1.141552, 7.133346, 4.165269, 1.921203) @ qreg(2)
+    measure_all(q)
+    -- Expected (energy check, external): <H> = -1.400, the exact ground energy.
+}

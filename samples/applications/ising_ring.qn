@@ -1,0 +1,58 @@
+-- Application demo: transverse-field Ising model on a ring (#191).
+--
+-- Problem. Simulate the transverse-field Ising model
+--     H = -J sum_<ij> Z_i Z_j - h sum_i X_i
+-- via first-order Trotterization. test/verify/ising.qn does this on an OPEN
+-- chain (nearest-neighbour bonds (i,i+1) only); this demo extends it to a
+-- RING -- a 1D lattice with periodic boundary conditions -- by adding the
+-- closing bond (n-1, 0). The ring is the natural "lattice" topology and the
+-- extra bond changes the interaction graph (and, at non-zero t, the
+-- spectrum) while keeping the Trotter structure identical. The Trotter
+-- parameters (coupling J, field h, time t, step count) are genuine Quon
+-- `Float`/`Int` parameters, partial-evaluated at compile time into the
+-- rotation angles -- the same `let tau = t / float(n_steps)` mechanism the
+-- open-chain fixture uses.
+--
+-- Encoding (Quon part). One Trotter step is exp(-i H_ZZ tau) |> exp(-i H_X
+-- tau): a `zz_ring` layer of six Rzz(-2 J tau) gates around the ring
+-- (depth 6), composed with an `x_layer` of Rx(-2 h tau) on every qubit
+-- (depth 1) -> depth 7 per step. `repeat(n_steps, ...)` composes n_steps
+-- steps, so the total depth is n_steps * 7, a compile-time bound.
+--
+-- Classical part (NOT in Quon). Choosing J, h, t, and n_steps to control
+-- the Trotter error is a classical modelling decision; Quon partial-evaluates
+-- the angles from them but does not pick them. The checker sets t = 0.
+--
+-- Verification. At t = 0, tau = 0, so every Rzz/Rx angle is exactly 0 -- the
+-- whole evolution is the identity (Rz(0) = I unconditionally) -- and
+-- measuring the default |0..0> state must give all zeros with probability 1.
+-- This is the same t=0 boundary oracle as ising.py, applied to the new ring
+-- topology; the seeded Aer checker asserts Hellinger fidelity >= 0.99
+-- against |000000>.
+
+fn zz_ring(j: Float, tau: Float): Circuit<6, 6, 6, Universal> = circuit {
+    Rzz(-2.0 * j * tau) @(0, 1)
+    |> Rzz(-2.0 * j * tau) @(1, 2)
+    |> Rzz(-2.0 * j * tau) @(2, 3)
+    |> Rzz(-2.0 * j * tau) @(3, 4)
+    |> Rzz(-2.0 * j * tau) @(4, 5)
+    |> Rzz(-2.0 * j * tau) @(5, 0)
+}
+
+fn x_layer(n: Nat, h: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(-2.0 * h * tau) q }
+}
+
+fn trotter_step(j: Float, h: Float, tau: Float): Circuit<6, 6, 7, Universal> = circuit {
+    zz_ring(j, tau) |> x_layer(6, h, tau)
+}
+
+fn ising_ring_evolve(j: Float, h: Float, t: Float, n_steps: Int): Circuit<6, 6, n_steps * 7, Universal> =
+    let tau = t / float(n_steps)
+    in repeat(n_steps, trotter_step(j, h, tau))
+
+fn main(): Q<List<Bit>> = run {
+    q <- ising_ring_evolve(1.0, 1.0, 0.0, 3) @ qreg(6)
+    measure_all(q)
+    -- Expected: 000000 with probability 1.0 (t = 0 is the identity evolution).
+}

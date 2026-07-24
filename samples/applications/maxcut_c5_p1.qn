@@ -1,0 +1,49 @@
+-- Application demo: QAOA depth scaling on C5 -- the p=1 baseline (#191).
+--
+-- Problem. MaxCut on the 5-cycle C5 (edges (0,1),(1,2),(2,3),(3,4),(4,0)).
+-- C5 is an odd cycle, so its MaxCut is 4 (one edge must stay uncut), achieved
+-- by 10 optimal bitstrings. This is the p=1 (single cost+mixer layer)
+-- baseline; the companion maxcut_c5_p2.qn adds a second layer. Comparing the
+-- two on the SAME graph is the cleanest demonstration of QAOA's depth/quality
+-- tradeoff, and the checker (test/verify/maxcut_depth.py) compiles BOTH and
+-- asserts the deeper circuit reaches at least as high an expected cut.
+--
+-- Encoding (Quon part). Identical machinery to maxcut_prism6.qn: Hadamard
+-- initial state, a cost layer of Rzz(gamma) over the 5 ring edges, an
+-- Rx(beta) mixer. p=1 applies one cost+mixer pair.
+--
+-- Classical part (NOT in Quon). The angle (gamma, beta) = (5.49779, 0.7854)
+-- was found by an offline statevector sweep and baked in. Quon lowers the
+-- ansatz and proves depth 1 + (5 + 1) = 7; the classical optimizer is
+-- external Python (documented in the checker).
+--
+-- Result. p=1 reaches an expected cut of 3.75 (0.94 of the MaxCut 4) and
+-- samples an optimal cut on ~88% of shots. p=2 (the companion) closes the
+-- remaining gap to the optimum.
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn cost_c5(gamma: Float): Circuit<5, 5, 5, Universal> = circuit {
+    Rzz(gamma) @(0, 1)
+    |> Rzz(gamma) @(1, 2)
+    |> Rzz(gamma) @(2, 3)
+    |> Rzz(gamma) @(3, 4)
+    |> Rzz(gamma) @(4, 0)
+}
+
+fn mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(beta) q }
+}
+
+fn qaoa_c5_layer(gamma: Float, beta: Float): Circuit<5, 5, 6, Universal> = circuit {
+    cost_c5(gamma) |> mixer(5, beta)
+}
+
+fn main(): Q<List<Bit>> = run {
+    q  <- hadamard_all(5) @ qreg(5)
+    q2 <- qaoa_c5_layer(5.49779, 0.7854) @ q
+    measure_all(q2)
+    -- Expected: 10 optimal bitstrings dominate; expected cut ~3.75 (p=1).
+}
