@@ -1,0 +1,51 @@
+-- Application demo: QAOA depth scaling on C5 -- the p=2 deeper ansatz (#191).
+--
+-- Companion to maxcut_c5_p1.qn (same C5 graph, same encoding). p=2 applies
+-- TWO cost+mixer layers, (gamma1,beta1) then (gamma2,beta2). The checker
+-- (test/verify/maxcut_depth.py) compiles this file AND the p=1 baseline and
+-- asserts the p=2 expected cut is at least the p=1 expected cut -- the
+-- empirical content of "more depth buys more quality" for QAOA.
+--
+-- Encoding (Quon part). Same cost_c5 / mixer / qaoa_c5_layer primitives as
+-- the p=1 file; the only difference is composing two layers at the run-block
+-- application site. (Composing compound parametric circuit expressions at
+-- the run site is exactly the pattern the lowerer supports today -- see the
+-- analogous note in test/verify/spin_glass_qaoa.qn.)
+--
+-- Classical part (NOT in Quon). The four angles
+-- (gamma1,beta1,gamma2,beta2) = (1.93015, 5.78512, 0.49807, 4.35303) were
+-- found by an offline statevector optimization and baked in as literals.
+-- Quon proves the p=2 depth bound 1 + 2*(5 + 1) = 13; the optimizer is
+-- external Python.
+--
+-- Result. p=2 concentrates essentially all probability on the 10 optimal
+-- cut bitstrings (expected cut ~4.0 = the MaxCut), a clear improvement over
+-- the p=1 baseline's 3.75.
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn cost_c5(gamma: Float): Circuit<5, 5, 5, Universal> = circuit {
+    Rzz(gamma) @(0, 1)
+    |> Rzz(gamma) @(1, 2)
+    |> Rzz(gamma) @(2, 3)
+    |> Rzz(gamma) @(3, 4)
+    |> Rzz(gamma) @(4, 0)
+}
+
+fn mixer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(beta) q }
+}
+
+fn qaoa_c5_layer(gamma: Float, beta: Float): Circuit<5, 5, 6, Universal> = circuit {
+    cost_c5(gamma) |> mixer(5, beta)
+}
+
+fn main(): Q<List<Bit>> = run {
+    q  <- hadamard_all(5) @ qreg(5)
+    q2 <- (qaoa_c5_layer(1.93015, 5.78512)
+           |> qaoa_c5_layer(0.49807, 4.35303)) @ q
+    measure_all(q2)
+    -- Expected: ~all mass on the 10 optimal bitstrings; expected cut ~4.0 (p=2).
+}

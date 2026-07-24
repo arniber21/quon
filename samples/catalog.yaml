@@ -125,6 +125,55 @@ entries:
     artifacts: []
     ci: none
 
+  # ── Application-domain demos (#191) ─────────────────────────────────────
+  - id: applications/maxcut-qaoa
+    path: samples/applications/maxcut_prism6.qn
+    tags: [applications, optimization, qaoa, maxcut, graph, aer-verify]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/qaoa-depth-p1
+    path: samples/applications/maxcut_c5_p1.qn
+    tags: [applications, optimization, qaoa, maxcut, depth-scaling, aer-verify]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/qaoa-depth-p2
+    path: samples/applications/maxcut_c5_p2.qn
+    tags: [applications, optimization, qaoa, maxcut, depth-scaling, aer-verify]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/ising-ring
+    path: samples/applications/ising_ring.qn
+    tags: [applications, simulation, ising, trotter, lattice, ring, periodic, aer-verify]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/vqe-ansatz
+    path: samples/applications/vqe_ansatz.qn
+    tags: [applications, optimization, vqe, ansatz, variational, aer-verify]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/tsp-sketch
+    path: samples/applications/tsp_sketch.qn
+    tags: [applications, optimization, tsp, sketch, ising, qaoa]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
   - id: workflows/edit-verify-loop-stub
     path: samples/workflows/edit_verify_loop.qn
     tags: [workflows, stub, pack-188]
