@@ -73,7 +73,10 @@ pub enum StatePrepMode {
     #[default]
     Heuristic,
     /// Exact SMT state-prep scheduling via z3 (requires `solver` feature).
-    /// Falls back to heuristic with a logged optimality gap on timeout.
+    /// The standalone solver (`exact::state_prep::schedule_exact`) is
+    /// implemented, but pipeline wiring into the QEC per-CNOT-phase
+    /// scheduler is not yet done, so requesting this currently logs a
+    /// fallback to the heuristic scheduler (issue #302, Deliverable A).
     Exact,
 }
 

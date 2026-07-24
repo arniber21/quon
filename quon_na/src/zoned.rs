@@ -220,11 +220,15 @@ pub enum PlacerMode {
     RoutingAgnostic,
     /// RAP: minimize Eq. (1) routing cost of the transition.
     RoutingAware,
-    /// SMT-optimal placement (issue #302, Deliverable B). Uses z3 to find
-    /// the optimal initial atom→site assignment on the flat AOD path, or
-    /// the optimal initial storage placement on the zoned path. Falls back
-    /// to [`PlacerMode::RoutingAgnostic`] with a logged optimality gap when
-    /// the `solver` feature is off or z3 times out.
+    /// SMT-optimal placement (issue #302, Deliverable B). On the **flat
+    /// AOD** path this dispatches to [`PlacementStrategy::Exact`], which
+    /// solves the atom→site assignment with z3 (or brute-force for n ≤ 8)
+    /// and falls back to [`PlacementStrategy::InteractionClustering`] with
+    /// a logged optimality gap on timeout or when the `solver` feature is
+    /// off. On the **zoned** path exact initial storage placement is not
+    /// yet implemented, so this runs the routing-agnostic per-layer
+    /// assignment and the schedule is labelled `heuristic` — the fallback
+    /// is logged, never silent.
     Exact,
 }
 

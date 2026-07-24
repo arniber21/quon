@@ -203,14 +203,20 @@ fn try_k_colouring(
     }
 
     match solver.check() {
-        SatResult::Sat => {
-            let model = solver.get_model().unwrap();
-            let stages: Vec<i64> = stage_vars
-                .iter()
-                .map(|sv| model.eval(sv, true).and_then(|v| v.as_i64()).unwrap_or(0))
-                .collect();
-            KColourResult::Sat(stages)
-        }
+        SatResult::Sat => match solver.get_model() {
+            // `get_model` can return `None` even after `Sat` (model
+            // extraction failure). Treat that as a timeout rather than
+            // panicking, so the caller falls back to the greedy colouring
+            // (issue #302: graceful degradation, no crash).
+            None => KColourResult::Unknown,
+            Some(model) => {
+                let stages: Vec<i64> = stage_vars
+                    .iter()
+                    .map(|sv| model.eval(sv, true).and_then(|v| v.as_i64()).unwrap_or(0))
+                    .collect();
+                KColourResult::Sat(stages)
+            }
+        },
         SatResult::Unsat => KColourResult::Unsat,
         SatResult::Unknown => KColourResult::Unknown,
     }

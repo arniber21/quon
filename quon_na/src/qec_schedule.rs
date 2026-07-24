@@ -70,15 +70,21 @@ fn schedule_expanded(
     let pipeline_started = Instant::now();
     let mut stage_acc = QecStageAccumulator::default();
 
-    // Issue #302 Deliverable A exceed hook: when `--na-state-prep exact` is
-    // requested, QEC logical-zero prep (e.g. Steane, surface d=3) can request
-    // optimal CZ-pair scheduling. The exact solver is invoked per CNOT phase
-    // inside `schedule_cnot_phase` via `plan_backend`; this logs the request.
+    // Issue #302 Deliverable A: `--na-state-prep exact` requests SMT-optimal
+    // CZ-pair scheduling. The standalone solver
+    // (`crate::exact::state_prep::schedule_exact`) is implemented and
+    // unit-tested (Steane 7q/9CZ -> 3 stages), but it is NOT yet wired into
+    // the QEC pipeline per-CNOT-phase scheduling -- `plan_backend` does
+    // not consume `opts.state_prep`, so the heuristic zoned/flat scheduler
+    // runs unchanged. Log the fallback so the request is never silently
+    // honoured (issue #302: "no silent heuristic-only fallback without
+    // logging").
     #[cfg(feature = "solver")]
     if opts.state_prep == crate::pipeline::StatePrepMode::Exact {
         eprintln!(
-            "[quon_na] exact state-prep scheduling requested for QEC workload \
-             (blocks={}, memory_rounds={})",
+            "[quon_na] --na-state-prep exact requested for QEC workload \
+             (blocks={}, memory_rounds={}), but exact state-prep scheduling \
+             is not yet wired into the pipeline; using heuristic",
             expanded.blocks.len(),
             expanded.memory_round_count()
         );

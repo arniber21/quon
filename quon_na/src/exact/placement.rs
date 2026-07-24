@@ -288,10 +288,16 @@ fn compute_actual_score<V: VertexId>(
         pos_map.insert(v, sites[assignment[i]].position);
     }
 
+    let zero = Position {
+        x_um: 0.0,
+        y_um: 0.0,
+    };
     let mut score = 0.0;
     for edge in &graph.edges {
-        let pa = pos_map.get(&edge.a).unwrap();
-        let pb = pos_map.get(&edge.b).unwrap();
+        // `graph.validate()` guarantees edge endpoints are in `vertices`,
+        // hence in `pos_map`; the fallback is defensive only.
+        let pa = pos_map.get(&edge.a).copied().unwrap_or(zero);
+        let pb = pos_map.get(&edge.b).copied().unwrap_or(zero);
         let dx = pa.x_um - pb.x_um;
         let dy = pa.y_um - pb.y_um;
         let euclidean = (dx * dx + dy * dy).sqrt();

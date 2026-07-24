@@ -93,11 +93,17 @@ pub fn plan_backend<V: VertexId>(
     req = match opts.backend {
         NaBackendKind::Zoned => {
             info.placer_mode = Some(opts.placer);
-            // Issue #302: exact mode on the zoned path uses agnostic
-            // per-layer assignment (the exact optimization is in the initial
-            // placement), so the schedule is heuristic-quality per layer.
+            // Issue #302: exact initial placement is only implemented for
+            // the flat-AOD path (PlacementStrategy::Exact). The zoned path
+            // has no SMT-optimal initial storage placement yet, so
+            // `--na-placer exact` here runs the routing-agnostic per-layer
+            // assignment and the schedule is labelled heuristic — the
+            // fallback is logged, never silently mislabelled exact.
             if opts.placer == PlacerMode::Exact {
                 info.schedule_optimality = Some(crate::report::ScheduleOptimality::Heuristic);
+                eprintln!(
+                    "[quon_na] exact placer mode on a zoned target is not yet                      supported: running routing-agnostic per-layer assignment                      (no SMT-optimal initial storage placement). Schedule                      labelled heuristic. Use --na-backend flat for exact                      placement (issue #302)."
+                );
             }
             let arch = zoned_architecture(na);
             let stage_started = Instant::now();

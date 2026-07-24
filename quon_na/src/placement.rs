@@ -101,6 +101,21 @@ pub fn place<V: VertexId>(
         let params = crate::exact::placement::ExactPlacementParams::default();
         match crate::exact::placement::place_exact(&req.graph, params) {
             Ok(exact) => {
+                if exact.outcome == crate::exact::SolverOutcome::Timeout {
+                    // z3 exceeded its time budget: the returned model is a
+                    // best-effort guess, NOT a proven optimum. Fall back to
+                    // the best heuristic and log the optimality gap so the
+                    // schedule is labelled heuristic — never silently
+                    // mislabelled `exact` (issue #302: "no silent
+                    // heuristic-only fallback without logging").
+                    let exact_score = exact.result.score;
+                    let heuristic = place(req, PlacementStrategy::InteractionClustering)?;
+                    eprintln!(
+                        "[quon_na] exact placement solver timed out (z3 returned                          `unknown`); fell back to interaction_clustering                          (best-effort exact score={exact_score:.4},                          heuristic score={:.4})",
+                        heuristic.score
+                    );
+                    return Ok(heuristic);
+                }
                 let mut result = exact.result;
                 result.request.layers = std::mem::take(&mut req.layers);
                 return Ok(result);
