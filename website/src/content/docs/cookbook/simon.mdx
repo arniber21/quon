@@ -1,0 +1,81 @@
+---
+title: Simon's algorithm
+description: Recover a hidden string with quantum queries and classical GF(2) post-processing.
+sidebar:
+  order: 13
+---
+
+## What we're building and why
+
+Simon's algorithm solves a problem that is exponentially hard for any
+classical randomized algorithm but takes only O(n) quantum queries: given
+a 2-to-1 function f with a hidden period s — f(x) = f(y) iff y = x ⊕ s —
+recover s. Each quantum query produces a string y with y · s = 0 (mod 2);
+collecting enough independent y's and solving the linear system over GF(2)
+recovers s.
+
+Inspired by the [Qiskit textbook "Simon's Algorithm" chapter](https://qiskit.org/textbook/ch-algorithms/simon-part.html).
+
+**What Quon does differently:** the Qiskit notebook implements both the
+oracle and the classical post-processing in Python. Here the same boundary
+is honest: the `.qn` program is the quantum *circuit* (Hadamard layers +
+oracle + Hadamard layer), a typed `Circuit<6, 6, 11, Clifford>` value whose
+depth is statically verified. The classical outer loop — collecting
+measurement samples and solving y · s = 0 over GF(2) — lives in the Python
+checker (`test/verify/simon.py`), just as in Qiskit, but the circuit itself
+is a typed value, not an imperative `QuantumCircuit` build.
+
+This sample hides s = 110 (n = 3 query + 3 work qubits). The oracle
+f(x) = x ⊕ (x₀ · s) is a 2-to-1 function with period s, implemented as five
+CNOTs. Each shot yields a y with y · s = 0; the checker collects these,
+performs Gaussian elimination over GF(2), and recovers s.
+
+## Source
+
+The full source is at
+[`samples/algorithms/simon.qn`](https://github.com/arniber21/quon/blob/main/samples/algorithms/simon.qn).
+
+```qn
+fn simon_s110(): Circuit<6, 6, 11, Clifford> = circuit {
+    H @0 |> H @1 |> H @2
+    |> CNOT @(0, 3) |> CNOT @(1, 4) |> CNOT @(2, 5) |> CNOT @(0, 3) |> CNOT @(0, 4)
+    |> H @0 |> H @1 |> H @2
+}
+```
+
+The type `Circuit<6, 6, 11, Clifford>` encodes: 6 qubits, depth 11 (3 H + 5
+CNOT + 3 H, all sequentially composed), Clifford class. The optimizer
+recognizes that the first and fourth CNOTs (both on qubits 0 and 3) cancel
+after commuting past disjoint CNOTs, reducing the oracle from 5 to 3 CNOTs.
+
+## Compile and simulate
+
+```sh
+./target/release/quonc samples/algorithms/simon.qn --emit-qasm
+QUONC=target/release/quonc python test/verify/simon.py
+```
+
+## Classical post-processing
+
+The quantum circuit produces random y values satisfying y · s = 0. The
+Python checker:
+
+1. Runs the circuit with 4096 shots (seeded for reproducibility).
+2. Extracts the query-register bits (y₀, y₁, y₂) from each shot.
+3. Filters out the trivial y = 000.
+4. Builds a constraint matrix over GF(2) from the non-trivial y's.
+5. Performs Gaussian elimination to find the 1-dimensional null space.
+6. The non-zero null-space vector is the hidden string s = 110.
+
+This is the honest boundary: Quon is the circuit, Python is the classical
+outer loop — the same split as the Qiskit textbook, but with the circuit as
+a typed, depth-verified Clifford value.
+
+## Expected result
+
+The [`simon.py`](https://github.com/arniber21/quon/blob/main/test/verify/simon.py)
+verifier recovers s = (1, 1, 0) from the measurement statistics and confirms
+it matches the hidden string.
+
+→ Next: [Phase estimation](./phase-estimation/) — estimate an eigenvalue
+  phase with a single counting qubit.
