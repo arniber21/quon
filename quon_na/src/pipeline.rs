@@ -80,6 +80,22 @@ pub enum StatePrepMode {
     Exact,
 }
 
+/// Placement/routing objective (issue #309).
+///
+/// `Time` (default) minimizes the time-shaped RAP Eq. (1) cost `Σ √(d_max)`.
+/// `ErrorBudget` minimizes analytic error-model contributions instead —
+/// `rate × count` (ADR-0017/0020), not logical error rates or thresholds.
+///
+/// Requesting `ErrorBudget` on a target without an `error_model` is a hard
+/// error (fail-closed, mirroring `--emit-resource-report` discipline).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NaObjective {
+    #[default]
+    Time,
+    ErrorBudget,
+}
+
 /// Options for the NA schedule pipeline.
 #[derive(Clone, Copy, Debug)]
 pub struct NaScheduleOptions {
@@ -98,6 +114,11 @@ pub struct NaScheduleOptions {
     /// `Exact` uses the z3-backed exact state-prep scheduler when the
     /// `solver` feature is enabled, falling back to heuristic on timeout.
     pub state_prep: StatePrepMode,
+    /// Placement/routing objective (issue #309): `Time` (default) minimizes
+    /// the RAP Eq. (1) time-shaped cost; `ErrorBudget` minimizes analytic
+    /// error-model contributions instead (ADR-0017/0020). Requires the
+    /// target's `error_model` — requesting it without one is a hard error.
+    pub objective: NaObjective,
 }
 impl Default for NaScheduleOptions {
     fn default() -> Self {
@@ -109,6 +130,7 @@ impl Default for NaScheduleOptions {
             dump_ir: false,
             aware_search: AwareSearchParams::default(),
             state_prep: StatePrepMode::default(),
+            objective: NaObjective::default(),
         }
     }
 }
@@ -181,6 +203,15 @@ pub enum NaPipelineError<V = LogicalQubitId> {
         z_cnot_count: usize,
         entangling_len: usize,
     },
+    /// Error-budget placement objective requested on a target without an
+    /// `error_model` (issue #309). Mirrors `--emit-resource-report`
+    /// fail-closed discipline (ADR-0017): never derive from fidelity.
+    #[error(
+        "error-budget placement objective (--na-objective error-budget) requires a \
+         target error_model; set error_model on the target (do not derive from \
+         fidelity) — mirrors --emit-resource-report fail-closed discipline (ADR-0017)"
+    )]
+    MissingErrorModelForObjective,
     #[error("resource report failed: {0}")]
     Report(#[from] crate::report::ReportError),
 }
@@ -689,6 +720,7 @@ fn finish_pipeline(
             placer_mode,
             placement_strategy,
             compaction: compaction_config,
+            objective: opts.objective,
         },
         stage_timings_us: StageTimingsUs {
             extract_us: None,

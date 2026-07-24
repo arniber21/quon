@@ -27,7 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::NaBackendKind;
+use crate::pipeline::{NaBackendKind, NaObjective};
 use crate::placement::PlacementStrategy;
 use crate::zoned::AgnosticPlacerMechanism;
 use crate::zoned::PlacerMode;
@@ -199,6 +199,10 @@ pub struct EffectiveConfig {
     pub placement_strategy: Option<PlacementStrategy>,
     #[serde(default)]
     pub compaction: CompactionConfig,
+    /// Placement/routing objective (issue #309): `Time` (default) or
+    /// `ErrorBudget`. Mirrors the `--na-objective` CLI knob.
+    #[serde(default)]
+    pub objective: NaObjective,
 }
 
 /// Tool/target identifiers so a stats file is self-describing without a

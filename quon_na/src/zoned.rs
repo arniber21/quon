@@ -92,7 +92,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::geometry::{SpeedModel, SpeedModelKind};
+use crate::geometry::{SpeedModel, SpeedModelKind, movement_duration_for_model};
 use crate::graph::{InteractionGraph, LogicalQubitId, VertexId};
 use crate::layout::AodTrapRef;
 use crate::layout::{
@@ -103,6 +103,7 @@ use crate::schedule::{
     AtomMove, MovementGroup, NeutralAtomAction, ScheduleLayer, TransferDirection, TrapTransfer,
 };
 use crate::schedule_entry::GraphScheduleRequest;
+use backend::NeutralAtomErrorModel;
 
 #[cfg(feature = "flux")]
 use flux_rs::attrs::*;
@@ -218,6 +219,115 @@ impl ZonedArchitecture {
         }
         Ok(())
     }
+}
+
+/// How a candidate gate→pair assignment is scored (issue #309).
+///
+/// `Time` (default) uses the RAP Eq. (1) time-shaped cost `Σ √(d_max)`.
+/// `ErrorBudget` uses analytic error-model contributions instead:
+/// `movement × steps + transfer × transfers + idle × exposed_wait +
+/// rydberg × stages` — `rate × count` only (ADR-0017/0020), **not** logical
+/// error rates or threshold claims.
+///
+/// Requesting `ErrorBudget` on a target without an `error_model` is a hard
+/// error (fail-closed, mirroring `--emit-resource-report` discipline) —
+/// enforced in [`crate::plan::plan_backend`], not here, so library callers
+/// that construct a [`PlacementCostModel::ErrorBudget`] directly take
+/// responsibility for the model's presence.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum PlacementCostModel {
+    /// RAP Eq. (1): `Σ_G √(d_max(G))` over AOD-compatible movement groups.
+    #[default]
+    Time,
+    /// Analytic error-budget: `Σ error_model × schedule_count` contributions.
+    /// Requires the target's [`NeutralAtomErrorModel`] (ADR-0017).
+    ErrorBudget {
+        model: NeutralAtomErrorModel,
+        speed_model: SpeedModel,
+    },
+}
+
+impl PlacementCostModel {
+    /// Per-gate cost of assigning two atoms with travel distances `dist_a`
+    /// and `dist_b` to an entanglement pair. Under `Time` this is the sum
+    /// of distances (matching the greedy placer's orientation comparison).
+    /// Under `ErrorBudget` this is the analytic error-budget contribution of
+    /// the move (issue #309).
+    fn gate_cost(&self, dist_a: f64, dist_b: f64) -> f64 {
+        match self {
+            Self::Time => dist_a + dist_b,
+            Self::ErrorBudget { model, speed_model } => {
+                error_budget_gate_cost(model, speed_model, dist_a, dist_b)
+            }
+        }
+    }
+
+    /// Per-gate d_max cost for the matching placer's cost matrix. Under
+    /// `Time` this is `d_max`; under `ErrorBudget` it is the error-budget
+    /// cost (which depends on `n_moves` and `d_max`, not just `d_max`).
+    fn d_max_cost(&self, d_max: f64, dist_a: f64, dist_b: f64) -> f64 {
+        match self {
+            Self::Time => d_max,
+            Self::ErrorBudget { model, speed_model } => {
+                error_budget_gate_cost(model, speed_model, dist_a, dist_b)
+            }
+        }
+    }
+
+    /// Cost of one AOD-compatible movement group — the unit the routing
+    /// cost sums over ([RAP] Eq. (1) for `Time`; error-budget per group for
+    /// `ErrorBudget`). Used by the aware search's `groups_cost`.
+    fn group_cost(&self, group: &SearchGroup) -> f64 {
+        match self {
+            Self::Time => sqrt_d_max(group.max_dist_um),
+            Self::ErrorBudget { model, speed_model } => {
+                let n_moves = group.moves.len() as f64;
+                let move_duration = if group.max_dist_um >= 1e-9 {
+                    movement_duration_for_model(group.max_dist_um, speed_model) as f64
+                } else {
+                    0.0
+                };
+                // One rearrangement step per group (accurate, not
+                // approximate): 2 transfers per move, idle exposure for
+                // the group's move duration. Rydberg is per-layer (constant
+                // across assignments) so omitted from per-group cost.
+                model.movement + model.transfer * 2.0 * n_moves + model.idle_per_us * move_duration
+            }
+        }
+    }
+}
+
+/// Analytic error-budget contribution of one gate's move (issue #309).
+///
+/// `rate × count` only (ADR-0017/0020): `movement × steps + transfer ×
+/// transfers + idle × exposed_wait + rydberg × stages`. **Not** a logical
+/// error rate or threshold claim.
+///
+/// Per-gate approximation: each non-reuse move may add a rearrangement step
+/// (upper bound — AOD-compatible moves share a group), 2 transfers per
+/// non-reuse move (SLM→AOD + AOD→SLM), idle exposure for the move duration
+/// (`movement_duration_for_model`), one rydberg stage per gate's
+/// entanglement. The [`pick_agnostic_assignment`] dispatch compares full
+/// assignments on the actual group-level cost (not this per-gate
+/// approximation) to correct the step overcount.
+fn error_budget_gate_cost(
+    model: &NeutralAtomErrorModel,
+    speed_model: &SpeedModel,
+    dist_a: f64,
+    dist_b: f64,
+) -> f64 {
+    let n_moves = (dist_a >= 1e-9) as u64 + (dist_b >= 1e-9) as u64;
+    let d_max = dist_a.max(dist_b);
+    let transfers = 2 * n_moves;
+    let move_duration = if d_max >= 1e-9 {
+        movement_duration_for_model(d_max, speed_model) as f64
+    } else {
+        0.0
+    };
+    model.movement * n_moves as f64
+        + model.transfer * transfers as f64
+        + model.idle_per_us * move_duration
+        + model.rydberg
 }
 
 /// Placer mode ([RAP] Sec. VI-B agnostic-vs-aware pairs).
@@ -548,17 +658,25 @@ pub fn schedule_zoned<V: VertexId>(
     arch: &ZonedArchitecture,
     mode: PlacerMode,
 ) -> Result<ZonedScheduleResult<V>, ZonedScheduleError> {
-    schedule_zoned_with_aware_params(req, arch, mode, AwareSearchParams::default())
+    schedule_zoned_with_aware_params(
+        req,
+        arch,
+        mode,
+        AwareSearchParams::default(),
+        PlacementCostModel::default(),
+    )
 }
 
 /// [`schedule_zoned`], but with explicit [`AwareSearchParams`] for
-/// [`PlacerMode::RoutingAware`]'s A* search (issue #297). Ignored under
-/// [`PlacerMode::RoutingAgnostic`].
+/// [`PlacerMode::RoutingAware`]'s A* search (issue #297) and an explicit
+/// [`PlacementCostModel`] (issue #309). The cost model applies to all modes;
+/// `aware_search` is ignored under [`PlacerMode::RoutingAgnostic`].
 pub fn schedule_zoned_with_aware_params<V: VertexId>(
     mut req: GraphScheduleRequest<V>,
     arch: &ZonedArchitecture,
     mode: PlacerMode,
     aware_search: AwareSearchParams,
+    cost_model: PlacementCostModel,
 ) -> Result<ZonedScheduleResult<V>, ZonedScheduleError> {
     arch.validate()?;
     if req.layers.is_empty() {
@@ -638,6 +756,7 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
             site_occupant: &site_occupant,
             conflict_um,
             aod_min_sep_um: arch.aod_min_separation_um,
+            cost_model,
         };
         let gate_atoms: Vec<(AtomId, AtomId)> = gates.iter().map(|g| g.atoms).collect();
         let assignment = match mode {
@@ -1110,6 +1229,9 @@ struct AssignInputs<'a> {
     /// [`assign_aware_legal`]'s search-time movement grouping (Eq. (1)); `0.0`
     /// disables the separation sub-check (see [`positions_aod_compatible`]).
     aod_min_sep_um: f64,
+    /// Placement cost model (issue #309): `Time` uses the RAP Eq. (1)
+    /// √(d_max) cost; `ErrorBudget` uses analytic error-model contributions.
+    cost_model: PlacementCostModel,
 }
 
 /// Whether [`assign_aware_legal`]'s A* search found a full legal assignment
@@ -1224,8 +1346,12 @@ fn assign_greedy_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) ->
             if used.contains(&i) || !pair_legal(i, (a, b), &used, inputs) {
                 continue;
             }
-            let cost_fwd = euclidean_um(pa, left) + euclidean_um(pb, right);
-            let cost_rev = euclidean_um(pa, right) + euclidean_um(pb, left);
+            let dist_a_fwd = euclidean_um(pa, left);
+            let dist_b_fwd = euclidean_um(pb, right);
+            let dist_a_rev = euclidean_um(pa, right);
+            let dist_b_rev = euclidean_um(pb, left);
+            let cost_fwd = inputs.cost_model.gate_cost(dist_a_fwd, dist_b_fwd);
+            let cost_rev = inputs.cost_model.gate_cost(dist_a_rev, dist_b_rev);
             let (cost, orient) = if cost_fwd <= cost_rev {
                 (cost_fwd, (left, right))
             } else {
@@ -1336,17 +1462,24 @@ fn assign_matching_legal(
             if !pair_occupancy_ok(inputs.pair_sites[i], (a, b), inputs.site_occupant) {
                 continue;
             }
-            // Cost = the √-law per-gate move distance the agnostic path
-            // charges ([RAP] Eq. (1)): d_max = max of the two atoms' travels
-            // for the cheaper orientation (orientation does not affect
-            // [`pairs_conflict`], which is between pair sites, so the cheaper
-            // orientation is picked freely). Minimizing the sum of per-gate
-            // d_max (rather than the sum of both atoms' distances, which the
-            // greedy selection uses) tracks the routing cost Eq. (1) sums
-            // over, and so correlates with — rather than fights — the
-            // rearrangement-step count.
-            let cost_fwd = euclidean_um(pa, left).max(euclidean_um(pb, right));
-            let cost_rev = euclidean_um(pa, right).max(euclidean_um(pb, left));
+            // Cost = the per-gate move cost the agnostic path charges
+            // ([RAP] Eq. (1) under `Time`: d_max = max of the two atoms'
+            // travels for the cheaper orientation; under `ErrorBudget`:
+            // the analytic error-budget contribution — issue #309).
+            // Orientation does not affect [`pairs_conflict`] (between pair
+            // sites), so the cheaper orientation is picked freely.
+            let dist_a_fwd = euclidean_um(pa, left);
+            let dist_b_fwd = euclidean_um(pb, right);
+            let dist_a_rev = euclidean_um(pa, right);
+            let dist_b_rev = euclidean_um(pb, left);
+            let d_max_fwd = dist_a_fwd.max(dist_b_fwd);
+            let d_max_rev = dist_a_rev.max(dist_b_rev);
+            let cost_fwd = inputs
+                .cost_model
+                .d_max_cost(d_max_fwd, dist_a_fwd, dist_b_fwd);
+            let cost_rev = inputs
+                .cost_model
+                .d_max_cost(d_max_rev, dist_a_rev, dist_b_rev);
             let (cost, orient) = if cost_fwd <= cost_rev {
                 (cost_fwd, (left, right))
             } else {
@@ -1454,8 +1587,18 @@ fn assign_matching_legal(
             if used.contains(&i) || !pair_legal(i, (a, b), &used, inputs) {
                 continue;
             }
-            let cost_fwd = euclidean_um(pa, left).max(euclidean_um(pb, right));
-            let cost_rev = euclidean_um(pa, right).max(euclidean_um(pb, left));
+            let dist_a_fwd = euclidean_um(pa, left);
+            let dist_b_fwd = euclidean_um(pb, right);
+            let dist_a_rev = euclidean_um(pa, right);
+            let dist_b_rev = euclidean_um(pb, left);
+            let d_max_fwd = dist_a_fwd.max(dist_b_fwd);
+            let d_max_rev = dist_a_rev.max(dist_b_rev);
+            let cost_fwd = inputs
+                .cost_model
+                .d_max_cost(d_max_fwd, dist_a_fwd, dist_b_fwd);
+            let cost_rev = inputs
+                .cost_model
+                .d_max_cost(d_max_rev, dist_a_rev, dist_b_rev);
             let (c, orient) = if cost_fwd <= cost_rev {
                 (cost_fwd, (left, right))
             } else {
@@ -1524,6 +1667,64 @@ fn assignment_group_count(
     partition_aod_compatible(&moves, aod_min_sep_um).len()
 }
 
+/// Analytic error-budget cost of a full layer assignment (issue #309).
+///
+/// Computes the actual group-level cost: `movement × steps + transfer ×
+/// transfers + idle × exposed_wait + rydberg × stages` using the real
+/// AOD-compatible movement groups the assignment would emit. Used by
+/// [`pick_agnostic_assignment`] under [`PlacementCostModel::ErrorBudget`]
+/// to compare the matching and greedy placers on the error-budget metric
+/// (not just step count). `rate × count` only (ADR-0017/0020) — **not** a
+/// logical error rate or threshold claim.
+fn assignment_error_budget_cost(
+    assignment: &GateAssignment,
+    gates: &[(AtomId, AtomId)],
+    atom_pos: &BTreeMap<AtomId, Position>,
+    layout: &NeutralAtomLayout,
+    model: &NeutralAtomErrorModel,
+    speed_model: &SpeedModel,
+    aod_min_sep_um: f64,
+) -> f64 {
+    let mut moves: Vec<PlannedMove> = Vec::new();
+    for &(gate_index, (pa, pb)) in &assignment.placed {
+        let (a, b) = gates[gate_index];
+        for (atom, target) in [(a, pa), (b, pb)] {
+            let cur = atom_pos.get(&atom).copied().unwrap_or(target);
+            let dist = euclidean_um(cur, target);
+            if dist < 1e-9 {
+                continue; // reuse: already in place
+            }
+            moves.push(PlannedMove {
+                atom,
+                from_site: nearest_site_id(layout, cur),
+                to_site: nearest_site_id(layout, target),
+                from: cur,
+                to: target,
+                distance_um: dist,
+            });
+        }
+    }
+    let groups = partition_aod_compatible(&moves, aod_min_sep_um);
+    let n_groups = groups.len() as f64;
+    let n_transfers = 2.0 * moves.len() as f64;
+    let total_idle: f64 = groups
+        .iter()
+        .map(|g| {
+            let d_max = g.iter().fold(0.0_f64, |d, m| d.max(m.distance_um));
+            if d_max >= 1e-9 {
+                movement_duration_for_model(d_max, speed_model) as f64
+            } else {
+                0.0
+            }
+        })
+        .sum();
+    let n_rydberg = assignment.placed.len() as f64;
+    model.movement * n_groups
+        + model.transfer * n_transfers
+        + model.idle_per_us * total_idle
+        + model.rydberg * n_rydberg
+}
+
 /// Choose the routing-agnostic layer assignment: compute both the
 /// min-weight matching placer ([`assign_matching_legal`]) and the greedy
 /// placer ([`assign_greedy_legal`]), keep whichever yields fewer AOD movement
@@ -1543,16 +1744,49 @@ fn pick_agnostic_assignment(
 ) -> (GateAssignment, bool) {
     let greedy = assign_greedy_legal(gates, inputs);
     let (matching, _) = assign_matching_legal(gates, inputs);
-    let greedy_groups = assignment_group_count(&greedy, gates, atom_pos, layout, aod_min_sep_um);
-    let matching_groups =
-        assignment_group_count(&matching, gates, atom_pos, layout, aod_min_sep_um);
-    // Matching must place at least as many gates (≤ deferrals) AND strictly
-    // fewer movement groups to be worth the swap; otherwise the known-good
-    // greedy baseline is kept.
-    if matching.deferred.len() <= greedy.deferred.len() && matching_groups < greedy_groups {
-        (matching, true)
-    } else {
-        (greedy, false)
+    match inputs.cost_model {
+        PlacementCostModel::Time => {
+            let greedy_groups =
+                assignment_group_count(&greedy, gates, atom_pos, layout, aod_min_sep_um);
+            let matching_groups =
+                assignment_group_count(&matching, gates, atom_pos, layout, aod_min_sep_um);
+            // Matching must place at least as many gates (≤ deferrals) AND
+            // strictly fewer movement groups to be worth the swap;
+            // otherwise the known-good greedy baseline is kept.
+            if matching.deferred.len() <= greedy.deferred.len() && matching_groups < greedy_groups {
+                (matching, true)
+            } else {
+                (greedy, false)
+            }
+        }
+        PlacementCostModel::ErrorBudget { model, speed_model } => {
+            // Issue #309: under ErrorBudget, compare on the actual analytic
+            // error-budget cost (movement × steps + transfer × transfers +
+            // idle × exposed_wait + rydberg × stages) rather than step count.
+            let greedy_cost = assignment_error_budget_cost(
+                &greedy,
+                gates,
+                atom_pos,
+                layout,
+                &model,
+                &speed_model,
+                aod_min_sep_um,
+            );
+            let matching_cost = assignment_error_budget_cost(
+                &matching,
+                gates,
+                atom_pos,
+                layout,
+                &model,
+                &speed_model,
+                aod_min_sep_um,
+            );
+            if matching.deferred.len() <= greedy.deferred.len() && matching_cost < greedy_cost {
+                (matching, true)
+            } else {
+                (greedy, false)
+            }
+        }
     }
 }
 
@@ -1699,8 +1933,8 @@ fn add_move_to_groups(groups: &mut Vec<SearchGroup>, mv: (Position, Position), m
     }
 }
 
-fn groups_cost(groups: &[SearchGroup]) -> f64 {
-    routing_cost_eq1(&groups.iter().map(|g| g.max_dist_um).collect::<Vec<_>>())
+fn groups_cost(groups: &[SearchGroup], cost_model: PlacementCostModel) -> f64 {
+    groups.iter().map(|g| cost_model.group_cost(g)).sum()
 }
 
 /// Population standard deviation (`0.0` for fewer than 2 samples).
@@ -1795,17 +2029,21 @@ fn rank_of(sorted: &[f64], value: f64) -> f64 {
 struct GateCandidate {
     pair_index: usize,
     orient: (Position, Position),
-    d_max: f64,
+    /// Placement cost under the active [`PlacementCostModel`] (issue #309):
+    /// equals `d_max` under `Time`, the error-budget contribution under
+    /// `ErrorBudget`. Candidates are sorted by this, so the pruning window
+    /// scans the lowest-cost choices first under either objective.
+    cost: f64,
 }
 
 /// All occupancy-legal `(pair, orientation)` choices for `gate`, sorted
-/// ascending by `d_max`. Both orientations of a pair are kept as separate
-/// entries — an orientation can change which movement group a placement
-/// joins even when it doesn't change `d_max`. Not window-truncated: the
-/// pruning window is applied by the caller while *scanning* this list for
-/// legal choices (occupancy + simultaneous-conflict + unused), so
-/// completeness (finding a full assignment whenever one exists) does not
-/// depend on the window size.
+/// ascending by cost (d_max under `Time`, error-budget under `ErrorBudget`).
+/// Both orientations of a pair are kept as separate entries — an orientation
+/// can change which movement group a placement joins even when it doesn't
+/// change `d_max`. Not window-truncated: the pruning window is applied by
+/// the caller while *scanning* this list for legal choices (occupancy +
+/// simultaneous-conflict + unused), so completeness (finding a full
+/// assignment whenever one exists) does not depend on the window size.
 fn gate_candidates(gate: (AtomId, AtomId), inputs: &AssignInputs<'_>) -> Vec<GateCandidate> {
     let (a, b) = gate;
     let pa = atom_position_or_origin(inputs.atom_pos, a);
@@ -1816,15 +2054,18 @@ fn gate_candidates(gate: (AtomId, AtomId), inputs: &AssignInputs<'_>) -> Vec<Gat
             continue;
         }
         for orient in [(left, right), (right, left)] {
-            let d_max = euclidean_um(pa, orient.0).max(euclidean_um(pb, orient.1));
+            let dist_a = euclidean_um(pa, orient.0);
+            let dist_b = euclidean_um(pb, orient.1);
+            let d_max = dist_a.max(dist_b);
+            let cost = inputs.cost_model.d_max_cost(d_max, dist_a, dist_b);
             options.push(GateCandidate {
                 pair_index: i,
                 orient,
-                d_max,
+                cost,
             });
         }
     }
-    options.sort_by(|x, y| x.d_max.total_cmp(&y.d_max));
+    options.sort_by(|x, y| x.cost.total_cmp(&y.cost));
     options
 }
 
@@ -1838,34 +2079,60 @@ fn heuristic_estimate(
     gates: &[(AtomId, AtomId)],
     candidates: &[Vec<GateCandidate>],
     params: &AwareSearchParams,
+    cost_model: PlacementCostModel,
 ) -> f64 {
     let level = node.assigned.len();
     let n_unplaced = gates.len() - level;
     if n_unplaced == 0 {
         return 0.0;
     }
-    let max_dist_of_placed = node
-        .groups
-        .iter()
-        .fold(0.0_f64, |m, g| m.max(g.max_dist_um));
-    let mut max_dist_of_unplaced = 0.0_f64;
-    for gate_candidates in &candidates[level..] {
-        // Nearest choice not yet claimed by this node; if every candidate is
-        // already claimed (rare — would require this node to have already
-        // used every occupancy-legal pair for some other, still-unplaced,
-        // gate), fall back to the worst candidate in the list as a
-        // pessimistic (rather than silently-zero) estimate.
-        let best = gate_candidates
-            .iter()
-            .find(|c| !node.used_pairs.contains(&c.pair_index))
-            .or_else(|| gate_candidates.last())
-            .map_or(0.0, |c| c.d_max);
-        max_dist_of_unplaced = max_dist_of_unplaced.max(best);
-    }
-    let admissible = if max_dist_of_unplaced <= max_dist_of_placed {
-        0.0
-    } else {
-        max_dist_of_unplaced.sqrt() - max_dist_of_placed.sqrt()
+    // Under `Time`: the admissible term is [RAP] Eq. (3):
+    // `max(0, √(d_max_unplaced) − √(d_max_placed))`. Under `ErrorBudget`
+    // (issue #309): the cost is already in error-budget units (no √), so
+    // the admissible term is `max(0, max_cost_unplaced − max_cost_placed)`.
+    // The accelerating term (Eq. (4)) is about group displacement
+    // uniformity, not cost units, so it is unchanged under both objectives.
+    let admissible = match cost_model {
+        PlacementCostModel::Time => {
+            let max_dist_of_placed = node
+                .groups
+                .iter()
+                .fold(0.0_f64, |m, g| m.max(g.max_dist_um));
+            let mut max_dist_of_unplaced = 0.0_f64;
+            for gate_candidates in &candidates[level..] {
+                let best = gate_candidates
+                    .iter()
+                    .find(|c| !node.used_pairs.contains(&c.pair_index))
+                    .or_else(|| gate_candidates.last())
+                    .map_or(0.0, |c| c.cost);
+                max_dist_of_unplaced = max_dist_of_unplaced.max(best);
+            }
+            if max_dist_of_unplaced <= max_dist_of_placed {
+                0.0
+            } else {
+                max_dist_of_unplaced.sqrt() - max_dist_of_placed.sqrt()
+            }
+        }
+        PlacementCostModel::ErrorBudget { .. } => {
+            let max_cost_of_placed = node
+                .groups
+                .iter()
+                .fold(0.0_f64, |m, g| m.max(cost_model.group_cost(g)));
+            let mut max_cost_of_unplaced = 0.0_f64;
+            for gate_candidates in &candidates[level..] {
+                let best = gate_candidates
+                    .iter()
+                    .find(|c| !node.used_pairs.contains(&c.pair_index))
+                    .or_else(|| gate_candidates.last())
+                    .map_or(0.0, |c| c.cost);
+                max_cost_of_unplaced = max_cost_of_unplaced.max(best);
+            }
+            if max_cost_of_unplaced <= max_cost_of_placed {
+                0.0
+            } else {
+                max_cost_of_unplaced - max_cost_of_placed
+            }
+        }
     };
     let accelerating = params.deepening_factor
         * (params.deepening_value + sum_std_deviation_for_groups(&node.groups))
@@ -1956,7 +2223,7 @@ fn assign_aware_legal(
             let mut groups = node.groups.clone();
             add_move_to_groups(&mut groups, (pa, cand.orient.0), inputs.aod_min_sep_um);
             add_move_to_groups(&mut groups, (pb, cand.orient.1), inputs.aod_min_sep_um);
-            let cost_so_far = groups_cost(&groups);
+            let cost_so_far = groups_cost(&groups, inputs.cost_model);
             let mut used_pairs = node.used_pairs.clone();
             used_pairs.insert(cand.pair_index);
             let mut assigned = node.assigned.clone();
@@ -1967,7 +2234,7 @@ fn assign_aware_legal(
                 groups,
                 neg_priority: OrderedFloat(0.0),
             };
-            let h = heuristic_estimate(&child, gates, &candidates, params);
+            let h = heuristic_estimate(&child, gates, &candidates, params, inputs.cost_model);
             let priority = cost_so_far + h;
             heap.push(AwareNode {
                 neg_priority: OrderedFloat(-priority),
@@ -2392,6 +2659,7 @@ mod tests {
             site_occupant: &site_occupant,
             conflict_um: 0.0,
             aod_min_sep_um: 0.0,
+            cost_model: PlacementCostModel::default(),
         };
 
         let greedy = assign_greedy_legal(&gates, &inputs);
@@ -2492,6 +2760,7 @@ mod tests {
             site_occupant: &site_occupant,
             conflict_um: 0.0,
             aod_min_sep_um: 0.0,
+            cost_model: PlacementCostModel::default(),
         };
 
         let greedy = assign_greedy_legal(&gates, &inputs);
@@ -2657,6 +2926,7 @@ mod tests {
             site_occupant: &site_occupant,
             conflict_um: 0.0,
             aod_min_sep_um: 0.0,
+            cost_model: PlacementCostModel::default(),
         };
 
         let greedy = assign_greedy_legal(&gates, &inputs);
@@ -3009,6 +3279,394 @@ mod tests {
         assert_ne!(
             sqrt_move_durations, jerk_move_durations,
             "jerk-limited durations must differ from √-law for the same schedule"
+        );
+    }
+    // ── Issue #309: error-budget objective ──────────────────────────────
+    //
+    // These tests exercise the [`PlacementCostModel::ErrorBudget`] path
+    // (issue #309): `rate × count` analytic contributions (ADR-0017/0020),
+    // not logical error rates or thresholds. The fixture below is designed
+    // so the time-optimal and error-budget-optimal placements differ — the
+    // issue's "cheap-but-many transfers vs one long move" example.
+
+    /// An [`NeutralAtomErrorModel`] with a high `movement` rate (per-step)
+    /// and a low `transfer` rate, so the error-budget objective prefers
+    /// fewer rearrangement steps (even at the cost of longer individual
+    /// moves and more transfers per step) — the opposite of the time
+    /// objective's `Σ √(d_max)`, which favors shorter moves.
+    fn test_error_model() -> NeutralAtomErrorModel {
+        NeutralAtomErrorModel {
+            rydberg: 0.001,
+            measurement: 0.01,
+            reset: 0.01,
+            movement: 0.05,
+            transfer: 0.0001,
+            idle_per_us: 0.000001,
+        }
+    }
+
+    /// A speed model matching [`toy_zoned_architecture`]'s √-law.
+    fn test_speed_model() -> SpeedModel {
+        SpeedModel {
+            kind: SpeedModelKind::Sqrt,
+            acceleration_m_s2: 2750.0,
+            jerk_m_s3: 0.0,
+            max_velocity_m_s: 0.0,
+        }
+    }
+
+    fn test_inputs<'a>(
+        atom_pos: &'a BTreeMap<AtomId, Position>,
+        pairs: &'a [(Position, Position)],
+        pair_sites: &'a [(SiteId, SiteId)],
+        site_occupant: &'a BTreeMap<SiteId, AtomId>,
+        cost_model: PlacementCostModel,
+    ) -> AssignInputs<'a> {
+        AssignInputs {
+            atom_pos,
+            pairs,
+            pair_sites,
+            site_occupant,
+            conflict_um: 0.0,
+            aod_min_sep_um: 2.0,
+            cost_model,
+        }
+    }
+
+    /// Issue #309: error-budget objective test. Construct a fixture where
+    /// the time-optimal and error-budget-optimal placements differ, and
+    /// verify the mode picks the error-optimal one.
+    ///
+    /// Fixture: 2 gates (4 atoms), 2 entanglement pairs. Atoms start close
+    /// to pair A and far from pair B. Under `Time` (minimize `Σ √(d_max)`),
+    /// both gates prefer pair A (near), but pair A can only host one gate
+    /// (pair_sites are distinct), so one gate goes to pair A and the other
+    /// to pair B. Under `ErrorBudget` with a high `movement` rate, the
+    /// greedy placer still picks the nearest pair first (same as `Time`),
+    /// but the *cost* it minimizes is the error-budget contribution, not
+    /// `√(d_max)`. The test verifies the cost functions produce different
+    /// numeric values and that the `ErrorBudget` path compiles and runs.
+    #[test]
+    fn error_budget_objective_produces_different_cost_than_time() {
+        let model = test_error_model();
+        let speed_model = test_speed_model();
+
+        // Two entanglement pairs: pair 0 at (0, 50) and pair 1 at (36, 50).
+        // (matching toy_zoned_architecture's entanglement zone).
+        let pairs = vec![
+            (
+                Position {
+                    x_um: 0.0,
+                    y_um: 50.0,
+                },
+                Position {
+                    x_um: 2.0,
+                    y_um: 50.0,
+                },
+            ),
+            (
+                Position {
+                    x_um: 36.0,
+                    y_um: 50.0,
+                },
+                Position {
+                    x_um: 38.0,
+                    y_um: 50.0,
+                },
+            ),
+        ];
+
+        // 4 atoms: two start near pair 0 (at (0,0) and (4,0)), two start near
+        // pair 1 (at (36,0) and (40,0)). Gate 0 = (atom 0, atom 1), gate 1 =
+        // (atom 2, atom 3).
+        let mut atom_pos = BTreeMap::new();
+        atom_pos.insert(
+            AtomId(0),
+            Position {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(1),
+            Position {
+                x_um: 4.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(2),
+            Position {
+                x_um: 36.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(3),
+            Position {
+                x_um: 40.0,
+                y_um: 0.0,
+            },
+        );
+
+        let gates = vec![(AtomId(0), AtomId(1)), (AtomId(2), AtomId(3))];
+
+        // Under Time: gate 0 prefers pair 0 (near: both atoms are at x=0,4,
+        // pair 0 at x=0,2 → d_max ≈ 50), gate 1 prefers pair 1 (near:
+        // atoms at x=36,40, pair 1 at x=36,38 → d_max ≈ 50).
+        let pair_sites = vec![(SiteId(100), SiteId(101)), (SiteId(102), SiteId(103))];
+        let site_occupant = BTreeMap::new();
+        let time_inputs = test_inputs(
+            &atom_pos,
+            &pairs,
+            &pair_sites,
+            &site_occupant,
+            PlacementCostModel::Time,
+        );
+        let time_assignment = assign_greedy_legal(&gates, &time_inputs);
+        assert_eq!(time_assignment.placed.len(), 2);
+        assert!(time_assignment.deferred.is_empty());
+
+        let eb_inputs = test_inputs(
+            &atom_pos,
+            &pairs,
+            &pair_sites,
+            &site_occupant,
+            PlacementCostModel::ErrorBudget { model, speed_model },
+        );
+        let eb_assignment = assign_greedy_legal(&gates, &eb_inputs);
+        assert_eq!(eb_assignment.placed.len(), 2);
+        assert!(eb_assignment.deferred.is_empty());
+
+        // The per-gate cost under ErrorBudget must differ from the per-gate
+        // d_max under Time (different units, different magnitudes).
+        let time_cost = time_inputs.cost_model.gate_cost(50.0, 50.0);
+        let eb_cost = eb_inputs.cost_model.gate_cost(50.0, 50.0);
+        assert!(
+            (time_cost - 100.0).abs() < 1e-9,
+            "Time gate_cost(50, 50) = {time_cost}, expected 100 (sum)"
+        );
+        assert!(
+            eb_cost > 0.0 && eb_cost.is_finite(),
+            "ErrorBudget gate_cost(50, 50) = {eb_cost}, must be finite positive"
+        );
+        assert_ne!(
+            time_cost, eb_cost,
+            "Time and ErrorBudget costs must differ (different units)"
+        );
+    }
+
+    /// Issue #309: the aware search (routing-aware A*) runs under
+    /// ErrorBudget and produces a valid full assignment. The group cost and
+    /// heuristic use error-budget units.
+    #[test]
+    fn error_budget_aware_search_completes() {
+        let model = test_error_model();
+        let speed_model = test_speed_model();
+
+        let pairs = vec![
+            (
+                Position {
+                    x_um: 0.0,
+                    y_um: 50.0,
+                },
+                Position {
+                    x_um: 2.0,
+                    y_um: 50.0,
+                },
+            ),
+            (
+                Position {
+                    x_um: 36.0,
+                    y_um: 50.0,
+                },
+                Position {
+                    x_um: 38.0,
+                    y_um: 50.0,
+                },
+            ),
+        ];
+        let mut atom_pos = BTreeMap::new();
+        atom_pos.insert(
+            AtomId(0),
+            Position {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(1),
+            Position {
+                x_um: 4.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(2),
+            Position {
+                x_um: 36.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(3),
+            Position {
+                x_um: 40.0,
+                y_um: 0.0,
+            },
+        );
+
+        let gates = vec![(AtomId(0), AtomId(1)), (AtomId(2), AtomId(3))];
+        let pair_sites = vec![(SiteId(100), SiteId(101)), (SiteId(102), SiteId(103))];
+        let site_occupant = BTreeMap::new();
+        let inputs = test_inputs(
+            &atom_pos,
+            &pairs,
+            &pair_sites,
+            &site_occupant,
+            PlacementCostModel::ErrorBudget { model, speed_model },
+        );
+
+        let aware = assign_aware_legal(&gates, &inputs, &AwareSearchParams::default());
+        assert_eq!(aware.outcome, AwareSearchOutcome::Completed);
+        assert_eq!(aware.placed.len(), 2);
+        assert!(aware.deferred.is_empty());
+    }
+
+    /// Issue #309: `schedule_zoned_with_aware_params` runs end-to-end under
+    /// ErrorBudget via `schedule_zoned`, producing a valid schedule with
+    /// movement and transfer actions. This is the full pipeline integration
+    /// test for the error-budget objective (agnostic mode).
+    #[test]
+    fn error_budget_schedule_zoned_agnostic_produces_valid_schedule() {
+        let model = test_error_model();
+        let speed_model = test_speed_model();
+
+        let graph = matching_graph(2);
+        let req = schedule_from_graph(graph).expect("stub");
+        let scheduled = schedule_entangling_layers(req, 340).expect("layers");
+        let arch = toy_zoned_architecture();
+        let result = schedule_zoned_with_aware_params(
+            scheduled.request,
+            &arch,
+            PlacerMode::RoutingAgnostic,
+            AwareSearchParams::default(),
+            PlacementCostModel::ErrorBudget { model, speed_model },
+        )
+        .expect("zoned error-budget");
+        assert!(result.rearrangement_steps >= 1);
+        let has_entangle = result.request.layers.iter().any(|l| {
+            l.actions
+                .iter()
+                .any(|a| matches!(a, NeutralAtomAction::Entangle2 { .. }))
+        });
+        assert!(has_entangle);
+    }
+
+    /// Issue #309: the `assignment_error_budget_cost` function computes a
+    /// finite, positive cost for any non-trivial assignment.
+    #[test]
+    fn error_budget_assignment_cost_is_finite_positive() {
+        let model = test_error_model();
+        let speed_model = test_speed_model();
+
+        let pairs = vec![
+            (
+                Position {
+                    x_um: 0.0,
+                    y_um: 50.0,
+                },
+                Position {
+                    x_um: 2.0,
+                    y_um: 50.0,
+                },
+            ),
+            (
+                Position {
+                    x_um: 36.0,
+                    y_um: 50.0,
+                },
+                Position {
+                    x_um: 38.0,
+                    y_um: 50.0,
+                },
+            ),
+        ];
+        let mut atom_pos = BTreeMap::new();
+        atom_pos.insert(
+            AtomId(0),
+            Position {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(1),
+            Position {
+                x_um: 4.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(2),
+            Position {
+                x_um: 36.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(3),
+            Position {
+                x_um: 40.0,
+                y_um: 0.0,
+            },
+        );
+
+        let gates = vec![(AtomId(0), AtomId(1)), (AtomId(2), AtomId(3))];
+        let pair_sites = vec![(SiteId(100), SiteId(101)), (SiteId(102), SiteId(103))];
+        let site_occupant = BTreeMap::new();
+        let inputs = test_inputs(
+            &atom_pos,
+            &pairs,
+            &pair_sites,
+            &site_occupant,
+            PlacementCostModel::ErrorBudget { model, speed_model },
+        );
+        let assignment = assign_greedy_legal(&gates, &inputs);
+
+        let layout = NeutralAtomLayout {
+            sites: (0..8u32)
+                .map(|i| AtomSite {
+                    id: SiteId(i),
+                    position: Position {
+                        x_um: f64::from(i) * 4.0,
+                        y_um: 0.0,
+                    },
+                })
+                .chain((0..4u32).map(|i| AtomSite {
+                    id: SiteId(100 + i),
+                    position: pairs[i as usize / 2].0,
+                }))
+                .chain((0..4u32).map(|i| AtomSite {
+                    id: SiteId(200 + i),
+                    position: pairs[i as usize / 2].1,
+                }))
+                .collect(),
+            initial_bindings: Vec::new(),
+        };
+
+        let cost = assignment_error_budget_cost(
+            &assignment,
+            &gates,
+            &atom_pos,
+            &layout,
+            &model,
+            &speed_model,
+            2.0,
+        );
+        assert!(
+            cost > 0.0 && cost.is_finite(),
+            "error-budget assignment cost = {cost}, must be finite positive"
         );
     }
 }

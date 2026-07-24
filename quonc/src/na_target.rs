@@ -1,7 +1,7 @@
 //! Map CLI strings onto [`quon_na::pipeline`] NA backend knobs.
 
 use quon_na::PlacerMode;
-use quon_na::pipeline::StatePrepMode;
+use quon_na::pipeline::{NaObjective, StatePrepMode};
 
 pub use quon_na::NaBackendKind;
 
@@ -32,6 +32,16 @@ pub fn parse_state_prep_mode(s: &str) -> Result<StatePrepMode, String> {
         "exact" => Ok(StatePrepMode::Exact),
         other => Err(format!(
             "unknown NA state-prep mode `{other}` (expected heuristic or exact)"
+        )),
+    }
+}
+
+pub fn parse_na_objective(s: &str) -> Result<NaObjective, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "time" => Ok(NaObjective::Time),
+        "error-budget" | "error_budget" | "budget" => Ok(NaObjective::ErrorBudget),
+        other => Err(format!(
+            "unknown NA objective `{other}` (expected time or error-budget)"
         )),
     }
 }

@@ -64,6 +64,9 @@ pub struct CompileRequest {
     /// State-preparation scheduling mode (issue #302): `Heuristic` (default)
     /// or `Exact` (SMT-optimal, requires `solver` feature).
     pub na_state_prep: quon_na::pipeline::StatePrepMode,
+    /// Placement/routing objective (issue #309): `Time` (default) or
+    /// `ErrorBudget` (requires target `error_model`; fail-closed otherwise).
+    pub na_objective: quon_na::pipeline::NaObjective,
     /// Parse the source as OpenQASM 2/3 (#304) instead of Quon (`.qn`).
     /// Set by the CLI when the input is `.qasm` or `--from-qasm` is passed;
     /// bypasses frontend lowering and enters the NA pipeline directly from
@@ -89,6 +92,7 @@ impl Default for CompileRequest {
             na_compact: true,
             na_placement: PlacementStrategy::RowMajor,
             na_state_prep: quon_na::pipeline::StatePrepMode::Heuristic,
+            na_objective: quon_na::pipeline::NaObjective::default(),
             from_qasm: false,
         }
     }
@@ -248,6 +252,7 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 placement: request.na_placement,
                 dump_ir: request.dump_ir,
                 state_prep: request.na_state_prep,
+                objective: request.na_objective,
                 ..Default::default()
             };
             // ADR-0016 / #248: QEC-backed entrypoints expand via workload IR;
@@ -349,6 +354,7 @@ fn compile_qasm(request: &CompileRequest) -> Result<CompileArtifacts, String> {
         placement: request.na_placement,
         dump_ir: request.dump_ir,
         state_prep: request.na_state_prep,
+        objective: request.na_objective,
         ..Default::default()
     };
     let artifacts = quon_na::pipeline::run_from_graph_with_local_gates(

@@ -17,7 +17,7 @@ use quon_na::{
 use sha2::{Digest, Sha256};
 
 use backend::{BackendTarget, TargetKind};
-use quon_na::pipeline::StatePrepMode;
+use quon_na::pipeline::{NaObjective, StatePrepMode};
 use quon_qec::{
     attach_barrier_cycles, dual_emit, expand_workload, experiment_to_json, na_refs_from_expanded,
     sibling_stim_path,
@@ -25,7 +25,9 @@ use quon_qec::{
 use quonc::compile::{
     CompileRequest, build_na_schedule_view, compile, schedule_to_json, schedule_to_mlir,
 };
-use quonc::na_target::{NaBackendKind, parse_na_backend, parse_placer_mode, parse_state_prep_mode};
+use quonc::na_target::{
+    NaBackendKind, parse_na_backend, parse_na_objective, parse_placer_mode, parse_state_prep_mode,
+};
 use quonc::watch::{print_watch_metrics, run_watch_loop};
 
 const AFTER_HELP: &str = "\
@@ -261,6 +263,17 @@ struct Cli {
         value_parser = parse_state_prep_mode
     )]
     na_state_prep: StatePrepMode,
+    /// Placement objective: time (default, minimizes Σ √(d_max)) or
+    /// error-budget (minimizes analytic error_model contributions —
+    /// requires the target's error_model; ADR-0017/0020, not logical rates)
+    #[arg(
+        long,
+        value_name = "OBJECTIVE",
+        default_value = "time",
+        help_heading = "Neutral atom",
+        value_parser = parse_na_objective
+    )]
+    na_objective: NaObjective,
     // ── Debug ───────────────────────────────────────────────────────────
     /// Dump MLIR after each major pass stage to stderr
     #[arg(long, help_heading = "Debug", action = ArgAction::SetTrue)]
@@ -1384,6 +1397,7 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
         na_compact: !cli.no_na_compact,
         na_placement: cli.na_placement.into(),
         na_state_prep: cli.na_state_prep,
+        na_objective: cli.na_objective,
         from_qasm,
     })
 }
