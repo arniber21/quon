@@ -33,10 +33,8 @@ use melior::ir::Module;
 
 use crate::emit::openqasm3;
 use crate::passes::{
-    classical_region_fusion, clifford_t_opt, compiler_uncomputation, depth_scheduling,
-    gate_cancellation, measurement_deferral, native_gate_decomp, rotation_merging,
-    sabre_routing::{self, SabreCost},
-    zx_simplification,
+    classical_region_fusion, clifford_t_opt, compiler_uncomputation, gate_cancellation,
+    measurement_deferral, rotation_merging, zx_simplification,
 };
 
 // The Fixed physical pipeline (decomp → route → decomp → schedule) and its
