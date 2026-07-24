@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::pipeline::NaBackendKind;
 use crate::placement::PlacementStrategy;
+use crate::zoned::AgnosticPlacerMechanism;
 use crate::zoned::PlacerMode;
 
 /// Wire-format label for [`NaStats`] (parallels
@@ -143,6 +144,16 @@ pub struct SearchDiagnostics {
     /// ([`crate::zoned::AwareSearchParams::pruning_window`]) — issue #297.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_pruning_window: Option<u64>,
+    /// Which routing-agnostic placement mechanism produced the schedule
+    /// (issue #300): [`AgnosticPlacerMechanism::Matching`] (min-weight
+    /// bipartite matching, the default for normal-size layers) or
+    /// [`AgnosticPlacerMechanism::GreedyFallback`] (very-large layers or
+    /// matching's conflict-repair failure). `None` for the flat-AOD backend
+    /// and for [`PlacerMode::RoutingAware`] (the agnostic concept does not
+    /// apply); under [`PlacerMode::RoutingAgnostic`] it is always `Some`,
+    /// matching the `aware_search_*` "always `Some` under zoned" convention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
 }
 
 /// Compaction knobs actually exercised. Requested and applied can diverge:

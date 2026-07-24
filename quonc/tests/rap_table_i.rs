@@ -242,33 +242,56 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
          fell back); got 0 of both — aware_search_status wiring regressed"
     );
 
+    // Issue #300: the routing-agnostic path now records which placement
+    // mechanism produced the schedule (matching vs greedy_fallback) — a
+    // zoned routing-agnostic compile must always emit it (Some), so a missing
+    // field is a structural regression, not an absent-optional no-op.
+    let agnostic_mechanism = agnostic
+        .get("agnostic_placer_mechanism")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            panic!(
+                "routing-agnostic resource report missing `agnostic_placer_mechanism` \
+                 (zoned NA backend must always emit it — see AgnosticPlacerMechanism): {agnostic}"
+            )
+        });
+
     let steps_ratio = agnostic_steps as f64 / aware_steps.max(1) as f64;
     let time_ratio = agnostic_time_us as f64 / aware_time_us.max(1) as f64;
 
     println!("--- RAP Table I (#111) — ising n=42 ---");
     println!(
-        "{:<18} {:>10} {:>10} {:>14} {:>14} {:>18} {:>18}",
-        "placer", "steps", "(paper)", "time_us(move)", "(paper)", "transfer_us", "aware search"
+        "{:<18} {:>8} {:>8} {:>14} {:>10} {:>16} {:>18} {:>16}",
+        "placer",
+        "steps",
+        "(paper)",
+        "time_us(move)",
+        "(paper)",
+        "transfer_us",
+        "aware search",
+        "agnostic mech"
     );
     println!(
-        "{:<18} {:>10} {:>10} {:>14} {:>14} {:>18} {:>18}",
+        "{:<18} {:>8} {:>8} {:>14} {:>10} {:>16} {:>18} {:>16}",
         "routing-agnostic",
         agnostic_steps,
         PUBLISHED_AGNOSTIC_STEPS,
         agnostic_time_us,
         PUBLISHED_AGNOSTIC_TIME_US,
         agnostic_transfer_us,
-        "n/a"
+        "n/a",
+        agnostic_mechanism
     );
     println!(
-        "{:<18} {:>10} {:>10} {:>14} {:>14} {:>18} {:>18}",
+        "{:<18} {:>8} {:>8} {:>14} {:>10} {:>16} {:>18} {:>16}",
         "routing-aware",
         aware_steps,
         PUBLISHED_AWARE_STEPS,
         aware_time_us,
         PUBLISHED_AWARE_TIME_US,
         aware_transfer_us,
-        format!("{aware_completed} ok / {aware_fell_back} fell back")
+        format!("{aware_completed} ok / {aware_fell_back} fell back"),
+        "n/a"
     );
     println!(
         "×-agnostic-over-aware ratio: steps={steps_ratio:.2} time={time_ratio:.2} \

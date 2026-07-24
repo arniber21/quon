@@ -18,6 +18,7 @@
   "bottleneck": "rearrangement",
   "aware_search_completed_layers": 0,
   "aware_search_fell_back_layers": 0,
+  "agnostic_placer_mechanism": "greedy_fallback",
   "error_budget": {
     "rydberg": 0.002,
     "measurement": 0.0,

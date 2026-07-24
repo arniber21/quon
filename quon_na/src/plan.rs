@@ -27,7 +27,7 @@ use crate::pipeline::{
 use crate::placement::{PlacementStrategy, place};
 use crate::schedule_entry::GraphScheduleRequest;
 use crate::stats::SearchDiagnostics;
-use crate::zoned::{PlacerMode, schedule_zoned_with_aware_params};
+use crate::zoned::{AgnosticPlacerMechanism, PlacerMode, schedule_zoned_with_aware_params};
 use backend::NeutralAtomTarget;
 
 /// Wall-clock elapsed microseconds since `start` (saturating on overflow).
@@ -51,6 +51,11 @@ pub struct BackendStageInfo {
     pub placement_strategy: Option<PlacementStrategy>,
     pub search_diagnostics: SearchDiagnostics,
     pub aware_search_status: Option<(u64, u64)>,
+    /// Which routing-agnostic mechanism produced the zoned schedule (issue
+    /// #300): `Some(Matching)`/`Some(GreedyFallback)` under
+    /// [`PlacerMode::RoutingAgnostic`], `None` otherwise (flat-AOD or
+    /// routing-aware). Mirrors `aware_search_status`'s "zoned-only" shape.
+    pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
 }
 
 /// Run the place → AOD movement (or zoned routing) backend on a
@@ -93,6 +98,20 @@ pub fn plan_backend<V: VertexId>(
                 zoned.aware_search_budget_exceeded_layers
                     + zoned.aware_search_no_legal_assignment_layers,
             ));
+            let agnostic_placer_mechanism = if opts.placer == PlacerMode::RoutingAgnostic {
+                // `GreedyFallback` if any layer used the greedy fallback
+                // (very-large threshold or unrepaired conflict); `Matching`
+                // otherwise — so a schedule reported as `Matching` is purely
+                // matching-based, never a silent mix.
+                Some(if zoned.agnostic_greedy_fallback_layers == 0 {
+                    AgnosticPlacerMechanism::Matching
+                } else {
+                    AgnosticPlacerMechanism::GreedyFallback
+                })
+            } else {
+                None
+            };
+            info.agnostic_placer_mechanism = agnostic_placer_mechanism;
             info.search_diagnostics = SearchDiagnostics {
                 aware_search_completed_layers: Some(zoned.aware_search_completed_layers),
                 aware_search_budget_exceeded_layers: Some(
@@ -106,6 +125,7 @@ pub fn plan_backend<V: VertexId>(
                 aware_search_deepening_factor: Some(opts.aware_search.deepening_factor),
                 aware_search_deepening_value: Some(opts.aware_search.deepening_value),
                 aware_search_pruning_window: Some(opts.aware_search.pruning_window as u64),
+                agnostic_placer_mechanism,
             };
             if opts.dump_ir {
                 eprintln!(
@@ -171,6 +191,7 @@ pub struct QecStageAccumulator {
     pub placement_strategy: Option<PlacementStrategy>,
     pub search_diagnostics: SearchDiagnostics,
     pub aware_search_status: Option<(u64, u64)>,
+    pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
 }
 
 impl QecStageAccumulator {
@@ -254,6 +275,20 @@ impl QecStageAccumulator {
             (Some((a1, b1)), Some((a2, b2))) => {
                 self.aware_search_status = Some((a1 + a2, b1 + b2));
             }
+        }
+        // agnostic_placer_mechanism: config echo (same across phases), keep
+        // the first non-None — but if any phase fell back to greedy, downgrade
+        // a `Matching` to `GreedyFallback` so the aggregate is truthful.
+        match (
+            self.agnostic_placer_mechanism,
+            backend.agnostic_placer_mechanism,
+        ) {
+            (None, v) => self.agnostic_placer_mechanism = v,
+            (Some(AgnosticPlacerMechanism::GreedyFallback), _) => {}
+            (_, Some(AgnosticPlacerMechanism::GreedyFallback)) => {
+                self.agnostic_placer_mechanism = Some(AgnosticPlacerMechanism::GreedyFallback);
+            }
+            _ => {}
         }
     }
 }

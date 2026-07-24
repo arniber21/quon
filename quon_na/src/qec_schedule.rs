@@ -198,6 +198,7 @@ fn schedule_expanded(
     // (`pipeline::finish_pipeline`); `NeutralAtomTarget::fidelity` is
     // mandatory, so this always applies once a target is available.
     let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
+    let report = report.with_agnostic_placer_mechanism(stage_acc.agnostic_placer_mechanism);
     let resource_report_us = elapsed_us(stage_started);
 
     let req = project_request_to_logical(req);

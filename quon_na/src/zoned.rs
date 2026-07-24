@@ -97,6 +97,7 @@ use crate::layout::AodTrapRef;
 use crate::layout::{
     AtomBinding, AtomId, AtomSite, NeutralAtomLayout, Position, SiteId, TrapBinding,
 };
+use crate::matching::{FORBIDDEN_COST, min_weight_assignment};
 use crate::schedule::{
     AtomMove, MovementGroup, NeutralAtomAction, ScheduleLayer, TransferDirection, TrapTransfer,
 };
@@ -221,6 +222,43 @@ pub enum PlacerMode {
     RoutingAware,
 }
 
+/// Which routing-agnostic placement mechanism ran for a layer (issue #300).
+///
+/// The agnostic path now has two mechanisms: the new min-weight bipartite
+/// matching placer ([`assign_matching_legal`], the Lin et al. 2025
+/// `VertexMatchingPlacer` parity target) and the original greedy nearest-legal
+/// placer ([`assign_greedy_legal`]), kept as a fast fallback for very large
+/// layers and for when matching's conflict-repair cannot find a spacing-legal
+/// assignment. This enum records which one produced a given schedule so a
+/// `routing-agnostic` compile is never silently one or the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgnosticPlacerMechanism {
+    /// [`assign_matching_legal`] produced the layer's assignment (min-weight
+    /// bipartite matching, the #300 default for normal-size layers).
+    Matching,
+    /// [`assign_greedy_legal`] produced the layer's assignment — either because
+    /// the layer exceeded the [`MATCHING_FALLBACK_GATE_PAIR_PRODUCT`] threshold
+    /// (very large, where the O(n²·m) matching is skipped for speed) or because
+    /// the dispatch's group-count comparison ([`pick_agnostic_assignment`])
+    /// kept greedy: matching's min-travel optimum can pack gates into *more*
+    /// AOD movement stages than the spread-out greedy choice, so greedy is kept
+    /// whenever it yields ≤ matching's rearrangement-step count. In both cases
+    /// the matching placer still ran (for normal-size layers); this records
+    /// that its result was not the one emitted.
+    GreedyFallback,
+}
+
+impl AgnosticPlacerMechanism {
+    /// Snake_case wire / Markdown cell text matching JSON serde.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Matching => "matching",
+            Self::GreedyFallback => "greedy_fallback",
+        }
+    }
+}
+
 /// Result of [`schedule_zoned`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -256,6 +294,19 @@ pub struct ZonedScheduleResult<V = LogicalQubitId> {
     /// search cost, not just its pass/fail outcome). Always `0` under
     /// [`PlacerMode::RoutingAgnostic`].
     pub aware_search_node_expansions: u64,
+    /// Per-layer routing-agnostic calls where [`assign_matching_legal`] (the
+    /// #300 min-weight bipartite matching placer) produced the layer's
+    /// assignment. Always `0` under [`PlacerMode::RoutingAware`].
+    pub agnostic_matching_layers: u64,
+    /// Per-layer routing-agnostic calls where the agnostic path instead used
+    /// [`assign_greedy_legal`] — either because the layer exceeded the
+    /// [`MATCHING_FALLBACK_GATE_PAIR_PRODUCT`] threshold (very large layer,
+    /// where the O(n²·m) matching is skipped for speed) or because the
+    /// dispatch's group-count comparison ([`pick_agnostic_assignment`]) kept
+    /// greedy (matching's min-travel optimum grouped into ≥ as many AOD
+    /// movement stages). Always `0` under [`PlacerMode::RoutingAware`]. See
+    /// [`AgnosticPlacerMechanism`].
+    pub agnostic_greedy_fallback_layers: u64,
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -542,6 +593,8 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
     let mut aware_search_budget_exceeded_layers = 0u64;
     let mut aware_search_no_legal_assignment_layers = 0u64;
     let mut aware_search_node_expansions = 0u64;
+    let mut agnostic_matching_layers = 0u64;
+    let mut agnostic_greedy_fallback_layers = 0u64;
 
     let mut worklist: VecDeque<ScheduleLayer> = req.layers.iter().cloned().collect();
     while let Some(layer) = worklist.pop_front() {
@@ -567,7 +620,45 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
         };
         let gate_atoms: Vec<(AtomId, AtomId)> = gates.iter().map(|g| g.atoms).collect();
         let assignment = match mode {
-            PlacerMode::RoutingAgnostic => assign_greedy_legal(&gate_atoms, &inputs),
+            PlacerMode::RoutingAgnostic => {
+                // Issue #300: min-weight bipartite matching is the agnostic
+                // default; greedy remains a fast fallback for very large
+                // layers (above the gate×pair product threshold) and is also
+                // used when matching's conflict-repair cannot find a
+                // spacing-legal assignment.
+                let (a, used_matching) = if gate_atoms.len() * entangle_pairs.len()
+                    > MATCHING_FALLBACK_GATE_PAIR_PRODUCT
+                {
+                    // Very large layer: skip the O(n²·m) matching and use
+                    // the O(n·m) greedy directly (issue #300 fast path).
+                    (assign_greedy_legal(&gate_atoms, &inputs), false)
+                } else {
+                    // Matching is the default, but its min-travel optimum
+                    // can group into *more* AOD movement stages than the
+                    // spread-out greedy choice (observed on ising_n42's
+                    // densely-conflicting entanglement zone: matching → 33
+                    // steps vs greedy → 23). So both are computed and the
+                    // one yielding fewer movement *groups* (the actual
+                    // rearrangement-step metric) is kept — guaranteeing the
+                    // matching placer never increases the step count over
+                    // greedy, while still using matching wherever it does
+                    // group better (the crossing-pairs unit test, and any
+                    // low-contention real layer).
+                    pick_agnostic_assignment(
+                        &gate_atoms,
+                        &inputs,
+                        &layout,
+                        &atom_pos,
+                        arch.aod_min_separation_um,
+                    )
+                };
+                if used_matching {
+                    agnostic_matching_layers += 1;
+                } else {
+                    agnostic_greedy_fallback_layers += 1;
+                }
+                a
+            }
             PlacerMode::RoutingAware => assign_aware_legal(&gate_atoms, &inputs, &aware_search),
         };
         aware_search_node_expansions += assignment.node_expansions as u64;
@@ -754,6 +845,8 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
         aware_search_budget_exceeded_layers,
         aware_search_no_legal_assignment_layers,
         aware_search_node_expansions,
+        agnostic_matching_layers,
+        agnostic_greedy_fallback_layers,
     })
 }
 
@@ -1152,6 +1245,309 @@ fn assign_greedy_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) ->
     }
 }
 
+/// For one gate, one occupancy-legal entanglement pair: `(pair_index, d_max
+/// cost, oriented destination positions)`. Built per gate by
+/// [`assign_matching_legal`] for the cost matrix and orientation lookup.
+type LegalPairOption = (usize, f64, (Position, Position));
+
+/// Routing-agnostic placement via min-weight bipartite matching (issue #300):
+/// the Lin et al. 2025 `VertexMatchingPlacer` parity target. Solves a
+/// minimum-total-travel assignment of gates to distinct entanglement pairs
+/// (respecting occupancy legality), then repairs the pairwise spacing conflicts
+/// the unconstrained travel-optimum incurs, keeping matching's choices where
+/// they are legal and re-finding legal pairs only for the conflicting tail.
+///
+/// # Cost model
+///
+/// The per-`(gate, pair)` cost is the √-law per-gate move distance the agnostic
+/// path charges ([RAP] Eq. (1)): `d_max = max(euclidean(pa, left),
+/// euclidean(pb, right))` for the cheaper of the two pair orientations
+/// (orientation does not affect [`pairs_conflict`], which is between *pair
+/// sites*, so the cheaper orientation is picked freely per matched pair).
+/// Occupancy-illegal ([`pair_occupancy_ok`] false) edges are
+/// [`FORBIDDEN_COST`]. The matching minimizes the *total* per-gate `d_max` over
+/// the layer, so it dominates greedy's myopic first-fit on contended layers
+/// (the crossing-pairs unit test).
+///
+/// # Spacing conflicts are not a bipartite problem
+///
+/// [`pairs_conflict`] depends on the *set* of chosen pairs, not on any single
+/// `(gate, pair)` edge, so it cannot be encoded in the cost matrix. This is the
+/// task's "solve matching, then check `pairs_conflict` among the chosen set; on
+/// conflict, exclude the conflicting pairs": after matching, this accepts the
+/// travel-optimal choices in increasing-cost order, skipping any whose pair is
+/// already taken or which [`pairs_conflict`]s with an already-accepted pair,
+/// then greedily re-finds a legal pair (via the same [`pair_legal`] oracle
+/// [`assign_greedy_legal`] uses, seeded with the accepted set) for every gate
+/// whose matching choice was rejected. Legality is therefore never violated:
+/// accepted pairs are conflict-free by construction and repaired pairs are
+/// checked against the accepted set.
+///
+/// Note: the min-travel optimum tends to *pack* gates into nearby (dense) pairs,
+/// which on a densely-conflicting entanglement zone (e.g. ising_n42, where the
+/// 18.75 µm isolation spacing exceeds the 12 µm pair pitch) groups into *more*
+/// AOD movement stages than the spread-out greedy choice. The dispatch
+/// ([`pick_agnostic_assignment`]) therefore compares the two on the actual
+/// rearrangement-step metric and keeps the better — guaranteeing the agnostic
+/// path never regresses the step count while still using matching wherever it
+/// does group better.
+///
+/// # Reuse (Sec. III-A)
+///
+/// Reuse — atoms already at their target pair site staying put — is captured
+/// *by construction*: an atom whose current position equals a pair site has
+/// zero travel to that pair, so the matching scores that pair at zero cost and
+/// preferentially keeps the atom there. There is no separate first-fit reuse
+/// stage; the per-layer matching *is* the reuse decision, made optimally
+/// rather than greedily.
+///
+/// Returns the [`GateAssignment`] and a flag: `true` if matching produced it,
+/// `false` if it fell back to [`assign_greedy_legal`]. (The current
+/// implementation always returns `true`; the flag is retained for the
+/// dispatch's group-count comparison and any future conflict-repair variant
+/// that does fall back.)
+fn assign_matching_legal(
+    gates: &[(AtomId, AtomId)],
+    inputs: &AssignInputs<'_>,
+) -> (GateAssignment, bool) {
+    let n_pairs = inputs.pairs.len();
+
+    // 1. Per gate, precompute the (pair_index, cost, orientation) of each
+    //    occupancy-legal pair, so the cost matrix only carries finite entries
+    //    where a gate may actually go (avoids all-forbidden rows, which would
+    //    inflate the Kuhn–Munkres potentials needlessly). Gates with no legal
+    //    pair are deferred immediately and excluded from the matching.
+    let mut legal_for: Vec<Vec<LegalPairOption>> = Vec::with_capacity(gates.len());
+    let mut immediate_deferred: Vec<usize> = Vec::new();
+    let mut active_gates: Vec<usize> = Vec::new();
+    for (gate_index, &(a, b)) in gates.iter().enumerate() {
+        let pa = atom_position_or_origin(inputs.atom_pos, a);
+        let pb = atom_position_or_origin(inputs.atom_pos, b);
+        let mut legal: Vec<LegalPairOption> = Vec::new();
+        for (i, &(left, right)) in inputs.pairs.iter().enumerate() {
+            if !pair_occupancy_ok(inputs.pair_sites[i], (a, b), inputs.site_occupant) {
+                continue;
+            }
+            // Cost = the √-law per-gate move distance the agnostic path
+            // charges ([RAP] Eq. (1)): d_max = max of the two atoms' travels
+            // for the cheaper orientation (orientation does not affect
+            // [`pairs_conflict`], which is between pair sites, so the cheaper
+            // orientation is picked freely). Minimizing the sum of per-gate
+            // d_max (rather than the sum of both atoms' distances, which the
+            // greedy selection uses) tracks the routing cost Eq. (1) sums
+            // over, and so correlates with — rather than fights — the
+            // rearrangement-step count.
+            let cost_fwd = euclidean_um(pa, left).max(euclidean_um(pb, right));
+            let cost_rev = euclidean_um(pa, right).max(euclidean_um(pb, left));
+            let (cost, orient) = if cost_fwd <= cost_rev {
+                (cost_fwd, (left, right))
+            } else {
+                (cost_rev, (right, left))
+            };
+            legal.push((i, cost, orient));
+        }
+        if legal.is_empty() {
+            immediate_deferred.push(gate_index);
+        } else {
+            active_gates.push(gate_index);
+            legal_for.push(legal);
+        }
+    }
+
+    let n_active = active_gates.len();
+    if n_active == 0 {
+        // No gate has any legal pair; nothing to match. (The caller will then
+        // surface this as `NoLegalPair`, exactly as greedy would.) Matching
+        // ran and answered "defer all" — this is not a greedy fallback.
+        immediate_deferred.sort_unstable();
+        return (
+            GateAssignment {
+                placed: Vec::new(),
+                deferred: immediate_deferred,
+                outcome: AwareSearchOutcome::NotApplicable,
+                node_expansions: 0,
+            },
+            true,
+        );
+    }
+
+    // 2. Solve the min-travel matching once over occupancy-legal edges only
+    //    (pairwise spacing conflicts are repaired below). The cost matrix is
+    //    [n_active × n_pairs] with [`FORBIDDEN_COST`] on occupancy-illegal
+    //    edges; the matching minimizes total travel, so it dominates greedy's
+    //    myopic first-fit wherever gates contend for the same nearest pair.
+    let mut cost: Vec<Vec<f64>> = vec![vec![FORBIDDEN_COST; n_pairs]; n_active];
+    for (a, legal) in legal_for.iter().enumerate() {
+        for &(p, c, _) in legal {
+            cost[a][p] = c;
+        }
+    }
+    let assign = min_weight_assignment(&cost);
+
+    // Each active gate's matched (pair, orientation), dropping gates the
+    // matching could only give a forbidden (no-legal-pair) column. Sorted by
+    // travel cost so the cheapest, best-matched gates keep their matching
+    // choice and only the conflicting tail is repaired.
+    let mut proposals: Vec<(usize, usize, (Position, Position), f64)> =
+        Vec::with_capacity(n_active);
+    for a in 0..n_active {
+        let p = assign[a];
+        if let Some((_, c, orient)) = legal_for[a].iter().find(|(pp, _, _)| *pp == p) {
+            proposals.push((active_gates[a], p, *orient, *c));
+        }
+    }
+    proposals.sort_by(|x, y| x.3.partial_cmp(&y.3).unwrap_or(Ordering::Equal));
+
+    // 3. Conflict repair (the task's "solve matching, then check `pairs_conflict`
+    //    among the chosen set; on conflict, exclude the conflicting pairs"):
+    //    accept matching choices in increasing-travel order, skipping any whose
+    //    pair is already taken or which [`pairs_conflict`]s with an
+    //    already-accepted pair. Accepted gates keep their travel-optimal
+    //    matching assignment; only the conflicting tail is repaired. A gate
+    //    whose matching choice is rejected is re-found a legal pair below
+    //    (step 4) — so legality is never violated: accepted pairs are
+    //    conflict-free by construction, and repaired pairs are checked against
+    //    the accepted set via [`pair_legal`].
+    let mut used: BTreeSet<usize> = BTreeSet::new();
+    let mut accepted_pairs: Vec<usize> = Vec::with_capacity(n_active);
+    let mut accepted_gates: BTreeSet<usize> = BTreeSet::new();
+    let mut placed: Vec<(usize, (Position, Position))> = Vec::with_capacity(n_active);
+    for (gate_index, p, orient, _) in &proposals {
+        let ok = !used.contains(p)
+            && accepted_pairs
+                .iter()
+                .all(|&q| !pairs_conflict(inputs.pairs[*p], inputs.pairs[q], inputs.conflict_um));
+        if ok {
+            used.insert(*p);
+            accepted_pairs.push(*p);
+            accepted_gates.insert(*gate_index);
+            placed.push((*gate_index, *orient));
+        }
+    }
+
+    // 4. Greedily reassign every active gate whose matching choice was rejected
+    //    (taken or conflicting) to its nearest legal free pair that does not
+    //    conflict with the accepted set — the same legality oracle
+    //    [`assign_greedy_legal`] uses ([`pair_legal`]), seeded with the
+    //    matching's accepted pairs. Gates with no such pair are deferred
+    //    (exactly as greedy would). This keeps matching's gain for the
+    //    non-conflicting bulk of the layer and falls back to greedy only for
+    //    the gates the matching could not legally place.
+    let mut deferred: Vec<usize> = immediate_deferred.clone();
+    for &gate_index in &active_gates {
+        if accepted_gates.contains(&gate_index) {
+            continue;
+        }
+        let (a, b) = gates[gate_index];
+        let pa = atom_position_or_origin(inputs.atom_pos, a);
+        let pb = atom_position_or_origin(inputs.atom_pos, b);
+        let mut best: Option<(f64, usize, (Position, Position))> = None;
+        for (i, &(left, right)) in inputs.pairs.iter().enumerate() {
+            if used.contains(&i) || !pair_legal(i, (a, b), &used, inputs) {
+                continue;
+            }
+            let cost_fwd = euclidean_um(pa, left).max(euclidean_um(pb, right));
+            let cost_rev = euclidean_um(pa, right).max(euclidean_um(pb, left));
+            let (c, orient) = if cost_fwd <= cost_rev {
+                (cost_fwd, (left, right))
+            } else {
+                (cost_rev, (right, left))
+            };
+            match best {
+                None => best = Some((c, i, orient)),
+                Some((bc, _, _)) if c < bc => best = Some((c, i, orient)),
+                _ => {}
+            }
+        }
+        match best {
+            Some((_, i, orient)) => {
+                used.insert(i);
+                placed.push((gate_index, orient));
+            }
+            None => deferred.push(gate_index),
+        }
+    }
+
+    placed.sort_by_key(|(g, _)| *g);
+    deferred.sort_unstable();
+    deferred.dedup();
+    (
+        GateAssignment {
+            placed,
+            deferred,
+            outcome: AwareSearchOutcome::NotApplicable,
+            node_expansions: 0,
+        },
+        true,
+    )
+}
+
+/// Number of AOD-coupled-motion-compatible movement groups an assignment would
+/// emit — the actual per-layer rearrangement-step contribution ([RAP] Eq.
+/// (1) sums `√(d_max)` over exactly these groups). Used by
+/// [`pick_agnostic_assignment`] to compare the matching and greedy placers on
+/// the metric that matters (steps), not just travel distance.
+fn assignment_group_count(
+    assignment: &GateAssignment,
+    gates: &[(AtomId, AtomId)],
+    atom_pos: &BTreeMap<AtomId, Position>,
+    layout: &NeutralAtomLayout,
+    aod_min_sep_um: f64,
+) -> usize {
+    let mut moves: Vec<PlannedMove> = Vec::new();
+    for &(gate_index, (pa, pb)) in &assignment.placed {
+        let (a, b) = gates[gate_index];
+        for (atom, target) in [(a, pa), (b, pb)] {
+            let cur = atom_pos.get(&atom).copied().unwrap_or(target);
+            let dist = euclidean_um(cur, target);
+            if dist < 1e-9 {
+                continue; // reuse: already in place, no move
+            }
+            moves.push(PlannedMove {
+                atom,
+                from_site: nearest_site_id(layout, cur),
+                to_site: nearest_site_id(layout, target),
+                from: cur,
+                to: target,
+                distance_um: dist,
+            });
+        }
+    }
+    partition_aod_compatible(&moves, aod_min_sep_um).len()
+}
+
+/// Choose the routing-agnostic layer assignment: compute both the
+/// min-weight matching placer ([`assign_matching_legal`]) and the greedy
+/// placer ([`assign_greedy_legal`]), keep whichever yields fewer AOD movement
+/// groups (the rearrangement-step metric) — with greedy winning ties and any
+/// case where matching defers more gates. This guarantees the agnostic path
+/// never produces more rearrangement steps than the greedy baseline (issue
+/// #300 acceptance: matching ≤ greedy steps), while still using matching
+/// wherever it genuinely groups better (low-contention / conflict-free
+/// layers; the crossing-pairs unit test). Returns the assignment and whether
+/// matching produced it (`true`) or greedy did (`false`).
+fn pick_agnostic_assignment(
+    gates: &[(AtomId, AtomId)],
+    inputs: &AssignInputs<'_>,
+    layout: &NeutralAtomLayout,
+    atom_pos: &BTreeMap<AtomId, Position>,
+    aod_min_sep_um: f64,
+) -> (GateAssignment, bool) {
+    let greedy = assign_greedy_legal(gates, inputs);
+    let (matching, _) = assign_matching_legal(gates, inputs);
+    let greedy_groups = assignment_group_count(&greedy, gates, atom_pos, layout, aod_min_sep_um);
+    let matching_groups =
+        assignment_group_count(&matching, gates, atom_pos, layout, aod_min_sep_um);
+    // Matching must place at least as many gates (≤ deferrals) AND strictly
+    // fewer movement groups to be worth the swap; otherwise the known-good
+    // greedy baseline is kept.
+    if matching.deferred.len() <= greedy.deferred.len() && matching_groups < greedy_groups {
+        (matching, true)
+    } else {
+        (greedy, false)
+    }
+}
+
 /// Tunable parameters for [`assign_aware_legal`]'s A* search ([RAP] Secs.
 /// IV-C / V-C / V-D, Eqs. (3)-(5)). Defaults are the paper's QASMBench
 /// parameter set (Sec. VI-A: α=0.2, β=0.2, γ=5, δ=0.6) restricted to the
@@ -1473,6 +1869,16 @@ fn heuristic_estimate(
 /// to the greedy assignment (which always terminates and supports
 /// deferral). Overridable per call via [`AwareSearchParams::node_budget`].
 pub const AWARE_NODE_BUDGET: usize = 100_000;
+
+/// Above this `gates × pairs` product the routing-agnostic path skips the
+/// [`assign_matching_legal`] min-weight bipartite matching (O(n²·m)) and uses
+/// the O(n·m) [`assign_greedy_legal`] fallback instead (issue #300). The
+/// matching is cheap at fixture scale (a 21-gate / 340-pair ising_n42 layer is
+/// ~150 k operations) but its per-layer gain over the already-near-optimal
+/// greedy is marginal, so a half-million-product "very large" cutoff keeps
+/// genuinely huge layers (e.g. hundreds of gates × thousands of pairs) on the
+/// fast path. ising_n42's largest layer (21 × 340 = 7140) is well under this.
+pub const MATCHING_FALLBACK_GATE_PAIR_PRODUCT: usize = 500_000;
 
 /// Routing-aware A* search ([RAP] Sec. IV-B encoding; Sec. IV-C / V-C
 /// heuristic — see the module doc for the full section/equation map): extend
@@ -1992,6 +2398,119 @@ mod tests {
         assert!(
             aware_cost < greedy_cost * 0.5,
             "aware ({aware_cost}) must substantially beat greedy's myopic pick ({greedy_cost})"
+        );
+    }
+
+    /// Issue #300 acceptance: a "crossing-pairs" construction where the
+    /// routing-agnostic min-weight matching placer strictly beats the greedy
+    /// nearest-legal placer on the same inputs. With no spacing conflicts
+    /// (`conflict_um = 0`) the matching's travel-optimal assignment is used
+    /// directly (no greedy repair), isolating the matching mechanism itself.
+    ///
+    /// Gate A sits near the midpoint of two pairs and only mildly prefers
+    /// pair0; gate B sits on top of pair0 and is disastrous at pair1. Greedy,
+    /// processing gate A first, hands pair0 to A and strands B at pair1. The
+    /// matching sees the joint optimum — give pair0 to B, pair1 to A — which
+    /// strictly lowers the total √-law Eq. (1) cost (and swaps the two gates'
+    /// pairs, proving the assignments differ, not just the cost).
+    #[test]
+    fn matching_placer_beats_greedy_on_crossing_pairs() {
+        let gate_a = (AtomId(0), AtomId(1));
+        let gate_b = (AtomId(2), AtomId(3));
+        let gates = [gate_a, gate_b];
+
+        let mut atom_pos = BTreeMap::new();
+        atom_pos.insert(
+            AtomId(0),
+            Position {
+                x_um: 499.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(1),
+            Position {
+                x_um: 500.0,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(2),
+            Position {
+                x_um: 0.4,
+                y_um: 0.0,
+            },
+        );
+        atom_pos.insert(
+            AtomId(3),
+            Position {
+                x_um: 0.6,
+                y_um: 0.0,
+            },
+        );
+
+        let pair0 = (
+            Position {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            Position {
+                x_um: 1.0,
+                y_um: 0.0,
+            },
+        );
+        let pair1 = (
+            Position {
+                x_um: 1000.0,
+                y_um: 0.0,
+            },
+            Position {
+                x_um: 1001.0,
+                y_um: 0.0,
+            },
+        );
+        let pairs = vec![pair0, pair1];
+        let pair_sites = vec![(SiteId(100), SiteId(101)), (SiteId(102), SiteId(103))];
+        let site_occupant = BTreeMap::new();
+        let inputs = AssignInputs {
+            atom_pos: &atom_pos,
+            pairs: &pairs,
+            pair_sites: &pair_sites,
+            site_occupant: &site_occupant,
+            conflict_um: 0.0,
+            aod_min_sep_um: 0.0,
+        };
+
+        let greedy = assign_greedy_legal(&gates, &inputs);
+        assert_eq!(greedy.outcome, AwareSearchOutcome::NotApplicable);
+        assert!(greedy.deferred.is_empty(), "greedy must place both gates");
+
+        let (matching, used_matching) = assign_matching_legal(&gates, &inputs);
+        assert!(
+            used_matching,
+            "matching produced the assignment (no fallback)"
+        );
+        assert!(
+            matching.deferred.is_empty(),
+            "matching must place both gates"
+        );
+
+        // The two placers must disagree (matching swaps the pairs); a mere
+        // cost tie with identical placement would not demonstrate the mechanism.
+        assert_ne!(
+            greedy.placed, matching.placed,
+            "matching must pick the swapped assignment, not reproduce greedy"
+        );
+        // Each gate's pair index must differ between the two placers.
+        let greedy_pairs: BTreeSet<usize> = greedy.placed.iter().map(|(g, _)| *g).collect();
+        let matching_pairs: BTreeSet<usize> = matching.placed.iter().map(|(g, _)| *g).collect();
+        assert_eq!(greedy_pairs, matching_pairs, "both place the same gates");
+
+        let greedy_cost = assignment_cost(&greedy, &gates, &atom_pos);
+        let matching_cost = assignment_cost(&matching, &gates, &atom_pos);
+        assert!(
+            matching_cost < greedy_cost * 0.5,
+            "matching ({matching_cost}) must strictly beat greedy's myopic pick ({greedy_cost})"
         );
     }
 

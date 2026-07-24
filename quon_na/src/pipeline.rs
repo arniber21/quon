@@ -571,6 +571,7 @@ fn finish_pipeline(
     let (planned_req, backend_info) = crate::plan::plan_backend(req, na, opts)?;
     req = planned_req;
     let aware_search_status = backend_info.aware_search_status;
+    let agnostic_placer_mechanism = backend_info.agnostic_placer_mechanism;
     let search_diagnostics = backend_info.search_diagnostics;
     let zoned_schedule_us = backend_info.zoned_schedule_us;
     let placement_us = backend_info.placement_us;
@@ -617,6 +618,7 @@ fn finish_pipeline(
         Some((completed, fell_back)) => report.with_aware_search_status(completed, fell_back),
         None => report,
     };
+    let report = report.with_agnostic_placer_mechanism(agnostic_placer_mechanism);
     // Production path: attach analytic error_budget whenever the target carries
     // an error_model (ADR-0017). `--emit-resource-report` in quonc additionally
     // hard-requires the model so missing budgets fail at emit time.
