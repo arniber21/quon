@@ -41,6 +41,6 @@ fn twins(): Circuit<4, 4, 5, Clifford> = circuit {
 fn main(): Q<List<Bit>> = run {
     q <- twins() @ qreg(4)
     measure_all(q)
-    -- Expected: only {0000, 0011, 1100, 1111}, each ~25%.
-    -- Decode (Qiskit prints bits high-index-first): b0==b1 and b2!=b3, always.
+    -- Expected (Qiskit high-index-first printing): only {1000, 0100, 1011, 0111}, each ~25%.
+    -- Decode: b0==b1 and b2!=b3, always (pair 0,1 is |Φ+⟩ correlated; pair 2,3 is |Ψ+⟩ anti-correlated).
 }
