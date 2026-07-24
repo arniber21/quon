@@ -225,6 +225,14 @@ fn schedule_expanded(
     // (`pipeline::finish_pipeline`); `NeutralAtomTarget::fidelity` is
     // mandatory, so this always applies once a target is available.
     let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
+    // Analytic per-atom movement-heating / atom-loss budget (issue #310,
+    // [Atomique] Eqs. (1)–(2)). Optional like `error_model`: attached only
+    // when the target carries `atom_loss_model`; distance measured against
+    // the zoned schedule's layout (real √-law travel), else zeroed/omitted.
+    let report = match na.atom_loss_model.as_ref() {
+        Some(model) => report.with_atom_loss_budget(&req.layers, req.layout.as_ref(), model),
+        None => report,
+    };
     let report = report.with_agnostic_placer_mechanism(stage_acc.agnostic_placer_mechanism);
     let report = match stage_acc.schedule_optimality {
         Some(optimality) => report.with_schedule_optimality(optimality),

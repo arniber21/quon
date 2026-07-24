@@ -25,6 +25,6 @@ pub use target::{
     AodMovement, AodMovementModel, AodSpeedModel, AodSpeedModelKind, BackendTarget,
     ConnectivityGraph, FixedTarget, GateOp, NativeGate, NeutralAtomCostModel,
     NeutralAtomErrorModel, NeutralAtomErrorModelSnapshot, NeutralAtomFidelity, NeutralAtomGrid,
-    NeutralAtomTarget, NeutralAtomTiming, NeutralAtomZone, NoiseModel, RydbergInteraction,
-    TargetKind, UNREACHABLE, ZoneKind,
+    NeutralAtomLossModel, NeutralAtomTarget, NeutralAtomTiming, NeutralAtomZone, NoiseModel,
+    RydbergInteraction, TargetKind, UNREACHABLE, ZoneKind,
 };

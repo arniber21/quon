@@ -13,13 +13,15 @@
 //! are **analytic** (ADR-0020) and distinct from `error_budget` — see
 //! [`ResourceReport::with_fidelity_estimate`].
 
-use backend::{BackendError, NeutralAtomErrorModel, NeutralAtomFidelity};
+use backend::{BackendError, NeutralAtomErrorModel, NeutralAtomFidelity, NeutralAtomLossModel};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
+use crate::layout::{AtomId, NeutralAtomLayout, Position, SiteId};
 use crate::qec::{CodeBlock, CodeFamily, QecError, atoms_per_logical};
 use crate::schedule::{LocalGateKind, NeutralAtomAction, ScheduleLayer};
-use crate::zoned::AgnosticPlacerMechanism;
+use crate::zoned::{AgnosticPlacerMechanism, euclidean_um};
 
 #[cfg(feature = "flux")]
 use flux_rs::attrs::*;
@@ -412,6 +414,26 @@ pub struct ResourceReport {
     /// term (out of scope for a per-action fidelity model).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_fidelity: Option<f64>,
+
+    // --- Per-atom movement heating / atom-loss budget (issue #310) ---
+    //
+    // `None` until [`ResourceReport::with_atom_loss_budget`] is overlaid with
+    // a target's [`NeutralAtomLossModel`] — the same "None until overlaid"
+    // convention `error_budget` uses (ADR-0017 §11.4). In production,
+    // `quon_na::pipeline::finish_pipeline` and
+    // `quon_na::qec_schedule::schedule_expanded` attach it whenever the
+    // target carries `atom_loss_model` (its presence is optional, unlike the
+    // mandatory `fidelity`); reports built directly from `from_layers` /
+    // `build_resource_report` without that overlay leave it `None`.
+    //
+    // **Analytic, not Monte Carlo** (ADR-0020): a per-atom `heating → loss`
+    // closed form ([Atomique] Eqs. (1)–(2)), kept visibly separate from the
+    // `error_budget` rate×count sum and the `estimated_fidelity` product.
+    /// Analytic per-atom movement-heating / atom-loss budget ([Atomique]
+    /// Eqs. (1)–(2)). `None` when the target carries no loss model or the
+    /// overlay was not applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atom_loss_budget: Option<AtomLossBudget>,
 }
 
 impl Default for ResourceReport {
@@ -456,6 +478,7 @@ impl Default for ResourceReport {
             global_ry_time_us: None,
             gate_fidelity_product: None,
             estimated_fidelity: None,
+            atom_loss_budget: None,
         }
     }
 }
@@ -507,6 +530,140 @@ impl ErrorBudgetContributions {
             idle: clean_contribution(model.idle_per_us * report.wait_time_us as f64),
         }
     }
+}
+
+/// Analytic per-atom movement-heating / atom-loss budget (issue #310,
+/// [Atomique] Wang et al. ISCA 2024 Eqs. (1)–(2)). Evidence-kind: analytic
+/// (ADR-0020) — not Monte Carlo loss simulation and not a threshold claim.
+///
+/// # Model
+///
+/// Per-atom heating accumulates over every `Move` action across all layers:
+/// `H_a = heating_rate_per_um × cumulative_movement_um_a` ([Atomique] Eq. (1),
+/// distance-only term). Per-atom loss probability follows:
+/// `p_a = 1 − exp(−loss_coeff × H_a)` ([Atomique] Eq. (2)). Aggregate
+/// [`expected_atoms_lost`](Self::expected_atoms_lost) `= Σ_a p_a` (a
+/// fractional expected count, not a survival probability).
+///
+/// `cumulative_movement_um_a` is the Euclidean distance between each move's
+/// `from`/`to` site positions in the schedule's [`NeutralAtomLayout`],
+/// summed across layers — the actual travel Quon's √-law movement planner
+/// emits, **not** [Atomique]'s fixed 300 µs-per-stage timing (see below).
+///
+/// # Documented divergence from [Atomique] (architecture_model.md §5)
+///
+/// [Atomique] charges a *fixed* 300 µs per movement stage regardless of
+/// distance (its Table I) and lets distance enter only its heating model.
+/// This budget does **not** import that fixed stage timing: movement here is
+/// the real per-atom travel distance through Quon's `√(d/a)` movement
+/// schedule (`rearrangement_time_us` in the parent report), never 300 µs.
+/// Heating scales with distance (µm), not with [Atomique]'s stage count.
+///
+/// # Omission
+///
+/// `None` on [`ResourceReport`] when the target carries no
+/// [`NeutralAtomLossModel`] (backward-compatible — targets without these
+/// params skip the metric). Also `None` for a report built without the
+/// `with_atom_loss_budget` overlay (library use / unit tests).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AtomLossBudget {
+    /// Per-atom cumulative travel (µm), keyed by `AtomId.0`. Deterministic
+    /// ascending atom-id order (BTreeMap) for stable JSON / golden output.
+    pub per_atom_movement_um: BTreeMap<u32, f64>,
+    /// Per-atom loss probability `1 − exp(−loss_coeff × H_a)`, same atom-id
+    /// keys as [`per_atom_movement_um`](Self::per_atom_movement_um).
+    pub per_atom_loss_probability: BTreeMap<u32, f64>,
+    /// `Σ_a p_a` — expected (fractional) atom count lost to movement heating.
+    pub expected_atoms_lost: f64,
+    /// Heating rate per µm, echoed from the target's loss model for
+    /// traceability (so the JSON artifact is self-describing).
+    pub heating_rate_per_um: f64,
+    /// Loss coefficient, echoed from the target's loss model.
+    pub loss_coeff: f64,
+}
+
+impl AtomLossBudget {
+    /// Derive the budget from per-atom cumulative movement and the loss model.
+    ///
+    /// `per_atom_movement` keys are the full [`AtomId`] (so the schedule's
+    /// atom universe is the report's universe); they are stored under their
+    /// `u32` payload for stable JSON map keys (serde serializes integer map
+    /// keys as strings).
+    pub fn from_movement(
+        per_atom_movement: &BTreeMap<AtomId, f64>,
+        model: &NeutralAtomLossModel,
+    ) -> Self {
+        let per_atom_movement_um = per_atom_movement
+            .iter()
+            .map(|(atom, d)| (atom.0, clean_contribution(*d)))
+            .collect();
+        let per_atom_loss_probability = per_atom_movement
+            .iter()
+            .map(|(atom, d)| {
+                let h = model.heating_rate_per_um * d;
+                let p = 1.0 - (-model.loss_coeff * h).exp();
+                (atom.0, clean_contribution(p))
+            })
+            .collect();
+        let expected_atoms_lost = clean_contribution(
+            per_atom_movement
+                .values()
+                .map(|d| 1.0 - (-model.loss_coeff * (model.heating_rate_per_um * d)).exp())
+                .sum::<f64>(),
+        );
+        Self {
+            per_atom_movement_um,
+            per_atom_loss_probability,
+            expected_atoms_lost,
+            heating_rate_per_um: model.heating_rate_per_um,
+            loss_coeff: model.loss_coeff,
+        }
+    }
+}
+
+/// Per-atom cumulative travel (µm) across every `Move` action in `layers`,
+/// measured between each move's `from`/`to` site positions in `layout`.
+///
+/// Distance is the Euclidean separation of the site coordinates in `layout`
+/// (the actual travel Quon's √-law movement planner emits), summed across
+/// layers per atom. `layout: None` (non-zoned / hand-built schedules with no
+/// site map) → an empty map: with no positions to measure against the loss
+/// budget stays structurally empty rather than fabricating distances. Moves
+/// whose `from`/`to` sites are absent from `layout` are skipped (treated as
+/// zero-distance, matching the zoned planner's "reuse: already in place"
+/// skip — see `schedule_zoned`'s `dist < 1e-9` continue).
+fn per_atom_movement(
+    layers: &[ScheduleLayer],
+    layout: Option<&NeutralAtomLayout>,
+) -> BTreeMap<AtomId, f64> {
+    let mut acc: BTreeMap<AtomId, f64> = BTreeMap::new();
+    let Some(layout) = layout else {
+        return acc;
+    };
+    let pos_of = |site: SiteId| -> Option<Position> {
+        layout
+            .sites
+            .iter()
+            .find(|s| s.id == site)
+            .map(|s| s.position)
+    };
+    for layer in layers {
+        for action in &layer.actions {
+            let NeutralAtomAction::Move(group) = action else {
+                continue;
+            };
+            for m in &group.moves {
+                if let (Some(from), Some(to)) = (pos_of(m.from), pos_of(m.to)) {
+                    let d = euclidean_um(from, to);
+                    if d > 0.0 {
+                        *acc.entry(m.atom).or_insert(0.0) += d;
+                    }
+                }
+            }
+        }
+    }
+    acc
 }
 
 /// Failures from building a sized [`ResourceReport`].
@@ -863,6 +1020,30 @@ impl ResourceReport {
         self
     }
 
+    /// Overlay the analytic per-atom movement-heating / atom-loss budget
+    /// (issue #310, [Atomique] Eqs. (1)–(2)).
+    ///
+    /// `layers` must be the same compiled schedule this report's counts came
+    /// from (`from_layers`); per-atom cumulative travel is re-scanned from the
+    /// `Move` actions and measured against `layout`'s site positions (the
+    /// actual √-law travel, never [Atomique]'s fixed 300 µs stage timing — see
+    /// [`AtomLossBudget`]'s divergence note). `layout: None` (non-zoned /
+    /// hand-built schedules with no site map) yields an empty budget: all
+    /// per-atom distances are zero / unmeasurable, so `expected_atoms_lost`
+    /// is `0` and the section is still emitted (zeroed) when a loss model is
+    /// present — making "loss model present but no layout" observable rather
+    /// than silently dropping the section.
+    pub fn with_atom_loss_budget(
+        mut self,
+        layers: &[ScheduleLayer],
+        layout: Option<&NeutralAtomLayout>,
+        model: &NeutralAtomLossModel,
+    ) -> Self {
+        let per_atom = per_atom_movement(layers, layout);
+        self.atom_loss_budget = Some(AtomLossBudget::from_movement(&per_atom, model));
+        self
+    }
+
     /// Overlay zoned-backend routing-aware search diagnostics (issue #111
     /// review finding). `completed_layers` / `fell_back_layers` come from
     /// [`crate::zoned::ZonedScheduleResult`]; see that type's field docs for
@@ -1161,6 +1342,46 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
         out.push('\n');
     }
 
+    if let Some(loss) = &report.atom_loss_budget {
+        out.push_str("## Atom-loss & movement-heating budget (Atomique Eqs. (1)–(2))\n");
+        out.push_str("| Metric | Value |\n");
+        out.push_str("| --- | ---: |\n");
+        out.push_str(&format!(
+            "| Heating rate (per µm) | {} |\n",
+            format_contribution(loss.heating_rate_per_um)
+        ));
+        out.push_str(&format!(
+            "| Loss coefficient | {} |\n",
+            format_contribution(loss.loss_coeff)
+        ));
+        out.push_str(&format!(
+            "| Expected atoms lost (Σ p_a) | {} |\n",
+            format_contribution(loss.expected_atoms_lost)
+        ));
+        out.push_str(&format!(
+            "| Atoms tracked | {} |\n",
+            loss.per_atom_movement_um.len()
+        ));
+        out.push('\n');
+        if !loss.per_atom_movement_um.is_empty() {
+            out.push_str("| Atom | Cumulative movement (µm) | Loss probability |\n");
+            out.push_str("| --- | ---: | ---: |\n");
+            for (atom, d) in &loss.per_atom_movement_um {
+                let p = loss
+                    .per_atom_loss_probability
+                    .get(atom)
+                    .copied()
+                    .unwrap_or(0.0);
+                out.push_str(&format!(
+                    "| {atom} | {} | {} |\n",
+                    format_contribution(*d),
+                    format_contribution(p)
+                ));
+            }
+            out.push('\n');
+        }
+    }
+
     out.push_str("## Notes\n");
     out.push_str(
         "- Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).\n",
@@ -1197,17 +1418,30 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
              sum, not a fidelity product.\n",
         );
     }
+    if report.atom_loss_budget.is_some() {
+        out.push_str(
+            "- Atom-loss & movement-heating budget is an analytic closed form \
+             ([Atomique] Eqs. (1)–(2): `H = heating_rate × cumulative_distance`, \
+             `p = 1 − exp(−loss_coeff × H)`), accumulated over real per-atom \
+             travel through Quon's √-law movement schedule — not Monte Carlo \
+             loss simulation, not a survival probability, and not a threshold \
+             claim (ADR-0020). It does NOT import [Atomique]'s fixed 300 µs \
+             per-stage movement timing (architecture_model.md §5): movement \
+             here is distance (µm), not 300 µs stages. Placeholder \
+             heating/loss coefficients (§8.6), not measured calibrations.\n",
+        );
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
-    use backend::{BackendError, NeutralAtomErrorModel, NeutralAtomFidelity};
+    use backend::{BackendError, NeutralAtomErrorModel, NeutralAtomFidelity, NeutralAtomLossModel};
     use serde_json::json;
 
     use super::*;
     use crate::graph::LogicalQubitId;
-    use crate::layout::{AodTrapRef, AtomId, SiteId};
+    use crate::layout::{AodTrapRef, AtomId, AtomSite, NeutralAtomLayout, Position, SiteId};
     use crate::qec::{CodeBlockId, NetRate, code_blocks_from_expanded};
     use crate::schedule::{
         AtomMove, MeasurementBasis, MovementGroup, NeutralAtomAction, ScheduleLayer,
@@ -2333,5 +2567,322 @@ mod tests {
         assert_eq!(backend_msg, report_msg);
         assert!(backend_msg.contains("--emit-resource-report"));
         assert!(backend_msg.contains("do not derive from fidelity"));
+    }
+    // --- Issue #310: atom-loss / movement-heating budget (Atomique Eqs. 1–2) ---
+
+    fn example_loss_model() -> NeutralAtomLossModel {
+        NeutralAtomLossModel {
+            heating_rate_per_um: 0.01,
+            loss_coeff: 0.5,
+        }
+    }
+
+    /// Layout with four sites at known coordinates so per-atom travel distance
+    /// is hand-computable. `initial_bindings` is unused by `per_atom_movement`
+    /// (which reads only `sites`), so it stays empty.
+    fn loss_layout() -> NeutralAtomLayout {
+        NeutralAtomLayout {
+            sites: vec![
+                AtomSite {
+                    id: site(0),
+                    position: Position {
+                        x_um: 0.0,
+                        y_um: 0.0,
+                    },
+                },
+                AtomSite {
+                    id: site(1),
+                    position: Position {
+                        x_um: 4.0,
+                        y_um: 0.0,
+                    },
+                },
+                AtomSite {
+                    id: site(2),
+                    position: Position {
+                        x_um: 0.0,
+                        y_um: 100.0,
+                    },
+                },
+                AtomSite {
+                    id: site(3),
+                    position: Position {
+                        x_um: 100.0,
+                        y_um: 0.0,
+                    },
+                },
+            ],
+            initial_bindings: Vec::new(),
+        }
+    }
+
+    /// One `Move` of `a` from `from` to `to` in its own layer.
+    fn move_layer(a: AtomId, from: SiteId, to: SiteId) -> ScheduleLayer {
+        ScheduleLayer {
+            cycle: 0,
+            actions: vec![NeutralAtomAction::Move(MovementGroup {
+                duration_us: 1,
+                moves: vec![AtomMove { atom: a, from, to }],
+            })],
+        }
+    }
+
+    #[test]
+    fn atom_loss_budget_formula_matches_atomique_eqs_1_2() {
+        // H = heating_rate × cumulative_distance ; p = 1 − exp(−loss_coeff × H).
+        let model = example_loss_model();
+        let movement: BTreeMap<AtomId, f64> = [(atom(0), 4.0_f64), (atom(1), 100.0_f64)]
+            .into_iter()
+            .collect();
+        let budget = AtomLossBudget::from_movement(&movement, &model);
+        // atom 0: H = 0.01 × 4 = 0.04 ; p = 1 − exp(−0.5 × 0.04) = 1 − exp(−0.02).
+        let p0 = 1.0 - (-0.02_f64).exp();
+        // atom 1: H = 0.01 × 100 = 1.0 ; p = 1 − exp(−0.5 × 1.0) = 1 − exp(−0.5).
+        let p1 = 1.0 - (-0.5_f64).exp();
+        assert!(
+            (budget.per_atom_movement_um[&0] - 4.0).abs() < 1e-12,
+            "cumulative movement echoed"
+        );
+        assert!(
+            (budget.per_atom_loss_probability[&0] - p0).abs() < 1e-12,
+            "p0 = 1 − exp(−loss_coeff·H0)"
+        );
+        assert!(
+            (budget.per_atom_loss_probability[&1] - p1).abs() < 1e-12,
+            "p1 = 1 − exp(−loss_coeff·H1)"
+        );
+        assert!(
+            (budget.expected_atoms_lost - (p0 + p1)).abs() < 1e-12,
+            "expected_atoms_lost = Σ p_a"
+        );
+        assert_eq!(budget.heating_rate_per_um, model.heating_rate_per_um);
+        assert_eq!(budget.loss_coeff, model.loss_coeff);
+        // loss_coeff = 0 ⇒ all probabilities zero (heating still tracked).
+        let zero_loss = NeutralAtomLossModel {
+            heating_rate_per_um: 0.01,
+            loss_coeff: 0.0,
+        };
+        let zb = AtomLossBudget::from_movement(&movement, &zero_loss);
+        assert!((zb.per_atom_loss_probability[&0] - 0.0).abs() < 1e-15);
+        assert!((zb.expected_atoms_lost - 0.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn per_atom_movement_accumulates_distance_across_layers() {
+        let layout = loss_layout();
+        // atom 0: 0→1 (4 µm) then 1→0 (4 µm) = 8 µm; atom 1: 2→3 (≈100.02 µm).
+        let layers = vec![
+            move_layer(atom(0), site(0), site(1)),
+            move_layer(atom(0), site(1), site(0)),
+            move_layer(atom(1), site(2), site(3)),
+        ];
+        let acc = per_atom_movement(&layers, Some(&layout));
+        assert!((acc[&atom(0)] - 8.0).abs() < 1e-9, "atom 0 cumulative");
+        let d13 = (100.0_f64 * 100.0 + 100.0 * 100.0).sqrt(); // (0,100)→(100,0)
+        assert!((acc[&atom(1)] - d13).abs() < 1e-9, "atom 1 cumulative");
+        // No layout ⇒ nothing measurable ⇒ empty map (not fabricated distances).
+        assert!(per_atom_movement(&layers, None).is_empty());
+    }
+
+    #[test]
+    fn atom_loss_budget_omitted_when_no_model() {
+        let report = ResourceReport::from_layers(&toy_layers());
+        assert_eq!(report.atom_loss_budget, None);
+        let json = serde_json::to_string(&report).expect("serialize");
+        assert!(!json.contains("atom_loss_budget"));
+        let md = resource_report_to_markdown(&report);
+        assert!(!md.contains("Atom-loss & movement-heating budget"));
+    }
+
+    #[test]
+    fn atom_loss_budget_present_when_model_overlay_applied() {
+        let layout = loss_layout();
+        let layers = vec![move_layer(atom(0), site(0), site(1))];
+        let report = ResourceReport::from_layers(&layers).with_atom_loss_budget(
+            &layers,
+            Some(&layout),
+            &example_loss_model(),
+        );
+        let budget = report.atom_loss_budget.expect("overlay attached");
+        assert!((budget.per_atom_movement_um[&0] - 4.0).abs() < 1e-12);
+        assert!(budget.expected_atoms_lost > 0.0);
+    }
+
+    #[test]
+    fn atom_loss_budget_zeroed_when_no_layout() {
+        // Loss model present but no site map (non-zoned / hand-built schedule):
+        // the section is emitted (observable) but all distances are zero.
+        let layers = vec![move_layer(atom(0), site(0), site(1))];
+        let report = ResourceReport::from_layers(&layers).with_atom_loss_budget(
+            &layers,
+            None,
+            &example_loss_model(),
+        );
+        let budget = report
+            .atom_loss_budget
+            .expect("overlay attached even w/o layout");
+        assert!(budget.per_atom_movement_um.is_empty());
+        assert!((budget.expected_atoms_lost - 0.0).abs() < 1e-15);
+    }
+
+    /// Issue #310 acceptance: the metric responds to routing/compaction choices
+    /// in the expected direction — more per-atom movement ⇒ higher loss.
+    #[test]
+    fn atom_loss_budget_responds_to_movement_direction() {
+        let layout = loss_layout();
+        let model = example_loss_model();
+        // Compact routing: atom 0 travels 4 µm (storage pitch).
+        let compact = vec![move_layer(atom(0), site(0), site(1))];
+        // Spread routing: the same atom travels 100 µm to a far site.
+        let spread = vec![move_layer(atom(0), site(0), site(3))];
+        let compact_report = ResourceReport::from_layers(&compact).with_atom_loss_budget(
+            &compact,
+            Some(&layout),
+            &model,
+        );
+        let spread_report = ResourceReport::from_layers(&spread).with_atom_loss_budget(
+            &spread,
+            Some(&layout),
+            &model,
+        );
+        let compact_loss = compact_report
+            .atom_loss_budget
+            .expect("compact budget")
+            .expected_atoms_lost;
+        let spread_loss = spread_report
+            .atom_loss_budget
+            .expect("spread budget")
+            .expected_atoms_lost;
+        assert!(
+            spread_loss > compact_loss,
+            "more movement ⇒ higher expected loss (spread={spread_loss}, compact={compact_loss})"
+        );
+        // Hand-check the monotonicity is real, not a sign error: compact travel
+        // is 4 µm (H=0.04) vs spread 100 µm (H=1.0), so spread loss must be
+        // many× larger.
+        assert!(spread_loss > 5.0 * compact_loss);
+        // Doubling travel (two 4 µm moves vs one) doubles heating and raises p.
+        let doubled = vec![
+            move_layer(atom(0), site(0), site(1)),
+            move_layer(atom(0), site(1), site(0)),
+        ];
+        let doubled_report = ResourceReport::from_layers(&doubled).with_atom_loss_budget(
+            &doubled,
+            Some(&layout),
+            &model,
+        );
+        let doubled_loss = doubled_report
+            .atom_loss_budget
+            .expect("doubled budget")
+            .expected_atoms_lost;
+        assert!(doubled_loss > compact_loss, "doubling travel raises loss");
+    }
+
+    #[test]
+    fn atom_loss_budget_json_round_trips_and_rejects_unknown_fields() {
+        let layout = loss_layout();
+        let layers = vec![
+            move_layer(atom(0), site(0), site(1)),
+            move_layer(atom(1), site(2), site(3)),
+        ];
+        let report = ResourceReport::from_layers(&layers).with_atom_loss_budget(
+            &layers,
+            Some(&layout),
+            &example_loss_model(),
+        );
+        let value = serde_json::to_value(&report).expect("serialize");
+        let budget = value
+            .get("atom_loss_budget")
+            .expect("atom_loss_budget in JSON");
+        assert!(budget.get("per_atom_movement_um").unwrap().is_object());
+        assert!(budget.get("per_atom_loss_probability").unwrap().is_object());
+        assert!(budget.get("expected_atoms_lost").unwrap().is_f64());
+        assert_eq!(budget["heating_rate_per_um"], json!(0.01));
+        assert_eq!(budget["loss_coeff"], json!(0.5));
+        let back: ResourceReport = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(back.atom_loss_budget, report.atom_loss_budget);
+
+        // deny_unknown_fields: an unknown key in the budget must be rejected.
+        let mut fused = serde_json::to_value(&report).expect("serialize");
+        let bud = fused
+            .get_mut("atom_loss_budget")
+            .and_then(|v| v.as_object_mut())
+            .expect("budget object");
+        bud.insert("monte_carlo_shots".into(), json!(4096));
+        let rejected = serde_json::from_value::<ResourceReport>(fused);
+        assert!(
+            rejected.is_err(),
+            "AtomLossBudget must reject unknown (sampled) fields (deny_unknown_fields)"
+        );
+    }
+
+    #[test]
+    fn markdown_includes_and_omits_atom_loss_section() {
+        let layout = loss_layout();
+        let layers = vec![move_layer(atom(0), site(0), site(1))];
+        let with_budget = ResourceReport::from_layers(&layers).with_atom_loss_budget(
+            &layers,
+            Some(&layout),
+            &example_loss_model(),
+        );
+        let md = resource_report_to_markdown(&with_budget);
+        assert!(md.contains("## Atom-loss & movement-heating budget (Atomique Eqs. (1)–(2))"));
+        assert!(md.contains("| Heating rate (per µm) | 0.01 |"));
+        assert!(md.contains("| Loss coefficient | 0.5 |"));
+        assert!(md.contains("| Expected atoms lost (Σ p_a) |"));
+        assert!(md.contains("| 0 | 4 |")); // atom 0, 4 µm
+        // Documented-divergence note (§5: no 300 µs stage timing import).
+        assert!(md.contains("300 µs"));
+        assert!(md.contains("√-law movement schedule"));
+        assert!(md.contains("ADR-0020"));
+
+        let without = ResourceReport::from_layers(&layers);
+        let md2 = resource_report_to_markdown(&without);
+        assert!(!md2.contains("Atom-loss & movement-heating budget"));
+        assert!(!md2.contains("Expected atoms lost"));
+    }
+
+    #[test]
+    fn loaded_target_without_loss_model_has_no_atom_loss_budget() {
+        // generic_rna_v0.json carries no `atom_loss_model` (backward-compat):
+        // the production overlay is skipped and the report section is omitted.
+        let path = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../targets/neutral_atom/generic_rna_v0.json"
+        ));
+        let loaded = backend::json::load(path).expect("load target");
+        let na = loaded.neutral_atom_target().expect("na target");
+        assert!(
+            na.atom_loss_model.is_none(),
+            "canonical target has no loss model"
+        );
+        let report = ResourceReport::from_layers(&toy_layers());
+        let with_overlay = match na.atom_loss_model.as_ref() {
+            Some(m) => report.with_atom_loss_budget(&toy_layers(), None, m),
+            None => report,
+        };
+        assert_eq!(with_overlay.atom_loss_budget, None);
+    }
+
+    #[test]
+    fn atom_loss_budget_section_snapshot() {
+        // Insta golden pinning the atom-loss report section (issue #310):
+        // two atoms moving known distances through `loss_layout`, so the JSON
+        // and Markdown emitters' exact rendering is regression-pinned.
+        let layout = loss_layout();
+        let layers = vec![
+            move_layer(atom(0), site(0), site(1)),
+            move_layer(atom(0), site(1), site(0)),
+            move_layer(atom(1), site(2), site(3)),
+        ];
+        let report = ResourceReport::from_layers(&layers).with_atom_loss_budget(
+            &layers,
+            Some(&layout),
+            &example_loss_model(),
+        );
+        let json = resource_report_to_json(&report).expect("json");
+        let md = resource_report_to_markdown(&report);
+        insta::assert_snapshot!("atom_loss_budget_section_json", json);
+        insta::assert_snapshot!("atom_loss_budget_section_md", md);
     }
 }

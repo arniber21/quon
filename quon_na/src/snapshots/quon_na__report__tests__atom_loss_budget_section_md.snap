@@ -1,0 +1,58 @@
+---
+source: quon_na/src/report.rs
+expression: md
+---
+# Neutral-atom analytic resource report
+
+## Qubit resources
+| Metric | Value |
+| --- | ---: |
+| Logical qubits | 0 |
+| Physical atoms | 0 |
+
+## Schedule metrics
+| Metric | Value |
+| --- | ---: |
+| Estimated cycles | 3 |
+| Bottleneck | rearrangement |
+| Rydberg stages | 0 |
+| Rearrangement steps | 3 |
+| Rearrangement time (µs) | 3 |
+| Trap transfers | 0 |
+| Transfer time (µs) | 0 |
+| Entangle2 count | 0 |
+| EntangleN count | 0 |
+| Measurement rounds | 0 |
+| Reset rounds | 0 |
+| Wait time (µs) | 0 |
+| Total time (µs) | 3 |
+
+## Atom pressure & reuse
+| Metric | Value |
+| --- | ---: |
+| Peak atoms | 2 |
+| Measurement count (ops) | 0 |
+| Reset count (ops) | 0 |
+| Reuse count (ops) | 0 |
+| Reused ancilla count | 0 |
+
+## Atom-loss & movement-heating budget (Atomique Eqs. (1)–(2))
+| Metric | Value |
+| --- | ---: |
+| Heating rate (per µm) | 0.01 |
+| Loss coefficient | 0.5 |
+| Expected atoms lost (Σ p_a) | 0.546141869452 |
+| Atoms tracked | 2 |
+
+| Atom | Cumulative movement (µm) | Loss probability |
+| --- | ---: | ---: |
+| 0 | 8 | 0.039210560848 |
+| 1 | 141.42135623731 | 0.506931308605 |
+
+## Notes
+- Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).
+- Field names align with TUM RAP Table I / Enola headline metrics.
+- `estimated_cycles` is `layers.len()`; `bottleneck` is the max of rydberg stages / rearrangement time / transfer time / measurement rounds (ties → mixed; all-zero → none).
+- Non-QEC reports omit atoms-per-logical and code-family rows.
+- `peak_atoms` counts distinct simultaneously-allocated atoms; qubit reuse (measure → reset → reuse of the same ancilla) lowers it versus a fresh-ancilla-per-round variant. `measurement_count` / `reset_count` are per-op tallies, distinct from the per-layer `measurement_rounds` / `reset_rounds`.
+- Atom-loss & movement-heating budget is an analytic closed form ([Atomique] Eqs. (1)–(2): `H = heating_rate × cumulative_distance`, `p = 1 − exp(−loss_coeff × H)`), accumulated over real per-atom travel through Quon's √-law movement schedule — not Monte Carlo loss simulation, not a survival probability, and not a threshold claim (ADR-0020). It does NOT import [Atomique]'s fixed 300 µs per-stage movement timing (architecture_model.md §5): movement here is distance (µm), not 300 µs stages. Placeholder heating/loss coefficients (§8.6), not measured calibrations.

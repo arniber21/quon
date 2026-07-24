@@ -275,6 +275,26 @@ pub struct NeutralAtomTarget {
     /// Absent when QEC error artifacts are requested is a hard failure — never
     /// derived from [`Self::fidelity`] (ADR-0017).
     pub error_model: Option<NeutralAtomErrorModel>,
+    /// Optional movement-induced heating / atom-loss parameters (issue #310,
+    /// [Atomique] Wang et al. ISCA 2024, arXiv:2311.15123, Eqs. (1)–(2)).
+    ///
+    /// Sibling to `error_model`; not derived from fidelity. When present, the
+    /// NA resource report attaches an analytic `atom_loss_budget` section
+    /// tracking per-atom cumulative movement and the resulting loss
+    /// probability. Absent → the section is omitted (backward-compatible;
+    /// targets without these params skip the metric).
+    ///
+    /// **Provenance / placeholder status (architecture_model.md §2 / §8.6):**
+    /// the heating→loss coefficients are *placeholder analytic knobs*, not
+    /// measured device calibrations. [Atomique] Sec. IV gives the model shape;
+    /// its numeric fidelity table is deliberately ×10-optimistic relative to
+    /// the 2022 experiments it scales from (see
+    /// `docs/neutral_atom/literature_notes.md` [Atomique]) — do not quote its
+    /// numbers as measured values. The model accumulates heating against the
+    /// *actual per-atom travel distance* through Quon's √-law movement
+    /// schedule and does **not** import [Atomique]'s fixed 300 µs-per-stage
+    /// movement timing (the documented §5 divergence).
+    pub atom_loss_model: Option<NeutralAtomLossModel>,
     pub cost_model: NeutralAtomCostModel,
 }
 
@@ -499,6 +519,43 @@ impl TryFrom<NeutralAtomErrorModelSnapshot> for NeutralAtomErrorModel {
             idle_per_us: probability("error_model.idle_per_us", s.idle_per_us)?,
         })
     }
+}
+/// Optional movement-induced heating / atom-loss parameters (issue #310;
+/// [Atomique] Wang et al. ISCA 2024, arXiv:2311.15123, Eqs. (1)–(2)).
+///
+/// Sibling to [`NeutralAtomErrorModel`] and [`NeutralAtomFidelity`]; not
+/// derived from either. Wire JSON lives in
+/// [`crate::descriptor::NeutralAtomLossModelDescriptor`] with validated
+/// conversion — this domain type has no serde derives.
+///
+/// # Model
+///
+/// Per-atom heating accumulates with travel:
+/// `H_a = heating_rate_per_um × cumulative_distance_um_a` ([Atomique] Eq. (1),
+/// distance-only term). Per-atom loss probability follows:
+/// `p_a = 1 − exp(−loss_coeff × H_a)` ([Atomique] Eq. (2)). The report's
+/// `expected_atoms_lost = Σ_a p_a`.
+///
+/// `heating_rate_per_um = 0` zeros every `H_a` (heating still reported as 0);
+/// `loss_coeff = 0` zeros every `p_a` (heating reported, loss probability 0).
+/// Both are non-negative finite scalars, not probabilities — `loss_coeff`
+/// maps a dimensionless heating sum to a probability through the exponential.
+///
+/// # Provenance
+///
+/// Placeholder analytic knobs (architecture_model.md §2 / §8.6), not measured
+/// calibrations. The model accumulates heating against actual per-atom travel
+/// distance through Quon's √-law movement schedule — it does **not** import
+/// [Atomique]'s fixed 300 µs-per-stage movement timing (§5 divergence).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeutralAtomLossModel {
+    /// Heating gained per µm of atom travel
+    /// (`H = heating_rate_per_um × cumulative_distance_um`; [Atomique] Eq. (1)).
+    pub heating_rate_per_um: f64,
+    /// Dimensionless loss coefficient mapping accumulated heating `H` to a
+    /// per-atom loss probability `1 − exp(−loss_coeff × H)` ([Atomique]
+    /// Eq. (2)). Non-negative; `0` reports heating with zero loss probability.
+    pub loss_coeff: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

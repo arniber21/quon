@@ -16,8 +16,8 @@ use crate::keys;
 use crate::target::{
     AodMovement, AodMovementModel, AodSpeedModel, AodSpeedModelKind, BackendTarget,
     ConnectivityGraph, FixedTarget, NeutralAtomCostModel, NeutralAtomErrorModel,
-    NeutralAtomFidelity, NeutralAtomGrid, NeutralAtomTarget, NeutralAtomTiming, NeutralAtomZone,
-    NoiseModel, RydbergInteraction, ZoneKind,
+    NeutralAtomFidelity, NeutralAtomGrid, NeutralAtomLossModel, NeutralAtomTarget,
+    NeutralAtomTiming, NeutralAtomZone, NoiseModel, RydbergInteraction, ZoneKind,
 };
 
 /// Top-level target JSON. The fixed descriptor remains backward-compatible:
@@ -128,6 +128,11 @@ pub struct NeutralAtomTargetDescriptor {
     /// `fidelity`; omitted targets still load for non-QEC paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_model: Option<NeutralAtomErrorModelDescriptor>,
+    /// Optional movement-induced heating / atom-loss parameters (issue #310,
+    /// [Atomique] Eqs. (1)–(2)). Sibling to `error_model`; omitted targets
+    /// still load and the report simply skips the `atom_loss_budget` section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atom_loss_model: Option<NeutralAtomLossModelDescriptor>,
     pub cost_model: NeutralAtomCostModelDescriptor,
 }
 
@@ -233,6 +238,18 @@ pub struct NeutralAtomErrorModelDescriptor {
     pub movement: f64,
     pub transfer: f64,
     pub idle_per_us: f64,
+}
+/// Wire form of [`crate::target::NeutralAtomLossModel`] (issue #310). Both
+/// fields required when the object is present (non-negative finite scalars);
+/// unknown keys are rejected.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NeutralAtomLossModelDescriptor {
+    /// Heating per µm of atom travel ([Atomique] Eq. (1)).
+    pub heating_rate_per_um: f64,
+    /// Dimensionless loss coefficient → `1 − exp(−loss_coeff × H)`
+    /// ([Atomique] Eq. (2)).
+    pub loss_coeff: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -444,6 +461,10 @@ fn neutral_atom_from_descriptor(
             )?,
         },
         error_model: d.error_model.map(error_model_from_descriptor).transpose()?,
+        atom_loss_model: d
+            .atom_loss_model
+            .map(loss_model_from_descriptor)
+            .transpose()?,
         cost_model: NeutralAtomCostModel {
             rydberg_stage_weight: non_negative_f64(
                 "cost_model.rydberg_stage_weight",
@@ -618,6 +639,12 @@ fn neutral_atom_to_descriptor(id: &str, target: &NeutralAtomTarget) -> NeutralAt
             transfer: m.transfer,
             idle_per_us: m.idle_per_us,
         }),
+        atom_loss_model: target
+            .atom_loss_model
+            .map(|m| NeutralAtomLossModelDescriptor {
+                heating_rate_per_um: m.heating_rate_per_um,
+                loss_coeff: m.loss_coeff,
+            }),
         cost_model: NeutralAtomCostModelDescriptor {
             rydberg_stage_weight: target.cost_model.rydberg_stage_weight,
             movement_time_weight: target.cost_model.movement_time_weight,
@@ -637,6 +664,23 @@ fn error_model_from_descriptor(
         movement: probability("error_model.movement", m.movement)?,
         transfer: probability("error_model.transfer", m.transfer)?,
         idle_per_us: probability("error_model.idle_per_us", m.idle_per_us)?,
+    })
+}
+
+/// Validate a [`NeutralAtomLossModelDescriptor`] into the domain model
+/// (issue #310). Both fields are non-negative finite scalars (not
+/// probabilities): `heating_rate_per_um` is heating per µm of travel;
+/// `loss_coeff` maps dimensionless heating to a loss probability via
+/// `1 − exp(−loss_coeff × H)`.
+fn loss_model_from_descriptor(
+    m: NeutralAtomLossModelDescriptor,
+) -> Result<NeutralAtomLossModel, BackendError> {
+    Ok(NeutralAtomLossModel {
+        heating_rate_per_um: non_negative_f64(
+            "atom_loss_model.heating_rate_per_um",
+            m.heating_rate_per_um,
+        )?,
+        loss_coeff: non_negative_f64("atom_loss_model.loss_coeff", m.loss_coeff)?,
     })
 }
 
@@ -741,5 +785,89 @@ mod error_model_validation_tests {
             "got {err:?}"
         );
         assert!(err.to_string().contains("error_model.idle_per_us"));
+    }
+}
+
+#[cfg(test)]
+mod loss_model_validation_tests {
+    use super::*;
+
+    fn valid_descriptor() -> NeutralAtomLossModelDescriptor {
+        NeutralAtomLossModelDescriptor {
+            heating_rate_per_um: 0.01,
+            loss_coeff: 0.5,
+        }
+    }
+
+    #[test]
+    fn accepts_placeholder_rates() {
+        let model = match loss_model_from_descriptor(valid_descriptor()) {
+            Ok(m) => m,
+            Err(e) => panic!("valid descriptor rejected: {e}"),
+        };
+        assert_eq!(model.heating_rate_per_um, 0.01);
+        assert_eq!(model.loss_coeff, 0.5);
+        // Zero is allowed (disables the corresponding term).
+        let zeroed = NeutralAtomLossModelDescriptor {
+            heating_rate_per_um: 0.0,
+            loss_coeff: 0.0,
+        };
+        let z = loss_model_from_descriptor(zeroed).expect("zeros allowed");
+        assert_eq!(z.heating_rate_per_um, 0.0);
+        assert_eq!(z.loss_coeff, 0.0);
+    }
+
+    #[test]
+    fn rejects_negative_heating_rate() {
+        let mut d = valid_descriptor();
+        d.heating_rate_per_um = -0.01;
+        let err = loss_model_from_descriptor(d).unwrap_err();
+        assert!(
+            matches!(err, BackendError::InvalidTargetConfig(_)),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("atom_loss_model.heating_rate_per_um")
+        );
+    }
+
+    #[test]
+    fn rejects_negative_loss_coeff() {
+        let mut d = valid_descriptor();
+        d.loss_coeff = -1.0;
+        let err = loss_model_from_descriptor(d).unwrap_err();
+        assert!(
+            matches!(err, BackendError::InvalidTargetConfig(_)),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("atom_loss_model.loss_coeff"));
+    }
+
+    // NaN / Infinity can't be injected through JSON literals (not valid JSON),
+    // so validate them here at the descriptor-struct level (bypasses serde).
+    #[test]
+    fn rejects_nan_and_infinity() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut d = valid_descriptor();
+            d.heating_rate_per_um = bad;
+            let err = loss_model_from_descriptor(d).unwrap_err();
+            assert!(
+                matches!(err, BackendError::InvalidTargetConfig(_)),
+                "got {err:?} for {bad}"
+            );
+            assert!(
+                err.to_string()
+                    .contains("atom_loss_model.heating_rate_per_um")
+            );
+        }
+        let mut d = valid_descriptor();
+        d.loss_coeff = f64::NAN;
+        let err = loss_model_from_descriptor(d).unwrap_err();
+        assert!(
+            matches!(err, BackendError::InvalidTargetConfig(_)),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("atom_loss_model.loss_coeff"));
     }
 }
