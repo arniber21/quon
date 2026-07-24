@@ -220,6 +220,16 @@ pub enum PlacerMode {
     RoutingAgnostic,
     /// RAP: minimize Eq. (1) routing cost of the transition.
     RoutingAware,
+    /// SMT-optimal placement (issue #302, Deliverable B). On the **flat
+    /// AOD** path this dispatches to [`PlacementStrategy::Exact`], which
+    /// solves the atom→site assignment with z3 (or brute-force for n ≤ 8)
+    /// and falls back to [`PlacementStrategy::InteractionClustering`] with
+    /// a logged optimality gap on timeout or when the `solver` feature is
+    /// off. On the **zoned** path exact initial storage placement is not
+    /// yet implemented, so this runs the routing-agnostic per-layer
+    /// assignment and the schedule is labelled `heuristic` — the fallback
+    /// is logged, never silent.
+    Exact,
 }
 
 /// Which routing-agnostic placement mechanism ran for a layer (issue #300).
@@ -620,30 +630,16 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
         };
         let gate_atoms: Vec<(AtomId, AtomId)> = gates.iter().map(|g| g.atoms).collect();
         let assignment = match mode {
-            PlacerMode::RoutingAgnostic => {
-                // Issue #300: min-weight bipartite matching is the agnostic
-                // default; greedy remains a fast fallback for very large
-                // layers (above the gate×pair product threshold) and is also
-                // used when matching's conflict-repair cannot find a
-                // spacing-legal assignment.
+            PlacerMode::RoutingAgnostic | PlacerMode::Exact => {
+                // Exact mode uses the same agnostic per-layer assignment as
+                // RoutingAgnostic — the exact optimization is in the initial
+                // placement (handled by the flat-AOD path or the caller),
+                // not in per-layer gate-to-pair assignment. Issue #302.
                 let (a, used_matching) = if gate_atoms.len() * entangle_pairs.len()
                     > MATCHING_FALLBACK_GATE_PAIR_PRODUCT
                 {
-                    // Very large layer: skip the O(n²·m) matching and use
-                    // the O(n·m) greedy directly (issue #300 fast path).
                     (assign_greedy_legal(&gate_atoms, &inputs), false)
                 } else {
-                    // Matching is the default, but its min-travel optimum
-                    // can group into *more* AOD movement stages than the
-                    // spread-out greedy choice (observed on ising_n42's
-                    // densely-conflicting entanglement zone: matching → 33
-                    // steps vs greedy → 23). So both are computed and the
-                    // one yielding fewer movement *groups* (the actual
-                    // rearrangement-step metric) is kept — guaranteeing the
-                    // matching placer never increases the step count over
-                    // greedy, while still using matching wherever it does
-                    // group better (the crossing-pairs unit test, and any
-                    // low-contention real layer).
                     pick_agnostic_assignment(
                         &gate_atoms,
                         &inputs,

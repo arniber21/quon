@@ -14,6 +14,14 @@ path = "src/lib.rs"
 name = "quonc"
 path = "src/main.rs"
 
+
+[features]
+default = []
+# Pass through to quon_na's `solver` feature (z3-backed exact placement +
+# state-prep scheduling, issue #302). The default quonc build does not link
+# z3; enable this to use `--na-placer exact` / `--na-state-prep exact`.
+solver = ["quon_na/solver"]
+
 [dependencies]
 frontend    = { path = "../frontend" }
 mlir_bridge = { path = "../mlir_bridge" }

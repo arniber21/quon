@@ -56,6 +56,11 @@ pub struct BackendStageInfo {
     /// [`PlacerMode::RoutingAgnostic`], `None` otherwise (flat-AOD or
     /// routing-aware). Mirrors `aware_search_status`'s "zoned-only" shape.
     pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
+    /// Whether the schedule was produced by the exact SMT solver or a
+    /// heuristic (issue #302). `None` when no exact mode was requested;
+    /// `Some(ScheduleOptimality::Exact)` when z3 proved optimality;
+    /// `Some(ScheduleOptimality::Heuristic)` on timeout/fallback.
+    pub schedule_optimality: Option<crate::report::ScheduleOptimality>,
 }
 
 /// Run the place → AOD movement (or zoned routing) backend on a
@@ -88,6 +93,18 @@ pub fn plan_backend<V: VertexId>(
     req = match opts.backend {
         NaBackendKind::Zoned => {
             info.placer_mode = Some(opts.placer);
+            // Issue #302: exact initial placement is only implemented for
+            // the flat-AOD path (PlacementStrategy::Exact). The zoned path
+            // has no SMT-optimal initial storage placement yet, so
+            // `--na-placer exact` here runs the routing-agnostic per-layer
+            // assignment and the schedule is labelled heuristic — the
+            // fallback is logged, never silently mislabelled exact.
+            if opts.placer == PlacerMode::Exact {
+                info.schedule_optimality = Some(crate::report::ScheduleOptimality::Heuristic);
+                eprintln!(
+                    "[quon_na] exact placer mode on a zoned target is not yet                      supported: running routing-agnostic per-layer assignment                      (no SMT-optimal initial storage placement). Schedule                      labelled heuristic. Use --na-backend flat for exact                      placement (issue #302)."
+                );
+            }
             let arch = zoned_architecture(na);
             let stage_started = Instant::now();
             let zoned =
@@ -98,19 +115,19 @@ pub fn plan_backend<V: VertexId>(
                 zoned.aware_search_budget_exceeded_layers
                     + zoned.aware_search_no_legal_assignment_layers,
             ));
-            let agnostic_placer_mechanism = if opts.placer == PlacerMode::RoutingAgnostic {
-                // `GreedyFallback` if any layer used the greedy fallback
-                // (very-large threshold or unrepaired conflict); `Matching`
-                // otherwise — so a schedule reported as `Matching` is purely
-                // matching-based, never a silent mix.
-                Some(if zoned.agnostic_greedy_fallback_layers == 0 {
-                    AgnosticPlacerMechanism::Matching
+            let agnostic_placer_mechanism =
+                if opts.placer == PlacerMode::RoutingAgnostic || opts.placer == PlacerMode::Exact {
+                    // Exact mode uses the agnostic per-layer assignment (the
+                    // exact optimization is in the initial placement), so it
+                    // reports the same mechanism. Issue #302.
+                    Some(if zoned.agnostic_greedy_fallback_layers == 0 {
+                        AgnosticPlacerMechanism::Matching
+                    } else {
+                        AgnosticPlacerMechanism::GreedyFallback
+                    })
                 } else {
-                    AgnosticPlacerMechanism::GreedyFallback
-                })
-            } else {
-                None
-            };
+                    None
+                };
             info.agnostic_placer_mechanism = agnostic_placer_mechanism;
             info.search_diagnostics = SearchDiagnostics {
                 aware_search_completed_layers: Some(zoned.aware_search_completed_layers),
@@ -144,11 +161,29 @@ pub fn plan_backend<V: VertexId>(
             zoned.request
         }
         NaBackendKind::FlatAod => {
-            info.placement_strategy = Some(opts.placement);
+            // When placer mode is Exact, use the SMT-optimal placement
+            // strategy (issue #302). Otherwise use the configured strategy.
+            let strategy = if opts.placer == PlacerMode::Exact {
+                PlacementStrategy::Exact
+            } else {
+                opts.placement
+            };
+            info.placement_strategy = Some(strategy);
             if req.layout.is_none() {
                 let stage_started = Instant::now();
-                let placed = place(req, opts.placement)?;
+                let placed = place(req, strategy)?;
                 info.placement_us = Some(elapsed_us(stage_started));
+                // Issue #302: label the schedule optimality. If exact was
+                // requested, the returned strategy tells us whether z3
+                // succeeded (Exact) or fell back (InteractionClustering).
+                if opts.placer == PlacerMode::Exact {
+                    info.schedule_optimality =
+                        Some(if placed.strategy == PlacementStrategy::Exact {
+                            crate::report::ScheduleOptimality::Exact
+                        } else {
+                            crate::report::ScheduleOptimality::Heuristic
+                        });
+                }
                 req = placed.request;
             }
             let params = movement_params(na);
@@ -192,6 +227,7 @@ pub struct QecStageAccumulator {
     pub search_diagnostics: SearchDiagnostics,
     pub aware_search_status: Option<(u64, u64)>,
     pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
+    pub schedule_optimality: Option<crate::report::ScheduleOptimality>,
 }
 
 impl QecStageAccumulator {
@@ -287,6 +323,17 @@ impl QecStageAccumulator {
             (Some(AgnosticPlacerMechanism::GreedyFallback), _) => {}
             (_, Some(AgnosticPlacerMechanism::GreedyFallback)) => {
                 self.agnostic_placer_mechanism = Some(AgnosticPlacerMechanism::GreedyFallback);
+            }
+            _ => {}
+        }
+        // schedule_optimality: config echo (same across phases), keep the
+        // first non-None — but if any phase reports Heuristic, downgrade
+        // Exact to Heuristic so the aggregate is truthful.
+        match (self.schedule_optimality, backend.schedule_optimality) {
+            (None, v) => self.schedule_optimality = v,
+            (Some(crate::report::ScheduleOptimality::Heuristic), _) => {}
+            (_, Some(crate::report::ScheduleOptimality::Heuristic)) => {
+                self.schedule_optimality = Some(crate::report::ScheduleOptimality::Heuristic);
             }
             _ => {}
         }

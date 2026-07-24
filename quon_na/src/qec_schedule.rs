@@ -70,6 +70,33 @@ fn schedule_expanded(
     let pipeline_started = Instant::now();
     let mut stage_acc = QecStageAccumulator::default();
 
+    // Issue #302 Deliverable A: `--na-state-prep exact` requests SMT-optimal
+    // CZ-pair scheduling. The standalone solver
+    // (`crate::exact::state_prep::schedule_exact`) is implemented and
+    // unit-tested (Steane 7q/9CZ -> 3 stages), but it is NOT yet wired into
+    // the QEC pipeline per-CNOT-phase scheduling -- `plan_backend` does
+    // not consume `opts.state_prep`, so the heuristic zoned/flat scheduler
+    // runs unchanged. Log the fallback so the request is never silently
+    // honoured (issue #302: "no silent heuristic-only fallback without
+    // logging").
+    #[cfg(feature = "solver")]
+    if opts.state_prep == crate::pipeline::StatePrepMode::Exact {
+        eprintln!(
+            "[quon_na] --na-state-prep exact requested for QEC workload \
+             (blocks={}, memory_rounds={}), but exact state-prep scheduling \
+             is not yet wired into the pipeline; using heuristic",
+            expanded.blocks.len(),
+            expanded.memory_round_count()
+        );
+    }
+    #[cfg(not(feature = "solver"))]
+    if opts.state_prep == crate::pipeline::StatePrepMode::Exact {
+        eprintln!(
+            "[quon_na] exact state-prep scheduling requires the `solver` feature, \
+             using heuristic"
+        );
+    }
+
     let mut all_layers: Vec<ScheduleLayer> = Vec::new();
     let mut combined_interactions: Vec<Interaction<AtomVertexId>> = Vec::new();
     let mut combined_segments: Vec<InteractionSegment> = Vec::new();
@@ -199,6 +226,10 @@ fn schedule_expanded(
     // mandatory, so this always applies once a target is available.
     let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
     let report = report.with_agnostic_placer_mechanism(stage_acc.agnostic_placer_mechanism);
+    let report = match stage_acc.schedule_optimality {
+        Some(optimality) => report.with_schedule_optimality(optimality),
+        None => report,
+    };
     let resource_report_us = elapsed_us(stage_started);
 
     let req = project_request_to_logical(req);

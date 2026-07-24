@@ -57,6 +57,34 @@ impl BottleneckKind {
     }
 }
 
+/// Whether a schedule was produced by the exact SMT solver or a heuristic
+/// (issue #302). Stored on [`ResourceReport`] so every emitted report
+/// labels the schedule provenance.
+///
+/// Defined here (not in the `solver`-gated `exact` module) so the field is
+/// available without linking z3 — the default build reports `Heuristic`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleOptimality {
+    /// Exact SMT solver produced the schedule (proven optimal within the
+    /// solver's time budget).
+    #[default]
+    Exact,
+    /// Heuristic placer / scheduler produced the schedule (either the
+    /// default path or a fallback after an exact-solver timeout).
+    Heuristic,
+}
+
+impl ScheduleOptimality {
+    /// Wire label for the resource report Markdown / JSON.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Heuristic => "heuristic",
+        }
+    }
+}
+
 /// Temporal atom-pressure metrics for a neutral-atom schedule (issue #282).
 ///
 /// These make peak-atom pressure and qubit-lifecycle reuse visible so a
@@ -278,6 +306,15 @@ pub struct ResourceReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
 
+    /// Whether the schedule was produced by the exact SMT solver or a
+    /// heuristic (issue #302). `None` for reports built without calling
+    /// [`ResourceReport::with_schedule_optimality`] (library use, most unit
+    /// tests); `Some` on every production report from the pipeline. When
+    /// the exact solver timed out and fell back, this is `Heuristic` — the
+    /// fallback is never silent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_optimality: Option<ScheduleOptimality>,
+
     /// Analytic physical error-budget contributions (rate × schedule counts).
     /// Never logical error rates or thresholds (ADR-0017 / ADR-0020).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -408,6 +445,7 @@ impl Default for ResourceReport {
             aware_search_completed_layers: None,
             aware_search_fell_back_layers: None,
             agnostic_placer_mechanism: None,
+            schedule_optimality: None,
             error_budget: None,
             temporal_atom_metrics: TemporalAtomMetrics::default(),
             local_h_count: None,
@@ -853,6 +891,16 @@ impl ResourceReport {
         self.agnostic_placer_mechanism = mechanism;
         self
     }
+
+    /// Overlay whether the schedule was produced by the exact SMT solver or
+    /// a heuristic (issue #302). `None` leaves the field at its `from_layers`
+    /// default of `None` (no optimality claim); `Some(Exact)` labels the
+    /// schedule as solver-proven; `Some(Heuristic)` labels it as heuristic
+    /// (including the timeout-fallback case).
+    pub fn with_schedule_optimality(mut self, optimality: ScheduleOptimality) -> Self {
+        self.schedule_optimality = Some(optimality);
+        self
+    }
 }
 
 /// Build a report from layers with optional QEC or physical-atom sizing.
@@ -1032,6 +1080,12 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
         out.push_str(&format!(
             "| Routing-agnostic placement mechanism | {} |\n",
             mechanism.as_str()
+        ));
+    }
+    if let Some(optimality) = report.schedule_optimality {
+        out.push_str(&format!(
+            "| Schedule optimality | {} |\n",
+            optimality.as_str()
         ));
     }
     out.push('\n');

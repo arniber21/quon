@@ -17,6 +17,7 @@ use quon_na::{
 use sha2::{Digest, Sha256};
 
 use backend::{BackendTarget, TargetKind};
+use quon_na::pipeline::StatePrepMode;
 use quon_qec::{
     attach_barrier_cycles, dual_emit, expand_workload, experiment_to_json, na_refs_from_expanded,
     sibling_stim_path,
@@ -24,7 +25,7 @@ use quon_qec::{
 use quonc::compile::{
     CompileRequest, build_na_schedule_view, compile, schedule_to_json, schedule_to_mlir,
 };
-use quonc::na_target::{NaBackendKind, parse_na_backend, parse_placer_mode};
+use quonc::na_target::{NaBackendKind, parse_na_backend, parse_placer_mode, parse_state_prep_mode};
 use quonc::watch::{print_watch_metrics, run_watch_loop};
 
 const AFTER_HELP: &str = "\
@@ -203,7 +204,8 @@ struct Cli {
     )]
     na_backend: NaBackendKind,
 
-    /// Zoned placer mode: routing-agnostic (default) or routing-aware
+    /// Zoned placer mode: routing-agnostic (default), routing-aware, or exact
+    /// (SMT-optimal placement, requires the `solver` feature)
     #[arg(
         long,
         value_name = "MODE",
@@ -226,6 +228,16 @@ struct Cli {
     )]
     na_placement: CliPlacement,
 
+    /// State-preparation scheduling mode: heuristic (default) or exact
+    /// (SMT-optimal CZ-pair scheduling, requires the `solver` feature)
+    #[arg(
+        long,
+        value_name = "MODE",
+        default_value = "heuristic",
+        help_heading = "Neutral atom",
+        value_parser = parse_state_prep_mode
+    )]
+    na_state_prep: StatePrepMode,
     // ── Debug ───────────────────────────────────────────────────────────
     /// Dump MLIR after each major pass stage to stderr
     #[arg(long, help_heading = "Debug", action = ArgAction::SetTrue)]
@@ -1307,6 +1319,7 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
         na_placer: cli.na_placer,
         na_compact: !cli.no_na_compact,
         na_placement: cli.na_placement.into(),
+        na_state_prep: cli.na_state_prep,
     })
 }
 

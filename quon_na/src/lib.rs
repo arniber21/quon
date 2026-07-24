@@ -38,6 +38,8 @@ pub mod compaction;
 #[cfg(feature = "mlir")]
 pub mod dialect;
 pub mod entangling_schedule;
+#[cfg(feature = "solver")]
+pub mod exact;
 #[cfg(feature = "mlir")]
 pub mod extract;
 pub mod geometry;
@@ -97,9 +99,10 @@ pub use qec::{
 pub use qec_schedule::{round_barrier_cuts, run_from_qec_workload};
 pub use report::{
     BottleneckKind, ErrorBudgetContributions, RESOURCE_REPORT_EVIDENCE_DISCLAIMER,
-    RESOURCE_REPORT_EVIDENCE_KIND, ReportError, ResourceReport, TemporalAtomMetrics,
-    attach_qec_error_budget, build_resource_report, require_target_error_model,
-    resource_report_to_json, resource_report_to_markdown, simultaneous_layer_time,
+    RESOURCE_REPORT_EVIDENCE_KIND, ReportError, ResourceReport, ScheduleOptimality,
+    TemporalAtomMetrics, attach_qec_error_budget, build_resource_report,
+    require_target_error_model, resource_report_to_json, resource_report_to_markdown,
+    simultaneous_layer_time,
 };
 pub use schedule::{
     AtomMove, EntanglingAction, LocalGateKind, MeasurementBasis, MovementGroup, NeutralAtomAction,
@@ -140,6 +143,6 @@ pub use lower::{ScheduleLowerError, ScheduleLowerParams, lower_layers, lower_sch
 #[cfg(feature = "mlir")]
 pub use pipeline::run_from_module;
 pub use pipeline::{
-    NaBackendKind, NaPipelineError, NaScheduleArtifacts, NaScheduleOptions, compaction_options,
-    movement_params, run_from_graph, validate_speed_model, zoned_architecture,
+    NaBackendKind, NaPipelineError, NaScheduleArtifacts, NaScheduleOptions, StatePrepMode,
+    compaction_options, movement_params, run_from_graph, validate_speed_model, zoned_architecture,
 };
