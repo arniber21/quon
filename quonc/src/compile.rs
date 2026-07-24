@@ -64,6 +64,11 @@ pub struct CompileRequest {
     /// State-preparation scheduling mode (issue #302): `Heuristic` (default)
     /// or `Exact` (SMT-optimal, requires `solver` feature).
     pub na_state_prep: quon_na::pipeline::StatePrepMode,
+    /// Parse the source as OpenQASM 2/3 (#304) instead of Quon (`.qn`).
+    /// Set by the CLI when the input is `.qasm` or `--from-qasm` is passed;
+    /// bypasses frontend lowering and enters the NA pipeline directly from
+    /// the QASM-derived interaction graph + captured 1-qubit gates.
+    pub from_qasm: bool,
 }
 
 impl Default for CompileRequest {
@@ -84,6 +89,7 @@ impl Default for CompileRequest {
             na_compact: true,
             na_placement: PlacementStrategy::RowMajor,
             na_state_prep: quon_na::pipeline::StatePrepMode::Heuristic,
+            from_qasm: false,
         }
     }
 }
@@ -204,6 +210,9 @@ struct CompileArtifacts {
 }
 
 fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
+    if request.from_qasm {
+        return compile_qasm(request);
+    }
     let context = melior::Context::new();
 
     let module = frontend::lower::lower_program(&context, &request.source).map_err(|diags| {
@@ -300,6 +309,86 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
         }
         TargetKind::Fixed(_) => compile_fixed(request, &context, &module),
     }
+}
+
+/// Compile an OpenQASM 2/3 source through the NA pipeline (#304).
+///
+/// Bypasses frontend lowering (no `.qn`): `quonc::qasm::parse_to_graph`
+/// builds the interaction graph + captured 1-qubit gates (the same contract
+/// `quon_na::extract` produces for `.qn`), then `run_from_graph_with_local_gates`
+/// enters the existing NA schedule/lower/verify stages unchanged. QASM
+/// ingestion is bare-qubit only — QEC-backed (`collect_qec_workload`) entry
+/// stays a `.qn` concern — so this path is never QEC-backed and requires a
+/// neutral-atom target.
+fn compile_qasm(request: &CompileRequest) -> Result<CompileArtifacts, String> {
+    let na = match &request.target.kind {
+        TargetKind::NeutralAtomReconfigurable(na) => na,
+        TargetKind::Fixed(_) => {
+            return Err(
+                "OpenQASM ingestion (#304) targets the neutral-atom pipeline — \
+                 pass a neutral-atom target via --target."
+                    .to_string(),
+            );
+        }
+    };
+    let (graph, local_gates) = crate::qasm::parse_to_graph(&request.source)
+        .map_err(|e| format!("OpenQASM ingestion failed: {e}"))?;
+    let logical_qubits = graph.vertices.len() as u64;
+    if request.dump_ir {
+        eprintln!(
+            "--- QASM interaction graph ---\nvertices={} interactions={} local_1q_gates={}",
+            graph.vertices.len(),
+            graph.interactions.len(),
+            local_gates.len(),
+        );
+    }
+    let opts = NaScheduleOptions {
+        backend: request.na_backend,
+        placer: request.na_placer,
+        compact: request.na_compact,
+        placement: request.na_placement,
+        dump_ir: request.dump_ir,
+        state_prep: request.na_state_prep,
+        ..Default::default()
+    };
+    let artifacts = quon_na::pipeline::run_from_graph_with_local_gates(
+        graph,
+        local_gates,
+        na,
+        opts,
+        Some(logical_qubits),
+    )
+    .map_err(|e| e.to_string())?;
+    let na_stats = artifacts.stats.clone().map(|mut stats| {
+        stats.version.target_id = Some(request.target.id.clone());
+        stats
+    });
+    let lower_params = ScheduleLowerParams::from_target(request.target.id.clone(), na);
+    let schedule_spec = lower_schedule(&artifacts.request, &lower_params)
+        .map_err(|e| format!("lowering schedule to quantum.na failed: {e}"))?;
+    maybe_verify_na_schedule(&schedule_spec, request.verify_na, false)?;
+    let circuit_metrics = CircuitMetrics {
+        depth: artifacts.resource_report.estimated_cycles,
+        depth_bound: Some(artifacts.resource_report.estimated_cycles.to_string()),
+        gate_count: artifacts.resource_report.entangle2_count
+            + artifacts.resource_report.entangle_n_count,
+        t_count: 0,
+        qubit_count: artifacts.logical_qubits,
+        swap_count: 0,
+    };
+    Ok(CompileArtifacts {
+        qasm: None,
+        na_schedule: Some(artifacts.layers),
+        na_layout: artifacts.request.layout.clone(),
+        na_graph: Some(artifacts.request.graph.clone()),
+        na_schedule_spec: Some(schedule_spec),
+        resource_report: Some(artifacts.resource_report),
+        na_stats,
+        na_logical_qubits: Some(artifacts.logical_qubits),
+        qec_backed: false,
+        qec_workload: None,
+        circuit_metrics,
+    })
 }
 
 fn compile_fixed(

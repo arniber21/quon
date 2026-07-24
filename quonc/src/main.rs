@@ -42,6 +42,11 @@ Examples:
   quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
     --emit-na-schedule --emit-na-graph --emit-resource-report
 
+  # OpenQASM 2/3 ingestion for the NA pipeline (#304): a .qasm extension
+  # (or --from-qasm) bypasses .qn lowering and enters at the interaction graph
+  quonc circuit.qasm --target targets/neutral_atom/rap_table_i.json \\
+    --emit-resource-report -
+
   # MQT NAViz interop (#303): .naviz instructions + sibling .namachine
   quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
     --emit-naviz /tmp/ghz.naviz
@@ -113,8 +118,15 @@ schedule JSON and resource reports as debug artifacts.",
 {all-args}{after-help}"
 )]
 struct Cli {
-    /// Source file to compile (.qn). Optional with --print-target / --list-passes.
+    /// Source file to compile (`.qn` Quon program, or `.qasm` OpenQASM 2/3
+    /// for the neutral-atom ingestion path, #304). Optional with --print-target
+    /// / --list-passes.
     source: Option<PathBuf>,
+
+    /// Parse the source as OpenQASM 2/3 (#304) instead of Quon (forces the
+    /// neutral-atom path; a `.qasm` extension already implies this).
+    #[arg(long, help_heading = "Input", action = ArgAction::SetTrue)]
+    from_qasm: bool,
 
     // ── Emit ────────────────────────────────────────────────────────────
     /// Emit OpenQASM 3.0 (fixed targets only)
@@ -1350,6 +1362,11 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
     let source_path = require_source(cli)?;
     let source = std::fs::read_to_string(&source_path)
         .with_context(|| format!("reading {}", source_path.display()))?;
+    let from_qasm = cli.from_qasm
+        || source_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("qasm"));
 
     Ok(CompileRequest {
         source_path,
@@ -1367,6 +1384,7 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
         na_compact: !cli.no_na_compact,
         na_placement: cli.na_placement.into(),
         na_state_prep: cli.na_state_prep,
+        from_qasm,
     })
 }
 
