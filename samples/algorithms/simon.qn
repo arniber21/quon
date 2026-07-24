@@ -1,0 +1,46 @@
+-- Simon's algorithm, n=3, hidden string s=110 (issue #186, textbook
+-- algorithm pack).
+--
+-- Inspired by the Qiskit textbook "Simon's Algorithm" chapter
+-- (https://qiskit.org/textbook/ch-algorithms/simon-part.html). Given a 2-to-1
+-- function f with a hidden period s — f(x) = f(y) iff y = x ⊕ s — Simon's
+-- algorithm recovers s in O(n) quantum queries, exponentially faster than any
+-- classical randomized algorithm.
+--
+-- What Quon does differently: the Qiskit notebook implements the oracle as a
+-- Python-side `QuantumCircuit` assembled from `cx`/`ccx` gates and runs the
+-- *classical post-processing* (Gaussian elimination over GF(2)) in Python.
+-- That same boundary is honest here too: the .qn program is the quantum
+-- *circuit* (Hadamard layers + oracle + Hadamard layer), and the classical
+-- outer loop (collecting samples, solving y.s = 0 over GF(2)) lives in the
+-- Python checker (`test/verify/simon.py`). The difference is that
+-- the circuit itself is a *typed value* whose Clifford classification is
+-- statically verified, and whose depth bound (11) is proved, not measured.
+--
+-- Oracle construction: f(x) = x ⊕ (x₀ · s) gives a 2-to-1 function with
+-- period s = 110.  The circuit first copies x into the work register
+-- (CNOT from each query qubit to its work counterpart), then conditionally
+-- XORs s into the work register using x₀ as the control: clear w₀ (s₀=1)
+-- and flip w₁ (s₁=1), leaving w₂ untouched (s₂=0).  Five CNOTs total.
+-- After the second Hadamard layer on the query register, each shot yields a
+-- y with y · s = 0 (mod 2).  Collecting enough independent y's and solving
+-- the linear system over GF(2) recovers s.
+
+fn simon_s110(): Circuit<6, 6, 11, Clifford> = circuit {
+    H @0 |> H @1 |> H @2
+    |> CNOT @(0, 3) |> CNOT @(1, 4) |> CNOT @(2, 5) |> CNOT @(0, 3) |> CNOT @(0, 4)
+    |> H @0 |> H @1 |> H @2
+}
+
+fn main(): Q<(Bit, Bit, Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, w0, w1, w2) <- simon_s110() @ qreg(6)
+    y0 <- measure(q0)
+    y1 <- measure(q1)
+    y2 <- measure(q2)
+    f0 <- measure(w0)
+    f1 <- measure(w1)
+    f2 <- measure(w2)
+    return (y0, y1, y2, f0, f1, f2)
+    -- (y0, y1, y2) = y where y · s = 0 (mod 2); s = 110.
+    -- The classical post-processing (GF(2) linear algebra) is in simon.py.
+}

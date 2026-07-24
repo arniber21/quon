@@ -1,0 +1,79 @@
+---
+title: Phase estimation
+description: Estimate an eigenvalue phase with a single counting qubit and CZ.
+sidebar:
+  order: 14
+---
+
+## What we're building and why
+
+Quantum phase estimation (QPE) estimates the phase φ in the eigenvalue
+e^{2πiφ} of a unitary U, given an eigenstate |u⟩. This sample uses the
+smallest non-trivial QPE: a single counting qubit (t = 1, one bit of
+precision) and U = Rz(2π) = −I, whose eigenvalue on |1⟩ is e^{iπ} = −1,
+so φ = 1/2 (binary 0.1).
+
+The circuit is elegant in its simplicity: H creates a superposition on the
+counting qubit, CZ (controlled-U) kicks the eigenvalue phase (−1) back
+onto the counting qubit, and a final H converts the phase into a
+deterministic computational-basis measurement. The "inverse QFT" for t = 1
+is just a single H — no controlled-phase gates needed.
+
+Inspired by the [Qiskit textbook "Quantum Phase Estimation" chapter](https://qiskit.org/textbook/ch-algorithms/quantum-phase-estimation.html).
+
+**What Quon does differently:** the Qiskit notebook assembles gates
+imperatively and reads `circuit.depth()` after the fact. Here the entire
+circuit is a *typed value* `Circuit<2, 2, 4, Clifford>` — the type system
+statically proves the algorithm is entirely Clifford and that the depth
+is exactly 4, before a single gate is emitted.
+
+## Source
+
+The full source is at
+[`samples/algorithms/phase_estimation.qn`](https://github.com/arniber21/quon/blob/main/samples/algorithms/phase_estimation.qn).
+
+```qn
+fn qpe_1bit(): Circuit<2, 2, 4, Clifford> = circuit {
+    X @0 |> H @1 |> CZ @(1, 0) |> H @1
+}
+```
+
+The type `Circuit<2, 2, 4, Clifford>` encodes: 2 qubits, depth 4 (X + H +
+CZ + H), Clifford class. The eigenstate |1⟩ is prepared by X on qubit 0,
+the counting qubit is put into superposition by H, CZ kicks back the
+phase, and the final H converts it to a measurement.
+
+## Compile and simulate
+
+```sh
+./target/release/quonc samples/algorithms/phase_estimation.qn --emit-qasm
+QUONC=target/release/quonc python test/verify/phase_estimation.py
+```
+
+## Limitations (documented)
+
+Extending to multi-bit QPE (t ≥ 2) requires an inverse QFT on the counting
+register. Quon's recursive QFT (from `test/verify/qft.qn`) uses a
+controlled-Rz convention whose half-angle phases do not match the standard
+QPE phase kickback, so a direct `adjoint(qft(t))` does not recover the
+correct eigenvalue. An explicit inverse QFT with standard controlled-phase
+gates is blocked by two language constraints:
+
+1. **Bare `Rz` in a `circuit {}` block** requires a Float parameter, not a
+   literal expression like `PI / 2.0` — only `controlled(Rz(...))` and
+   `Rzz(...)` accept expressions.
+2. **The `if bit then circuit else circuit` feed-forward** construct (needed
+   for iterative QPE) is lowered to QASM `if` blocks that Aer does not
+   execute when the branch contains non-Pauli multi-qubit gates
+   (measurement deferral only handles single-qubit Pauli corrections like
+   X and Z — see `test/verify/teleport.qn`).
+
+A future language improvement — allowing bare `Rz` with literal expressions,
+or supporting dynamic-circuit `if` execution in the backend — would unblock
+multi-bit QPE.
+
+## Expected result
+
+Every shot yields (counting, eigenstate) = (1, 1), confirming φ = 1/2.
+The [`phase_estimation.py`](https://github.com/arniber21/quon/blob/main/test/verify/phase_estimation.py)
+verifier checks that the outcome is always (1, 1).

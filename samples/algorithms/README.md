@@ -16,6 +16,9 @@ section instead of forking the `.qn`).
 | Catalog id | Path | Concept |
 | --- | --- | --- |
 | `algorithms/ghz-state` | [`ghz_state.qn`](./ghz_state.qn) | n-qubit GHZ entanglement (generalizes `learning/hello-bell`'s Bell pair) |
+| `algorithms/deutsch-jozsa` | [`deutsch_jozsa.qn`](./deutsch_jozsa.qn) | Deutsch-Jozsa: constant vs balanced oracle in a single query (textbook #186) |
+| `algorithms/simon` | [`simon.qn`](./simon.qn) | Simon's algorithm: hidden string recovery with GF(2) classical post-processing (textbook #186) |
+| `algorithms/phase-estimation` | [`phase_estimation.qn`](./phase_estimation.qn) | QPE: estimate eigenvalue phase of Rz(2*pi) with a single counting qubit (textbook #186) |
 
 For deeper algorithm fixtures already verified end-to-end on Aer, see
 [`test/verify/`](../../test/verify/) (Grover, QFT, Bernstein–Vazirani, Shor,

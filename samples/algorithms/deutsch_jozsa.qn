@@ -1,0 +1,51 @@
+-- Deutsch–Jozsa algorithm, n=3 (issue #186, textbook algorithm pack).
+--
+-- Inspired by the Qiskit textbook "Deutsch-Jozsa Algorithm" chapter
+-- (https://qiskit.org/textbook/ch-algorithms/deutsch-jozsa.html). Given an
+-- oracle f : {0,1}^n → {0,1} that is promised to be either constant (same
+-- output for every input) or balanced (0 for exactly half the inputs, 1 for
+-- the other half), Deutsch–Jozsa determines which in a *single* quantum query
+-- — versus the 2^{n-1}+1 queries a deterministic classical algorithm needs.
+--
+-- What Quon does differently: the Qiskit notebook builds the oracle from
+-- Python-side classical logic (IFF gates, per-input X strings) and switches
+-- between constant/balanced by editing a lambda. Here both oracles are
+-- first-class *typed circuit values* — `Circuit<4,4,d,Clifford>` — and the
+-- type system statically proves the algorithm is entirely Clifford (hence
+-- efficiently classically simulable) before a single gate is emitted. The
+-- `|>`-composed gate sequence mirrors the Qiskit notebook's `QuantumCircuit`
+-- build, but depth is a *verified* static bound, not an after-the-fact
+-- `circuit.depth()` call.
+--
+-- Balanced oracle: f(x) = x0 ⊕ x1 ⊕ x2. One CNOT from each query qubit to the
+-- |−⟩ ancilla encodes the phase kickback. After the final Hadamards the query
+-- register reads (1,1,1) — non-zero, confirming f is balanced.
+--
+-- Constant oracle (defined for comparison): f(x) = 0. The ancilla in |−⟩ is
+-- an eigenstate of the identity oracle, so no query-ancilla interaction
+-- occurs. The query register reads (0,0,0) — all zeros, confirming f is
+-- constant. Swap `dj_balanced` for `dj_constant` in `main` to see it.
+
+fn dj_balanced(): Circuit<4, 4, 11, Clifford> = circuit {
+    X @3
+    |> H @0 |> H @1 |> H @2 |> H @3
+    |> CNOT @(0, 3) |> CNOT @(1, 3) |> CNOT @(2, 3)
+    |> H @0 |> H @1 |> H @2
+}
+
+fn dj_constant(): Circuit<4, 4, 8, Clifford> = circuit {
+    X @3
+    |> H @0 |> H @1 |> H @2 |> H @3
+    |> H @0 |> H @1 |> H @2
+}
+
+fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, anc) <- dj_balanced() @ qreg(4)
+    b0  <- measure(q0)
+    b1  <- measure(q1)
+    b2  <- measure(q2)
+    anc_bit <- measure(anc)
+    return (b0, b1, b2, anc_bit)
+    -- Balanced: (b0, b1, b2) = (1, 1, 1) — non-zero confirms f is balanced.
+    -- (For the constant oracle the query bits would read (0, 0, 0).)
+}

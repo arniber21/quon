@@ -1,0 +1,77 @@
+---
+title: Deutsch–Jozsa
+description: Determine whether an oracle is constant or balanced in a single quantum query.
+sidebar:
+  order: 12
+---
+
+## What we're building and why
+
+The Deutsch–Jozsa algorithm solves a problem that takes up to
+2^{n-1}+1 queries classically but only *one* quantum query: given an
+oracle f : {0,1}^n → {0,1} promised to be either constant or balanced,
+decide which. It is the textbook demonstration of *phase kickback* — the
+mechanism where a computational-basis query is transformed into a phase
+that carries information, which Hadamard gates then convert into
+measurable bits.
+
+Inspired by the [Qiskit textbook "Deutsch-Jozsa Algorithm" chapter](https://qiskit.org/textbook/ch-algorithms/deutsch-jozsa.html).
+
+**What Quon does differently:** the Qiskit notebook builds the oracle from
+Python-side classical logic and switches between constant/balanced by
+editing a lambda. Here both oracles are first-class *typed circuit values*
+— `Circuit<4, 4, d, Clifford>` — and the type system statically proves the
+algorithm is entirely Clifford (efficiently classically simulable) before
+a single gate is emitted.
+
+This sample uses a balanced oracle f(x) = x₀ ⊕ x₁ ⊕ x₂ (n = 3 query
+qubits + 1 ancilla). After the DJ circuit, the query register reads
+(1, 1, 1) — non-zero, confirming f is balanced. A constant oracle
+(defined for comparison) would read (0, 0, 0).
+
+## Source
+
+The full source is at
+[`samples/algorithms/deutsch_jozsa.qn`](https://github.com/arniber21/quon/blob/main/samples/algorithms/deutsch_jozsa.qn).
+
+```qn
+fn dj_balanced(): Circuit<4, 4, 11, Clifford> = circuit {
+    X @3
+    |> H @0 |> H @1 |> H @2 |> H @3
+    |> CNOT @(0, 3) |> CNOT @(1, 3) |> CNOT @(2, 3)
+    |> H @0 |> H @1 |> H @2
+}
+```
+
+The type `Circuit<4, 4, 11, Clifford>` encodes the structure: 4 qubits
+in and out, depth 11 (X + 4 H + 3 CNOT + 3 H), and the Clifford class —
+every gate is Clifford, so the entire algorithm is efficiently simulable
+on a stabilizer tableau.
+
+## Compile and simulate
+
+```sh
+./target/release/quonc samples/algorithms/deutsch_jozsa.qn --emit-qasm
+QUONC=target/release/quonc python test/verify/deutsch_jozsa.py
+```
+
+## What the compiler proves
+
+1. **Clifford classification.** The type system infers `Clifford` from
+   the gate set (X, H, CNOT) and the composition rule. This is a verified
+   fact, not a runtime check.
+2. **Depth bound ≤ 11.** The typechecker proves the depth by summing
+   sequentially composed gates under `|>`.
+3. **Linear use of all four qubits.** No qubit is left unmeasured or
+   used twice — the linear type system tracks the context through the
+   entire `run` block.
+
+## Expected result
+
+Every shot yields query bits (1, 1, 1) — non-zero, confirming f is
+balanced. The [`deutsch_jozsa.py`](https://github.com/arniber21/quon/blob/main/test/verify/deutsch_jozsa.py)
+verifier checks that the set of recovered query-bit triples is exactly
+{(1, 1, 1)}.
+
+→ Next: [Simon's algorithm](./simon/) — recover a hidden string with
+  quantum queries and classical GF(2) post-processing.

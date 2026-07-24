@@ -45,6 +45,30 @@ entries:
     artifacts: []
     ci: smoke
 
+  - id: algorithms/deutsch-jozsa
+    path: samples/algorithms/deutsch_jozsa.qn
+    tags: [algorithms, textbook, deutsch-jozsa, oracle, phase-kickback, learning]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: algorithms/simon
+    path: samples/algorithms/simon.qn
+    tags: [algorithms, textbook, simon, oracle, gf2, learning]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: algorithms/phase-estimation
+    path: samples/algorithms/phase_estimation.qn
+    tags: [algorithms, textbook, qpe, phase-estimation, phase-kickback, learning]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
   - id: applications/quantum-coin-flip
     path: samples/applications/quantum_coin_flip.qn
     tags: [applications, randomness, superposition]
