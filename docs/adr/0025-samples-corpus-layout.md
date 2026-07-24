@@ -2,7 +2,7 @@
 
 **Status:** Accepted (2026-07-15)
 
-Narrative demos live under `samples/` with a fixed top-level taxonomy (`learning/`, `algorithms/`, `workflows/`, `visualization/`, `applications/`, `research/`, `neutral-atom/`) and a required machine-readable `catalog.yaml`. CI fixtures stay in `test/`; QEC compiler examples stay in `examples/na_qec/`; the website cookbook deep-links into samples rather than owning a parallel tree.
+Narrative demos live under `samples/` with a fixed top-level taxonomy (`learning/`, `algorithms/`, `workflows/`, `visualization/`, `applications/`, `research/`, `neutral-atom/`, `creative/`) and a required machine-readable `catalog.yaml`. CI fixtures stay in `test/`; QEC compiler examples stay in `examples/na_qec/`; the website cookbook deep-links into samples rather than owning a parallel tree.
 
 We rejected per-pack top-level dirs without a shared layout (drift) and README-only indexing (no consumer hook for regenerate scripts). Pack ownership is exclusive per artifact kind: NA pedagogy (#192), viz stress artifacts (#189), workflows (#188), research notebooks (#190) — one canonical `.qn` per story. Catalog entries may opt into `ci: smoke` (typecheck / Aer when numerical); default is `ci: none`.
 
@@ -10,7 +10,7 @@ We rejected per-pack top-level dirs without a shared layout (drift) and README-o
 
 - A catalog entry's `id` prefix, not its `path`, determines category
   membership. `quonc/tests/samples_catalog.rs` enforces that every `id`
-  prefix is one of the seven taxonomy categories above; it does not require
+  prefix is one of the eight taxonomy categories above; it does not require
   `path` to live under the matching `samples/<category>/` directory. This is
   deliberate: `neutral-atom/*` entries may point `path` at
   `examples/na_qec/*.qn` (the QEC compiler examples' canonical home) or at

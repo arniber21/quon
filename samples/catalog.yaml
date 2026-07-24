@@ -482,3 +482,28 @@ entries:
       ]
     artifacts: []
     ci: smoke
+
+  # ── Creative / games pack (#200) ───────────────────────────────────────
+  - id: creative/quantum-dice
+    path: samples/creative/quantum_dice.qn
+    tags: [creative, games, superposition, parallel-composition, born-rule, randomness, aer-verify, pack-200]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: creative/entangled-twins
+    path: samples/creative/entangled_twins.qn
+    tags: [creative, games, entanglement, bell-state, correlation, anti-correlation, aer-verify, pack-200]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: creative/interference-barcode
+    path: samples/creative/interference_barcode.qn
+    tags: [creative, games, interference, phase, superposition, t-gate, generative-art, aer-verify, pack-200]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke

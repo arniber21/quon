@@ -21,6 +21,7 @@ samples/
   research/             <- literate notebooks + .py smoke twins (#190)
   neutral-atom/         <- NA pedagogy: zoned vs flat, routing-agnostic vs
                             routing-aware zoned placer (#192)
+  creative/             <- playful / games programs that teach one concept each (#200)
 ```
 
 Each top-level category has its own `README.md` with a `## Status` section
@@ -68,6 +69,7 @@ regenerate rather than forking a copy:
 | Viz goldens | [#189](https://github.com/arniber21/quon/issues/189) | stress artifacts + "what you should see" |
 | Research notebooks | [#190](https://github.com/arniber21/quon/issues/190) | literate notebooks + `.py` smoke twins |
 | NA pedagogy | [#192](https://github.com/arniber21/quon/issues/192) | walkthroughs, zoned vs flat, routing-agnostic vs routing-aware placer story |
+| Creative / games | [#200](https://github.com/arniber21/quon/issues/200) | playful programs that teach one Quon concept each (superposition, entanglement, interference) |
 
 `learning/`, `algorithms/`, and `applications/` have no dedicated pack —
 contribute directly against those categories.

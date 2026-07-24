@@ -55,7 +55,7 @@ enforces:
 - Every `id` is unique.
 - Every entry's `path` exists.
 - Every top-level category has at least one entry, and every `id` prefix
-  is one of the seven taxonomy categories (unknown prefixes fail the build).
+  is one of the eight taxonomy categories (unknown prefixes fail the build).
 - `samples/README.md` and every category `README.md` carry their required
   sections (see the test for the exact list).
 - Every `ci: smoke` entry actually compiles with the debug `quonc` binary

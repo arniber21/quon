@@ -75,6 +75,7 @@ export default defineConfig({
 						{ label: 'Neutral-atom FT demo', slug: 'guides/na-ft-demo' },
 						{ label: 'Maturation path', slug: 'guides/roadmap' },
 						{ label: 'Application demos', slug: 'guides/applications' },
+						{ label: 'Creative & games', slug: 'guides/creative' },
 					],
 				},
 				{
