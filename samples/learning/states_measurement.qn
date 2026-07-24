@@ -1,0 +1,32 @@
+-- Lesson 2 - States and measurement.
+-- Two qubits, two stories. Qubit 0 is left in |0> (the computational basis):
+-- measuring it always yields 0. Qubit 1 gets a Hadamard, putting it into the
+-- equal superposition |+> = (|0> + |1>)/sqrt(2): measuring it yields 0 or 1
+-- each with probability 1/2 - the Born rule, made visible.
+--
+-- This is the heart of measurement: it is not "reading" a pre-existing bit,
+-- it is an irreversible sampling that collapses a quantum state to a classical
+-- one. In Quon, `measure` *consumes* the qubit (a linear value) and produces a
+-- `Bit` (an unrestricted, copyable classical value). After `measure(q1)`, q1 is
+-- gone from the program; only its classical shadow, b1, remains.
+--
+-- The circuit type is Circuit<2, 2, 1, Clifford>: only one gate (H @1), so the
+-- depth bound is 1. The other qubit needs no gate - it stays |0> by default.
+--
+-- Try it, then check the statistics with the Aer checker:
+--   quonc samples/learning/states_measurement.qn --emit-qasm > /tmp/s.qasm
+--   QUONC=target/release/quonc python samples/learning/states_measurement.py
+-- Expected: b0 = 0 on every shot; b1 = 0/1 each ~50%.
+-- Previous: samples/learning/hello_quon.qn  |  Next: samples/learning/gates_composition.qn
+
+fn basis_and_superposition(): Circuit<2, 2, 1, Clifford> = circuit {
+    H @1
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- basis_and_superposition() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+    -- Expected: b0 always 0; b1 ~50/50. The Born rule, one qubit at a time.
+}

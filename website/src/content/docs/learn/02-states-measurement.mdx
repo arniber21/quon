@@ -1,0 +1,110 @@
+---
+title: "Lesson 2: States & measurement"
+description: Computational basis versus superposition, the Born rule, and why measure consumes a qubit and hands back a copyable Bit.
+---
+
+import { Card } from '@astrojs/starlight/components';
+
+Lesson 1 measured a deterministic state: both qubits were `1`, always. This lesson
+puts one qubit into a **superposition** and measures it, so you can watch the
+**Born rule** — the rule that a measurement of a quantum state samples a
+classical outcome with probability given by the squared amplitude — happen in the
+counts. Along the way we make precise what `measure` *does* to a qubit in Quon.
+
+## Two qubits, two stories
+
+```qn
+fn basis_and_superposition(): Circuit<2, 2, 1, Clifford> = circuit {
+    H @1
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- basis_and_superposition() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+}
+```
+
+Qubit 0 gets no gate, so it stays in `|0⟩` — the **computational basis**
+state. Measuring it always yields `0`. Qubit 1 gets a single `H` (Hadamard),
+which maps `|0⟩` to the equal superposition
+
+```text
+|+⟩ = (1/√2)(|0⟩ + |1⟩)
+```
+
+Measuring `|+⟩` yields `0` with probability `1/2` and `1` with probability
+`1/2`. That *is* the Born rule, in its smallest non-trivial form: the probability
+of an outcome is the squared magnitude of its amplitude. Here both amplitudes are
+`1/√2`, so both probabilities are `1/2`.
+
+The circuit type is `Circuit<2, 2, 1, Clifford>`: only one gate (`H @1`), so the
+depth bound is `1`. The other qubit needs no gate — it starts in `|0⟩` by
+default.
+
+## Measurement consumes the qubit
+
+This is the Quon-specific point. `measure` is not "reading" a pre-existing bit;
+it is an **irreversible sampling** that collapses a quantum state to a classical
+one. In Quon, `measure(q1)` *consumes* the qubit (a linear value, gone from the
+program after this line) and produces a `Bit` — an **unrestricted**, copyable
+classical value:
+
+```qn
+b0       <- measure(q0)   -- q0 is gone; b0 is a Bit you can reuse freely
+b1       <- measure(q1)   -- q1 is gone; b1 is a Bit you can reuse freely
+```
+
+After `measure(q1)`, `q1` is out of scope. Referencing it again would be a type
+error — the same error you would get for using a `&mut` reference after a `drop`
+in Rust. Only `b1`, the classical shadow, remains. This `Qubit`/`Bit` split is the
+practical boundary between the quantum and classical worlds, and the typechecker
+enforces it at every measurement.
+
+## Check the statistics on Aer
+
+The lesson ships a Python checker, `samples/learning/states_measurement.py`, that
+compiles the program and runs it on Qiskit Aer with a fixed seed:
+
+```sh
+./target/release/quonc samples/learning/states_measurement.qn --emit-qasm > /tmp/s.qasm
+QUONC=target/release/quonc python samples/learning/states_measurement.py
+```
+
+The checker asserts that `c[0]` (the basis qubit) is `0` on every one of 4096
+shots, and that `c[1]` (the superposition qubit) is `1` on about half of them:
+
+```text
+counts: {'10': 2071, '00': 2025}
+basis c[0]==0: 4096/4096 (expect 4096)
+superposition c[1]==1: 2071/4096 (expect ~2048)
+PASS: computational basis is deterministic, superposition follows the Born rule
+```
+
+A basis qubit is a certainty; a superposition qubit is a fair coin. The numbers
+are samples, so they fluctuate, but the checker's tolerance (about `10σ` for
+a fair coin over 4096 shots) makes the assertion robust.
+
+## Why the `Clifford` class matters here
+
+Both `H` and the implicit identity on qubit 0 are Clifford gates, so the
+typechecker writes `Clifford` into the type. That is not a label — it is a
+*license*. It tells the compiler this circuit is efficiently simulable on a
+stabilizer tableau, which is exactly why Aer (and Quon's own Clifford path) can
+verify it cheaply. You will see the Clifford classification drive real choices in
+later lessons.
+
+## Exercises
+
+1. **Perturb the superposition.** Replace `H @1` with two Hadamards
+   (`H @1 |> H @1`). Since `H · H = I`, qubit 1 should return to `|0⟩`
+   and measure `0` every shot — the randomness cancels.
+2. **Make the basis qubit random instead.** Move the `H` to qubit 0
+   (`H @0`). Now `c[0]` is the fair coin and `c[1]` is the constant. The roles are
+   symmetric; only which qubit you touch decides which bit is random.
+
+<Card title="Next lesson" icon="right-arrow">
+  [Lesson 3: Gates & composition](./03-gates-composition/) — sequential `|>` versus a
+  parallel layer, and depth as a verified bound.
+</Card>

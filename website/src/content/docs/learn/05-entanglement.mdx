@@ -1,0 +1,91 @@
+---
+title: "Lesson 5: Entanglement"
+description: A Bell pair and a separable pair measured in one shot — correlation versus independence made visible in the histogram.
+---
+
+import { Card } from '@astrojs/starlight/components';
+
+Lesson 4 showed that a `CNOT` on a computational-basis input *copies* a known bit.
+This lesson changes one gate and watches the same `CNOT` do something entirely
+different: **entangle**. To make the effect unmistakable, the program measures an
+entangled pair and a separable pair in the *same* shot.
+
+## The program
+
+```qn
+fn entangled_vs_separable(): Circuit<4, 4, 4, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1) |> H @2 |> H @3
+}
+
+fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, q3) <- entangled_vs_separable() @ qreg(4)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    b3 <- measure(q3)
+    return (b0, b1, b2, b3)
+}
+```
+
+Four qubits, two pairs, one circuit:
+
+- **`(q0, q1)` is entangled.** `H @0` puts qubit 0 into `|+⟩`, then
+  `CNOT @(0, 1)` correlates qubit 1 with it. The pair is now the Bell state
+  `(1/√2)(|00⟩ + |11⟩)`. Measuring it yields `00` or `11`, *never* `01` or
+  `10`. Each qubit alone is a fair coin, but the two coins always agree.
+- **`(q2, q3)` is separable.** Each gets an independent `H`, so each is a fair coin
+  on its own, with *no* correlation between them. Measuring it yields all of
+  `00`, `01`, `10`, `11` about a quarter of the time each.
+
+Same gate library — `H` and `CNOT` — opposite statistics. The `CNOT` is what makes
+the difference: on a basis input it copies (Lesson 4); on a superposition input
+it entangles. That is the whole content of the no-cloning theorem made visible:
+the superposition cannot be copied, so the `CNOT` produces *correlation* instead.
+
+## Reading the type
+
+`Circuit<4, 4, 4, Clifford>`: four qubits in and out, depth `4` (the four gates
+run sequentially under `|>`, so depths add), and `Clifford` — so a stabilizer
+tableau can simulate this circuit exactly. That last fact is why Aer can verify it
+cheaply, and why the correlations are not approximate: a Clifford circuit's
+statistics are exact.
+
+## What the histogram shows
+
+Running the compiled program on a sampler produces something like:
+
+```text
+0000: 253   1111: 254   0100: 265   1000: 260
+0011: 231   1011: 234   1101: ...   0110: ...
+```
+
+Look at the pair `(b0, b1)` (the entangled pair): across every outcome it is
+either `00` or `11` — never mixed. Now look at `(b2, b3)` (the separable pair):
+all four combinations appear with roughly equal weight. Correlation versus
+independence, in a single histogram. The entangled pair's outcomes are linked
+even though the qubits were measured independently; the separable pair's are not.
+
+## From two to many
+
+The Bell pair is the two-qubit case. Add more `CNOT`s in a chain and the
+correlation generalizes: a Hadamard on qubit 0 followed by `CNOT @(0,1)`,
+`CNOT @(1,2)`, … entangles every qubit with the first, so measuring all of them
+yields all-`0`s or all-`1`s. That is the **GHZ state**, already in the repo as
+[`samples/algorithms/ghz_state.qn`](https://github.com/arniber21/quon/blob/main/samples/algorithms/ghz_state.qn)
+— and the minimal two-qubit Bell pair lives at
+[`samples/learning/hello_bell.qn`](https://github.com/arniber21/quon/blob/main/samples/learning/hello_bell.qn).
+This lesson adds the side-by-side comparison that makes *why* it is entanglement
+visible.
+
+## Compile and run
+
+```sh
+./target/release/quonc samples/learning/entanglement.qn --emit-qasm
+./target/release/quonc samples/learning/entanglement.qn --emit-qasm \
+  | python python/quon_aer.py --shots 2048 --seed 7
+```
+
+<Card title="Next lesson" icon="right-arrow">
+  [Lesson 6: Oracles & algorithms](./06-oracles-algorithms/) — the phase-kickback
+  oracle seed, and the on-ramp to the textbook algorithms.
+</Card>

@@ -1,0 +1,38 @@
+-- Lesson 4 - Linearity and ancilla discipline.
+-- The no-cloning theorem forbids copying an *unknown* quantum state. It does
+-- NOT forbid copying a *known* computational-basis value - and that is what
+-- this program does. q0 is prepared in |1> (a known basis state) and a CNOT
+-- copies that bit onto q1, the workspace ("ancilla"). Measuring gives (1, 1)
+-- every shot.
+--
+-- What makes this a lesson about linearity is not the physics but the type
+-- system around it. Every qubit in Quon is a *linear value*: it is allocated
+-- once, used once, and gone after that use. The ancilla q1 is allocated by
+-- qreg(2), consumed by the CNOT, and consumed again by `measure` - the
+-- typechecker tracks each step and refuses to compile if any qubit is left
+-- unmeasured (a "leak") or used twice (a "clone"). Copying a known |1> onto an
+-- ancilla is fine; forgetting to measure the ancilla is a type error, not a
+-- silent resource leak.
+--
+-- The contrast to keep in mind: replace the `X @0` with `H @0` and the CNOT no
+-- longer copies - it *entangles* (Lesson 5). No-cloning is precisely the
+-- statement that the superposition case cannot be a copy, and Quon's linear
+-- types are what make "use this qubit once" a compile-time fact rather than a
+-- runtime hope. (For *scoped* ancilla with a no-escape lifetime guarantee, Quon
+-- provides `borrow` blocks - see the Borrow blocks language page.)
+--
+--   quonc samples/learning/linearity_borrow.qn --emit-qasm
+-- Previous: samples/learning/gates_composition.qn  |  Next: samples/learning/entanglement.qn
+
+fn copy_classical_bit(): Circuit<2, 2, 2, Clifford> = circuit {
+    X @0 |> CNOT @(0, 1)
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (data, anc) <- copy_classical_bit() @ qreg(2)
+    d <- measure(data)
+    a <- measure(anc)
+    return (d, a)
+    -- Expected: (1, 1) every shot. CNOT copied the known |1> onto the ancilla,
+    -- and the linear typechecker proved the ancilla was consumed, not leaked.
+}

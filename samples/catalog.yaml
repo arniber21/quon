@@ -37,6 +37,54 @@ entries:
     artifacts: []
     ci: smoke
 
+  - id: learning/hello-quon
+    path: samples/learning/hello_quon.qn
+    tags: [learning, tutorial, beginner, hello-world, x-gate, measurement]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: learning/states-measurement
+    path: samples/learning/states_measurement.qn
+    tags: [learning, tutorial, beginner, superposition, born-rule, hadamard, aer-verify]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: learning/gates-composition
+    path: samples/learning/gates_composition.qn
+    tags: [learning, tutorial, beginner, composition, parallel, depth]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: learning/linearity-borrow
+    path: samples/learning/linearity_borrow.qn
+    tags: [learning, tutorial, beginner, linearity, no-cloning, ancilla, cnot]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: learning/entanglement
+    path: samples/learning/entanglement.qn
+    tags: [learning, tutorial, beginner, entanglement, bell-state, correlation]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: learning/oracles-algorithms
+    path: samples/learning/oracles_algorithms.qn
+    tags: [learning, tutorial, beginner, oracle, phase-kickback, bernstein-vazirani, algorithm]
+    difficulty: beginner
+    quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
   - id: algorithms/ghz-state
     path: samples/algorithms/ghz_state.qn
     tags: [algorithms, entanglement, ghz, beginner]

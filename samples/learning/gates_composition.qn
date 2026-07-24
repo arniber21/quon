@@ -1,0 +1,40 @@
+-- Lesson 3 - Gates and composition: |> vs a parallel layer.
+-- Same four Hadamards, two ways to write them, two different depth bounds.
+--
+-- Sequential composition with `|>` chains gates one after another: depth *adds*.
+-- `seq_hadamards` applies H to qubits 0,1,2,3 in order, so its type carries
+-- depth 4 - even though the gates touch disjoint qubits. A parallel layer
+-- places gates on disjoint qubits in the *same* layer: depth takes the
+-- *maximum*, here 1. `parallel_hadamards` writes that layer with a `for` loop
+-- over the register's qubits; the elaborator unrolls it into four H placements
+-- the typechecker recognises as disjoint, proving depth 1.
+--
+-- The depth bound is the third number in the type - a *verified* upper bound,
+-- not a guess. Circuit<4, 4, 4, Clifford> vs Circuit<4, 4, 1, Clifford>: the
+-- latter is the typechecker's proof that all four gates fit one layer. If you
+-- wrote `|>` where you meant a parallel layer, the inferred depth would balloon
+-- and the declared bound would no longer hold - a DepthMismatch, caught before
+-- a single gate is lowered. (Quon also offers the declarative `par { c } * n`
+-- spelling of a parallel layer; see the Parallel composition language page.)
+--
+-- This program runs the depth-1 version and measures. Swap `parallel_hadamards`
+-- for `seq_hadamards` to run the same physics under a depth-4 type.
+-- Previous: samples/learning/states_measurement.qn  |  Next: samples/learning/linearity_borrow.qn
+
+fn seq_hadamards(): Circuit<4, 4, 4, Clifford> = circuit {
+    H @0 |> H @1 |> H @2 |> H @3
+}
+
+fn parallel_hadamards(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, q3) <- parallel_hadamards(4) @ qreg(4)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    b3 <- measure(q3)
+    return (b0, b1, b2, b3)
+    -- Expected: each bit ~50/50, independently. Four fair coins, one depth layer.
+}
