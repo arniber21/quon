@@ -19,6 +19,18 @@ export default defineConfig({
 						{ label: 'Your second program', slug: 'getting-started/second-program' },
 					],
 				},
+			{
+				label: 'Learning track',
+				items: [
+					{ label: 'Overview', slug: 'learn' },
+					{ label: '1 · Hello, Quon', slug: 'learn/01-hello-quon' },
+					{ label: '2 · States & measurement', slug: 'learn/02-states-measurement' },
+					{ label: '3 · Gates & composition', slug: 'learn/03-gates-composition' },
+					{ label: '4 · Linearity & ancilla', slug: 'learn/04-linearity-borrow' },
+					{ label: '5 · Entanglement', slug: 'learn/05-entanglement' },
+					{ label: '6 · Oracles & algorithms', slug: 'learn/06-oracles-algorithms' },
+				],
+			},
 				{
 					label: 'Why Quon',
 					items: [

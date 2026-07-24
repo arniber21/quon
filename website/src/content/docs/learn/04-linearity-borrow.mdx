@@ -1,0 +1,114 @@
+---
+title: "Lesson 4: Linearity & ancilla"
+description: Why a qubit cannot be copied, what an ancilla owes you, and how linear types turn no-cloning into a compile-time fact.
+---
+
+import { Card } from '@astrojs/starlight/components';
+
+So far we have said qubits are "linear" and that `measure` "consumes" one. This
+lesson makes that precise with the smallest program that exercises the
+discipline, and uses it to explain the no-cloning theorem as Quon sees it: not a
+physics footnote, but a **type error**.
+
+## Copying a *known* bit is fine; copying an *unknown* state is not
+
+The no-cloning theorem forbids copying an **unknown** quantum state. It does *not*
+forbid copying a **known** computational-basis value — and that is exactly what
+this program does:
+
+```qn
+fn copy_classical_bit(): Circuit<2, 2, 2, Clifford> = circuit {
+    X @0 |> CNOT @(0, 1)
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (data, anc) <- copy_classical_bit() @ qreg(2)
+    d <- measure(data)
+    a <- measure(anc)
+    return (d, a)
+}
+```
+
+Qubit 0 (`data`) is prepared in `|1⟩` with an `X` gate — a *known* basis
+state. A `CNOT @(0, 1)` then copies that bit onto qubit 1 (`anc`), the workspace
+("ancilla"). Measuring gives `(1, 1)` on every shot. This is legal because `|1⟩`
+is orthogonal to `|0⟩`; copying a basis state is just classical fan-out.
+
+The contrast to hold onto: replace `X @0` with `H @0` and the `CNOT` no longer
+copies — it **entangles** (Lesson 5). No-cloning is precisely the statement that
+the *superposition* case cannot be a copy, and the difference is encoded in
+which gate precedes the `CNOT`.
+
+## What "linear" means, concretely
+
+Every qubit in Quon lives in a **linear context** and must be **consumed exactly
+once**: passed to a gate, measured, returned, or discarded. The typechecker tracks
+each qubit by name and removes it from scope the moment it is used.
+
+In this program:
+
+- `qreg(2)` allocates `data` and `anc`, both live.
+- `copy_classical_bit() @ qreg(2)` consumes the register and produces two fresh
+  qubits, again `data` and `anc`.
+- `measure(data)` consumes `data`; `measure(anc)` consumes `anc`.
+- Both are gone before the `return`. The program compiles.
+
+Two mistakes the typechecker refuses:
+
+```qn
+-- Clone: the second `q` is unbound, the first already consumed it.
+fn clone(q: Qubit): (Qubit, Qubit) = let (q1, q2) = (q, q) in (q1, q2)
+```
+
+```qn
+-- Leak: q1 is still live at the return — an unmeasured qubit.
+fn leak(): Q<Bit> = run {
+    (q0, q1) <- copy_classical_bit() @ qreg(2)
+    b0 <- measure(q0)
+    return b0
+}
+```
+
+The first is no-cloning, caught as "linear resource `q` used twice." The second is
+a resource leak, caught as "linear resource `q1` not consumed." Both are **type
+errors** — caught before a single gate is lowered, not at run time. This is the
+same borrow-check reasoning Rust performs on a `&mut` reference; the parallel is
+structural, not metaphorical.
+
+## Ancilla discipline
+
+The ancilla `q1` here is allocated as part of `qreg(2)`, used by the `CNOT`, and
+consumed by `measure`. The linear typechecker guarantees it is *accounted for* —
+never leaked, never used twice. That is ancilla discipline in its simplest form:
+a workspace qubit must be measured (or explicitly discarded) before its scope
+ends, or the program does not compile.
+
+Quon also provides **`borrow` blocks** for *scoped* ancilla with a no-escape
+lifetime guarantee — a borrowed qubit cannot appear in the block's result, so it
+can never leak into the caller. The `borrow` construct is the natural home for
+temporary workspace; the [Borrow blocks](/language/borrow/) language page covers
+it in depth. This lesson uses the `qreg`-plus-`measure` form because it lowers
+concretely here, but the discipline it teaches — every qubit consumed exactly
+once — is the same.
+
+## Compile and run
+
+```sh
+./target/release/quonc samples/learning/linearity_borrow.qn --emit-qasm
+```
+
+The emitted circuit is `x q[0]; cx q[0], q[1];` plus two measurements — the
+classical copy, with both qubits accounted for.
+
+## Exercise
+
+Add a third qubit as a second ancilla: change the circuit to
+`X @0 |> CNOT @(0, 1) |> CNOT @(1, 2)` over a 3-qubit register, and measure all
+three. The linear typechecker will insist you measure the new ancilla too —
+forget it, and the program will not compile. You have just felt the type system
+enforcing ancilla discipline for you.
+
+<Card title="Next lesson" icon="right-arrow">
+  [Lesson 5: Entanglement](./05-entanglement/) — a Bell pair and a separable pair
+  measured in one shot.
+</Card>

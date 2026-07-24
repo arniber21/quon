@@ -1,0 +1,80 @@
+---
+title: Learning track
+description: A six-lesson progressive introduction to quantum computing through Quon's linear types and the Circuit/Q model — states, gates, entanglement, and algorithms.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+The learning track is a short, ordered path from "what is a Quon program?" to
+"recover a secret with a quantum oracle." Each lesson is one small `.qn` program
+under [`samples/learning/`](https://github.com/arniber21/quon/blob/main/samples/learning/)
+that you can read, compile, and edit without opening the language specification.
+The pages below teach the same material in prose, in order.
+
+The track is deliberately *Quon-native*. It does not teach a circuit-building API
+the way a Python framework would. It teaches quantum computing through the lens of
+Quon's two load-bearing ideas: a **circuit is a typed value** (`Circuit<n, m, d,
+C>`), and a **qubit is a linear value** that is consumed exactly once. Those two
+ideas — not a matrix library — are what let the compiler catch width mismatches,
+depth overruns, cloned qubits, and leaked ancillae *before* a single gate runs.
+
+## How to run the lessons
+
+Build the compiler once from the repository root:
+
+```sh
+cargo build --release -p quonc
+```
+
+Then compile any lesson to OpenQASM 3:
+
+```sh
+./target/release/quonc samples/learning/hello_quon.qn --emit-qasm
+```
+
+Every lesson compiles to a flat QASM program you can sample on any simulator. Two
+lessons ship a Python checker that runs the compiled program on Qiskit Aer and
+asserts the statistics.
+
+## The six lessons
+
+<CardGrid>
+  <Card title="1 · Hello, Quon" icon="rocket">
+    The smallest complete program: a typed circuit value, the Quantum Monad,
+    and measurement. Read the `Circuit<2, 2, 2, Clifford>` type before the gates.
+  </Card>
+  <Card title="2 · States & measurement" icon="set">
+    Computational basis versus superposition, and the Born rule — checked on
+    Aer. Why `measure` *consumes* a qubit and hands back a copyable `Bit`.
+  </Card>
+  <Card title="3 · Gates & composition" icon="list">
+    Sequential `|>` (depth adds) versus a parallel layer (depth = max). Depth as
+    a *verified* type-level bound, not an after-the-fact count.
+  </Card>
+  <Card title="4 · Linearity & ancilla" icon="lock">
+    Why a qubit cannot be copied, what an ancilla owes you, and how the linear
+    type system turns no-cloning into a compile-time fact.
+  </Card>
+  <Card title="5 · Entanglement" icon="link">
+    A Bell pair and a separable pair measured in one shot — correlation versus
+    independence made visible in the histogram.
+  </Card>
+  <Card title="6 · Oracles & algorithms" icon="wand">
+    The phase-kickback oracle seed that recovers a one-bit secret in a single
+    query — the on-ramp to the textbook algorithm pack.
+  </Card>
+</CardGrid>
+
+Read them in order. Each lesson links to the next, and the last hands off to the
+[algorithm samples](https://github.com/arniber21/quon/blob/main/samples/algorithms/)
+and the [cookbook](/cookbook/).
+
+## Where this sits in the docs
+
+This track is the beginner on-ramp. For the formal language concepts once you
+finish it, read the [Language guide](/language/introduction/) — it covers the
+same ground (circuits, linearity, parallel composition, depth, measurement,
+borrow) at reference depth. The [cookbook](/cookbook/) then walks complete
+end-to-end programs that the CI verifies on Aer.
+
+→ Start with [Lesson 1: Hello, Quon](./01-hello-quon/).

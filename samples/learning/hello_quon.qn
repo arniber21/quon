@@ -1,0 +1,31 @@
+-- Lesson 1 - Hello, Quon.
+-- The smallest complete program: allocate two qubits, flip them both to |1>,
+-- and measure. Nothing runs until you compile it; the circuit is a *value*
+-- with a *type* the compiler checks first.
+--
+-- Read the type before the gates. `prepare_ones` is a Circuit<2, 2, 2, Clifford>:
+--   2 qubits in, 2 out  - the circuit transforms a 2-qubit register, nothing more
+--   depth 2             - two gates, run one after the other (|> adds depth)
+--   Clifford            - only Clifford gates (X), so efficiently simulable
+--
+-- The `run` block is the Quantum Monad: it allocates real qubits with qreg(2),
+-- applies the circuit with `@` (consuming the register), and `measure` turns
+-- each qubit into a classical Bit. Because qubits are *linear*, you cannot
+-- forget to measure them - an unmeasured qubit is a type error, not a silent leak.
+--
+-- Try it:
+--   quonc samples/learning/hello_quon.qn --emit-qasm
+-- Then edit: change `X @1` to `H @1` and watch qubit 1 become random.
+-- Next lesson: samples/learning/states_measurement.qn
+
+fn prepare_ones(): Circuit<2, 2, 2, Clifford> = circuit {
+    X @0 |> X @1
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- prepare_ones() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+    -- Expected: (1, 1) on every shot. |0> --X--> |1>, deterministically.
+}

@@ -1,0 +1,127 @@
+---
+title: "Lesson 1: Hello, Quon"
+description: The smallest complete program — a typed circuit value, the Quantum Monad, and measurement. Read the type before the gates.
+---
+
+import { Card } from '@astrojs/starlight/components';
+
+Welcome to Quon. This lesson compiles a two-qubit program end to end and uses it
+to introduce the three things every Quon program is built from: a **typed circuit
+value**, the **Quantum Monad**, and **measurement**. By the end you will be able
+to read `Circuit<2, 2, 2, Clifford>` and say, from the type alone, how many
+qubits the program touches, how deep it is, and what class of gates it uses.
+
+## The whole program in one screen
+
+```qn
+fn prepare_ones(): Circuit<2, 2, 2, Clifford> = circuit {
+    X @0 |> X @1
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- prepare_ones() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+}
+```
+
+That is a complete, runnable program. Allocate two qubits, flip each to `|1⟩`
+with an `X` gate, measure both, and return the two classical bits. It compiles to
+a two-line OpenQASM program and measures `(1, 1)` on every shot.
+
+## A circuit is a value, not a side-effect
+
+In most quantum frameworks you build a circuit by calling functions that mutate a
+hidden global object — `circuit.x(0)`, `circuit.x(1)`. Quon rejects that.
+`prepare_ones` is a **function that returns a circuit**, and that circuit has a
+**type**:
+
+```
+Circuit<2, 2, 2, Clifford>
+```
+
+The type carries four pieces of information, and the compiler *checks* all four
+before a single gate is lowered:
+
+- **`2` qubits in, `2` out** — the circuit transforms a 2-qubit register into a
+  2-qubit register. Nothing is created or destroyed. Passing a 3-qubit register
+  where 2 are expected is a *type error*, caught at compile time.
+- **depth bound `2`** — the two gates run one after another. The `|>` operator is
+  sequential composition: depth *adds*. `X @0` has depth 1, `X @1` has depth 1,
+  so the composition has depth `1 + 1 = 2`. This is a *proved* upper bound, written
+  into the type.
+- **`Clifford`** — both `X` gates are Clifford gates, and the Clifford class is
+  closed under composition. The typechecker infers this bottom-up. It means the
+  circuit is efficiently classically simulable — a fact later lessons rely on.
+
+`@` is read "at": `X @0` is "X *at* qubit 0." Positions are compile-time integers
+checked against the circuit's width, so `X @5` inside a 2-qubit circuit would not
+compile.
+
+## The Quantum Monad: where qubits live
+
+The `circuit { }` block above is pure — it describes a transformation but touches
+no real qubits. Real qubits are allocated, applied to, and measured inside a
+separate `run { }` block, the **Quantum Monad** (`Q<...>`). This split is the
+language's most important boundary: the pure unitary side can be simplified with
+algebra, while the dynamic side handles allocation and measurement.
+
+```qn
+fn main(): Q<(Bit, Bit)> = run {
+    (q0, q1) <- prepare_ones() @ qreg(2)
+    b0       <- measure(q0)
+    b1       <- measure(q1)
+    return (b0, b1)
+}
+```
+
+- `qreg(2)` allocates two fresh qubits, both in `|0⟩`.
+- `prepare_ones() @ qreg(2)` **applies** the circuit to the register with the `@`
+  operator, *consuming* the register and producing two new qubits. The `<-`
+  binding then destructures them into `q0` and `q1`.
+- `measure(q0)` consumes the qubit and produces a classical `Bit`.
+
+Because qubits are **linear**, you cannot forget to measure them. An unmeasured
+qubit at the end of a `run` block is a *type error*, not a silent resource leak.
+We will make "linear" precise in Lesson 4; for now, notice that the program is
+compelled to account for both `q0` and `q1`.
+
+## Compile and run
+
+```sh
+./target/release/quonc samples/learning/hello_quon.qn --emit-qasm
+```
+
+The output is a flat OpenQASM 3 program:
+
+```text
+OPENQASM 3.0;
+include "stdgates.inc";
+qubit[2] q;
+bit[2] c;
+x q[0];
+x q[1];
+c[0] = measure q[0];
+c[1] = measure q[1];
+```
+
+Two `x` gates, two measurements — and the depth bound `2` from the source type is
+exactly what the emitted circuit respects. If an optimization pass reordered or
+expanded the circuit in a way that broke that contract, the compiler would catch
+it.
+
+## Exercises
+
+1. **Make a qubit random.** Change `X @1` to `H @1` (a Hadamard). Recompile and
+   sample on Aer — qubit 1 should now read `0` or `1` each about half the time,
+   while qubit 0 stays `1`. You have just written a superposition; Lesson 2
+   explains why.
+2. **Break the depth bound.** Try annotating the circuit as `Circuit<2, 2, 1,
+   Clifford>`. The typechecker should reject it — the true depth is 2, and the
+   bound is checked, not estimated.
+
+<Card title="Next lesson" icon="right-arrow">
+  [Lesson 2: States & measurement](./02-states-measurement/) — computational basis
+  versus superposition, and the Born rule checked on Aer.
+</Card>

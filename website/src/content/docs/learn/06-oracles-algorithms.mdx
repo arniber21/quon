@@ -1,0 +1,101 @@
+---
+title: "Lesson 6: Oracles & algorithms"
+description: The phase-kickback oracle seed that recovers a one-bit secret in a single query — the on-ramp to the textbook algorithm pack.
+---
+
+import { Card } from '@astrojs/starlight/components';
+
+You have now seen circuits, states, gates, linearity, and entanglement. The last
+lesson of the track introduces the idea that turns these primitives into
+*algorithms*: the **oracle**, and the trick that makes quantum oracles useful —
+**phase kickback**. The program is the smallest one that recovers a secret in a
+single quantum query.
+
+## The one-bit Bernstein–Vazirani seed
+
+An oracle is a circuit that encodes a function `f` into quantum gates. Here
+`f(x) = s · x (mod 2)` for a one-bit secret `s = 1`, and the oracle is a
+single `CNOT` from the query qubit to an ancilla held in `|−⟩ = H|1⟩`:
+
+```qn
+fn oracle_seed_s1(): Circuit<2, 2, 5, Clifford> = circuit {
+    X @1 |> H @0 |> H @1 |> CNOT @(0, 1) |> H @0
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (query, anc) <- oracle_seed_s1() @ qreg(2)
+    s           <- measure(query)
+    dontcare    <- measure(anc)
+    return (s, dontcare)
+}
+```
+
+Walk through the circuit:
+
+1. `X @1` sets the ancilla to `|1⟩`; `H @1` turns it into `|−⟩`.
+2. `H @0` puts the query qubit into `|+⟩`.
+3. `CNOT @(0, 1)` — with the ancilla in `|−⟩` (an eigenstate of the target
+   action) — kicks a *minus sign* back onto the query exactly when `x = 1`. That
+   is **phase kickback**: the function value `f(x)` is encoded as a *phase*, not a
+   bit.
+4. A final `H @0` converts that phase back into a computational-basis bit.
+5. Measuring the query yields `s = 1` **deterministically** — one query.
+
+The ancilla reads about `50/50` and carries no information about `s`; it is the
+*spent* workspace, measured only because the linear typechecker requires every
+qubit to be consumed (Lesson 4).
+
+The type `Circuit<2, 2, 5, Clifford>` records the structure: two qubits, depth
+`5` (five gates, sequential under `|>`), all Clifford — so the whole algorithm is
+efficiently simulable, and the depth and class are *proved* before any gate is
+emitted.
+
+## From one bit to an algorithm
+
+This is the one-qubit Bernstein–Vazirani seed. The full algorithms scale the *same
+idea* — more query qubits, more `CNOT`s (one per set bit of `s`), the same
+`H`-then-oracle-then-`H` sandwich:
+
+| Algorithm | Sample | What it adds |
+| --- | --- | --- |
+| Bernstein–Vazirani | [`samples/algorithms/`](https://github.com/arniber21/quon/blob/main/samples/algorithms/) — and the Aer-verified [`test/verify/bernstein_vazirani.qn`](https://github.com/arniber21/quon/blob/main/test/verify/bernstein_vazirani.qn) | an `n`-bit secret in one query |
+| Deutsch–Jozsa | [`samples/algorithms/deutsch_jozsa.qn`](https://github.com/arniber21/quon/blob/main/samples/algorithms/deutsch_jozsa.qn) | constant versus balanced, in one query |
+| Simon | [`samples/algorithms/simon.qn`](https://github.com/arniber21/quon/blob/main/samples/algorithms/simon.qn) | hidden-string recovery with `GF(2)` post-processing |
+| Phase estimation | [`samples/algorithms/phase_estimation.qn`](https://github.com/arniber21/quon/blob/main/samples/algorithms/phase_estimation.qn) | eigenvalue phase from one counting qubit |
+| Grover | [`test/verify/grover.qn`](https://github.com/arniber21/quon/blob/main/test/verify/grover.qn) | amplitude amplification, the exact `n = 2` case |
+
+Quon's contribution at this scale is that each oracle is a **typed value** — a
+`Circuit<...>` whose depth and Clifford class are part of the contract. You know,
+from the type alone, that Deutsch–Jozsa is entirely Clifford (hence classically
+efficient) before you look at a single gate.
+
+## Compile and run
+
+```sh
+./target/release/quonc samples/learning/oracles_algorithms.qn --emit-qasm
+./target/release/quonc samples/learning/oracles_algorithms.qn --emit-qasm \
+  | python python/quon_aer.py --shots 2048 --seed 7
+```
+
+The query bit `s` reads `1` on every shot; the ancilla wanders. One query
+recovered the secret.
+
+## Where to go next
+
+You have finished the track. Two natural continuations:
+
+- The **[Language guide](/language/introduction/)** revisits the concepts you just
+  met — circuits, linearity, parallel composition, depth, measurement, borrow —
+  at reference depth.
+- The **[Cookbook](/cookbook/)** walks complete, CI-verified programs that build
+  on these primitives: teleportation (feed-forward), Grover (parametric loops and
+  `repeat`), the QFT (recursion and value-dependent depth), and more. Start with
+  the [Bell state](/cookbook/bell/) recipe, which is the compiler's view of the
+  pair you measured in Lesson 5.
+
+<Card title="Track complete" icon="check">
+  You can now read a `Circuit<n, m, d, C>` type, explain why a qubit cannot be
+  copied, distinguish a parallel layer from a sequential chain by its depth bound,
+  and see phase kickback turn an oracle into an algorithm. The rest of the docs
+  deepen each of these.
+</Card>

@@ -1,0 +1,37 @@
+-- Lesson 6 - Oracles and algorithms: the phase-kickback seed.
+-- The smallest oracle program: recover a one-bit secret `s` in a single query.
+--
+-- An oracle is a circuit that encodes a function f into quantum gates. Here
+-- f(x) = s . x (mod 2) for s = 1: the oracle is a single CNOT from the query
+-- qubit to an ancilla held in |-> = H|1>. The trick is *phase kickback*: because
+-- the ancilla is an eigenstate of the CNOT's target action, the query picks up a
+-- minus sign exactly when x = 1, encoding f(x) as a phase. A final Hadamard
+-- converts that phase back into a computational-basis bit, so measuring the
+-- query yields s directly - one query, deterministic.
+--
+-- This is the one-qubit Bernstein-Vazirani seed. The full algorithms scale the
+-- same idea: more query qubits, more CNOTs (one per set bit of s), the same
+-- H-then-oracle-then-H sandwich. Quon's contribution is that each oracle is a
+-- *typed value* - Circuit<2, 2, 5, Clifford> here - whose depth (5) and Clifford
+-- class are proved before any gate is emitted.
+--
+-- Run it, then follow the hand-off to the full textbook algorithms:
+--   samples/algorithms/deutsch_jozsa.qn     - constant vs balanced in one query
+--   samples/algorithms/simon.qn             - hidden-string recovery over GF(2)
+--   samples/algorithms/phase_estimation.qn   - eigenvalue phase from one counting qubit
+-- and the Aer-verified fixtures test/verify/bernstein_vazirani.qn, test/verify/grover.qn.
+--   quonc samples/learning/oracles_algorithms.qn --emit-qasm
+-- Previous: samples/learning/entanglement.qn
+
+fn oracle_seed_s1(): Circuit<2, 2, 5, Clifford> = circuit {
+    X @1 |> H @0 |> H @1 |> CNOT @(0, 1) |> H @0
+}
+
+fn main(): Q<(Bit, Bit)> = run {
+    (query, anc) <- oracle_seed_s1() @ qreg(2)
+    s           <- measure(query)
+    dontcare    <- measure(anc)
+    return (s, dontcare)
+    -- Expected: s = 1 on every shot. One query recovered the 1-bit secret.
+    -- `dontcare` is the spent ancilla; it reads ~50/50 and carries no information.
+}

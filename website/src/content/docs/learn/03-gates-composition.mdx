@@ -1,0 +1,97 @@
+---
+title: "Lesson 3: Gates & composition"
+description: Sequential composition with |> adds depth; a parallel layer takes the maximum. Depth is a verified type-level bound.
+---
+
+import { Card } from '@astrojs/starlight/components';
+
+Lesson 2 used a single gate. Real circuits chain many. Quon has two ways to
+combine gates, and they differ in *one* crucial respect: how they count depth.
+This lesson runs the same four Hadamards both ways so you can see the difference
+written into the type.
+
+## The same gates, two depth bounds
+
+```qn
+fn seq_hadamards(): Circuit<4, 4, 4, Clifford> = circuit {
+    H @0 |> H @1 |> H @2 |> H @3
+}
+
+fn parallel_hadamards(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+```
+
+`seq_hadamards` composes four `H` gates with `|>`. The `|>` operator is
+**sequential composition**: "do this, then that." Its depth rule is *addition* —
+each gate is depth 1, so four of them give depth `1 + 1 + 1 + 1 = 4`. The type
+`Circuit<4, 4, 4, Clifford>` records that, even though the four gates act on
+*disjoint* qubits and could in principle run together.
+
+`parallel_hadamards` writes the same four `H` gates as a **parallel layer** with a
+`for` loop over the register's qubits. The elaborator unrolls the loop into four
+`H` placements on disjoint qubits, and the typechecker recognises them as
+parallel: the depth rule for a parallel layer is *maximum*, so the depth is
+`max(1, 1, 1, 1) = 1`. The type is `Circuit<4, 4, 1, Clifford>` — one depth layer.
+
+## Why depth lives in the type
+
+The depth bound is the **third** number in `Circuit<n, m, d, C>`. It is not a
+comment, a hint, or an after-the-fact `circuit.depth()` call. It is a **proved
+upper bound**: the typechecker computes the depth from the composition structure
+and checks it fits the declared bound, before any gate is lowered.
+
+That makes a wrong composition a *type error*. Suppose you meant a parallel layer
+but wrote `|>` by mistake. The inferred depth would balloon to `n`, the declared
+bound `1` would no longer hold, and the typechecker would reject the program with
+a `DepthMismatch` — naming the inferred and declared expressions and suggesting a
+fix. In an imperative circuit builder this mistake would be invisible until you
+profiled the result; in Quon the type signature itself betrays it.
+
+## `|>` versus a parallel layer, made concrete
+
+The program below runs the depth-`1` version and measures. Swap
+`parallel_hadamards` for `seq_hadamards` to run the *same physics* under a
+depth-`4` type — the measurement statistics are identical (four independent fair
+coins either way), but the depth bound the compiler proved changes from `1` to
+`4`.
+
+```qn
+fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, q3) <- parallel_hadamards(4) @ qreg(4)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    b3 <- measure(q3)
+    return (b0, b1, b2, b3)
+}
+```
+
+On hardware, depth is the primary cost: a deeper circuit decoheres more. By
+putting depth in the type, Quon makes that cost visible at the API boundary — a
+function returning `Circuit<8, 8, 1, Clifford>` is promising the caller a single
+parallel layer, and the compiler will not let you ship a depth-8 circuit under
+that promise.
+
+## A note on `par`
+
+Quon also offers a declarative spelling of a parallel layer, `par { c } * n`,
+which tensor-products one circuit `c` into an `n`-fold parallel composition (depth
+unchanged, widths multiplied). This lesson uses the `for q in qubits(n)` form
+because it elaborates and lowers concretely here; both express the same depth-`1`
+idea. The [Parallel composition](/language/parallel/) language page covers `par`
+in full, including the rule that `max`, not `+`, governs parallel depth.
+
+## Compile and run
+
+```sh
+./target/release/quonc samples/learning/gates_composition.qn --emit-qasm
+```
+
+The emitted QASM is four `h` gates followed by four measurements — a single
+parallel layer, exactly as the depth-`1` type promised.
+
+<Card title="Next lesson" icon="right-arrow">
+  [Lesson 4: Linearity & ancilla](./04-linearity-borrow/) — why a qubit cannot be
+  copied, and what an ancilla owes you.
+</Card>

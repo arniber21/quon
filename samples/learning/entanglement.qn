@@ -1,0 +1,38 @@
+-- Lesson 5 - Entanglement.
+-- Two pairs of qubits, measured in the same shot, to see what entanglement
+-- actually *does* to the statistics.
+--
+-- Pair (q0, q1) is entangled: H @0 then CNOT @(0,1) prepares a Bell state
+-- (1/sqrt(2))(|00> + |11>). Measuring it yields "00" or "11", never "01" or
+-- "10" - the two bits are perfectly correlated even though each is, on its
+-- own, a fair coin. That correlation *is* the entanglement.
+--
+-- Pair (q2, q3) is separable: each gets an independent H, so each is a fair
+-- coin on its own, with no correlation between them. Measuring it yields all
+-- of "00","01","10","11" about a quarter of the time each.
+--
+-- Same gate library (H, CNOT), opposite statistics. The CNOT is what makes the
+-- difference: on a computational-basis input it copies (Lesson 4); on a
+-- superposition input it entangles. The circuit type Circuit<4, 4, 4, Clifford>
+-- says four qubits, depth 4 (the four gates run sequentially under |>), all
+-- Clifford - so a stabilizer tableau can simulate this exactly.
+--
+-- Try it, then compare with the minimal Bell pair in
+-- samples/learning/hello_bell.qn and its n-qubit cousin samples/algorithms/ghz_state.qn:
+--   quonc samples/learning/entanglement.qn --emit-qasm
+-- Previous: samples/learning/linearity_borrow.qn  |  Next: samples/learning/oracles_algorithms.qn
+
+fn entangled_vs_separable(): Circuit<4, 4, 4, Clifford> = circuit {
+    H @0 |> CNOT @(0, 1) |> H @2 |> H @3
+}
+
+fn main(): Q<(Bit, Bit, Bit, Bit)> = run {
+    (q0, q1, q2, q3) <- entangled_vs_separable() @ qreg(4)
+    b0 <- measure(q0)
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    b3 <- measure(q3)
+    return (b0, b1, b2, b3)
+    -- Expected: (b0,b1) in {00,11} each ~50%; (b2,b3) in {00,01,10,11} each ~25%.
+    -- Correlation vs independence, in one histogram.
+}
