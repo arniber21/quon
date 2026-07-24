@@ -6,6 +6,7 @@
 
 pub mod compile;
 pub mod na_target;
+pub mod qasm;
 pub mod validation;
 pub mod watch;
 
@@ -14,6 +15,7 @@ pub use compile::{
     schedule_to_json, schedule_to_mlir,
 };
 pub use na_target::{NaBackendKind, parse_na_backend, parse_placer_mode};
+pub use qasm::{QasmError, QasmProgram, build_interaction_graph, parse, parse_to_graph};
 pub use validation::{
     Provenance, SampledEvidence, ValidationError, ValidationReport, fuse,
     validation_report_to_json, validation_report_to_markdown,
