@@ -505,6 +505,7 @@ mod tests {
                 coherence_time_us: 1500000.0,
             },
             error_model: None,
+            atom_loss_model: None,
             cost_model: NeutralAtomCostModel {
                 rydberg_stage_weight: 1.0,
                 movement_time_weight: 1.0,
@@ -565,6 +566,7 @@ mod tests {
                 atom_transfer: 0.999,
                 coherence_time_us: 1500000.0,
             },
+            atom_loss_model: None,
             error_model: None,
             cost_model: NeutralAtomCostModel {
                 rydberg_stage_weight: 1.0,

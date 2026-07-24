@@ -797,3 +797,96 @@ fn unknown_target_kind_is_rejected() {
         "got {err:?}"
     );
 }
+
+// --- Neutral-atom atom_loss_model (issue #310, Atomique Eqs. 1–2) -----------
+
+/// Insert an `atom_loss_model` object into a copy of the sample JSON.
+fn with_atom_loss_model(body: &str) -> String {
+    let mut value = neutral_sample_value();
+    value.as_object_mut().expect("object").insert(
+        "atom_loss_model".into(),
+        serde_json::from_str(body).expect("json"),
+    );
+    value.to_string()
+}
+
+#[test]
+fn neutral_atom_loss_model_is_optional() {
+    // generic_rna_v0.json carries no atom_loss_model (backward-compat): it
+    // still loads and the field is None.
+    let target = json::load(&workspace_path(
+        "../targets/neutral_atom/generic_rna_v0.json",
+    ))
+    .expect("load");
+    let na = target
+        .neutral_atom_target()
+        .expect("expected neutral atom target");
+    assert!(na.atom_loss_model.is_none());
+}
+
+#[test]
+fn neutral_atom_loss_model_loads_and_round_trips() {
+    let src = with_atom_loss_model(r#"{"heating_rate_per_um": 0.01, "loss_coeff": 0.5}"#);
+    let target = json::from_str(&src).expect("target with atom_loss_model loads");
+    let na = target.neutral_atom_target().expect("na");
+    let model = na
+        .atom_loss_model
+        .expect("atom_loss_model present after load");
+    assert_eq!(model.heating_rate_per_um, 0.01);
+    assert_eq!(model.loss_coeff, 0.5);
+
+    // Descriptor round-trip preserves the loss model.
+    let desc = target.to_descriptor();
+    let reloaded = backend::BackendTarget::try_from(desc).expect("descriptor → target");
+    let na2 = reloaded.neutral_atom_target().expect("na");
+    assert_eq!(na2.atom_loss_model, na.atom_loss_model);
+
+    // `to_descriptor` must not emit the key when the field is None.
+    let none_src = neutral_sample_json();
+    let none_target = json::from_str(&none_src).expect("load");
+    let serialized = serde_json::to_string(&none_target.to_descriptor()).expect("serialize");
+    assert!(
+        !serialized.contains("atom_loss_model"),
+        "None atom_loss_model must be skipped on serialize"
+    );
+}
+
+#[test]
+fn neutral_atom_loss_model_rejects_unknown_fields() {
+    let src = with_atom_loss_model(
+        r#"{"heating_rate_per_um": 0.01, "loss_coeff": 0.5, "cooling_rate": 0.2}"#,
+    );
+    let err = json::from_str(&src).unwrap_err();
+    // `deny_unknown_fields` rejects at serde-deserialize time → Json error,
+    // same as the error_model unknown-field test.
+    assert!(matches!(err, BackendError::Json(_)), "got {err:?}");
+    assert!(
+        err.to_string().contains("cooling_rate") || err.to_string().contains("unknown field"),
+        "got {err}"
+    );
+}
+
+#[test]
+fn neutral_atom_loss_model_rejects_missing_key() {
+    let src = with_atom_loss_model(r#"{"heating_rate_per_um": 0.01}"#);
+    let err = json::from_str(&src).unwrap_err();
+    assert!(matches!(err, BackendError::Json(_)), "got {err:?}");
+    assert!(
+        err.to_string().contains("loss_coeff") || err.to_string().contains("missing field"),
+        "got {err}"
+    );
+}
+
+#[test]
+fn neutral_atom_loss_model_rejects_negative() {
+    let src = with_atom_loss_model(r#"{"heating_rate_per_um": -0.01, "loss_coeff": 0.5}"#);
+    let err = json::from_str(&src).unwrap_err();
+    assert!(
+        matches!(err, BackendError::InvalidTargetConfig(_)),
+        "got {err:?}"
+    );
+    assert!(
+        err.to_string()
+            .contains("atom_loss_model.heating_rate_per_um")
+    );
+}

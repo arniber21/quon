@@ -709,6 +709,16 @@ fn finish_pipeline(
     // `gate_fidelity_product`/`estimated_fidelity` are `Some` on every
     // production report from this pipeline.
     let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
+    // Analytic per-atom movement-heating / atom-loss budget (issue #310,
+    // [Atomique] Eqs. (1)–(2)). Optional like `error_model`: attached only
+    // when the target carries `atom_loss_model`, else the section is omitted.
+    // Distance is measured against the zoned schedule's layout (the real
+    // √-law travel); `req.layout` is `None` only for non-zoned hand-built
+    // schedules, in which case the budget is emitted zeroed (observable).
+    let report = match na.atom_loss_model.as_ref() {
+        Some(model) => report.with_atom_loss_budget(&req.layers, req.layout.as_ref(), model),
+        None => report,
+    };
     let resource_report_us = elapsed_us(stage_started);
 
     let stats = NaStats {

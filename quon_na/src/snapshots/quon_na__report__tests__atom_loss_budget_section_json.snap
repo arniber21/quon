@@ -1,0 +1,54 @@
+---
+source: quon_na/src/report.rs
+expression: json
+---
+{
+  "evidence_kind": "analytic",
+  "evidence_disclaimer": "Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).",
+  "rydberg_stages": 0,
+  "rearrangement_steps": 3,
+  "rearrangement_time_us": 3,
+  "trap_transfers": 0,
+  "transfer_time_us": 0,
+  "entangle2_count": 0,
+  "entangle_n_count": 0,
+  "measurement_rounds": 0,
+  "reset_rounds": 0,
+  "wait_time_us": 0,
+  "total_time_us": 3,
+  "logical_qubits": 0,
+  "physical_atoms": 0,
+  "estimated_cycles": 3,
+  "bottleneck": "rearrangement",
+  "temporal_atom_metrics": {
+    "peak_atoms": 2,
+    "allocated_atoms_series": [
+      1,
+      1,
+      2
+    ],
+    "measurement_count": 0,
+    "reset_count": 0,
+    "reuse_count": 0,
+    "reused_ancilla_count": 0
+  },
+  "local_h_count": 0,
+  "local_rz_count": 0,
+  "local_u3_count": 0,
+  "local_gate_time_us": 0,
+  "global_ry_count": 0,
+  "global_ry_time_us": 0,
+  "atom_loss_budget": {
+    "per_atom_movement_um": {
+      "0": 8.0,
+      "1": 141.4213562373095
+    },
+    "per_atom_loss_probability": {
+      "0": 0.039210560847677,
+      "1": 0.50693130860476
+    },
+    "expected_atoms_lost": 0.546141869452437,
+    "heating_rate_per_um": 0.01,
+    "loss_coeff": 0.5
+  }
+}
