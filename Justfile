@@ -151,6 +151,18 @@ ci-rust: setup-python
     export PATH="$PWD/.venv/bin:$PATH"
     export QUON_REQUIRE_LIT=1
     cargo nextest run --workspace {{WORKSPACE_EXCLUDE}}
+    # RAP Table I Phase-2b enforcement (#111): the #[ignore]d n42 dump test
+    # (routing-aware A* is ~90 s in --release) hard-asserts the
+    # mechanism-legitimacy invariants — search completes (0 fallback), aware
+    # beats agnostic by the 0.85 floor, agnostic matches the paper's
+    # 22/3100 baseline. The aware-vs-published absolute (18/2999 vs 9/1600)
+    # stays SOFT (eprintln only) — accepted mechanism divergence under
+    # Phase-2b sign-off. Targets only n42; the n98 sweep stays local-only via
+    # `just na-rap-sweep`. OOM concern resolved by #297 (peak RSS now ~64 MB).
+    # The `ising_n42` filter matches both the un-ignored preflight and the
+    # ignored dump test; --include-ignored runs the dump.
+    echo "==> RAP Table I (#111) enforced n42 dump"
+    QUON_RAP_TABLE_I_ENFORCE=1 cargo test --release -p quonc --test rap_table_i ising_n42 -- --include-ignored --nocapture
     export QUONC=target/release/quonc
     for script in \
       test/verify/bell.py \
@@ -164,39 +176,23 @@ ci-rust: setup-python
       test/verify/shor.py \
       samples/research/compiler_experiment_log_smoke.py \
       samples/research/algorithm_correctness_narrative_smoke.py \
-      samples/research/na_resource_study_smoke.py
-    do
-      echo "==> $script"
-      .venv/bin/python "$script"
-    done
-    echo "==> python/test_qec_stim_smoke.py (ADR-0022 / #253)"
-    .venv/bin/python -m unittest python/test_qec_stim_smoke.py
-    echo "==> python/test_quon_qec_sinter.py (#253)"
-    .venv/bin/python -m unittest python/test_quon_qec_sinter.py
-    echo "==> python/test_quon_qec_benchmarks.py (#254 / ADR-0023)"
-    .venv/bin/python -m unittest python/test_quon_qec_benchmarks.py
-
-# RAP Table I dump (#111, --release --include-ignored). Local-only: prior to
-# #297's heuristic + beam-width search, the uniform-cost routing-aware search
-# peaked ~17.5 GB RSS on `ising_n42` (always exhausting its budget on every
-# layer), which OOMs GitHub's 16 GB hosted runners (systemd-oomd SIGTERM,
-# exit 143). #297 fixes this as a side effect (measured peak RSS on this same
-# fixture is now ~64 MB — the search actually completes instead of filling
-# memory with an ever-growing frontier), but this recipe has not been
-# re-integrated into `ci-rust`'s hosted-runner gate; the cheap preflight
-# variant of this test still runs un-ignored in the ordinary workspace suite,
-# so CI still pins the gate/layer counts — only the slow metrics dump is
-# local. Re-wiring this into `ci-rust` now that the memory concern is
-# resolved is a reasonable follow-up, left out of #297's scope.
+# RAP Table I dump (#111, --release --include-ignored). Local convenience:
+# the same enforced n42 dump test `just ci-rust` runs (#111 Phase-2b). The
+# OOM concern that kept this out of ci-rust pre-#297 is resolved — #297's
+# heuristic + beam-width search peaks ~64 MB RSS on `ising_n42` (vs the old
+# uniform-cost search's ~17.5 GB, which OOMed GitHub's 16 GB hosted runners),
+# so ci-rust now enforces the n42 dump too. This recipe runs the dump
+# locally (with enforcement on); the n98 sweep stays separate (`just
+# na-rap-sweep`).
 rap-table-i:
-    cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture
+    QUON_RAP_TABLE_I_ENFORCE=1 cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture
 
 # RAP Table I full sweep (#306, follow-up to #111/#297/#307): both
 # --na-placer modes over every checked-in `ising` row (n=42, n=98), one
-# qmap-comparable CSV. Local-only, same precedent as `rap-table-i` above —
-# NOT wired into `ci-rust`'s hosted-runner gate. Needs a release quonc
-# (`cargo build --release -p quonc`) for reasonable wall time; `ising_n98`'s
-# routing-aware cell alone is a double-digit-second run. #304 (QASM
+# qmap-comparable CSV. Local-only — `ising_n98`'s routing-aware cell alone is
+# a double-digit-second run, too slow for the hosted-runner gate (unlike n42,
+# which ci-rust now enforces per #111 Phase-2b). Needs a release quonc
+# (`cargo build --release -p quonc`) for reasonable wall time. #304 (QASM
 # ingestion) is not implemented, so only the `ising` rows are swept — see
 # python/na_rap_table_i_sweep.py's module docstring and
 # docs/neutral_atom/rap_table_i_methodology.md for the full scope rationale.

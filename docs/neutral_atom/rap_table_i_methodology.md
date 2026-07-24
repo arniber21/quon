@@ -16,15 +16,16 @@ below.
 | --- | --- | --- |
 | **1 (this doc / agent-implementable)** | Agent | Land the circuit, pinned target, this doc, and a metric **dump** test that records agnostic vs aware rearrangement steps/time without failing CI on mismatch. |
 | **2a (#297, agent-implementable)** | Agent | Implement [RAP]'s Eqs. (3)-(5) A* heuristic so the aware search actually completes instead of always falling back — see [Phase 2a status](#phase-2a-status-297-heuristic-search-closes-the-fallback-gap). Still does **not** flip the enforcement flag. |
-| **2b (human then enforce)** | Human sign-off, then agent | Review whether the Phase 2a numbers are a *mechanism-legitimate* reproduction (not just numerically close by accident) and whether the remaining gap to the paper's 9-step/1.6ms row is understood/acceptable. Only then flip on hard tolerance asserts (`QUON_RAP_TABLE_I_ENFORCE=1`, below). |
+| **2b (#111, done)** | Human sign-off ✅, then agent | Review whether the Phase 2a numbers are a *mechanism-legitimate* reproduction (not just numerically close by accident) and whether the remaining gap to the paper's 9-step/1.6ms row is understood/acceptable. Sign-off **given**: 18/2999 vs 9/1600 is a documented mechanism divergence, not a regression. Enforcement then wired to mechanism legitimacy — `QUON_RAP_TABLE_I_ENFORCE=1` is now set in `just ci-rust` (hard-asserts search-completion + improvement floor + agnostic-baseline; aware-absolute stays soft). See [Phase 2b status](#phase-2b-status-111-enforced-in-ci). |
 
-Phase 1 deliberately does not hard-assert against the published numbers. See
+Phase 1 deliberately did not hard-assert against the published numbers. See
 [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)
 for the original fallback finding, and
 [Phase 2a status](#phase-2a-status-297-heuristic-search-closes-the-fallback-gap)
-for what changed once the heuristic landed. `QUON_RAP_TABLE_I_ENFORCE` remains
-**unset by default** after #297 — Phase 2b's human sign-off has not happened
-yet.
+for what changed once the heuristic landed. As of Phase 2b (#111),
+`QUON_RAP_TABLE_I_ENFORCE=1` is **set in `just ci-rust`** — human sign-off is
+complete; the enforced invariants and the soft aware-absolute are documented in
+[Tolerances (Phase-2b enforcement)](#tolerances-phase-2b-enforcement--live-in-ci-as-of-111).
 
 ## Anchor row
 
@@ -41,8 +42,10 @@ group) is **optional / local only, not CI** — the fixture (`test/na/ising_n98.
 landed in #306, see [n = 98 (optional, local — landed by #306)](#n--98-optional-local--landed-by-306).
 #306 also adds a repeatable local sweep harness over both rows × both placer
 modes — see [Full sweep harness (#306)](#full-sweep-harness-306). Neither
-addition changes what's hard-asserted in CI (still just `ising_n42`'s
-structural pre-flight, per the locked Phase 1/2 split above).
+addition changes what's hard-asserted in CI for the `ising` rows
+(`ising_n42`'s structural pre-flight *plus* the Phase-2b enforced dump —
+search-completion / improvement floor / agnostic-baseline, per the split
+above; n98 stays dump-only local).
 
 ## Metric mapping
 
@@ -155,22 +158,25 @@ anchor's numbers. See
   ×-agnostic-over-aware ratio, aware search completed/fell-back status) to
   stdout, and:
   - **Hard, regardless of `QUON_RAP_TABLE_I_ENFORCE`** (structural — under
-    `just ci-rust`'s `set -euo pipefail` these are what actually gate CI, per
-    the #111 review): `entangle2_count == 82` and `rydberg_stages == 4` on
-    **both** placers (not just agnostic — closing the gap the fast
-    agnostic-only pre-flight test above deliberately leaves open), and the
+    `just ci-rust`'s `set -euo pipefail` these gate CI): `entangle2_count
+    == 82` and `rydberg_stages == 4` on **both** placers, and the
     routing-aware search's `aware_search_completed_layers` /
     `aware_search_fell_back_layers` diagnostic fields are present and
     internally consistent (agnostic reports `(0, 0)`; aware reports at least
-    one outcome). Prints a `FALLBACK` banner (not a failure — Phase 1 stays
-    soft on the *numeric* mismatch, see below) whenever
+    one outcome). Prints a `FALLBACK` banner whenever
     `aware_search_fell_back_layers > 0`.
-  - **Soft (`QUON_RAP_TABLE_I_ENFORCE` unset or not `1`):** never fails on a
-    numeric mismatch against the published row. Prints a `WARNING` banner
-    (not a failure) if aware is not at least as good as agnostic, since
-    [RAP]'s whole point is a meaningful aware improvement.
-  - **`QUON_RAP_TABLE_I_ENFORCE=1` (Phase 2, after human sign-off):** hard
-    tolerance asserts — see [Tolerances](#tolerances-for-phase-2-enforcement).
+  - **`QUON_RAP_TABLE_I_ENFORCE=1` (Phase 2b, enforced in `just ci-rust`
+    as of #111):** hard-asserts the mechanism-legitimacy invariants — see
+    [Tolerances (Phase-2b enforcement)](#tolerances-phase-2b-enforcement--live-in-ci-as-of-111).
+    Hard: `aware_search_fell_back_layers == 0` (search completes), agnostic
+    within ±2 steps / ±10% time of the paper (22 / 3100), and
+    `aware_steps ≤ 0.85 × agnostic_steps` (meaningful-improvement floor).
+  - **Soft (never asserted, even under the flag):** the aware-vs-published
+    *absolute* comparison (18/2999 vs 9/1600) — prints a SOFT WARNING citing
+    the documented mechanism divergence, but never fails the test. The aware
+    absolute is an accepted divergence under Phase-2b sign-off, not a
+    regression (see [Divergences from the paper's
+    numbers](#divergences-from-the-papers-numbers-post-297)).
 
 `quon_na/src/zoned.rs`'s `mod tests` additionally has
 `aware_search_completes_and_beats_greedy_on_contended_pairs` — a small
@@ -211,32 +217,30 @@ for that superseded measurement). Even at the improved speed this is still
 too slow for the default `cargo test --workspace` gate (which runs in debug
 mode, substantially slower again), so the dump test remains `#[ignore]`d.
 
-**Correction (#306 review — a prior draft of this section was stale/wrong):**
-the `just rap-table-i` recipe
-(`cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture`)
-is a **local-only convenience recipe** — checked directly against
-`Justfile` and `.github/workflows/ci.yml` while implementing #306, neither
-`ci-rust` nor any CI job actually invokes it. Only
-`ising_n42_preflight_gate_and_layer_counts` (the fast, un-ignored test) runs
-in CI today, as part of `cargo test --workspace` inside `ci-rust`'s `rust`
-job. So "n=42 in CI" currently means the *structural* 82/4 pre-flight only —
-the slower metric-dump comparison against the published 22/9 / 3.1/1.6ms row
-is **not** automatically re-run by CI; a human/agent must run `just
-rap-table-i` locally to regenerate it. Re-wiring the dump test into a CI job
-(the Justfile's own comment on `rap-table-i` already flags this as "a
-reasonable follow-up, left out of #297's scope") remains exactly that: an
-open follow-up, not something #306 changes. #306's own `na-rap-sweep` recipe
-(below) follows the *same* local-only precedent deliberately, for the same
-reason (wall time), not because CI wiring was judged unnecessary.
+**CI wiring (Phase 2b, as of #111):** the dump test is now enforced in
+`just ci-rust`. After `ci-rust`'s `cargo nextest run --workspace` step, it
+runs:
 
 ```bash
-# Local-only — NOT invoked by any CI job (see justfile's `rap-table-i` recipe
-# and the correction above)
-cargo test --release -p quonc --test rap_table_i -- --include-ignored --nocapture
-
-# Fast pre-flight only (part of the default gate)
-cargo test -p quonc --test rap_table_i preflight
+QUON_RAP_TABLE_I_ENFORCE=1 cargo test --release -p quonc --test rap_table_i ising_n42 \
+  -- --include-ignored --nocapture
 ```
+
+The `ising_n42` filter matches both the un-ignored preflight and the
+`#[ignore]`d dump test; `--include-ignored` runs the dump. This is the same
+`--release --include-ignored` pattern as `quon_lsp/tests/smoke.rs`. It targets
+only n42 — the n98 sweep stays local-only via `just na-rap-sweep`
+(`ising_n98`'s routing-aware cell is a double-digit-second run, too slow for
+the hosted-runner gate). The OOM concern that kept this out of ci-rust pre-#297
+(uniform-cost search peaked ~17.5 GB RSS, OOMing GitHub's 16 GB runners) is
+resolved by #297 (peak RSS now ~64 MB). The local `just rap-table-i` recipe
+runs the same enforced dump for iteration without the rest of ci-rust.
+
+Even at the improved post-#297 speed (routing-aware ≈ 2–12 s in `--release`),
+this is still too slow for the default debug-mode `cargo test --workspace`
+gate, so the dump test itself remains `#[ignore]`d — it is only the ci-rust
+release step above that opts into running it. The fast pre-flight runs
+un-ignored in the ordinary workspace suite regardless.
 
 ## Phase 1 finding: routing-aware falls back to greedy on this target/circuit pair
 
@@ -429,29 +433,79 @@ on this fixture now — but a human should read this section before deciding
 whether 18/2999 (vs. published 9/1600) counts as close enough to flip
 `QUON_RAP_TABLE_I_ENFORCE=1`, and at what tolerance.
 
-## Tolerances (for Phase 2 enforcement)
+## Tolerances (Phase-2b enforcement — live in CI as of #111)
 
-Locked decisions (implemented behind the enforce flag; **off by default** in
-Phase 1):
+Phase-2b human sign-off is **given** (see [Phase 2b status](#phase-2b-status-111-enforced-in-ci)
+below). The enforce flag `QUON_RAP_TABLE_I_ENFORCE=1` is now wired into
+`just ci-rust`, so these asserts run on every hosted-runner gate. The model is
+**mechanism legitimacy**, not the aware absolute number: the post-#297 aware
+result (18 steps / 2999 µs vs published 9 / 1600) is an accepted, documented
+divergence (see [Divergences from the paper's numbers](#divergences-from-the-papers-numbers-post-297)),
+so it is deliberately **not** hard-asserted against the paper.
 
-- **±2 steps** on each placer's `rearrangement_steps` vs its published value
-  (22 agnostic / 9 aware).
-- **±10%** on each placer's `rearrangement_time_us` vs its published value
-  (3.1 ms agnostic / 1.6 ms aware).
-- **Meaningful aware improvement**: aware must beat agnostic by a documented
-  relative floor (not just `<`), reflecting [RAP]'s reported −59% steps /
-  −49% time story. The exact floor wired today is whatever
-  `rap_table_i.rs` encodes; Phase 2 may revise it after human sign-off.
+**Hard asserts** (CI fails on drift; all pass at the post-#297 numbers):
 
-`QUON_RAP_TABLE_I_ENFORCE=1` is read by
-`ising_n42_dumps_both_placer_rearrangement_metrics`. The ±2 / ±10% / floor
-asserts are **already implemented** in that test — they are not stubs or
-no-ops. With the flag unset (CI default), those numeric asserts are skipped
-and only the dump + structural checks run. With the flag set to `1` today,
-the test **will hard-fail** on this fixture because routing-aware still falls
-back to greedy on every layer (23/23 steps, no paper delta) — see the finding
-above. Do **not** enable the flag in CI until Phase 2 human sign-off closes
-the mechanism gap (real A* / larger budget / tighter geometry / etc.).
+- **Structural** (hard regardless of the flag): both placers
+  `entangle2_count == 82`, `rydberg_stages == 4`; the aware-search
+  completed/fell-back diagnostics present and internally consistent.
+- **Search completes** (`aware_search_fell_back_layers == 0`): the #297
+  acceptance criterion. Falling back to greedy would make "routing-aware"
+  byte-for-byte indistinguishable from the routing-agnostic baseline — the
+  exact regression this gate exists to catch.
+- **Agnostic baseline matches the paper** (the faithful,
+  mechanism-complete baseline): `rearrangement_steps` within **±2** of
+  `PUBLISHED_AGNOSTIC_STEPS` (22); `rearrangement_time_us` within **±10%** of
+  `PUBLISHED_AGNOSTIC_TIME_US` (3100). (23 / 3049 passes.)
+- **Meaningful aware improvement floor**: `aware_steps ≤ 0.85 ×
+  agnostic_steps` (aware must beat agnostic by ≥15%). Locked at Phase-2b
+  sign-off — [RAP] reports −59%, this crate lands at 18/23 = −22%, which
+  passes (`18 ≤ 0.85 × 23 = 19.55`); a no-op tie (23/23 = 1.0) fails. The guard
+  is that aware *genuinely beats* agnostic, not that it hits the paper's
+  absolute.
+
+**Soft** (eprintln warning, **never asserted** even under the flag) — the
+aware-vs-published *absolute* comparison:
+
+- `aware_steps` within ±2 of `PUBLISHED_AWARE_STEPS` (9): 18 is outside
+  (gap +9) → prints a SOFT WARNING citing the documented divergence.
+- `aware_time_us` within ±10% of `PUBLISHED_AWARE_TIME_US` (1600): 2999 is
+  outside (87% rel err) → prints a SOFT WARNING citing the documented
+  divergence.
+
+The published constants (22 / 9 / 3100 / 1600) are **unchanged** — the
+aware-absolute gap is closed by soft-warning visibility, not by broadening a
+tolerance to force a pass. The aware-published gap is a *mechanism* divergence
+(this crate's search reassigns entanglement-zone placement only, not
+storage-zone; no Eq. (5) cross-layer look-ahead; beam width trades
+completeness for speed), not a regression — enforcing it would gate on the
+wrong thing.
+
+## Phase 2b status (#111: enforced in CI)
+
+Phase-2b human sign-off is **given**: the post-#297 aware numbers (18 steps /
+2999 µs vs published 9 / 1600) are a **mechanism-legitimate** reproduction of
+[RAP]'s routing-aware placer. The gap to the paper's row is a documented,
+understood divergence (see [Divergences from the paper's
+numbers](#divergences-from-the-papers-numbers-post-297)) — the search only
+reassigns entanglement-zone placement (not storage-zone), implements no Eq. (5)
+cross-layer look-ahead, and trades completeness for speed via a beam width. It
+is **not** a regression.
+
+Enforcement is therefore wired to reflect **mechanism legitimacy**, not the
+aware absolute. As of this change, `QUON_RAP_TABLE_I_ENFORCE=1` is set in
+`just ci-rust`'s release-mode n42 dump step, so CI fails on drift of:
+
+1. the structural pre-flight (82 gates / 4 layers on both placers),
+2. the search-completion invariant (`aware_search_fell_back_layers == 0`),
+3. the meaningful-aware-improvement floor (`aware_steps ≤ 0.85 × agnostic`),
+4. the agnostic-baseline match to the paper (±2 steps / ±10% time).
+
+The aware-vs-published *absolute* (18/2999 vs 9/1600) stays **soft** — an
+eprintln warning in CI logs, never an assert — because closing that gap
+further is a mechanism-completeness follow-up (storage-zone re-placement,
+Eq. (5) look-ahead, wider search), not something a CI tolerance can police
+honestly. See the [Tolerances](#tolerances-phase-2b-enforcement--live-in-ci-as-of-111)
+section above for the exact hard/soft split.
 
 ## n = 98 (optional, local — landed by #306)
 
