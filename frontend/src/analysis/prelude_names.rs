@@ -88,6 +88,9 @@ pub fn quantum_builtins() -> &'static [&'static str] {
         "measure_logical_z",
         "measure_logical_x",
         "logical_cx",
+        "logical_t",
+        "logical_tdag",
+        "logical_ccz",
     ]
 }
 

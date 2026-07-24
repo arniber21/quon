@@ -22,6 +22,12 @@ pub mod op {
     pub const MEMORY_ROUND: &str = "quantum.dynamic.qec_memory_round";
     pub const MEASURE_LOGICAL: &str = "quantum.dynamic.qec_measure_logical";
     pub const LOGICAL_CX: &str = "quantum.dynamic.qec_logical_cx";
+    /// Magic-state-consuming logical T (issue #283/#311).
+    pub const LOGICAL_T: &str = "quantum.dynamic.qec_logical_t";
+    /// Magic-state-consuming logical T† (issue #283/#311).
+    pub const LOGICAL_TDAG: &str = "quantum.dynamic.qec_logical_tdag";
+    /// Magic-state-consuming logical CCZ (issue #283/#311).
+    pub const LOGICAL_CCZ: &str = "quantum.dynamic.qec_logical_ccz";
 }
 
 /// Attribute names shared by QEC dynamic ops.
@@ -32,6 +38,10 @@ pub mod attr {
     pub const LOGICAL_ID: &str = "logical_id";
     pub const CONTROL_ID: &str = "control_id";
     pub const TARGET_ID: &str = "target_id";
+    /// CCZ operand/block ids (issue #283/#311).
+    pub const A_ID: &str = "a_id";
+    pub const B_ID: &str = "b_id";
+    pub const C_ID: &str = "c_id";
 }
 
 /// The MLIR type of a QEC block SSA value.
@@ -176,10 +186,12 @@ pub fn verify<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(),
         op::MEMORY_ROUND => verify_memory_round(operation),
         op::MEASURE_LOGICAL => verify_measure_logical(operation),
         op::LOGICAL_CX => verify_logical_cx(operation),
+        op::LOGICAL_T => verify_unary_magic(operation, op::LOGICAL_T),
+        op::LOGICAL_TDAG => verify_unary_magic(operation, op::LOGICAL_TDAG),
+        op::LOGICAL_CCZ => verify_logical_ccz(operation),
         _ => Ok(()),
     }
 }
-
 fn verify_construct<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
 ) -> Result<(), VerifyError> {
@@ -274,6 +286,36 @@ fn verify_logical_cx<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     expect_result_qec(operation, op::LOGICAL_CX, 1)?;
     let _ = require_i64_attr(operation, op::LOGICAL_CX, attr::CONTROL_ID)?;
     let _ = require_i64_attr(operation, op::LOGICAL_CX, attr::TARGET_ID)?;
+    Ok(())
+}
+
+/// Verifies a unary magic-state op (`qec_logical_t` / `qec_logical_tdag`):
+/// one QEC-block operand, one QEC-block result, a `logical_id` attribute.
+fn verify_unary_magic<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
+    operation: &O,
+    op: &'static str,
+) -> Result<(), VerifyError> {
+    expect_counts(operation, op, 1, 1)?;
+    expect_operand_qec(operation, op, 0)?;
+    expect_result_qec(operation, op, 0)?;
+    let _ = require_i64_attr(operation, op, attr::LOGICAL_ID)?;
+    Ok(())
+}
+
+/// Verifies `qec_logical_ccz`: three QEC-block operands/results and `a_id`/`b_id`/`c_id`.
+fn verify_logical_ccz<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
+    operation: &O,
+) -> Result<(), VerifyError> {
+    expect_counts(operation, op::LOGICAL_CCZ, 3, 3)?;
+    expect_operand_qec(operation, op::LOGICAL_CCZ, 0)?;
+    expect_operand_qec(operation, op::LOGICAL_CCZ, 1)?;
+    expect_operand_qec(operation, op::LOGICAL_CCZ, 2)?;
+    expect_result_qec(operation, op::LOGICAL_CCZ, 0)?;
+    expect_result_qec(operation, op::LOGICAL_CCZ, 1)?;
+    expect_result_qec(operation, op::LOGICAL_CCZ, 2)?;
+    let _ = require_i64_attr(operation, op::LOGICAL_CCZ, attr::A_ID)?;
+    let _ = require_i64_attr(operation, op::LOGICAL_CCZ, attr::B_ID)?;
+    let _ = require_i64_attr(operation, op::LOGICAL_CCZ, attr::C_ID)?;
     Ok(())
 }
 
@@ -383,11 +425,89 @@ pub fn qec_logical_cx<'c>(
     )
 }
 
+/// Builds `quantum.dynamic.qec_logical_t` (magic-state-consuming T, issue #283/#311).
+pub fn qec_logical_t<'c>(
+    context: &'c Context,
+    block: Value<'c, '_>,
+    logical_id: i64,
+    location: Location<'c>,
+) -> Result<Operation<'c>, BuildError> {
+    let block_ty = qec_block_type(context)?;
+    finish(
+        OperationBuilder::new(op::LOGICAL_T, location)
+            .add_operands(&[block])
+            .add_results(&[block_ty])
+            .add_attributes(&[(
+                Identifier::new(context, attr::LOGICAL_ID),
+                IntegerAttribute::new(i64_type(context), logical_id).into(),
+            )]),
+    )
+}
+
+/// Builds `quantum.dynamic.qec_logical_tdag` (magic-state-consuming T†, issue #283/#311).
+pub fn qec_logical_tdag<'c>(
+    context: &'c Context,
+    block: Value<'c, '_>,
+    logical_id: i64,
+    location: Location<'c>,
+) -> Result<Operation<'c>, BuildError> {
+    let block_ty = qec_block_type(context)?;
+    finish(
+        OperationBuilder::new(op::LOGICAL_TDAG, location)
+            .add_operands(&[block])
+            .add_results(&[block_ty])
+            .add_attributes(&[(
+                Identifier::new(context, attr::LOGICAL_ID),
+                IntegerAttribute::new(i64_type(context), logical_id).into(),
+            )]),
+    )
+}
+
+/// Builds `quantum.dynamic.qec_logical_ccz` (magic-state-consuming CCZ, issue #283/#311).
+#[allow(clippy::too_many_arguments)]
+pub fn qec_logical_ccz<'c>(
+    context: &'c Context,
+    a: Value<'c, '_>,
+    b: Value<'c, '_>,
+    c: Value<'c, '_>,
+    a_id: i64,
+    b_id: i64,
+    c_id: i64,
+    location: Location<'c>,
+) -> Result<Operation<'c>, BuildError> {
+    let block_ty = qec_block_type(context)?;
+    finish(
+        OperationBuilder::new(op::LOGICAL_CCZ, location)
+            .add_operands(&[a, b, c])
+            .add_results(&[block_ty, block_ty, block_ty])
+            .add_attributes(&[
+                (
+                    Identifier::new(context, attr::A_ID),
+                    IntegerAttribute::new(i64_type(context), a_id).into(),
+                ),
+                (
+                    Identifier::new(context, attr::B_ID),
+                    IntegerAttribute::new(i64_type(context), b_id).into(),
+                ),
+                (
+                    Identifier::new(context, attr::C_ID),
+                    IntegerAttribute::new(i64_type(context), c_id).into(),
+                ),
+            ]),
+    )
+}
+
 /// True when `name` is a QEC dynamic op.
 pub fn is_qec_op(name: &str) -> bool {
     matches!(
         name,
-        op::CONSTRUCT | op::MEMORY_ROUND | op::MEASURE_LOGICAL | op::LOGICAL_CX
+        op::CONSTRUCT
+            | op::MEMORY_ROUND
+            | op::MEASURE_LOGICAL
+            | op::LOGICAL_CX
+            | op::LOGICAL_T
+            | op::LOGICAL_TDAG
+            | op::LOGICAL_CCZ
     )
 }
 

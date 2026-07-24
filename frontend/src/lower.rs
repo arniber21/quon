@@ -695,6 +695,61 @@ impl<'c> LoweringCtx<'c> {
                             }
                             return Ok(results);
                         }
+                        "logical_t" if args.len() == 1 => {
+                            let block_val = single_value(self.eval(args[0], env)?)?;
+                            let logical_id = self.qec_id_of(block_val)?;
+                            let op = qec_dynamic::qec_logical_t(
+                                self.context,
+                                block_val,
+                                logical_id,
+                                self.location,
+                            )?;
+                            let results = self.append_dynamic_op(op, 1)?;
+                            if let Some(result) = results.first() {
+                                self.qec_logical_ids.insert(value_key(result), logical_id);
+                            }
+                            return Ok(results);
+                        }
+                        "logical_tdag" if args.len() == 1 => {
+                            let block_val = single_value(self.eval(args[0], env)?)?;
+                            let logical_id = self.qec_id_of(block_val)?;
+                            let op = qec_dynamic::qec_logical_tdag(
+                                self.context,
+                                block_val,
+                                logical_id,
+                                self.location,
+                            )?;
+                            let results = self.append_dynamic_op(op, 1)?;
+                            if let Some(result) = results.first() {
+                                self.qec_logical_ids.insert(value_key(result), logical_id);
+                            }
+                            return Ok(results);
+                        }
+                        "logical_ccz" if args.len() == 3 => {
+                            let a = single_value(self.eval(args[0], env)?)?;
+                            let b = single_value(self.eval(args[1], env)?)?;
+                            let c = single_value(self.eval(args[2], env)?)?;
+                            let a_id = self.qec_id_of(a)?;
+                            let b_id = self.qec_id_of(b)?;
+                            let c_id = self.qec_id_of(c)?;
+                            let op = qec_dynamic::qec_logical_ccz(
+                                self.context,
+                                a,
+                                b,
+                                c,
+                                a_id,
+                                b_id,
+                                c_id,
+                                self.location,
+                            )?;
+                            let results = self.append_dynamic_op(op, 3)?;
+                            if results.len() == 3 {
+                                self.qec_logical_ids.insert(value_key(&results[0]), a_id);
+                                self.qec_logical_ids.insert(value_key(&results[1]), b_id);
+                                self.qec_logical_ids.insert(value_key(&results[2]), c_id);
+                            }
+                            return Ok(results);
+                        }
                         _ => {}
                     }
                 }

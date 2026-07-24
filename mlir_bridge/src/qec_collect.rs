@@ -227,6 +227,64 @@ fn collect_op(
             bind_result(operation, 0, control_ssa, ssa_ids, &name)?;
             bind_result(operation, 1, target_ssa, ssa_ids, &name)?;
         }
+        op::LOGICAL_T | op::LOGICAL_TDAG => {
+            let ssa_id = resolve_ssa_id(operation, 0, &name, ssa_ids)?;
+            let attr_id = logical_id_from_i64(
+                qec_dynamic::read_i64_attr(&operation, attr::LOGICAL_ID).map_err(|e| {
+                    CollectError::InvalidOp {
+                        op: name.clone(),
+                        detail: e.to_string(),
+                    }
+                })?,
+                &name,
+            )?;
+            require_attr_matches_ssa(&name, attr_id, ssa_id)?;
+            if name == op::LOGICAL_T {
+                builder.logical_t(ssa_id)?;
+            } else {
+                builder.logical_tdag(ssa_id)?;
+            }
+            bind_result(operation, 0, ssa_id, ssa_ids, &name)?;
+        }
+        op::LOGICAL_CCZ => {
+            let a_ssa = resolve_ssa_id(operation, 0, &name, ssa_ids)?;
+            let b_ssa = resolve_ssa_id(operation, 1, &name, ssa_ids)?;
+            let c_ssa = resolve_ssa_id(operation, 2, &name, ssa_ids)?;
+            let a_attr = logical_id_from_i64(
+                qec_dynamic::read_i64_attr(&operation, attr::A_ID).map_err(|e| {
+                    CollectError::InvalidOp {
+                        op: name.clone(),
+                        detail: e.to_string(),
+                    }
+                })?,
+                &name,
+            )?;
+            let b_attr = logical_id_from_i64(
+                qec_dynamic::read_i64_attr(&operation, attr::B_ID).map_err(|e| {
+                    CollectError::InvalidOp {
+                        op: name.clone(),
+                        detail: e.to_string(),
+                    }
+                })?,
+                &name,
+            )?;
+            let c_attr = logical_id_from_i64(
+                qec_dynamic::read_i64_attr(&operation, attr::C_ID).map_err(|e| {
+                    CollectError::InvalidOp {
+                        op: name.clone(),
+                        detail: e.to_string(),
+                    }
+                })?,
+                &name,
+            )?;
+            require_attr_matches_ssa(&name, a_attr, a_ssa)?;
+            require_attr_matches_ssa(&name, b_attr, b_ssa)?;
+            require_attr_matches_ssa(&name, c_attr, c_ssa)?;
+            builder.logical_ccz(a_ssa, b_ssa, c_ssa)?;
+            bind_result(operation, 0, a_ssa, ssa_ids, &name)?;
+            bind_result(operation, 1, b_ssa, ssa_ids, &name)?;
+            bind_result(operation, 2, c_ssa, ssa_ids, &name)?;
+        }
         other if other.starts_with("quantum.dynamic.qec_") => {
             return Err(CollectError::InvalidOp {
                 op: name,
@@ -288,7 +346,9 @@ mod tests {
 
     use super::*;
     use crate::dialect::{qec_dynamic, quantum_dynamic};
-    use quon_qec::{CodeFamily, LogicalBasis, SourceFamily, WorkloadError, WorkloadOp};
+    use quon_qec::{
+        CodeFamily, LogicalBasis, LogicalQubitId, SourceFamily, WorkloadError, WorkloadOp,
+    };
 
     fn with_ctx<F>(f: F)
     where
@@ -551,6 +611,156 @@ mod tests {
             assert!(matches!(
                 err,
                 CollectError::Workload(WorkloadError::UseAfterMeasure(0))
+            ));
+        });
+    }
+
+    #[test]
+    fn collects_surface_logical_t_and_ccz_full_order() {
+        with_ctx(|context| {
+            let location = Location::unknown(context);
+            let module = melior::ir::Module::new(location);
+            let body = module.body();
+
+            let a = body.append_operation(
+                qec_dynamic::qec_construct(context, "surface", 3, "z", 0, location).expect("a"),
+            );
+            let b = body.append_operation(
+                qec_dynamic::qec_construct(context, "surface", 3, "z", 1, location).expect("b"),
+            );
+            let c = body.append_operation(
+                qec_dynamic::qec_construct(context, "surface", 3, "z", 2, location).expect("c"),
+            );
+            let a_v = Value::from(a.result(0).expect("a0"));
+            let b_v = Value::from(b.result(0).expect("b0"));
+            let c_v = Value::from(c.result(0).expect("c0"));
+            // logical_t consumes a magic state, returns the same block (stays live).
+            let t = body.append_operation(
+                qec_dynamic::qec_logical_t(context, a_v, 0, location).expect("t"),
+            );
+            let a_t = Value::from(t.result(0).expect("t0"));
+            // logical_ccz over three live surface blocks at equal distance.
+            let ccz = body.append_operation(
+                qec_dynamic::qec_logical_ccz(context, a_t, b_v, c_v, 0, 1, 2, location)
+                    .expect("ccz"),
+            );
+            let a2 = Value::from(ccz.result(0).expect("ccz0"));
+            let b2 = Value::from(ccz.result(1).expect("ccz1"));
+            let c2 = Value::from(ccz.result(2).expect("ccz2"));
+            body.append_operation(
+                qec_dynamic::qec_measure_logical(context, a2, "z", 0, location).expect("mza"),
+            );
+            body.append_operation(
+                qec_dynamic::qec_measure_logical(context, b2, "z", 1, location).expect("mzb"),
+            );
+            body.append_operation(
+                qec_dynamic::qec_measure_logical(context, c2, "z", 2, location).expect("mzc"),
+            );
+
+            let workload = collect_qec_workload(&module).expect("collect");
+            assert_eq!(workload.blocks.len(), 3);
+            assert_eq!(
+                workload.ops,
+                vec![
+                    WorkloadOp::Construct {
+                        family: SourceFamily::Surface,
+                        distance: 3,
+                        basis: LogicalBasis::Z,
+                        logical_id: LogicalQubitId(0),
+                    },
+                    WorkloadOp::Construct {
+                        family: SourceFamily::Surface,
+                        distance: 3,
+                        basis: LogicalBasis::Z,
+                        logical_id: LogicalQubitId(1),
+                    },
+                    WorkloadOp::Construct {
+                        family: SourceFamily::Surface,
+                        distance: 3,
+                        basis: LogicalBasis::Z,
+                        logical_id: LogicalQubitId(2),
+                    },
+                    WorkloadOp::LogicalT {
+                        logical_id: LogicalQubitId(0),
+                    },
+                    WorkloadOp::LogicalCcz {
+                        a: LogicalQubitId(0),
+                        b: LogicalQubitId(1),
+                        c: LogicalQubitId(2),
+                    },
+                    WorkloadOp::MeasureLogical {
+                        logical_id: LogicalQubitId(0),
+                        basis: LogicalBasis::Z,
+                    },
+                    WorkloadOp::MeasureLogical {
+                        logical_id: LogicalQubitId(1),
+                        basis: LogicalBasis::Z,
+                    },
+                    WorkloadOp::MeasureLogical {
+                        logical_id: LogicalQubitId(2),
+                        basis: LogicalBasis::Z,
+                    },
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn unsupported_logical_t_on_repetition_is_diagnostic() {
+        with_ctx(|context| {
+            let location = Location::unknown(context);
+            let module = melior::ir::Module::new(location);
+            let body = module.body();
+
+            let a = body.append_operation(
+                qec_dynamic::qec_construct(context, "repetition", 3, "z", 0, location)
+                    .expect("rep"),
+            );
+            let a_v = Value::from(a.result(0).expect("a0"));
+            body.append_operation(
+                qec_dynamic::qec_logical_t(context, a_v, 0, location).expect("t"),
+            );
+
+            let err = collect_qec_workload(&module).expect_err("should reject");
+            assert!(matches!(
+                err,
+                CollectError::Workload(WorkloadError::NonCliffordNotSurface {
+                    op: "logical_t",
+                    id: 0,
+                    family: "repetition",
+                })
+            ));
+        });
+    }
+
+    #[test]
+    fn unsupported_logical_ccz_distance_mismatch_is_diagnostic() {
+        with_ctx(|context| {
+            let location = Location::unknown(context);
+            let module = melior::ir::Module::new(location);
+            let body = module.body();
+
+            let a = body.append_operation(
+                qec_dynamic::qec_construct(context, "surface", 3, "z", 0, location).expect("a"),
+            );
+            let b = body.append_operation(
+                qec_dynamic::qec_construct(context, "surface", 5, "z", 1, location).expect("b"),
+            );
+            let c = body.append_operation(
+                qec_dynamic::qec_construct(context, "surface", 5, "z", 2, location).expect("c"),
+            );
+            let a_v = Value::from(a.result(0).expect("a0"));
+            let b_v = Value::from(b.result(0).expect("b0"));
+            let c_v = Value::from(c.result(0).expect("c0"));
+            body.append_operation(
+                qec_dynamic::qec_logical_ccz(context, a_v, b_v, c_v, 0, 1, 2, location)
+                    .expect("ccz"),
+            );
+
+            let err = collect_qec_workload(&module).expect_err("should reject");
+            assert!(matches!(
+                err,
+                CollectError::Workload(WorkloadError::LogicalCczDistanceMismatch)
             ));
         });
     }

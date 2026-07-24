@@ -180,6 +180,20 @@ pub enum TypeError {
         found: DepthExpr,
         span: SimpleSpan,
     },
+    /// A magic-state non-Clifford op (`logical_t` / `logical_tdag` / `logical_ccz`)
+    /// requires a surface-code block (issue #283/#311).
+    NonCliffordRequiresSurface {
+        op: &'static str,
+        family: crate::types::CodeFamilyTy,
+        span: SimpleSpan,
+    },
+    /// `logical_ccz` requires three surface-code blocks at equal distance (issue #283/#311).
+    NonCliffordDistanceMismatch {
+        op: &'static str,
+        expected: DepthExpr,
+        found: DepthExpr,
+        span: SimpleSpan,
+    },
     /// QEC constructor used without a distance type argument (`repetition_code<d>()`).
     QecCtorRequiresDistance {
         name: &'static str,
@@ -232,6 +246,8 @@ impl TypeError {
             | TypeError::UnknownCodeFamily { span, .. }
             | TypeError::LogicalCxRequiresSurface { span, .. }
             | TypeError::LogicalCxDistanceMismatch { span, .. }
+            | TypeError::NonCliffordRequiresSurface { span, .. }
+            | TypeError::NonCliffordDistanceMismatch { span, .. }
             | TypeError::QecCtorRequiresDistance { span, .. }
             | TypeError::NonLiteralQecDistance { span }
             | TypeError::Unsupported { span, .. } => *span,
@@ -274,6 +290,10 @@ impl TypeError {
             TypeError::UnknownCodeFamily { .. } => DiagnosticCode::QEC_UNKNOWN_FAMILY,
             TypeError::LogicalCxRequiresSurface { .. } => DiagnosticCode::QEC_LOGICAL_CX_FAMILY,
             TypeError::LogicalCxDistanceMismatch { .. } => DiagnosticCode::QEC_LOGICAL_CX_DISTANCE,
+            TypeError::NonCliffordRequiresSurface { .. } => DiagnosticCode::QEC_NONCLIFFORD_FAMILY,
+            TypeError::NonCliffordDistanceMismatch { .. } => {
+                DiagnosticCode::QEC_NONCLIFFORD_DISTANCE
+            }
             TypeError::QecCtorRequiresDistance { .. } => DiagnosticCode::QEC_CTOR_REQUIRES_DISTANCE,
             TypeError::NonLiteralQecDistance { .. } => DiagnosticCode::QEC_NON_LITERAL_DISTANCE,
             TypeError::Unsupported { .. } => DiagnosticCode::UNSUPPORTED_QUANTUM,
@@ -480,6 +500,20 @@ impl fmt::Display for TypeError {
             } => write!(
                 f,
                 "`logical_cx` requires equal distances; expected `{expected}`, found `{found}`"
+            ),
+            TypeError::NonCliffordRequiresSurface { op, family, .. } => write!(
+                f,
+                "`{op}` requires a surface-code block; found family `{family}`"
+            ),
+            TypeError::NonCliffordDistanceMismatch {
+                op,
+                expected,
+                found,
+                ..
+            } => write!(
+                f,
+                "`{op}` requires surface-code blocks at equal distance; \
+                 expected `{expected}`, found `{found}`"
             ),
             TypeError::QecCtorRequiresDistance { name, .. } => write!(
                 f,

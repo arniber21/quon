@@ -179,6 +179,23 @@ pub fn lookup(name: &str) -> Option<Scheme> {
                 )
             },
         },
+        "logical_t" | "logical_tdag" => Scheme {
+            vars: &[],
+            body: {
+                let block = qec(CodeFamilyTy::Surface, "d");
+                func(block.clone(), q(block))
+            },
+        },
+        "logical_ccz" => Scheme {
+            vars: &[],
+            body: {
+                let block = qec(CodeFamilyTy::Surface, "d");
+                curry(
+                    vec![block.clone(), block.clone(), block.clone()],
+                    q(tuple(vec![block.clone(), block.clone(), block])),
+                )
+            },
+        },
 
         // ── §5.11 Physics constants ─────────────────────────────────────────
         "PI" | "TAU" | "E" => Scheme::mono(Ty::Float),
