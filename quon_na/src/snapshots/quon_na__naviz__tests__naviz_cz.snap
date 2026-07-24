@@ -1,0 +1,12 @@
+---
+source: quon_na/src/naviz.rs
+expression: out
+---
+#target demo
+
+atom (0, 0) atom0
+atom (12, 0) atom1
+
+@+ [
+	cz { atom0, atom1 }
+]

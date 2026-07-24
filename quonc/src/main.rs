@@ -42,6 +42,10 @@ Examples:
   quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
     --emit-na-schedule --emit-na-graph --emit-resource-report
 
+  # MQT NAViz interop (#303): .naviz instructions + sibling .namachine
+  quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
+    --emit-naviz /tmp/ghz.naviz
+
   # Compiler statistics: per-stage wall times, search diagnostics, config
   # echo (#307) — a separate artifact from --emit-resource-report
   quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
@@ -169,6 +173,13 @@ struct Cli {
         help_heading = "Emit"
     )]
     emit_na_stats: Option<String>,
+
+    /// Emit MQT NAViz interop artifacts: a `.naviz` instruction file plus a
+    /// sibling `.namachine` (zones, SLM traps, rydberg range) for rendering in
+    /// the MQT NAViz visualizer (#303). Requires a filesystem PATH (writes two
+    /// sibling files); stdout is not supported.
+    #[arg(long, value_name = "PATH", help_heading = "Emit")]
+    emit_naviz: Option<PathBuf>,
 
     /// Emit QEC experiment JSON + sibling structure-level `.stim` (ADR-0018)
     #[arg(long, value_name = "PATH", help_heading = "Emit")]
@@ -614,14 +625,15 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
         || cli.emit_na_graph.is_some()
         || cli.emit_resource_report.is_some()
         || cli.emit_na_stats.is_some()
+        || cli.emit_naviz.is_some()
         || cli.emit_qec_experiment.is_some()
         || cli.emit_qec_validation.is_some())
         && !is_na
     {
         bail!(
             "--emit-na-mlir / --emit-na-schedule / --emit-na-graph / --emit-resource-report / \
-             --emit-na-stats / --emit-qec-experiment / --emit-qec-validation require a \
-             neutral_atom_reconfigurable target (see targets/neutral_atom/)"
+             --emit-na-stats / --emit-naviz / --emit-qec-experiment / --emit-qec-validation \
+             require a neutral_atom_reconfigurable target (see targets/neutral_atom/)"
         );
     }
     if cli.verify_na && !is_na {
@@ -644,6 +656,14 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
         bail!(
             "--emit-qec-validation requires a filesystem PATH (writes JSON report + sibling \
              .md and separate QEC / sampled primaries); stdout is not supported"
+        );
+    }
+    if let Some(path) = &cli.emit_naviz
+        && path.as_os_str() == "-"
+    {
+        bail!(
+            "--emit-naviz requires a filesystem PATH (writes .naviz + sibling .namachine); \
+             stdout dual-emit is not supported"
         );
     }
     Ok(())
@@ -768,6 +788,33 @@ fn emit_artifacts(
         emitted = true;
     }
 
+    if let Some(path) = &cli.emit_naviz {
+        let layers = report.na_schedule.as_ref().ok_or_else(|| {
+            anyhow!("no neutral-atom schedule available (compile with a neutral-atom target)")
+        })?;
+        let layout = report.na_layout.as_ref().ok_or_else(|| {
+            anyhow!("no neutral-atom layout available (compile with a neutral-atom target)")
+        })?;
+        let na = match &request.target.kind {
+            TargetKind::NeutralAtomReconfigurable(na) => na,
+            _ => bail!(
+                "--emit-naviz requires a neutral_atom_reconfigurable target \
+                 (see targets/neutral_atom/)"
+            ),
+        };
+        // NAViz machine id = the sibling .namachine file-name stem.
+        let machine_id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| anyhow!("--emit-naviz requires a file path with a stem"))?;
+        let namachine_path = path.with_extension("namachine");
+        let naviz = quon_na::naviz::schedule_to_naviz(layers, layout, machine_id);
+        let namachine = quon_na::naviz::target_to_namachine(na, layout, &request.target.id);
+        write_atomic(path, &naviz)?;
+        write_atomic(&namachine_path, &namachine)?;
+        emitted = true;
+    }
+
     if let Some(json_path) = &cli.emit_qec_experiment {
         emit_qec_experiment_artifacts(request, report, json_path)?;
         emitted = true;
@@ -791,8 +838,8 @@ fn emit_artifacts(
                     "{dim}(compiled successfully for neutral-atom target `{id}`; \
                      pass --emit-na-mlir for quantum.na MLIR, or \
                      --emit-na-schedule / --emit-na-graph / --emit-resource-report / \
-                     --emit-na-stats / --emit-qec-experiment / --emit-qec-validation for debug / \
-                     QEC evaluation artifacts){dim:#}"
+                     --emit-na-stats / --emit-naviz / --emit-qec-experiment / \
+                     --emit-qec-validation for debug / QEC evaluation artifacts){dim:#}"
                 );
             }
             id => {

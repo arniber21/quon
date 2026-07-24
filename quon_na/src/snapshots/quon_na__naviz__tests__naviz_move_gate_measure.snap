@@ -1,0 +1,18 @@
+---
+source: quon_na/src/naviz.rs
+expression: out
+---
+#target demo
+
+atom (0, 0) atom0
+atom (12, 0) atom1
+
+@+ [
+	load (0, 0) atom0
+	move (24, 0) atom0
+	rz 1.570796 atom1
+]
+// [cycle 1] measure atom0 (Z)
+@+ [
+	cz { atom0, atom1 }
+]

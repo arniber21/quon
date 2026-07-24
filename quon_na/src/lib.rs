@@ -51,6 +51,7 @@ pub mod matching;
 pub mod movement;
 #[cfg(feature = "mlir")]
 pub mod native_gate_decomp;
+pub mod naviz;
 pub mod pipeline;
 pub mod placement;
 pub mod plan;

@@ -125,6 +125,24 @@ quonc program.qn \
   --emit-na-stats stats.json
 ```
 
+
+### `--emit-naviz <PATH>`
+
+Emit [MQT NAViz](https://github.com/munich-quantum-toolkit/naviz) interop
+artifacts (issue #303): a `.naviz` instruction file plus a sibling `.namachine`
+(zones, SLM traps, rydberg range) for rendering the atom shuttling animation in
+the NAViz visualizer. Requires a `neutral_atom_reconfigurable` target and a
+filesystem `PATH` (writes two sibling files; stdout is not supported). See the
+[NAViz visualization guide](/guides/naviz-visualization/) for the rendering
+workflow.
+
+```bash
+quonc program.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-naviz /tmp/program.naviz
+# writes /tmp/program.naviz and /tmp/program.namachine
+```
+
 ### `--emit-qec-experiment <PATH>`
 
 Dual-emit the QEC experiment artifact from one `quon_qec` workload IR pass

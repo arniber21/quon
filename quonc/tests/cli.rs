@@ -75,6 +75,7 @@ fn help_lists_all_documented_flags() {
         "--emit-na-graph",
         "--emit-resource-report",
         "--emit-qec-experiment",
+        "--emit-naviz",
         "--resource-report-format",
         "--target",
         "--print-target",
