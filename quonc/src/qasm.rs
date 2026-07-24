@@ -1026,11 +1026,14 @@ pub fn build_interaction_graph(
         let qubits: Vec<LogicalQubitId> = gate
             .operands
             .iter()
-            .map(|(reg, idx)| {
-                let off = *offset.get(reg).expect("declared register");
-                LogicalQubitId(off + idx)
+            .map(|(reg, idx)| match offset.get(reg) {
+                Some(&off) => Ok(LogicalQubitId(off + idx)),
+                None => Err(QasmError::UnknownRegister {
+                    line: gate.line,
+                    reg: reg.clone(),
+                }),
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         if qubits.len() == 1 {
             let qubit = qubits[0];
