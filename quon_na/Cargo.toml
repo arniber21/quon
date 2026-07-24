@@ -14,6 +14,10 @@ default = ["mlir"]
 # --no-default-features --features flux` (nightly).
 flux = ["dep:flux-rs", "backend/flux", "quon_qec/flux"]
 mlir = ["dep:melior", "dep:mlir_bridge"]
+# Opt-in exact SMT solver (issue #302): z3-backed optimal placement + state-prep
+# scheduling. Mirrors frontend's `analyze` optional-z3 pattern (ADR-0038): the
+# default build never links z3, so the stable workspace is unaffected.
+solver = ["dep:z3"]
 
 [dependencies]
 backend     = { path = "../backend" }
@@ -25,6 +29,7 @@ quon_qec    = { path = "../quon_qec" }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 thiserror   = { workspace = true }
+z3          = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta    = { workspace = true }

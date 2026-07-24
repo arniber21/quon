@@ -70,6 +70,27 @@ fn schedule_expanded(
     let pipeline_started = Instant::now();
     let mut stage_acc = QecStageAccumulator::default();
 
+    // Issue #302 Deliverable A exceed hook: when `--na-state-prep exact` is
+    // requested, QEC logical-zero prep (e.g. Steane, surface d=3) can request
+    // optimal CZ-pair scheduling. The exact solver is invoked per CNOT phase
+    // inside `schedule_cnot_phase` via `plan_backend`; this logs the request.
+    #[cfg(feature = "solver")]
+    if opts.state_prep == crate::pipeline::StatePrepMode::Exact {
+        eprintln!(
+            "[quon_na] exact state-prep scheduling requested for QEC workload \
+             (blocks={}, memory_rounds={})",
+            expanded.blocks.len(),
+            expanded.memory_round_count()
+        );
+    }
+    #[cfg(not(feature = "solver"))]
+    if opts.state_prep == crate::pipeline::StatePrepMode::Exact {
+        eprintln!(
+            "[quon_na] exact state-prep scheduling requires the `solver` feature, \
+             using heuristic"
+        );
+    }
+
     let mut all_layers: Vec<ScheduleLayer> = Vec::new();
     let mut combined_interactions: Vec<Interaction<AtomVertexId>> = Vec::new();
     let mut combined_segments: Vec<InteractionSegment> = Vec::new();
@@ -199,6 +220,10 @@ fn schedule_expanded(
     // mandatory, so this always applies once a target is available.
     let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
     let report = report.with_agnostic_placer_mechanism(stage_acc.agnostic_placer_mechanism);
+    let report = match stage_acc.schedule_optimality {
+        Some(optimality) => report.with_schedule_optimality(optimality),
+        None => report,
+    };
     let resource_report_us = elapsed_us(stage_started);
 
     let req = project_request_to_logical(req);

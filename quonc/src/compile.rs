@@ -61,6 +61,9 @@ pub struct CompileRequest {
     pub na_compact: bool,
     /// Flat AOD placement strategy (ignored unless `na_backend` is flat).
     pub na_placement: PlacementStrategy,
+    /// State-preparation scheduling mode (issue #302): `Heuristic` (default)
+    /// or `Exact` (SMT-optimal, requires `solver` feature).
+    pub na_state_prep: quon_na::pipeline::StatePrepMode,
 }
 
 impl Default for CompileRequest {
@@ -80,6 +83,7 @@ impl Default for CompileRequest {
             na_placer: PlacerMode::RoutingAgnostic,
             na_compact: true,
             na_placement: PlacementStrategy::RowMajor,
+            na_state_prep: quon_na::pipeline::StatePrepMode::Heuristic,
         }
     }
 }
@@ -234,6 +238,7 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 compact: request.na_compact,
                 placement: request.na_placement,
                 dump_ir: request.dump_ir,
+                state_prep: request.na_state_prep,
                 ..Default::default()
             };
             // ADR-0016 / #248: QEC-backed entrypoints expand via workload IR;

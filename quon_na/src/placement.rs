@@ -38,6 +38,11 @@ pub enum PlacementStrategy {
     /// Agglomerative clustering on gate-frequency weights, then packed row bands
     /// (Atomique MAX-k-Cut–inspired, adapted to spatial proximity).
     InteractionClustering,
+    /// SMT-optimal placement via z3 (issue #302, Deliverable B). Requires the
+    /// `solver` feature; the exact encoding lives in [`crate::exact::placement`].
+    /// Falls back to [`PlacementStrategy::InteractionClustering`] with a logged
+    /// optimality gap when the `solver` feature is off or z3 times out.
+    Exact,
 }
 
 /// Result of [`place`]: filled request plus score metadata.
@@ -69,6 +74,11 @@ pub enum PlacementError<V = LogicalQubitId> {
     InvalidBindings,
     #[error("layout is missing a binding for vertex {0:?}")]
     MissingBinding(V),
+    /// Exact SMT placement failed (z3 returned infeasible or no model).
+    /// Requires the `solver` feature; the caller should fall back to a
+    /// heuristic strategy.
+    #[error("exact placement solver failed: {0}")]
+    ExactSolverFailed(String),
 }
 
 /// Place qubits onto a square-ish SLM grid and fill `req.layout`.
@@ -81,6 +91,38 @@ pub fn place<V: VertexId>(
     req.graph.validate()?;
     if req.graph.vertices.is_empty() {
         return Err(PlacementError::EmptyGraph);
+    }
+
+    // Exact placement dispatches to the z3 solver (issue #302). When the
+    // `solver` feature is off, fall back to InteractionClustering so the
+    // build never fails — the caller's report will label it heuristic.
+    #[cfg(feature = "solver")]
+    if strategy == PlacementStrategy::Exact {
+        let params = crate::exact::placement::ExactPlacementParams::default();
+        match crate::exact::placement::place_exact(&req.graph, params) {
+            Ok(exact) => {
+                let mut result = exact.result;
+                result.request.layers = std::mem::take(&mut req.layers);
+                return Ok(result);
+            }
+            Err(msg) => {
+                // z3 failed outright (infeasible / no model): fall back to
+                // the best heuristic with a logged warning.
+                eprintln!(
+                    "[quon_na] exact placement solver failed ({msg}), \
+                     falling back to interaction_clustering"
+                );
+                return place(req, PlacementStrategy::InteractionClustering);
+            }
+        }
+    }
+    #[cfg(not(feature = "solver"))]
+    if strategy == PlacementStrategy::Exact {
+        eprintln!(
+            "[quon_na] exact placement requires the `solver` feature, \
+             falling back to interaction_clustering"
+        );
+        return place(req, PlacementStrategy::InteractionClustering);
     }
 
     let layout = build_layout(&req.graph, strategy)?;
@@ -126,8 +168,9 @@ fn build_layout<V: VertexId>(
     let site_order = match strategy {
         PlacementStrategy::RowMajor => row_major_sites(rows, cols),
         PlacementStrategy::DegreeBased => spiral_sites(rows, cols),
-        PlacementStrategy::InteractionClustering => {
-            // Clustering chooses qubit order; sites stay row-major bands via ordered qubits.
+        PlacementStrategy::InteractionClustering | PlacementStrategy::Exact => {
+            // Exact is handled in `place()` before reaching here; if we do
+            // arrive, fall back to the clustering site order.
             row_major_sites(rows, cols)
         }
     };
@@ -140,6 +183,7 @@ fn build_layout<V: VertexId>(
         }
         PlacementStrategy::DegreeBased => order_by_weighted_degree(graph),
         PlacementStrategy::InteractionClustering => order_by_clustering(graph, cols),
+        PlacementStrategy::Exact => order_by_clustering(graph, cols),
     };
 
     debug_assert_eq!(qubit_order.len(), site_order.len().min(n));

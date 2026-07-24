@@ -65,6 +65,18 @@ pub enum NaBackendKind {
     FlatAod,
 }
 
+/// State-preparation scheduling mode (issue #302, Deliverable A).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatePrepMode {
+    /// Heuristic zoned/flat scheduler (default).
+    #[default]
+    Heuristic,
+    /// Exact SMT state-prep scheduling via z3 (requires `solver` feature).
+    /// Falls back to heuristic with a logged optimality gap on timeout.
+    Exact,
+}
+
 /// Options for the NA schedule pipeline.
 #[derive(Clone, Copy, Debug)]
 pub struct NaScheduleOptions {
@@ -78,8 +90,12 @@ pub struct NaScheduleOptions {
     /// (issue #297). Ignored otherwise. A per-run option (not a target JSON
     /// field) — see [`AwareSearchParams`]'s doc for why.
     pub aware_search: AwareSearchParams,
+    /// State-preparation scheduling mode (issue #302, Deliverable A).
+    /// `Heuristic` (default) uses the standard zoned/flat scheduler;
+    /// `Exact` uses the z3-backed exact state-prep scheduler when the
+    /// `solver` feature is enabled, falling back to heuristic on timeout.
+    pub state_prep: StatePrepMode,
 }
-
 impl Default for NaScheduleOptions {
     fn default() -> Self {
         Self {
@@ -89,6 +105,7 @@ impl Default for NaScheduleOptions {
             placement: PlacementStrategy::RowMajor,
             dump_ir: false,
             aware_search: AwareSearchParams::default(),
+            state_prep: StatePrepMode::default(),
         }
     }
 }
@@ -578,6 +595,7 @@ fn finish_pipeline(
     let movement_us = backend_info.movement_us;
     let placer_mode = backend_info.placer_mode;
     let placement_strategy = backend_info.placement_strategy;
+    let schedule_optimality = backend_info.schedule_optimality;
 
     let mut compaction_config = CompactionConfig {
         requested: opts.compact,
@@ -616,6 +634,10 @@ fn finish_pipeline(
     let report = build_resource_report(&req.layers, None, Some(logical_qubits.max(1)))?;
     let report = match aware_search_status {
         Some((completed, fell_back)) => report.with_aware_search_status(completed, fell_back),
+        None => report,
+    };
+    let report = match schedule_optimality {
+        Some(optimality) => report.with_schedule_optimality(optimality),
         None => report,
     };
     let report = report.with_agnostic_placer_mechanism(agnostic_placer_mechanism);
