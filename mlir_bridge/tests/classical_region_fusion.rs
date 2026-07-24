@@ -2,6 +2,7 @@
 
 mod support;
 
+use melior::ir::operation::OperationLike;
 use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike, Value};
 
 use mlir_bridge::dialect::quantum_circ as qc;
@@ -210,4 +211,64 @@ fn does_not_fuse_when_second_condition_depends_on_first() {
 
     classical_region_fusion::run_on_module(&context, &module);
     assert_eq!(count_ifs(&module), 2);
+}
+
+/// Counts `quantum.dynamic.if` ops that are direct children of the module body
+/// — i.e. the classical/quantum boundary crossings. Nested `if`s inside a
+/// region are not counted.
+fn count_top_level_ifs(module: &Module<'_>) -> usize {
+    let body = module.body();
+    let mut op = body.first_operation();
+    let mut count = 0;
+    while let Some(current) = op {
+        let name = current
+            .name()
+            .as_string_ref()
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        if name == qd::op::IF {
+            count += 1;
+        }
+        op = current.next_in_block();
+    }
+    count
+}
+
+#[test]
+fn fuses_adjacent_ifs_on_disjoint_qubits_with_independent_conditions() {
+    // Issue #97: two `if`s on *different*, independent condition bits with
+    // disjoint target qubits fuse via the nested-if shape. Each condition is
+    // its own measurement (neither bit is produced by the other's body), so the
+    // pair is independent and eligible for fusion.
+    let context = dynamic_context();
+    let location = Location::unknown(&context);
+    let module = Module::new(location);
+    let body = module.body();
+
+    let m0 = append_foreign_qubit(&context, &body, location);
+    let m1 = append_foreign_qubit(&context, &body, location);
+    let q0 = append_foreign_qubit(&context, &body, location);
+    let q1 = append_foreign_qubit(&context, &body, location);
+    let measure0 = body.append_operation(qd::measure(&context, m0, location).unwrap());
+    let b1 = Value::from(measure0.result(0).unwrap());
+    let measure1 = body.append_operation(qd::measure(&context, m1, location).unwrap());
+    let b2 = Value::from(measure1.result(0).unwrap());
+
+    append_if(&context, &body, b1, q0, Some("X"), None, location);
+    append_if(&context, &body, b2, q1, Some("Z"), None, location);
+
+    classical_region_fusion::run_on_module(&context, &module);
+    let text = module.as_operation().to_string();
+
+    // Exactly one top-level `if` remains: the outer fused `if`. The
+    // classical/quantum boundary-crossing count drops from two to one.
+    assert_eq!(count_top_level_ifs(&module), 1, "{text}");
+    // The nested-if shape adds one inner `if` per outer branch (both branches
+    // need it to keep all four condition combinations reachable), so three
+    // `if`s in total — but only the outer one is a boundary crossing.
+    assert_eq!(count_ifs(&module), 3, "{text}");
+    // Both correction bodies survive, each guarded by its own condition.
+    assert!(text.contains("gate_name = \"X\""), "{text}");
+    assert!(text.contains("gate_name = \"Z\""), "{text}");
 }
