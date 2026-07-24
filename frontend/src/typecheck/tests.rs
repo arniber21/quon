@@ -1853,3 +1853,107 @@ fn qec_let_bound_special_builtin_rejected_clearly() {
         }
     ));
 }
+
+#[test]
+fn qec_logical_t_surface_compiles() {
+    accepts_run(
+        "fn main(): Q<Bit> = run {
+           a <- surface_code<3>()
+           a <- memory_round(a)
+           a <- logical_t(a)
+           a <- memory_round(a)
+           measure_logical_z(a)
+         }",
+    );
+}
+
+#[test]
+fn qec_logical_tdag_surface_compiles() {
+    accepts_run(
+        "fn main(): Q<Bit> = run {
+           a <- surface_code<3>()
+           a <- memory_round(a)
+           a <- logical_tdag(a)
+           measure_logical_z(a)
+         }",
+    );
+}
+
+#[test]
+fn qec_logical_ccz_surface_same_d_compiles() {
+    accepts_run(
+        "fn main(): Q<Bit> = run {
+           a <- surface_code<3>()
+           b <- surface_code<3>()
+           c <- surface_code<3>()
+           (a2, b2, c2) <- logical_ccz(a, b, c)
+           _ <- measure_logical_z(a2)
+           _ <- measure_logical_z(b2)
+           measure_logical_z(c2)
+         }",
+    );
+}
+
+#[test]
+fn qec_logical_t_requires_surface() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               a <- repetition_code<3>()
+               a <- logical_t(a)
+               measure_logical_z(a)
+             }"
+        ),
+        TypeError::NonCliffordRequiresSurface { op, .. } if op == "logical_t"
+    ));
+}
+
+#[test]
+fn qec_logical_tdag_requires_surface() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               a <- repetition_code<3>()
+               a <- logical_tdag(a)
+               measure_logical_z(a)
+             }"
+        ),
+        TypeError::NonCliffordRequiresSurface { op, .. } if op == "logical_tdag"
+    ));
+}
+
+#[test]
+fn qec_logical_ccz_requires_surface() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               a <- repetition_code<3>()
+               b <- surface_code<3>()
+               c <- surface_code<3>()
+               (a2, b2, c2) <- logical_ccz(a, b, c)
+               _ <- measure_logical_z(a2)
+               _ <- measure_logical_z(b2)
+               measure_logical_z(c2)
+             }"
+        ),
+        TypeError::NonCliffordRequiresSurface { op, .. } if op == "logical_ccz"
+    ));
+}
+
+#[test]
+fn qec_logical_ccz_distance_mismatch() {
+    assert!(matches!(
+        reject_run_err(
+            "fn main(): Q<Bit> = run {
+               a <- surface_code<3>()
+               b <- surface_code<5>()
+               c <- surface_code<5>()
+               (a2, b2, c2) <- logical_ccz(a, b, c)
+               _ <- measure_logical_z(a2)
+               _ <- measure_logical_z(b2)
+               measure_logical_z(c2)
+             }"
+        ),
+        TypeError::NonCliffordDistanceMismatch { op, .. } if op == "logical_ccz"
+    ));
+}

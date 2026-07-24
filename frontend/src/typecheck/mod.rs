@@ -706,7 +706,13 @@ impl TypeChecker {
             // with a clear diagnostic rather than a later opaque mismatch on the lying scheme.
             if matches!(
                 name,
-                "memory_round" | "measure_logical_z" | "measure_logical_x" | "logical_cx"
+                "memory_round"
+                    | "measure_logical_z"
+                    | "measure_logical_x"
+                    | "logical_cx"
+                    | "logical_t"
+                    | "logical_tdag"
+                    | "logical_ccz"
             ) {
                 return Err(TypeError::Unsupported {
                     construct: "let-bound QEC builtin",
@@ -963,6 +969,15 @@ impl TypeChecker {
                 }
                 ("logical_cx", 2) => {
                     return self.synth_logical_cx(env, delta, args[0], args[1], span);
+                }
+                ("logical_t", 1) => {
+                    return self.synth_logical_t(env, delta, args[0], span);
+                }
+                ("logical_tdag", 1) => {
+                    return self.synth_logical_tdag(env, delta, args[0], span);
+                }
+                ("logical_ccz", 3) => {
+                    return self.synth_logical_ccz(env, delta, args[0], args[1], args[2], span);
                 }
                 _ => {}
             }
@@ -1654,6 +1669,114 @@ impl TypeChecker {
         Ok(Ty::Q(Box::new(Ty::Tuple(vec![block.clone(), block]))))
     }
 
+    /// Synthesize `logical_t(block) : QecBlock<Surface, d> -> Q<QecBlock<Surface, d>>`.
+    ///
+    /// Magic-state-consuming T: surface-code only, the block stays live (issue
+    /// #283/#311). Mirrors the surface-only constraint of `quon_qec`'s
+    /// `WorkloadBuilder::logical_t`.
+    fn synth_logical_t(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        arg: &Sp<Expr>,
+        span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        self.synth_unary_magic("logical_t", env, delta, arg, span)
+    }
+
+    /// Synthesize `logical_tdag(block) : QecBlock<Surface, d> -> Q<QecBlock<Surface, d>>`.
+    fn synth_logical_tdag(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        arg: &Sp<Expr>,
+        span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        self.synth_unary_magic("logical_tdag", env, delta, arg, span)
+    }
+
+    /// Shared surface-only check for the unary magic-state ops (T / T†).
+    fn synth_unary_magic(
+        &mut self,
+        op: &'static str,
+        env: &Env,
+        delta: &mut Delta,
+        arg: &Sp<Expr>,
+        span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        let ty = self.synth(env, delta, arg)?;
+        let (family, distance) = match self.table.resolve(&ty) {
+            Ty::QecBlock { family, distance } => (family, distance),
+            other => {
+                return Err(TypeError::Mismatch {
+                    expected: Ty::QecBlock {
+                        family: CodeFamilyTy::Surface,
+                        distance: DepthExpr::Var("d".into()),
+                    },
+                    found: other,
+                    span: arg.1,
+                });
+            }
+        };
+        if family != CodeFamilyTy::Surface {
+            return Err(TypeError::NonCliffordRequiresSurface { op, family, span });
+        }
+        Ok(Ty::Q(Box::new(Ty::QecBlock { family, distance })))
+    }
+
+    /// Synthesize `logical_ccz(a, b, c)` over three surface-code blocks at equal
+    /// distance, returning `Q<(QecBlock<Surface, d>, QecBlock<Surface, d>,
+    /// QecBlock<Surface, d>)>`. Mirrors `WorkloadBuilder::logical_ccz`.
+    fn synth_logical_ccz(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        a: &Sp<Expr>,
+        b: &Sp<Expr>,
+        c: &Sp<Expr>,
+        span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        let mut blocks: Vec<Ty> = Vec::with_capacity(3);
+        let mut common: Option<DepthExpr> = None;
+        for arg in [a, b, c] {
+            let ty = self.synth(env, delta, arg)?;
+            let (family, distance) = match self.table.resolve(&ty) {
+                Ty::QecBlock { family, distance } => (family, distance),
+                other => {
+                    return Err(TypeError::Mismatch {
+                        expected: Ty::QecBlock {
+                            family: CodeFamilyTy::Surface,
+                            distance: DepthExpr::Var("d".into()),
+                        },
+                        found: other,
+                        span: arg.1,
+                    });
+                }
+            };
+            if family != CodeFamilyTy::Surface {
+                return Err(TypeError::NonCliffordRequiresSurface {
+                    op: "logical_ccz",
+                    family,
+                    span: arg.1,
+                });
+            }
+            if let Some(prev) = &common {
+                if !prev.equiv(&distance) {
+                    return Err(TypeError::NonCliffordDistanceMismatch {
+                        op: "logical_ccz",
+                        expected: prev.clone(),
+                        found: distance,
+                        span,
+                    });
+                }
+            } else {
+                common = Some(distance.clone());
+            }
+            blocks.push(Ty::QecBlock { family, distance });
+        }
+        Ok(Ty::Q(Box::new(Ty::Tuple(blocks))))
+    }
+
     fn synth_kinded_app(
         &mut self,
         env: &Env,
@@ -1921,7 +2044,8 @@ fn scan_qec_usage(expr: &Sp<Expr>, has_qec: &mut bool, has_bare: &mut bool) {
     match &expr.0 {
         Expr::Var(n) => match n.as_str() {
             "repetition_code" | "surface_code" | "surface_code_x" | "memory_round"
-            | "measure_logical_z" | "measure_logical_x" | "logical_cx" => *has_qec = true,
+            | "measure_logical_z" | "measure_logical_x" | "logical_cx" | "logical_t"
+            | "logical_tdag" | "logical_ccz" => *has_qec = true,
             "qreg" | "qubit" | "init_one" | "init_plus" | "measure" | "measure_x" | "measure_y"
             | "measure_all" | "destructure" | "split" | "reset" | "discard" => *has_bare = true,
             _ => {}
