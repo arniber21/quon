@@ -55,8 +55,8 @@ On `bell.qn` (2 qubits, 1 `CNOT`), both backends succeed:
 
 | Backend | Estimated cycles | Rearrangement steps | Trap transfers | Bottleneck |
 | --- | ---: | ---: | ---: | --- |
-| `zoned` (default) | 9 | 1 | 4 | rearrangement |
-| `flat` | 6 | 0 | 0 | rydberg |
+| `zoned` (default) | 10 | 1 | 4 | rearrangement |
+| `flat` | 7 | 0 | 0 | mixed |
 
 (Issue #298: `H @0`'s Z-Y-Z decomposition into a local `rz` + a global `ry`
 raster now contributes real schedule layers — previously it was silently
@@ -66,8 +66,20 @@ not a bare raster: every *other* trapped atom (here, qubit 1) gets a local
 `Rz(pi)`/`Rz(-pi)` echo pair around the raster's second half, which provably
 nets to identity for it — a bare raster would otherwise have also rotated
 it, since every atom is bound into the trap array from schedule start (see
-`quon_na::pipeline::push_global_ry_with_refocus`). Rearrangement/transfer/
-bottleneck are unaffected: none of this needs a site placement.)
+`quon_na::pipeline::push_global_ry_with_refocus`). Rearrangement/transfer are
+unaffected: none of this needs a site placement.)
+
+`bell.qn`'s terminal `measure_all` adds one more cycle on top of the #298
+numbers above (9 -> 10 zoned, 6 -> 7 flat): `quantum.dynamic.measure` was
+extracted but never lowered into a schedule action at all — every NA
+resource report showed `measurement_rounds: 0` regardless of the source
+program, and the ~1500us readout never entered `total_time_us`. Fixed: the
+terminal measurement is its own final layer (both atoms measured in the
+same cycle, since the bare-qubit NA path has no mid-circuit feed-forward).
+On the `flat` backend this flips `bottleneck` from `rydberg` to `mixed`: the
+readout now dominates `total_time_us`, and the bottleneck heuristic reads
+that as a genuine tie by count rather than the old, measurement-blind
+`rydberg` reading.
 
 `zoned` moves qubit 0 into a dedicated entanglement zone before the Rydberg
 pulse; `flat` entangles the two atoms in place on the row-major storage
@@ -104,10 +116,15 @@ quonc --target targets/neutral_atom/generic_rna_v0.json --na-backend zoned \
 
 | Sample | Placer | Estimated cycles | Rearrangement steps | Trap transfers | Total time (µs) |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `qaoa_graph.qn` (dense, 3-regular graph) | `routing-agnostic` (default) | 80 | 8 | 22 | 1686 |
-| `qaoa_graph.qn` | `routing-aware` | 83 | 9 | 24 | 1742 |
-| `ising.qn` (nearest-neighbor chain) | `routing-agnostic` (default) | 48 | 9 | 20 | 2217 |
-| `ising.qn` | `routing-aware` | 48 | 9 | 20 | 2217 |
+| `qaoa_graph.qn` (dense, 3-regular graph) | `routing-agnostic` (default) | 81 | 8 | 22 | 3186 |
+| `qaoa_graph.qn` | `routing-aware` | 84 | 9 | 24 | 3242 |
+| `ising.qn` (nearest-neighbor chain) | `routing-agnostic` (default) | 49 | 9 | 20 | 3717 |
+| `ising.qn` | `routing-aware` | 49 | 9 | 20 | 3717 |
+
+(Every row above is +1 cycle / +1500us over the #297 numbers for the same
+reason as the `bell.qn` terminal-measurement fix described above: both
+programs end in `measure_all`, which used to be dropped before it ever
+reached the schedule.)
 
 (Issue #298: both programs apply per-qubit `H`/`Rx` rotations
 (`qaoa_graph.qn`'s `hadamard_all`/`mixer_4`; `ising.qn`'s `x_layer`) that
@@ -144,7 +161,7 @@ walkthrough is drawn from.
 This is the honest result, not a cherry-picked one: at this small size,
 `routing-aware` is not a strict win over `routing-agnostic` on either
 graph — on the chain the two modes now produce *identical* metrics across
-the board, including total time (2217 µs both). That is not a silent
+the board, including total time (3717 µs both). That is not a silent
 fallback to the agnostic planner: both runs report `na_placer: routing_aware`
 in their schedule metadata and take the aware code path, and (verifiable via
 `--emit-na-stats`) the aware search genuinely completes every layer rather
@@ -152,10 +169,12 @@ than exhausting its budget — it's a real search that, on this small,
 low-contention circuit, converges on the same joint-optimal placement
 distance-minimizing greedy already finds. On the denser MaxCut graph,
 `routing-aware` still uses one more rearrangement step and 2 more trap
-transfers than agnostic, but 1742 µs total time is now *lower* than the
+transfers than agnostic, but its post-#297 total time was *lower* than the
 1764 µs a mismatched (pre-#297) cost model used to report for the same step
 count — the guided search finds a shorter-travel placement within that
-group structure. This aligns with the #111/#297 story: the comparison is
+group structure (3242 µs vs. 3186 µs today includes the +1500us terminal-
+measurement fix described above on top of that #297 delta). This aligns
+with the #111/#297 story: the comparison is
 about *when* aware placement pays off (denser, larger interaction graphs —
 see the RAP Table I reproduction on the 42-qubit `ising_n42` fixture in
 `docs/neutral_atom/rap_table_i_methodology.md`, where aware now beats
@@ -198,13 +217,18 @@ schedule a Pauli-frame correction gate conditioned on the outcome. True
 feed-forward control flow on the NA path is future work, not claimed here.
 (`test/na/syndrome_round_toy.qn` — the toy CI fixture this story used to
 fork into `samples/` — does not actually help demonstrate this: its
-program measures three qubits only *after* all entangling layers, and its
-NA schedule reports `measurement_rounds: 0` because none of those terminal
-measurements are lowered into a scheduled action at all. Forking it into a
-second `samples/neutral-atom/*.qn` copy would have restated that same
-non-claim under a "dynamic circuit" label it doesn't earn — which is why
-this pack points the dynamic-circuit story at the QEC memory circuit's real
-mid-circuit schedule instead.)
+program measures three qubits only *after* all entangling layers, so its
+NA schedule reports a single terminal `measurement_rounds: 1` covering all
+three atoms at once, not the genuine per-round interleaving
+`repetition_d3_memory.qn` shows above. (An earlier version of this pack's
+NA pipeline did not lower terminal measurement into a scheduled action at
+all, so this fixture used to report `measurement_rounds: 0` outright — that
+gap is now fixed, but the fixture still only ever measures once, at the
+end, which is why it still can't stand in for a genuine mid-circuit story.)
+Forking it into a second `samples/neutral-atom/*.qn` copy would have
+restated that same non-claim under a "dynamic circuit" label it doesn't
+earn — which is why this pack points the dynamic-circuit story at the QEC
+memory circuit's real mid-circuit schedule instead.)
 
 ## Seeds
 

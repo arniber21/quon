@@ -150,6 +150,9 @@ fn desugar_expr_acc(expr: Sp<Expr>, errors: &mut Vec<Diagnostic>) -> Sp<Expr> {
         Expr::CircuitBlock(stmts) => Expr::CircuitBlock(desugar_stmts(stmts, errors)),
         Expr::Compose(a, b) => Expr::Compose(rec(*a, errors), rec(*b, errors)),
         Expr::Par(body, count) => Expr::Par(rec(*body, errors), rec(*count, errors)),
+        Expr::ParN(elems) => Expr::ParN(
+            elems.into_iter().map(|e| desugar_expr_acc(e, errors)).collect(),
+        ),
         Expr::Adjoint(inner) => Expr::Adjoint(rec(*inner, errors)),
         Expr::Controlled(inner) => Expr::Controlled(rec(*inner, errors)),
         Expr::GateApp { gate, qubits } => Expr::GateApp {

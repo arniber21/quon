@@ -27,7 +27,7 @@
 //! and residual unsupported controlled bodies are rejected with
 //! [`ElabError::Unsupported`] (span-accurate), not silently miscompiled.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chumsky::span::SimpleSpan;
 use quon_core::DepthExpr;
@@ -35,7 +35,7 @@ use thiserror::Error;
 
 use crate::ast::{BinOp, Expr, LitPat, Pat, Stmt};
 use crate::lexer::Sp;
-use crate::specialized_circuit::{flatten_app, reverse_and_invert};
+use crate::specialized_circuit::{flatten_app, max_qubit_index, reverse_and_invert};
 use crate::typecheck::circuit;
 
 #[derive(Debug, Error)]
@@ -120,6 +120,18 @@ pub struct ParametricDef {
 /// recursively specialize its callee.
 pub struct ElabCtx {
     pub parametric: HashMap<String, ParametricDef>,
+    /// Zero-argument circuit-function bodies (`fn f(): Circuit<…> = body`),
+    /// keyed by name. Populated by the lowerer from its own `bodies` table so
+    /// the elaborator can inline a bare call `f()` (resolving its width) when
+    /// unrolling `par { f() } * n` / `par { …, f(), … }`. Parametric callees
+    /// live in `parametric`; this is only for the zero-arg case.
+    pub bodies: HashMap<String, Sp<Expr>>,
+    /// The set of zero-arg callee names currently being inlined on the
+    /// elaboration stack — a cycle guard so a self-referential
+    /// `fn loop() = par { loop() }` rejects cleanly instead of overflowing
+    /// the stack. Interior-mutable so it threads through `&ElabCtx` without
+    /// changing every `elaborate_circuit_body` signature.
+    pub expanding: std::cell::RefCell<HashSet<String>>,
 }
 
 type ClassicalEnv = HashMap<String, Value>;
@@ -532,11 +544,168 @@ pub fn elaborate_circuit_body(
             let _ = name;
             Ok(expr.clone())
         }
+        Expr::Par(body, count) => unroll_par(body, count, classical_env, ctx, fuel, span),
+        Expr::ParN(elems) => unroll_parn(elems, classical_env, ctx, fuel, span),
         _ => Err(ElabError::unsupported(
             "circuit body expression during elaboration",
             no_span(),
         )),
     }
+}
+
+/// Walk an elaborated circuit tree and shift every gate's qubit indices by
+/// `offset`, used to place a `par` arm on a disjoint qubit slice. Gate names
+/// and rotation angles are untouched; only the `@ (…)` target literals move.
+fn shift_circuit_indices(expr: &Sp<Expr>, offset: i64) -> Sp<Expr> {
+    let span = expr.1;
+    match &expr.0 {
+        Expr::Compose(l, r) => (
+            Expr::Compose(
+                Box::new(shift_circuit_indices(l, offset)),
+                Box::new(shift_circuit_indices(r, offset)),
+            ),
+            span,
+        ),
+        Expr::Adjoint(inner) => (
+            Expr::Adjoint(Box::new(shift_circuit_indices(inner, offset))),
+            span,
+        ),
+        Expr::GateApp { gate, qubits } => (
+            Expr::GateApp {
+                gate: gate.clone(),
+                qubits: Box::new(shift_qubit_targets(qubits, offset)),
+            },
+            span,
+        ),
+        // `par`/`parn` should be unrolled before shifting, but recurse defensively.
+        Expr::Par(body, count) => (
+            Expr::Par(
+                Box::new(shift_circuit_indices(body, offset)),
+                count.clone(),
+            ),
+            span,
+        ),
+        Expr::ParN(elems) => (
+            Expr::ParN(elems.iter().map(|e| shift_circuit_indices(e, offset)).collect()),
+            span,
+        ),
+        // The empty-circuit sentinel and anything else pass through unchanged.
+        _ => expr.clone(),
+    }
+}
+
+/// If `body` is a bare zero-arg call to a name in `ctx.bodies` (`f()` with a
+/// single `Unit` arg, or bare `f`), return that name and its stored body so the
+/// caller can inline it — letting the elaborator read the gate tree (and thus
+/// the width) of a zero-arg callee like `par { had_one() } * n`. Returns the
+/// name alongside the body so the caller can guard against self-reference.
+fn zero_arg_callee_body<'a>(
+    body: &'a Sp<Expr>,
+    ctx: &'a ElabCtx,
+) -> Option<(&'a str, &'a Sp<Expr>)> {
+    let name = match &body.0 {
+        Expr::App(f, x) => {
+            let (head, args) = flatten_app(f, x);
+            if !args.iter().all(|a| matches!(a.0, Expr::Unit)) {
+                return None;
+            }
+            let Expr::Var(n) = &head.0 else {
+                return None;
+            };
+            n.as_str()
+        }
+        Expr::Var(n) => n.as_str(),
+        _ => return None,
+    };
+    ctx.bodies.get(name).map(|b| (name, b))
+}
+
+/// Elaborate one `par` sub-body, inlining a bare zero-arg callee against
+/// `ctx.bodies` so the width is concrete. Inline gate trees and parametric
+/// callees elaborate via the normal [`elaborate_circuit_body`] path.
+fn elaborate_par_subbody(
+    body: &Sp<Expr>,
+    classical_env: &ClassicalEnv,
+    ctx: &ElabCtx,
+    fuel: &mut u32,
+) -> Result<Sp<Expr>, ElabError> {
+    match zero_arg_callee_body(body, ctx) {
+        Some((name, b)) => {
+            // Cycle guard: a self-referential `fn loop() = par { loop() }`
+            // would otherwise recurse without bound (zero-arg circuit fns
+            // have no decreasing-`Nat` termination witness). Reject cleanly.
+            if ctx.expanding.borrow().contains(name) {
+                return Err(ElabError::unsupported(
+                    "self-referential zero-arg circuit function (non-terminating `par` body)",
+                    body.1,
+                ));
+            }
+            ctx.expanding.borrow_mut().insert(name.to_string());
+            let result = elaborate_circuit_body(b, classical_env, ctx, fuel);
+            ctx.expanding.borrow_mut().remove(name);
+            result
+        }
+        None => elaborate_circuit_body(body, classical_env, ctx, fuel),
+    }
+}
+
+/// `par { c } * k` (SPEC §5.8): unroll into `k` copies of `c` placed on
+/// contiguous disjoint qubit slices `[0, w)`, `[w, 2w)`, … — a `Compose` chain
+/// the lowerer's depth scheduler sees as one layer (disjoint qubits), matching
+/// the typechecker's "depth unchanged" rule. `w` is the body's width, read off
+/// the elaborated gate tree (`max_qubit_index + 1`), exact for a self-contained
+/// circuit indexed from 0.
+pub fn unroll_par(
+    body: &Sp<Expr>,
+    count: &Sp<Expr>,
+    classical_env: &ClassicalEnv,
+    ctx: &ElabCtx,
+    fuel: &mut u32,
+    span: chumsky::span::SimpleSpan,
+) -> Result<Sp<Expr>, ElabError> {
+    let k = eval_classical(count, classical_env, fuel)?
+        .as_i64()
+        .ok_or_else(|| ElabError::unsupported("par count (expected Int)", span))?;
+    if k < 0 {
+        return Err(ElabError::unsupported("negative par count", span));
+    }
+    if k == 0 {
+        return Ok(empty_circuit(span));
+    }
+    let elab = elaborate_par_subbody(body, classical_env, ctx, fuel)?;
+    let width = max_qubit_index(&elab).map(|m| m as i64 + 1).unwrap_or(0);
+    let mut composed = empty_circuit(span);
+    for i in 0..k {
+        let shifted = shift_circuit_indices(&elab, i * width);
+        composed = compose_nonempty(composed, shifted, span);
+    }
+    Ok(composed)
+}
+
+/// `par { c₁, c₂, … }` (SPEC §3.3): tensor the (different) arms on disjoint
+/// qubit slices — arm `j` is shifted by the running width sum. The result is
+/// a `Compose` chain the lowerer schedules as a single layer (disjoint qubits),
+/// matching the typechecker's `max` depth rule for `par`.
+pub fn unroll_parn(
+    elems: &[Sp<Expr>],
+    classical_env: &ClassicalEnv,
+    ctx: &ElabCtx,
+    fuel: &mut u32,
+    span: chumsky::span::SimpleSpan,
+) -> Result<Sp<Expr>, ElabError> {
+    if elems.is_empty() {
+        return Ok(empty_circuit(span));
+    }
+    let mut composed = empty_circuit(span);
+    let mut offset = 0i64;
+    for elem in elems {
+        let elab = elaborate_par_subbody(elem, classical_env, ctx, fuel)?;
+        let shifted = shift_circuit_indices(&elab, offset);
+        let w = max_qubit_index(&elab).map(|m| m as i64 + 1).unwrap_or(0);
+        offset += w;
+        composed = compose_nonempty(composed, shifted, span);
+    }
+    Ok(composed)
 }
 
 fn elaborate_app(
@@ -775,6 +944,15 @@ fn subst_classical_vars(expr: &Sp<Expr>, env: &ClassicalEnv) -> Result<Sp<Expr>,
             Expr::Par(
                 Box::new(subst_classical_vars(body, env)?),
                 Box::new(subst_classical_vars(count, env)?),
+            ),
+            span,
+        )),
+        Expr::ParN(elems) => Ok((
+            Expr::ParN(
+                elems
+                    .iter()
+                    .map(|e| subst_classical_vars(e, env))
+                    .collect::<Result<_, _>>()?,
             ),
             span,
         )),
@@ -1021,6 +1199,23 @@ fn decompose_controlled(
             for i in 0..k {
                 let t = shift_qubit_targets(target, i);
                 let step = decompose_controlled(body, control, &t, classical_env, span)?;
+                composed = compose_nonempty(composed, step, span);
+            }
+            Ok(composed)
+        }
+        Expr::ParN(elems) => {
+            // `controlled(par { c₁, …, cₖ })` distributes control over each arm,
+            // each on a contiguous target slice. The arm's width (read from its
+            // elaborated gate tree) offsets the next arm's targets, mirroring the
+            // `Par` repeat arm. Falls back to the generic "unsupported" error if
+            // an arm is not a decomposable width-1 body.
+            let mut composed = empty_circuit(span);
+            let mut offset = 0i64;
+            for elem in elems {
+                let t = shift_qubit_targets(target, offset);
+                let step = decompose_controlled(elem, control, &t, classical_env, span)?;
+                let w = max_qubit_index(&step).map(|m| m as i64 + 1).unwrap_or(1);
+                offset += w;
                 composed = compose_nonempty(composed, step, span);
             }
             Ok(composed)

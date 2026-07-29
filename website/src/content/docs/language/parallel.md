@@ -44,11 +44,12 @@ fn mixed_layer(): Circuit<3, 3, 2, Universal> = circuit {
 }
 ```
 
-Here the first sub-circuit (`H @0 |> T @0`) has depth 2 and the second (`H @1`)
-has depth 1. The `par` takes `max(2, 1) = 2`, so the composite has depth 2. The
-classification is `Universal` because one sub-circuit contains `T`. The width is
-`1 + 2 = 3` — three qubits, two touched by the first circuit and one by the
-second.
+Here the first sub-circuit (`H @0 |> T @0`) has depth 2 and width 1; the second
+(`H @1`) has depth 1 and width 2 (its `@1` index is relative to its own slice,
+so it lands on qubit 2). The `par` takes `max(2, 1) = 2`, so the composite has
+depth 2. The classification is `Universal` because one sub-circuit contains
+`T`. The width is `1 + 2 = 3` — three qubits, one touched by the first circuit
+and two by the second.
 
 ## Why parallel composition matters
 
@@ -107,16 +108,19 @@ You can also nest `par` directly:
 ```kotlin
 fn nested_par(): Circuit<4, 4, 1, Clifford> = circuit {
     par {
-        par { H @0, H @1 },
-        par { H @2, H @3 }
+        par { H @0, H @0 },
+        par { H @0, H @0 }
     }
 }
 ```
 
-The outer `par` composes two inner `par` blocks, each of depth 1. The total
+The outer `par` composes two inner `par` blocks, each placing two Hadamards on
+its own disjoint qubit slice (width 2). The total width is `2 + 2 = 4`, and the
 depth is `max(max(1,1), max(1,1)) = 1` — all four gates run in one layer. The
 typechecker evaluates the nested `max` expressions symbolically and verifies
-the result fits the declared bound.
+the result fits the declared bound. (Indices inside a `par` arm are *relative*
+to that arm's slice — `@0` in each inner arm, shifted by the running width —
+so the four H gates land on qubits 0, 1, 2, 3.)
 
 ## Parametric circuits with `Nat`
 

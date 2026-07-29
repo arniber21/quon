@@ -154,6 +154,11 @@ pub fn print_expr(e: &Sp<Expr>, ctx: &mut Context<'_>, min_prec: Prec) -> Doc {
             Doc::text(" } * "),
             print_as_atom(count, ctx),
         ])),
+        Expr::ParN(elems) => Doc::group(Doc::concat([
+            Doc::text("par { "),
+            comma_sep(elems.iter().map(|e| expr_in_circuit_context(e, ctx)).collect()),
+            Doc::text(" }"),
+        ])),
 
         Expr::Adjoint(x) => Doc::concat([
             Doc::text("adjoint("),
@@ -340,8 +345,7 @@ fn uncurry_app(e: &Sp<Expr>) -> (Sp<Expr>, Vec<Sp<Expr>>) {
         args.push(x.as_ref().clone());
         cur = f.as_ref().clone();
     }
-    args.reverse();
-    (cur, args)
+    (cur, args.into_iter().rev().collect())
 }
 
 fn print_app(e: &Sp<Expr>, ctx: &mut Context<'_>) -> Doc {
@@ -351,20 +355,15 @@ fn print_app(e: &Sp<Expr>, ctx: &mut Context<'_>) -> Doc {
         return print_expr(&func, ctx, Prec::App);
     }
 
-    if args.len() == 1 {
-        let arg = &args[0];
-        if is_unit(arg) {
-            return Doc::concat([print_expr(&func, ctx, Prec::App), Doc::text("()")]);
-        }
-        if is_juxta_safe(&func) && is_juxta_atom(arg) {
-            return Doc::concat([
-                print_expr(&func, ctx, Prec::App),
-                Doc::text(" "),
-                print_as_atom(arg, ctx),
-            ]);
-        }
+    // A nullary call's single `Unit` argument prints as `f()`, not `f(())`.
+    if args.len() == 1 && matches!(args[0].0, Expr::Unit) {
+        return Doc::concat([print_expr(&func, ctx, Prec::App), Doc::text("()")]);
     }
 
+    // All other calls print parenthesized — `f(a)`, `f(a, b)` — matching the
+    // website's presentation style and the checked-in fixtures. (A prior
+    // juxtaposition rule printed a single atom arg as `f x`, which contradicted
+    // every code sample and made the "Source: the exact fixture" framing false.)
     let arg_docs: Vec<Doc> = args.iter().map(|a| print_expr(a, ctx, Prec::Top)).collect();
     Doc::concat([
         print_expr(&func, ctx, Prec::App),
@@ -374,39 +373,6 @@ fn print_app(e: &Sp<Expr>, ctx: &mut Context<'_>) -> Doc {
     ])
 }
 
-fn is_unit(e: &Sp<Expr>) -> bool {
-    matches!(e.0, Expr::Unit)
-}
-
-fn is_juxta_atom(e: &Sp<Expr>) -> bool {
-    // Tuples are not juxta-safe: `f (a, b)` parses as curried `App(App(f, a), b)`.
-    // Lists are not juxta-safe: `f [x]` re-parses as index sugar `index(f, x)`.
-    // Always print those args in call form: `f((a, b))`, `f([x])`.
-    matches!(
-        &e.0,
-        Expr::Int(_)
-            | Expr::Float(_)
-            | Expr::Bool(_)
-            | Expr::Unit
-            | Expr::Var(_)
-            | Expr::Adjoint(_)
-            | Expr::Controlled(_)
-    ) || matches!(&e.0, Expr::GateApp { .. })
-}
-
-fn is_juxta_safe(e: &Sp<Expr>) -> bool {
-    match &e.0 {
-        Expr::Var(_)
-        | Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Unit
-        | Expr::Adjoint(_)
-        | Expr::Controlled(_) => true,
-        Expr::App(f, x) if is_juxta_safe(f) && is_juxta_atom(x) => true,
-        _ => false,
-    }
-}
 
 fn comma_sep(items: Vec<Doc>) -> Doc {
     let n = items.len();
@@ -454,7 +420,7 @@ fn expr_prec(e: &Expr) -> Prec {
             op: BinOp::Mul | BinOp::Div,
             ..
         }
-        | Expr::Par(_, _) => Prec::Mul,
+        | Expr::Par(_, _) | Expr::ParN(_) => Prec::Mul,
         Expr::BinOp {
             op: BinOp::Add | BinOp::Sub,
             ..

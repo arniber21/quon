@@ -110,7 +110,7 @@ Pure `let` bindings work inside `run` blocks for classical values:
 ```kotlin
 fn classical_logic(b: Bit): Q<Bit> = run {
     let label = if b { "got one" } else { "got zero" }
-    q <- qinit()
+    q <- qubit()
     result <- measure(q)
     return result
 }
@@ -129,7 +129,7 @@ forward through `<-`:
 
 ```kotlin
 fn chain(): Q<Bit> = run {
-    q1 <- prepare_one() @ qinit()
+    q1 <- prepare_one() @ qubit()
     q2 <- bell_state() @ qreg(2)     -- produces a pair, not one qubit
     (a, b) = q2
     q3 <- (H @0) @ a                  -- apply a single gate as a circuit
@@ -141,7 +141,7 @@ fn chain(): Q<Bit> = run {
 ```
 
 Each `<-` consumes the qubits on the right and binds fresh ones on the left.
-The linear context tracks every qubit: `qinit()` produces one, `prepare_one()`
+The linear context tracks every qubit: `qubit()` produces one, `prepare_one()`
 consumes it and produces `q1`, and so on. If any qubit is left unconsumed at
 the `return`, the typechecker rejects the program — the same "linear resource
 not consumed" diagnostic from the linearity page.

@@ -1,0 +1,31 @@
+-- RUN: %quonc --emit-qasm %s | %FileCheck %s
+--
+-- `par { c₁, c₂, … }` — tensor of *different* circuits on disjoint qubit sets
+-- (`Expr::ParN`). The elaborator shifts each arm onto a contiguous slice and
+-- composes the result; the typechecker's `synth_parn` (SPEC §3.3: widths add,
+-- depth = max) classifies it. Indices inside a `par` arm are *relative* to that
+-- arm's slice, so `@0` in each arm lands on a distinct qubit.
+
+fn had_two(): Circuit<2, 2, 1, Clifford> = par { H @0, H @0 }
+
+fn mixed_layer(): Circuit<3, 3, 2, Universal> = circuit {
+    par {
+        H @0 |> T @0,
+        H @1
+    }
+}
+
+fn main(): Q<List<Bit>> = run {
+    a <- had_two() @ qreg(2)
+    b <- mixed_layer() @ qreg(3)
+    ba <- measure_all(a)
+    bb <- measure_all(b)
+    return ba
+}
+
+-- CHECK: qubit[5] q;
+-- CHECK: h q[0];
+-- CHECK: h q[1];
+-- CHECK: h q[2];
+-- CHECK: t q[2];
+-- CHECK: h q[4];

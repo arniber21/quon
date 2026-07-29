@@ -110,7 +110,7 @@ be used wherever a `Universal` circuit is expected — but not vice versa:
 
 ```kotlin
 fn expects_universal(c: Circuit<1, 1, 1, Universal>): Q<Qubit> = run {
-    q <- c @ qinit()
+    q <- c @ qubit()
     return q
 }
 
@@ -131,7 +131,7 @@ typechecker rejects it:
 
 ```kotlin
 fn expects_clifford(c: Circuit<1, 1, 1, Clifford>): Q<Qubit> = run {
-    q <- c @ qinit()
+    q <- c @ qubit()
     return q
 }
 

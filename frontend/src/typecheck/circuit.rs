@@ -356,14 +356,78 @@ impl super::TypeChecker {
         body: &Sp<Expr>,
         count: &Sp<Expr>,
     ) -> Result<Ty, TypeError> {
-        let bt = self.synth(env, delta, body)?;
-        let (bn, bm, bd, bc) = self.as_circuit(&bt, body.1)?;
+        self.circuit_width.push(DepthExpr::Nat(0));
+        self.circuit_width_cap.push(DepthExpr::Nat(u64::MAX / 4));
+        let synth_result = self.synth(env, delta, body);
+        let grown = self.circuit_width.last().cloned().unwrap_or(DepthExpr::Nat(0));
+        self.circuit_width.pop();
+        self.circuit_width_cap.pop();
+        let bt = synth_result?;
+        let (sn, sm, bd, bc) = self.as_circuit(&bt, body.1)?;
+        // Bare-gate body (`H @0`): width is the grown ambient (see `synth_parn`).
+        let bn = grown.clone().par(sn).normalize();
+        let bm = grown.par(sm).normalize();
         let k = self.expr_to_depth(env, delta, count)?;
         Ok(Ty::Circuit {
             n: DepthExpr::repeat(k.clone(), bn),
             m: DepthExpr::repeat(k, bm),
             d: bd,
             c: bc,
+        })
+    }
+
+    /// `par { c₁, c₂, … }` (SPEC §3.3): tensor of *different* circuits on disjoint
+    /// qubit sets. Widths add (`seq`), depth is the max of the arms (`par`),
+    /// classification joins. The infix `f par g` row of §3.3 generalized to a list.
+    ///
+    /// Each arm synthesizes under its own zero-width ambient register (pushed
+    /// and popped like a `circuit { }` block) so a bare gate arm `H @0` routes
+    /// to `place_gate` (index into the arm's own register) rather than
+    /// `apply_circuit` (which would read `0` as a `QReg` value). This matches
+    /// how `par { c } * n`'s body is already circuit-valued: a bare `GateApp`
+    /// is a valid 1-qubit circuit value once given an ambient width.
+    pub(super) fn synth_parn(
+        &mut self,
+        env: &Env,
+        delta: &mut Delta,
+        elems: &[Sp<Expr>],
+        _span: SimpleSpan,
+    ) -> Result<Ty, TypeError> {
+        if elems.is_empty() {
+            return Ok(Ty::Circuit {
+                n: DepthExpr::Nat(0),
+                m: DepthExpr::Nat(0),
+                d: DepthExpr::Nat(0),
+                c: CliffordClass::Clifford,
+            });
+        }
+        let mut acc: (DepthExpr, DepthExpr, DepthExpr, CliffordClass) = (DepthExpr::Nat(0), DepthExpr::Nat(0), DepthExpr::Nat(0), CliffordClass::Clifford);
+        for elem in elems {
+            self.circuit_width.push(DepthExpr::Nat(0));
+            self.circuit_width_cap.push(DepthExpr::Nat(u64::MAX / 4));
+            // Synth under the arm's own 0-width ambient; on error, pop before
+            // propagating so the width/cap stacks stay balanced on all paths.
+            let synth_result = self.synth(env, delta, elem);
+            let grown = self.circuit_width.last().cloned().unwrap_or(DepthExpr::Nat(0));
+            self.circuit_width.pop();
+            self.circuit_width_cap.pop();
+            let t = synth_result?;
+            // A bare-gate arm (`H @0`) returns `Circuit<n=ambient₀=0, m=placement=1, …>`;
+            // the arm's true width is the *grown* ambient (the register it actually
+            // touched). A circuit-valued arm (`f()`, `circuit { … }`) carries its
+            // own width in the synth result and does not grow the ambient (which
+            // stayed at 0), so `par(grown, sn)` takes the arm's declared width when
+            // it exceeds the ambient — correct in both cases.
+            let (sn, sm, sd, sc) = self.as_circuit(&t, elem.1)?;
+            let n = grown.clone().par(sn).normalize();
+            let m = grown.par(sm).normalize();
+            acc = (acc.0.seq(n), acc.1.seq(m), acc.2.par(sd), acc.3.join(&sc));
+        }
+        Ok(Ty::Circuit {
+            n: acc.0,
+            m: acc.1,
+            d: acc.2,
+            c: acc.3,
         })
     }
 

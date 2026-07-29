@@ -65,14 +65,18 @@ pub trait DynamicVisitor<'c, 'a> {
         let _ = (op, qubit_roots);
     }
 
-    /// A `quantum.dynamic.measure`.
-    fn measure(&mut self, op: OperationRef<'c, 'a>) {
-        let _ = op;
+    /// A `quantum.dynamic.measure`. `qubit_roots` are the roots of the
+    /// measured qubit operand(s) (mirrors `gate`/`barrier` — previously this
+    /// callback received no root, so no visitor could learn *which* qubit was
+    /// measured; see issue where the NA backend's resource report always
+    /// showed zero measurement rounds).
+    fn measure(&mut self, op: OperationRef<'c, 'a>, qubit_roots: &[usize]) {
+        let _ = (op, qubit_roots);
     }
 
-    /// A `quantum.dynamic.reset`.
-    fn reset(&mut self, op: OperationRef<'c, 'a>) {
-        let _ = op;
+    /// A `quantum.dynamic.reset`. `qubit_roots` mirrors `measure`.
+    fn reset(&mut self, op: OperationRef<'c, 'a>, qubit_roots: &[usize]) {
+        let _ = (op, qubit_roots);
     }
 
     /// Any op the walk does not otherwise dispatch on (e.g. a qubit
@@ -189,12 +193,14 @@ fn walk_block_with<'c, 'a>(
             continue;
         }
         if name == quantum_dynamic::op::MEASURE {
-            visitor.measure(current);
+            let roots = tracker.roots_for_operands(current);
+            visitor.measure(current, &roots);
             tracker.observe_operation(current);
             continue;
         }
         if name == quantum_dynamic::op::RESET {
-            visitor.reset(current);
+            let roots = tracker.roots_for_operands(current);
+            visitor.reset(current, &roots);
             tracker.observe_operation(current);
             continue;
         }

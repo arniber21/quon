@@ -1,0 +1,16 @@
+-- H2 VQE: ground-state energy of molecular hydrogen (STO-3G, parity-mapped,
+-- 2-qubit-reduced Hamiltonian, O'Malley et al. 2016) via a single-parameter
+-- UCC-style ansatz. The Hartree-Fock reference is |01>; Ry(theta) on qubit 0
+-- followed by CNOT(0,1) is the standard single-excitation ansatz for this
+-- Hamiltonian's odd-parity block. theta = 3.3713385391099426 was found by
+-- classically diagonalizing H and matching the exact ground eigenvector --
+-- it reproduces the exact ground energy -1.8511991241 Hartree, not an
+-- approximation.
+fn h2_ansatz(theta: Float): Circuit<2, 2, 3, Universal> = circuit {
+    X @1 |> (Ry theta) @0 |> CNOT @(0, 1)
+}
+
+fn main(): Q<List<Bit>> = run {
+    reg <- h2_ansatz(3.3713385391099426) @ qreg(2)
+    measure_all(reg)
+}

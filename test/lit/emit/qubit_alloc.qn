@@ -1,0 +1,17 @@
+-- RUN: %quonc --emit-qasm %s | %FileCheck %s
+--
+-- `qubit()` — the nullary single-qubit allocation builtin (SPEC §5.9). The
+-- docs previously called this `qinit()`, which never existed in the compiler;
+-- `qubit()` now lowers (a `test.qubit` allocation op) like `qreg(1)` but
+-- produces a `Qubit` rather than a `QReg<1>`, so the measure-after-allocate
+-- idiom from linearity.md / monad.md / clifford.md compiles.
+
+fn main(): Q<Bit> = run {
+    q <- qubit()
+    b <- measure(q)
+    return b
+}
+
+-- CHECK: qubit[1] q;
+-- CHECK: bit[1] c;
+-- CHECK: c[0] = measure q[0];

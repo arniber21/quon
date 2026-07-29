@@ -22,10 +22,11 @@ use crate::compaction::{
 };
 use crate::entangling_schedule::schedule_entangling_layers;
 use crate::graph::{InteractionGraph, LogicalQubitId};
+use crate::layout::AtomId;
 use crate::movement::MovementParams;
 use crate::placement::PlacementStrategy;
 use crate::report::{ResourceReport, attach_qec_error_budget, build_resource_report};
-use crate::schedule::ScheduleLayer;
+use crate::schedule::{MeasurementBasis, NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
 use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, StageTimingsUs};
 use crate::zoned::{AwareSearchParams, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture};
@@ -44,13 +45,11 @@ use crate::extract::{ExtractError, LocalGateExtract, extract_interaction_graph_a
 #[cfg(feature = "mlir")]
 use crate::graph::InteractionId;
 #[cfg(feature = "mlir")]
-use crate::layout::AtomId;
-#[cfg(feature = "mlir")]
 use crate::native_gate_decomp::{
     DecomposedLocalGate, NaDecompError, NaLocalOp, decompose_local_gates,
 };
 #[cfg(feature = "mlir")]
-use crate::schedule::{LocalGateKind, NeutralAtomAction};
+use crate::schedule::LocalGateKind;
 #[cfg(feature = "mlir")]
 use std::collections::BTreeMap;
 
@@ -327,19 +326,27 @@ pub fn run_from_module<'c>(
 ) -> Result<NaScheduleArtifacts, NaPipelineError> {
     validate_speed_model(na).map_err(NaPipelineError::InvalidTarget)?;
     let extract_started = Instant::now();
-    let (graph, local_gates) = extract_interaction_graph_and_local_gates(module)?;
+    let (graph, local_gates, measured_qubits) =
+        extract_interaction_graph_and_local_gates(module)?;
     let extract_us = elapsed_us(extract_started);
     let logical_qubits = graph.vertices.len() as u64;
     if opts.dump_ir {
         eprintln!(
-            "--- interaction graph ---\nvertices={} interactions={} local_1q_gates={}",
+            "--- interaction graph ---\nvertices={} interactions={} local_1q_gates={} measured_qubits={}",
             graph.vertices.len(),
             graph.interactions.len(),
             local_gates.len(),
+            measured_qubits.len(),
         );
     }
-    let mut artifacts =
-        run_from_graph_with_local_gates(graph, local_gates, na, opts, Some(logical_qubits))?;
+    let mut artifacts = run_from_graph_with_local_gates(
+        graph,
+        local_gates,
+        measured_qubits,
+        na,
+        opts,
+        Some(logical_qubits),
+    )?;
     if let Some(stats) = artifacts.stats.as_mut() {
         stats.stage_timings_us.extract_us = Some(extract_us);
         stats.stage_timings_us.total_us =
@@ -370,8 +377,13 @@ pub fn run_from_graph(
     let scheduled = schedule_entangling_layers(req, max_pairs)?;
     let entangling_layers_us = elapsed_us(stage_started);
 
+    // No MLIR at this raw-graph debug/stress entry point, so there is no
+    // `quantum.dynamic.measure` to read — same limitation as "no 1-qubit
+    // gates" documented above. Use `run_from_module` for the full-fidelity,
+    // measurement-aware production path.
     finish_pipeline(
         scheduled.request,
+        Vec::new(),
         na,
         opts,
         logical_qubits,
@@ -392,6 +404,7 @@ pub fn run_from_graph(
 pub fn run_from_graph_with_local_gates(
     graph: InteractionGraph,
     local_gates: Vec<LocalGateExtract>,
+    measured_qubits: Vec<LogicalQubitId>,
     na: &NeutralAtomTarget,
     opts: NaScheduleOptions,
     logical_qubits_override: Option<u64>,
@@ -422,6 +435,7 @@ pub fn run_from_graph_with_local_gates(
 
     finish_pipeline(
         req,
+        measured_qubits,
         na,
         opts,
         logical_qubits,
@@ -630,6 +644,7 @@ fn push_global_ry_with_refocus(
 /// (entangling actions, plus any interleaved local-gate actions).
 fn finish_pipeline(
     mut req: GraphScheduleRequest,
+    measured_qubits: Vec<LogicalQubitId>,
     na: &NeutralAtomTarget,
     opts: NaScheduleOptions,
     logical_qubits: u64,
@@ -683,6 +698,36 @@ fn finish_pipeline(
             );
         }
         req = compacted.request;
+    }
+
+    // Terminal measurement (issue: NA resource reports always showed
+    // `measurement_rounds: 0`, even for programs whose only NA-relevant cost
+    // was the final `measure_all`). `quantum.dynamic.measure` ops were
+    // extracted but never turned into a schedule action, so `measurement_us`
+    // — often the single largest per-op duration in the target's timing
+    // model — never entered `total_time_us` or the fidelity estimate.
+    // Appended as one dedicated layer *after* compaction (not interleaved
+    // with entangling/movement actions the compaction legality checker
+    // wasn't written against), one `Measure` action per measured atom, all
+    // in the same cycle since Quon's bare-qubit NA path has no mid-circuit
+    // feed-forward — every measurement is terminal and simultaneous.
+    if !measured_qubits.is_empty() {
+        let duration_us = na.timing.measurement_us.max(0.0).round() as u64;
+        let mut qubits = measured_qubits.clone();
+        qubits.sort();
+        qubits.dedup();
+        let actions = qubits
+            .into_iter()
+            .map(|q| NeutralAtomAction::Measure {
+                atom: AtomId(q.0),
+                basis: MeasurementBasis::Z,
+                duration_us,
+            })
+            .collect();
+        req.layers.push(ScheduleLayer {
+            cycle: req.layers.len() as u32,
+            actions,
+        });
     }
 
     let stage_started = Instant::now();

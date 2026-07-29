@@ -356,6 +356,11 @@ pub(crate) fn max_qubit_index(expr: &Sp<Expr>) -> Option<usize> {
             .max(),
         Expr::GateApp { qubits, .. } => qubit_targets(qubits).into_iter().max(),
         Expr::Adjoint(inner) => max_qubit_index(inner),
+        // `par`/`parn` should already be unrolled to a Compose chain before this
+        // runs, but recurse defensively so an unreduced node is not silently read
+        // as width 0.
+        Expr::Par(body, _) => max_qubit_index(body),
+        Expr::ParN(elems) => elems.iter().filter_map(max_qubit_index).max(),
         _ => None,
     }
 }

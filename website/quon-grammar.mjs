@@ -25,7 +25,7 @@ export const quonGrammar = {
       patterns: [
         { name: 'keyword.control.quon', match: '\\b(if|then|else|match|for|in|return|let|repeat)\\b' },
         { name: 'keyword.declaration.quon', match: '\\b(fn|type|circuit|run|borrow|par)\\b' },
-        { name: 'keyword.other.quon', match: '\\b(adjoint|controlled|identity|measure|measure_all|qinit|qreg|destructure|split|tensored|on_high|swap_reverse|qubits|range|pairs|discard|reset)\\b' },
+        { name: 'keyword.other.quon', match: '\\b(adjoint|controlled|identity|measure|measure_all|qubit|qreg|destructure|split|tensored|on_high|swap_reverse|qubits|range|pairs|discard|reset)\\b' },
       ],
     },
     types: {

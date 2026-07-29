@@ -233,6 +233,11 @@ pub enum Expr {
     /// `par { body } * count` — n-fold tensor product of `body` with itself (§5.8).
     /// First field is the circuit body, second is the repeat count.
     Par(Box<Sp<Expr>>, Box<Sp<Expr>>),
+    /// `par { c₁, c₂, … }` — tensor product of *different* circuits on disjoint
+    /// qubit sets (§3.3). Widths add; depth is the max of the arms; classification
+    /// joins. Distinct from `Par`: that repeats one body `k` times; this composes
+    /// an arbitrary list once each.
+    ParN(Vec<Sp<Expr>>),
     Adjoint(Box<Sp<Expr>>),
     Controlled(Box<Sp<Expr>>),
     GateApp {
