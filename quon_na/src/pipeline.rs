@@ -326,8 +326,7 @@ pub fn run_from_module<'c>(
 ) -> Result<NaScheduleArtifacts, NaPipelineError> {
     validate_speed_model(na).map_err(NaPipelineError::InvalidTarget)?;
     let extract_started = Instant::now();
-    let (graph, local_gates, measured_qubits) =
-        extract_interaction_graph_and_local_gates(module)?;
+    let (graph, local_gates, measured_qubits) = extract_interaction_graph_and_local_gates(module)?;
     let extract_us = elapsed_us(extract_started);
     let logical_qubits = graph.vertices.len() as u64;
     if opts.dump_ir {

@@ -1009,9 +1009,8 @@ impl<'c> LoweringCtx<'c> {
                 // layer.
                 let mut fuel = elaborate::fresh_fuel();
                 let ctx = self.elab_ctx();
-                let elaborated = elaborate::unroll_par(
-                    body, count, &HashMap::new(), &ctx, &mut fuel, body.1,
-                )?;
+                let elaborated =
+                    elaborate::unroll_par(body, count, &HashMap::new(), &ctx, &mut fuel, body.1)?;
                 self.lower_circuit_body_expr_with_locals(&elaborated.0, block, wires, locals)
             }
             Expr::ParN(elems) => {
@@ -1021,7 +1020,8 @@ impl<'c> LoweringCtx<'c> {
                     .first()
                     .map(|e| e.1)
                     .unwrap_or_else(|| chumsky::span::SimpleSpan::from(0..0));
-                let elaborated = elaborate::unroll_parn(elems, &HashMap::new(), &ctx, &mut fuel, span)?;
+                let elaborated =
+                    elaborate::unroll_parn(elems, &HashMap::new(), &ctx, &mut fuel, span)?;
                 self.lower_circuit_body_expr_with_locals(&elaborated.0, block, wires, locals)
             }
             _ => Err(LowerError::Unsupported {

@@ -579,14 +579,16 @@ fn shift_circuit_indices(expr: &Sp<Expr>, offset: i64) -> Sp<Expr> {
         ),
         // `par`/`parn` should be unrolled before shifting, but recurse defensively.
         Expr::Par(body, count) => (
-            Expr::Par(
-                Box::new(shift_circuit_indices(body, offset)),
-                count.clone(),
-            ),
+            Expr::Par(Box::new(shift_circuit_indices(body, offset)), count.clone()),
             span,
         ),
         Expr::ParN(elems) => (
-            Expr::ParN(elems.iter().map(|e| shift_circuit_indices(e, offset)).collect()),
+            Expr::ParN(
+                elems
+                    .iter()
+                    .map(|e| shift_circuit_indices(e, offset))
+                    .collect(),
+            ),
             span,
         ),
         // The empty-circuit sentinel and anything else pass through unchanged.

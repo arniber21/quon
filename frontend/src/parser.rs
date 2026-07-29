@@ -711,9 +711,7 @@ where
             .ignore_then(brace_expr.clone())
             .then_ignore(just(Token::Star))
             .then(mul_chain.clone())
-            .map_with(|(body, count), e| {
-                (Expr::Par(Box::new(body), Box::new(count)), e.span())
-            });
+            .map_with(|(body, count), e| (Expr::Par(Box::new(body), Box::new(count)), e.span()));
 
         let par_tensor = just(Token::Par)
             .ignore_then(par_block)

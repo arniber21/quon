@@ -81,9 +81,9 @@ fn contains_circuit_block(e: &Expr, span: SimpleSpan, offset: usize) -> bool {
         | Expr::GateApp { gate: a, qubits: b } => {
             contains_circuit_block(&a.0, a.1, offset) || contains_circuit_block(&b.0, b.1, offset)
         }
-        Expr::ParN(elems) => {
-            elems.iter().any(|e| contains_circuit_block(&e.0, e.1, offset))
-        }
+        Expr::ParN(elems) => elems
+            .iter()
+            .any(|e| contains_circuit_block(&e.0, e.1, offset)),
         Expr::TypeApp { callee, .. } => contains_circuit_block(&callee.0, callee.1, offset),
         Expr::If { cond, then, else_ } => {
             contains_circuit_block(&cond.0, cond.1, offset)
