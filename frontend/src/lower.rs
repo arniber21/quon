@@ -355,6 +355,26 @@ impl<'c> LoweringCtx<'c> {
         )
     }
 
+    /// Build an [`elaborate::ElabCtx`] carrying both the parametric-circuit
+    /// table and the zero-arg circuit-function bodies, so the elaborator can
+    /// resolve a bare `par { f() } * n` / `par { …, f(), … }` callee's width
+    /// by inlining `f`'s body during unrolling.
+    fn elab_ctx(&self) -> elaborate::ElabCtx {
+        elaborate::ElabCtx {
+            parametric: self
+                .parametric
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            bodies: self
+                .bodies
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            expanding: std::cell::RefCell::new(std::collections::HashSet::new()),
+        }
+    }
+
     /// Specializes the parametric circuit function `name` at concrete
     /// argument values `args` (each a classically-evaluable expression —
     /// typically an integer literal, or an expression closed over an
@@ -393,13 +413,7 @@ impl<'c> LoweringCtx<'c> {
         self.specialized
             .insert(cache_key.clone(), synth_name.clone());
 
-        let ctx = elaborate::ElabCtx {
-            parametric: self
-                .parametric
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        };
+        let ctx = self.elab_ctx();
         let circuit = SpecializedCircuit::specialize(&def, args, classical_env, &ctx)?;
         self.emit_specialized(&synth_name, &circuit)?;
         Ok(synth_name)
@@ -426,13 +440,7 @@ impl<'c> LoweringCtx<'c> {
         }
 
         let mut fuel = elaborate::fresh_fuel();
-        let ctx = elaborate::ElabCtx {
-            parametric: self
-                .parametric
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        };
+        let ctx = self.elab_ctx();
         let elaborated = elaborate::elaborate_circuit_body(gate, &HashMap::new(), &ctx, &mut fuel)?;
         let circuit = SpecializedCircuit::anonymous(elaborated)?;
 
@@ -624,6 +632,15 @@ impl<'c> LoweringCtx<'c> {
                                     qubits.extend(self.append_dynamic_op(op, 1)?);
                                 }
                                 return Ok(qubits);
+                            }
+                        }
+                        // `qubit()` — allocate a single fresh qubit (the nullary
+                        // allocation builtin, SPEC §5.9), the `qreg(1)` shape
+                        // returning one qubit rather than a `QReg<1>`. Leaves |0⟩.
+                        "qubit" if args.len() == 1 => {
+                            if let Expr::Unit = &args[0].0 {
+                                let op = self.foreign_qubit()?;
+                                return Ok(self.append_dynamic_op(op, 1)?);
                             }
                         }
                         // `measure(q)` — consume one qubit, produce one bit.
@@ -946,13 +963,7 @@ impl<'c> LoweringCtx<'c> {
                         gate.1,
                     );
                     let mut fuel = elaborate::fresh_fuel();
-                    let ctx = elaborate::ElabCtx {
-                        parametric: self
-                            .parametric
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect(),
-                    };
+                    let ctx = self.elab_ctx();
                     let elaborated =
                         elaborate::elaborate_circuit_body(&sp, &HashMap::new(), &ctx, &mut fuel)?;
                     return self.lower_circuit_body_expr_with_locals(
@@ -988,6 +999,30 @@ impl<'c> LoweringCtx<'c> {
                         construct: "circuit variable",
                     })
                 }
+            }
+            Expr::Par(body, count) => {
+                // `par { c } * k` reached inline (a zero-arg circuit fn whose
+                // body is a `par`, or a `par` inside a `circuit { }` block):
+                // reduce to a shifted `Compose` chain via the elaborator
+                // (resolving bare zero-arg callees against `self.bodies`), then
+                // lower the elaborated form so disjoint-qubit copies land as one
+                // layer.
+                let mut fuel = elaborate::fresh_fuel();
+                let ctx = self.elab_ctx();
+                let elaborated = elaborate::unroll_par(
+                    body, count, &HashMap::new(), &ctx, &mut fuel, body.1,
+                )?;
+                self.lower_circuit_body_expr_with_locals(&elaborated.0, block, wires, locals)
+            }
+            Expr::ParN(elems) => {
+                let mut fuel = elaborate::fresh_fuel();
+                let ctx = self.elab_ctx();
+                let span = elems
+                    .first()
+                    .map(|e| e.1)
+                    .unwrap_or_else(|| chumsky::span::SimpleSpan::from(0..0));
+                let elaborated = elaborate::unroll_parn(elems, &HashMap::new(), &ctx, &mut fuel, span)?;
+                self.lower_circuit_body_expr_with_locals(&elaborated.0, block, wires, locals)
             }
             _ => Err(LowerError::Unsupported {
                 construct: "circuit body expression",

@@ -1,0 +1,24 @@
+-- RUN: %quonc --emit-qasm %s | %FileCheck %s
+--
+-- `par { c } * n` (the flagship homepage / introduction / parallel.md example)
+-- now lowers end-to-end. Previously it typechecked but the elaborator dropped it
+-- at "elaboration is not implemented for circuit body expression"; the `Expr::Par`
+-- arm in `elaborate_circuit_body` unrolls it into `k` shifted copies, which the
+-- depth scheduler sees as one disjoint-qubit layer (depth 1), matching the
+-- declared `Circuit<n, n, 1, Clifford>`.
+
+fn had_one(): Circuit<1, 1, 1, Clifford> = circuit { H @0 }
+
+fn hadamard_layer(n: Nat): Circuit<n, n, 1, Clifford> =
+    par { had_one() } * n
+
+fn main(): Q<List<Bit>> = run {
+    reg <- hadamard_layer(3) @ qreg(3)
+    measure_all(reg)
+}
+
+-- CHECK: OPENQASM 3.0;
+-- CHECK: qubit[3] q;
+-- CHECK: h q[0];
+-- CHECK: h q[1];
+-- CHECK: h q[2];

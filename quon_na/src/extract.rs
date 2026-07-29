@@ -76,7 +76,7 @@ pub fn extract_interaction_graph_with_gamma<'c>(
     module: &Module<'c>,
     gamma: f64,
 ) -> Result<InteractionGraph, ExtractError> {
-    let (graph, _local_gates) =
+    let (graph, _local_gates, _measured_qubits) =
         extract_interaction_graph_and_local_gates_with_gamma(module, gamma)?;
     Ok(graph)
 }
@@ -84,16 +84,23 @@ pub fn extract_interaction_graph_with_gamma<'c>(
 /// Extract with [`DEFAULT_GAMMA`], also returning captured 1-qubit gates.
 pub fn extract_interaction_graph_and_local_gates<'c>(
     module: &Module<'c>,
-) -> Result<(InteractionGraph, Vec<LocalGateExtract>), ExtractError> {
+) -> Result<(InteractionGraph, Vec<LocalGateExtract>, Vec<LogicalQubitId>), ExtractError> {
     extract_interaction_graph_and_local_gates_with_gamma(module, DEFAULT_GAMMA)
 }
 
 /// Extract with a caller-supplied decay base `gamma ∈ (0, 1]`, also returning
-/// captured 1-qubit gates (issue #298) in program order.
+/// captured 1-qubit gates (issue #298) in program order, and the set of
+/// logical qubits that a `quantum.dynamic.measure` op consumes anywhere in
+/// the walked body. The bare-qubit NA pipeline previously dropped every
+/// terminal `measure`/`measure_all` silently — `DynamicVisitor::measure` was
+/// never given the measured qubit's wire-tracker root, so no visitor
+/// (including this one) could ever learn which qubit was measured, and the
+/// NA resource report always showed `measurement_rounds: 0` regardless of
+/// the source program.
 pub fn extract_interaction_graph_and_local_gates_with_gamma<'c>(
     module: &Module<'c>,
     gamma: f64,
-) -> Result<(InteractionGraph, Vec<LocalGateExtract>), ExtractError> {
+) -> Result<(InteractionGraph, Vec<LocalGateExtract>, Vec<LogicalQubitId>), ExtractError> {
     let Some(body) = module
         .as_operation()
         .region(0)
@@ -106,6 +113,7 @@ pub fn extract_interaction_graph_and_local_gates_with_gamma<'c>(
     let mut interactions = Vec::new();
     let mut segments = Vec::new();
     let mut local_gates = Vec::new();
+    let mut measured_qubits = BTreeSet::new();
     let mut next_id = 0u32;
     let mut used_qubits = BTreeSet::new();
     let mut numbering = RootNumbering::default();
@@ -119,6 +127,7 @@ pub fn extract_interaction_graph_and_local_gates_with_gamma<'c>(
         &mut interactions,
         &mut segments,
         &mut local_gates,
+        &mut measured_qubits,
         &mut next_id,
         &mut used_qubits,
         &mut numbering,
@@ -135,6 +144,7 @@ pub fn extract_interaction_graph_and_local_gates_with_gamma<'c>(
     // (likely empty, since callees are inlined) FUNC re-scan.
     if interactions.is_empty() && local_gates.is_empty() {
         used_qubits.clear();
+        measured_qubits.clear();
         numbering = RootNumbering::default();
         let mut op = body.first_operation();
         while let Some(current) = op {
@@ -153,6 +163,7 @@ pub fn extract_interaction_graph_and_local_gates_with_gamma<'c>(
                 &mut interactions,
                 &mut segments,
                 &mut local_gates,
+                &mut measured_qubits,
                 &mut next_id,
                 &mut used_qubits,
                 &mut numbering,
@@ -160,10 +171,10 @@ pub fn extract_interaction_graph_and_local_gates_with_gamma<'c>(
         }
     }
 
-    let (vertices, interactions, local_gates) =
-        densify_logical_qubits(used_qubits, interactions, local_gates);
+    let (vertices, interactions, local_gates, measured_qubits) =
+        densify_logical_qubits(used_qubits, interactions, local_gates, measured_qubits);
     let graph = InteractionGraph::from_interactions(vertices, interactions, segments, gamma)?;
-    Ok((graph, local_gates))
+    Ok((graph, local_gates, measured_qubits))
 }
 
 /// Remap possibly sparse / pointer-derived [`LogicalQubitId`]s to dense `0..n`.
@@ -171,7 +182,13 @@ fn densify_logical_qubits(
     used_qubits: BTreeSet<LogicalQubitId>,
     mut interactions: Vec<Interaction>,
     mut local_gates: Vec<LocalGateExtract>,
-) -> (Vec<LogicalQubitId>, Vec<Interaction>, Vec<LocalGateExtract>) {
+    measured_qubits: BTreeSet<LogicalQubitId>,
+) -> (
+    Vec<LogicalQubitId>,
+    Vec<Interaction>,
+    Vec<LocalGateExtract>,
+    Vec<LogicalQubitId>,
+) {
     let vertices: Vec<LogicalQubitId> = used_qubits.into_iter().collect();
     let remap: HashMap<LogicalQubitId, LogicalQubitId> = vertices
         .iter()
@@ -192,9 +209,13 @@ fn densify_logical_qubits(
             gate.qubit = mapped;
         }
     }
+    let measured_qubits: Vec<LogicalQubitId> = measured_qubits
+        .into_iter()
+        .map(|q| remap.get(&q).copied().unwrap_or(q))
+        .collect();
     let dense_vertices: Vec<LogicalQubitId> =
         (0..vertices.len() as u32).map(LogicalQubitId).collect();
-    (dense_vertices, interactions, local_gates)
+    (dense_vertices, interactions, local_gates, measured_qubits)
 }
 
 /// Densifies wire-tracker roots (raw SSA addresses or block-arg indices) to
@@ -223,6 +244,7 @@ fn extract_block<'c, 'a>(
     interactions: &mut Vec<Interaction>,
     segments: &mut Vec<InteractionSegment>,
     local_gates: &mut Vec<LocalGateExtract>,
+    measured_qubits: &mut BTreeSet<LogicalQubitId>,
     next_id: &mut u32,
     used_qubits: &mut BTreeSet<LogicalQubitId>,
     numbering: &mut RootNumbering,
@@ -240,9 +262,14 @@ fn extract_block<'c, 'a>(
 
     let mut visitor = ExtractVisitor {
         segments: vec![Vec::new()],
+        measured: Vec::new(),
         numbering,
     };
     dynamic_walk::walk_block(block, &mut visitor);
+    for qubit in &visitor.measured {
+        used_qubits.insert(*qubit);
+        measured_qubits.insert(*qubit);
+    }
 
     // Tracks, per qubit, the most recently extracted ≥2-qubit interaction —
     // the anchor a same-segment 1-qubit gate on that qubit attaches to
@@ -310,6 +337,9 @@ struct RawGate {
 
 struct ExtractVisitor<'n> {
     segments: Vec<Vec<RawGate>>,
+    /// Logical qubits consumed by a `quantum.dynamic.measure` op, in program
+    /// order (may contain duplicates; the caller dedupes via a `BTreeSet`).
+    measured: Vec<LogicalQubitId>,
     numbering: &'n mut RootNumbering,
 }
 
@@ -335,6 +365,12 @@ impl<'c, 'a> DynamicVisitor<'c, 'a> for ExtractVisitor<'_> {
 
     fn barrier(&mut self, _op: OperationRef<'c, 'a>, _qubit_roots: &[usize]) {
         self.segments.push(Vec::new());
+    }
+
+    fn measure(&mut self, _op: OperationRef<'c, 'a>, qubit_roots: &[usize]) {
+        for &root in qubit_roots {
+            self.measured.push(self.numbering.id(root));
+        }
     }
 }
 

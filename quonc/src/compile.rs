@@ -357,9 +357,14 @@ fn compile_qasm(request: &CompileRequest) -> Result<CompileArtifacts, String> {
         objective: request.na_objective,
         ..Default::default()
     };
+    // QASM ingestion intentionally skips `measure`/`reset` statements
+    // (`crate::qasm::skip_measure` — measurement is orchestrated by the
+    // source `.qn`'s `measure_all`, not by benchmark QASM), so there is no
+    // measured-qubit set to pass here.
     let artifacts = quon_na::pipeline::run_from_graph_with_local_gates(
         graph,
         local_gates,
+        Vec::new(),
         na,
         opts,
         Some(logical_qubits),

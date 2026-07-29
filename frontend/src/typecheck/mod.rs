@@ -615,6 +615,7 @@ impl TypeChecker {
             }
             Expr::Compose(l, r) => self.synth_compose(env, delta, l, r, span),
             Expr::Par(body, count) => self.synth_par(env, delta, body, count),
+            Expr::ParN(elems) => self.synth_parn(env, delta, elems, span),
             Expr::Adjoint(c) => self.synth_adjoint(env, delta, c),
             Expr::Controlled(c) => self.synth_controlled(env, delta, c),
             Expr::For { pat, iter, body } => self.synth_for(env, delta, pat, iter, body, span),
@@ -2058,6 +2059,11 @@ fn scan_qec_usage(expr: &Sp<Expr>, has_qec: &mut bool, has_bare: &mut bool) {
             scan_qec_usage(a, has_qec, has_bare);
             scan_qec_usage(b, has_qec, has_bare);
         }
+        Expr::ParN(elems) => {
+            for e in elems {
+                scan_qec_usage(e, has_qec, has_bare);
+            }
+        }
         Expr::BinOp { lhs, rhs, .. } => {
             scan_qec_usage(lhs, has_qec, has_bare);
             scan_qec_usage(rhs, has_qec, has_bare);
@@ -2191,6 +2197,11 @@ fn collect_called_fns(
         | Expr::Controlled(a)
         | Expr::Return(a)
         | Expr::Ascribe(a, _) => collect_called_fns(a, fns, out),
+        Expr::ParN(elems) => {
+            for e in elems {
+                collect_called_fns(e, fns, out);
+            }
+        }
         Expr::Compose(a, b) | Expr::Par(a, b) | Expr::GateApp { gate: a, qubits: b } => {
             collect_called_fns(a, fns, out);
             collect_called_fns(b, fns, out);
@@ -2412,7 +2423,7 @@ fn construct_name(expr: &Expr) -> &'static str {
     match expr {
         Expr::CircuitBlock(_) => "circuit block",
         Expr::Compose(..) => "|> composition",
-        Expr::Par(..) => "par",
+        Expr::Par(..) | Expr::ParN(..) => "par",
         Expr::Adjoint(_) => "adjoint",
         Expr::Controlled(_) => "controlled",
         Expr::GateApp { .. } => "gate application",

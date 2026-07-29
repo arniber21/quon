@@ -191,6 +191,39 @@ fn par_count_absorbs_multiplicative_chain() {
 }
 
 #[test]
+fn par_parn_tensor_of_different_circuits() {
+    let b = body("par { H @ 0, H @ 1 }");
+    match b {
+        Expr::ParN(elems) => assert_eq!(elems.len(), 2, "expected 2 arms, got {elems:?}"),
+        other => panic!("expected ParN, got {other:?}"),
+    }
+    assert_eq!(shape("par { H @ 0, H @ 1 }"), "par { H @ 0, H @ 1 }");
+}
+
+#[test]
+fn par_parn_single_arm_is_grouping() {
+    // `par { c }` with no `* count` parses as a 1-arm tensor (grouping), not Par.
+    let b = body("par { H @ 0 }");
+    match b {
+        Expr::ParN(elems) => assert_eq!(elems.len(), 1),
+        other => panic!("expected ParN, got {other:?}"),
+    }
+}
+
+#[test]
+fn par_parn_nested() {
+    let b = body("par { par { H @ 0, H @ 1 }, par { H @ 2, H @ 3 } }");
+    match b {
+        Expr::ParN(elems) => {
+            assert_eq!(elems.len(), 2, "expected 2 outer arms, got {elems:?}");
+            assert!(matches!(elems[0].0, Expr::ParN(_)), "inner not ParN");
+            assert!(matches!(elems[1].0, Expr::ParN(_)), "inner not ParN");
+        }
+        other => panic!("expected ParN, got {other:?}"),
+    }
+}
+
+#[test]
 fn bare_type_name_is_var_parameterized_is_named() {
     // Bare non-builtin name -> Type::Var; `Name<args>` -> Type::Named.
     let decls = parse_stripped("fn f(x: Bell): Oracle<n> = ()");

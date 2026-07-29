@@ -9,4 +9,4 @@ fn match_demo(x: Int): Int = match x {
 _ => 2
 }
 
-fn loop(): Circuit<2, 2, 1, Clifford> = for i in (range 2) { H @i }
+fn loop(): Circuit<2, 2, 1, Clifford> = for i in (range(2)) { H @i }

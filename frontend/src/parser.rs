@@ -690,15 +690,36 @@ where
             )
             .boxed();
 
-        // ---- par { body } * count ----
-        // The count is a full multiplicative chain, so `par { c } * 4 * 2` parses as
-        // `par { c } * (4 * 2)` — the `* …` chain binds entirely into the tensor count.
-        // `par` therefore lives at the multiplicative tier (tighter than `+`, looser than `@`).
-        let par_expr = just(Token::Par)
+        // ---- par forms ----
+        // Two surface shapes share the `par` keyword:
+        //   * `par { body } * count` — n-fold tensor of one circuit (Expr::Par).
+        //   * `par { c₁, c₂, … }`     — tensor of *different* circuits (Expr::ParN).
+        // The repetition branch parses exactly one body between the braces and
+        // demands a trailing `* count`; a comma after the body (`par { a, b }`)
+        // fails it and the comma-list tensor branch takes over. `par { a, b } * n`
+        // is intentionally not a form — the `* n` is left unconsumed and rejected.
+        let par_block = expr
+            .clone()
+            .separated_by(comma.clone())
+            .at_least(1)
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .padded_by(nls.clone())
+            .delimited_by(just(Token::LBrace), just(Token::RBrace));
+
+        let par_repeat = just(Token::Par)
             .ignore_then(brace_expr.clone())
             .then_ignore(just(Token::Star))
             .then(mul_chain.clone())
-            .map_with(|(body, count), e| (Expr::Par(Box::new(body), Box::new(count)), e.span()));
+            .map_with(|(body, count), e| {
+                (Expr::Par(Box::new(body), Box::new(count)), e.span())
+            });
+
+        let par_tensor = just(Token::Par)
+            .ignore_then(par_block)
+            .map_with(|elems, e| (Expr::ParN(elems), e.span()));
+
+        let par_expr = choice((par_repeat, par_tensor));
 
         let product = choice((par_expr, mul_chain)).boxed();
 

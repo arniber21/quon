@@ -323,6 +323,10 @@ fn e_str(e: &Sp<Expr>) -> String {
         Expr::RunBlock(stmts) => block_str("run", stmts),
         Expr::Compose(a, b) => format!("{} |> {}", atom(a), atom(b)),
         Expr::Par(body, count) => format!("par {{ {} }} * {}", e_str(body), atom(count)),
+        Expr::ParN(elems) => {
+            let inner = elems.iter().map(e_str).collect::<Vec<_>>().join(", ");
+            format!("par {{ {inner} }}")
+        }
         Expr::Adjoint(x) => format!("adjoint({})", e_str(x)),
         Expr::Controlled(x) => format!("controlled({})", e_str(x)),
         Expr::GateApp { gate, qubits } => format!("{} @ {}", atom(gate), atom(qubits)),

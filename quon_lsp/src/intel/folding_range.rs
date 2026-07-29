@@ -101,6 +101,11 @@ fn walk_expr(expr: &Sp<Expr>, src: &str, out: &mut Vec<FoldingRange>) {
                 walk_expr(e, src, out);
             }
         }
+        Expr::ParN(elems) => {
+            for e in elems {
+                walk_expr(e, src, out);
+            }
+        }
         Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(_) => {}
     }
 }

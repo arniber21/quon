@@ -9,9 +9,8 @@
 -- placements act on disjoint qubits and proves depth 1 -- all n Hadamards run
 -- in a single layer. Contrast with writing them as `H @0 |> H @1 |> ...`,
 -- which would chain them sequentially and inflate the depth to n for the same
--- physics. (The declarative `par { c } * n` spelling of the same layer
--- typechecks but is not yet lowered; the `for` form is the one that compiles
--- end to end -- see samples/learning/gates_composition.qn.)
+-- physics. (Both the declarative `par { c } * n` and the `for q in qubits(n)`
+-- forms now compile end to end; this sample uses the `for` spelling.)
 --
 -- This is the many-qubit cousin of samples/applications/quantum_coin_flip.qn
 -- (one qubit, one bit) and samples/learning/states_measurement.qn (one basis

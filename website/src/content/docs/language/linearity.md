@@ -60,7 +60,7 @@ linear invariant was violated.
 
 ```kotlin
 fn bug(): Q<Bit> = run {
-    q <- qinit()
+    q <- qubit()
     b <- measure(q)
     b2 <- measure(q)
     return b2
@@ -114,7 +114,7 @@ error: linear resource `q1` not consumed
 
 ```kotlin
 fn bug(): Q<(Qubit, Qubit)> = run {
-    q <- qinit()
+    q <- qubit()
     return (q, q)
 }
 ```

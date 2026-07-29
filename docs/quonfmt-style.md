@@ -53,7 +53,7 @@ sources use `quonfmt`.
 
 | AST | Printed as |
 | --- | ---------- |
-| Juxtaposition `App(f, x)` | `f x` when both sides are atom-safe |
+| `App(f, x)` | `f(x)` — always parenthesized (the juxtaposition `f x` form was dropped to match the website and fixtures) |
 | Multi-arg call | `f(a, b, …)` |
 | `App(f, Unit)` | `f()` |
 | Index desugar | `index(q, i)` |

@@ -185,6 +185,11 @@ pub fn walk_expr(
             walk_expr(ctx, a, visit);
             walk_expr(ctx, b, visit);
         }
+        Expr::ParN(elems) => {
+            for e in elems {
+                walk_expr(ctx, e, visit);
+            }
+        }
         Expr::Adjoint(e) | Expr::Controlled(e) | Expr::Ascribe(e, _) => walk_expr(ctx, e, visit),
         // Type-level args are `NatExpr`s, not expressions — only the callee is walkable.
         Expr::TypeApp { callee, .. } => walk_expr(ctx, callee, visit),

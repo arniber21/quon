@@ -131,9 +131,18 @@ fn bell_backend_headline_numbers_match_readme() {
     // too; see `quon_na::pipeline::push_global_ry_with_refocus`).
     // Movement-side numbers (rearrangement/transfers/bottleneck) are
     // unaffected — none of this needs a site placement.
-    assert_eq!(m["estimated_cycles"], 9, "zoned bell.qn: {zoned}");
+    // 9 -> 10: `bell.qn`'s terminal `measure_all` was previously extracted
+    // but never lowered into a schedule action at all (`DynamicVisitor::measure`
+    // had no qubit_roots to report which qubit was measured), so every NA
+    // resource report showed `measurement_rounds: 0` regardless of the
+    // source program. Fixed: the terminal measurement is now its own final
+    // layer (both atoms, same cycle — the bare-qubit NA path has no
+    // mid-circuit feed-forward, so every measurement is simultaneous and
+    // terminal), which is why `estimated_cycles` grows by exactly 1 here.
+    assert_eq!(m["estimated_cycles"], 10, "zoned bell.qn: {zoned}");
     assert_eq!(m["rearrangement_steps"], 1, "zoned bell.qn: {zoned}");
     assert_eq!(m["trap_transfers"], 4, "zoned bell.qn: {zoned}");
+    assert_eq!(m["measurement_rounds"], 1, "zoned bell.qn: {zoned}");
     assert_eq!(m["bottleneck"], "rearrangement", "zoned bell.qn: {zoned}");
 
     let (flat_out, flat) = emit_na_schedule(&source, &["--na-backend", "flat"]);
@@ -144,10 +153,17 @@ fn bell_backend_headline_numbers_match_readme() {
     );
     let m = &flat["metrics"];
     // Same #298 story: 1 -> 6 for the same reason as the zoned case above.
-    assert_eq!(m["estimated_cycles"], 6, "flat bell.qn: {flat}");
+    // 6 -> 7 for the terminal-measurement fix above; the added measurement
+    // round now dominates `total_time_us` (1500us vs. a few us of gate
+    // time), which flips `bottleneck` from `rydberg` to `mixed` (a genuine
+    // tie by count, not a regression — the old `rydberg` bottleneck reading
+    // was itself an artifact of the report not knowing about the
+    // measurement at all).
+    assert_eq!(m["estimated_cycles"], 7, "flat bell.qn: {flat}");
     assert_eq!(m["rearrangement_steps"], 0, "flat bell.qn: {flat}");
     assert_eq!(m["trap_transfers"], 0, "flat bell.qn: {flat}");
-    assert_eq!(m["bottleneck"], "rydberg", "flat bell.qn: {flat}");
+    assert_eq!(m["measurement_rounds"], 1, "flat bell.qn: {flat}");
+    assert_eq!(m["bottleneck"], "mixed", "flat bell.qn: {flat}");
 }
 
 /// T2 (issue #192 review): the flat-backend footnote story on `qft_small.qn`
@@ -256,28 +272,35 @@ fn placer_headline_numbers_match_readme() {
     // per `H`". `ising.qn` has no bare `H`/non-diagonal 1-qubit gate (its
     // `Rzz`-sandwich `Rz`s are diagonal, needing no `ry`/echo at all), so
     // it is untouched by this and keeps its #298-era numbers below.
+    // `estimated_cycles` +1 and `total_time_us` +1500us across every row
+    // below vs. the pre-fix numbers: `qaoa_graph.qn`/`ising.qn` both end in
+    // `measure_all`, which — like `bell.qn` above — was extracted but never
+    // lowered into a schedule action, so `measurement_rounds` was always 0
+    // and the ~1500us terminal readout never entered `total_time_us`.
+    // Rearrangement/transfer counts are unaffected (measurement needs no
+    // atom movement).
     let m = &qaoa_agnostic["metrics"];
-    assert_eq!(m["estimated_cycles"], 80, "qaoa agnostic: {qaoa_agnostic}");
+    assert_eq!(m["estimated_cycles"], 81, "qaoa agnostic: {qaoa_agnostic}");
     assert_eq!(
         m["rearrangement_steps"], 8,
         "qaoa agnostic: {qaoa_agnostic}"
     );
     assert_eq!(m["trap_transfers"], 22, "qaoa agnostic: {qaoa_agnostic}");
-    assert_eq!(m["total_time_us"], 1686, "qaoa agnostic: {qaoa_agnostic}");
+    assert_eq!(m["total_time_us"], 3186, "qaoa agnostic: {qaoa_agnostic}");
 
     let m = &qaoa_aware["metrics"];
-    assert_eq!(m["estimated_cycles"], 83, "qaoa aware: {qaoa_aware}");
+    assert_eq!(m["estimated_cycles"], 84, "qaoa aware: {qaoa_aware}");
     assert_eq!(m["rearrangement_steps"], 9, "qaoa aware: {qaoa_aware}");
     assert_eq!(m["trap_transfers"], 24, "qaoa aware: {qaoa_aware}");
-    // 1764 -> 1742 under #297: same step/transfer counts, but the corrected
-    // grouped-cost search now finds a lower-travel-distance placement within
-    // that same group structure.
-    assert_eq!(m["total_time_us"], 1742, "qaoa aware: {qaoa_aware}");
+    // 1764 -> 1742 under #297 (same step/transfer counts, corrected
+    // grouped-cost search finds a lower-travel-distance placement), then
+    // +1500us for the terminal-measurement fix above.
+    assert_eq!(m["total_time_us"], 3242, "qaoa aware: {qaoa_aware}");
 
     let agnostic_m = &ising_agnostic["metrics"];
     let aware_m = &ising_aware["metrics"];
     assert_eq!(
-        agnostic_m["estimated_cycles"], 48,
+        agnostic_m["estimated_cycles"], 49,
         "ising agnostic: {ising_agnostic}"
     );
     assert_eq!(
@@ -289,11 +312,11 @@ fn placer_headline_numbers_match_readme() {
         "ising agnostic: {ising_agnostic}"
     );
     assert_eq!(
-        agnostic_m["total_time_us"], 2217,
+        agnostic_m["total_time_us"], 3717,
         "ising agnostic: {ising_agnostic}"
     );
     assert_eq!(
-        aware_m["estimated_cycles"], 48,
+        aware_m["estimated_cycles"], 49,
         "ising aware: {ising_aware}"
     );
     assert_eq!(
@@ -302,9 +325,10 @@ fn placer_headline_numbers_match_readme() {
     );
     assert_eq!(aware_m["trap_transfers"], 20, "ising aware: {ising_aware}");
     // #297: was 2256 (worse than agnostic's 2217) under the old per-gate
-    // (ungrouped) search cost model; now 2217, tied with agnostic — see this
-    // test's doc comment for why that is the corrected, expected outcome.
-    assert_eq!(aware_m["total_time_us"], 2217, "ising aware: {ising_aware}");
+    // (ungrouped) search cost model; 2217 tied with agnostic after #297, then
+    // +1500us for the terminal-measurement fix above (still tied with
+    // agnostic — see the sanity assertion below).
+    assert_eq!(aware_m["total_time_us"], 3717, "ising aware: {ising_aware}");
 
     // N2 (revised for #297): every structural metric above — including
     // `total_time_us`, which used to differ — is now byte-for-byte identical

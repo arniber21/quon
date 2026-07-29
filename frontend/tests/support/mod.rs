@@ -208,6 +208,11 @@ fn strip_expr(e: &mut Expr) {
             go!(a, strip_expr);
             go!(b, strip_expr);
         }
+        Expr::ParN(elems) => {
+            for e in elems.iter_mut() {
+                go!(e, strip_expr);
+            }
+        }
         Expr::GateApp { gate, qubits } => {
             go!(gate, strip_expr);
             go!(qubits, strip_expr);

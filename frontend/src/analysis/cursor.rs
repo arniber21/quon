@@ -125,6 +125,11 @@ fn visit_expr<'a>(
             visit_expr(&a.0, a.1, offset, best);
             visit_expr(&b.0, b.1, offset, best);
         }
+        Expr::ParN(elems) => {
+            for e in elems {
+                visit_expr(&e.0, e.1, offset, best);
+            }
+        }
         Expr::TypeApp { callee, .. } => {
             visit_expr(&callee.0, callee.1, offset, best);
         }

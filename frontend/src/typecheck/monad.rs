@@ -344,6 +344,11 @@ fn collect_var_hit(expr: &Sp<Expr>, borrowed: &BTreeSet<String>, found: &mut Opt
             collect_var_hit(a, borrowed, found);
             collect_var_hit(b, borrowed, found);
         }
+        Expr::ParN(elems) => {
+            for e in elems {
+                collect_var_hit(e, borrowed, found);
+            }
+        }
         Expr::TypeApp { callee, .. } => collect_var_hit(callee, borrowed, found),
         Expr::BinOp { lhs, rhs, .. } => {
             collect_var_hit(lhs, borrowed, found);

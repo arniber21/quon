@@ -293,6 +293,11 @@ fn walk_expr(expr: &Sp<Expr>, b: &mut Builder<'_>) {
             walk_expr(a, b);
             walk_expr(br, b);
         }
+        Expr::ParN(elems) => {
+            for e in elems {
+                walk_expr(e, b);
+            }
+        }
         Expr::TypeApp { callee, .. } => walk_expr(callee, b),
         Expr::BinOp { lhs, rhs, .. } => {
             walk_expr(lhs, b);

@@ -47,7 +47,12 @@ impl<'a> Context<'a> {
     }
 
     pub fn current_indent(&self) -> String {
-        self.config.indent.repeat(self.indent_level + 1)
+        // `nested()` is always called before entering a block (CircuitBlock/
+        // RunBlock/Borrow), so `indent_level` already reflects the block depth;
+        // a top-level block body lives at level 1 → one indent (4 spaces),
+        // not two. The prior `indent_level + 1` double-counted and emitted
+        // 8-space bodies (contradicting quonfmt-style.md's "4 spaces").
+        self.config.indent.repeat(self.indent_level)
     }
 }
 
