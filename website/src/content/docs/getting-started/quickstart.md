@@ -104,7 +104,8 @@ return once the core path works.
 Set up the optional Python environment if you have not already:
 
 ```bash
-just setup-python
+just setup-python                 # inside devbox shell
+devbox run -- just setup-python   # one-shot from the host shell
 source .venv/bin/activate
 ```
 

@@ -16,21 +16,52 @@ just doctor           # check required tools
 cargo build -p quonc
 ```
 
-All build, test, and lint commands go through `devbox run -- just <recipe>`
-(or run them inside `devbox shell`). See [getting started][install] for the
-full setup and troubleshooting.
+### First-run toolchain readiness
+
+Run `just doctor` before the first build. It prints a readiness matrix over
+the required rows (`MLIR_SYS_220_PREFIX`, `z3`) and the optional rows
+(`.venv` + Qiskit, `lit`, `FileCheck`, `quonc`), exiting non-zero only when a
+**required** row is `MISSING` (pass `--strict` to fail on optional rows too).
+Each `MISSING` row names its recovery action.
+
+If `command not found: just` appears, you are on the host shell without Devbox
+active — `just` lives inside Devbox, not on the host. Recover with either
+path (they are equivalent):
+
+```bash
+devbox shell              # stay in the locked environment, then run: just <recipe>
+devbox run -- just doctor # one-shot: Devbox runs the recipe and exits
+```
+
+Do not install `just` on the host to silence the error — the Devbox-pinned
+`just` is the supported version. See [getting started][install] for the full
+setup and troubleshooting.
+
+## Two ways to run `just` recipes
+
+All build, test, and lint commands go through `just` recipes (the root
+`Justfile` is the orchestrator source of truth, ADR-0012). CI invokes them
+through `devbox run --`. Locally you can use either:
+
+- **Inside `devbox shell`** — run `just <recipe>` directly.
+- **One-shot from the host shell** — run `devbox run -- just <recipe>`;
+  Devbox spins up the locked environment for that single command.
+
+The two are equivalent; pick one and stay consistent within a session.
 
 ## Daily workflow
 
-```bash
-just test-fast        # unit + integration tests (cargo-nextest; soft-skip lit)
-just test-ci          # local CI-parity path (fmt + clippy + build + tests + tooling + docs)
-just ci-rust          # the rust CI gate alone
-just ci-tooling       # quonfmt + quonlint + LSP smoke
-just ci-docs-assert   # assert agent validation docs match Justfile / CI
-```
+| Inside `devbox shell` | One-shot from host shell | Purpose |
+| --------------------- | ------------------------ | ------- |
+| `just test-fast` | `devbox run -- just test-fast` | unit + integration tests (cargo-nextest; soft-skip lit) |
+| `just test-ci` | `devbox run -- just test-ci` | local CI-parity path (fmt + clippy + build + tests + tooling + docs) |
+| `just ci-rust` | `devbox run -- just ci-rust` | the rust CI gate alone |
+| `just ci-tooling` | `devbox run -- just ci-tooling` | quonfmt + quonlint + LSP smoke |
+| `just ci-docs-assert` | `devbox run -- just ci-docs-assert` | assert agent validation docs match Justfile / CI |
 
-`just test-ci` is the local mirror of what CI runs. Run it before pushing.
+`just test-ci` is the local mirror of what CI runs. Run it before pushing
+(`devbox run -- just test-ci` works from the host shell without entering
+Devbox).
 
 ## Branches and pull requests
 
