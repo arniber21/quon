@@ -134,6 +134,17 @@ pub fn ceil_div(numerator: u32, denominator: u32) -> Result<u32, QecError> {
     Ok(adjusted / denominator)
 }
 
+/// Negative compile fixture (issue #411): `ceil_div`'s Flux precondition
+/// `denominator > 0` is load-bearing. The `#[should_fail]` attribute encodes
+/// that flux *must* reject the zero-denominator call. If someone drops the
+/// precondition, this function would verify and flux would error on
+/// `should_fail`.
+#[allow(dead_code)]
+#[cfg_attr(feature = "flux", should_fail)]
+fn ceil_div_zero_denominator_is_rejected() -> Result<u32, QecError> {
+    ceil_div(1, 0)
+}
+
 /// Source-language `CodeFamily` tag (`Repetition` / `Surface`).
 ///
 /// Wire/report strings use `"repetition"` / `"surface"` (ADR-0014).

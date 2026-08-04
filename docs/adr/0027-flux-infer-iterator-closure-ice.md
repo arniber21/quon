@@ -92,6 +92,22 @@ length-propagation gap as the lattice-surgery functions above). The remaining
 failures are pure toolchain ICEs in impl-block methods and are **not**
 individually worked around — see the CI decision below.
 
+### `quon_core/src/depth.rs` — loop-invariant gaps in no-alloc decimal helpers
+
+`write_decimal` and `leading_decimal_byte` (perf helpers from #398/#420)
+carry `#[cfg_attr(feature = "flux", flux_rs::trusted)]`. flux-infer cannot:
+
+- relate the `m > 0` loop guard to `i > 0` (`write_decimal`: `i -= 1`
+  underflow, `buf[i]` OOB);
+- prove the `while d >= 10 { d /= 10 }` loop establishes `d < 10`
+  (`leading_decimal_byte`: `b'0' + (d as u8)` u8 overflow).
+
+Neither helper carries a flux spec, so trusting them skips no verification.
+Issue #411 also added `quon_core/flux` to `quon_na`'s `flux` feature so the
+`#[trusted]` attrs are active when `cargo flux -p quon_na --features flux`
+builds `quon_core` as a dependency (without it, the attrs are inactive and
+the depth.rs errors resurface).
+
 ### CI handling
 
 The Flux workflow (`.github/workflows/flux.yml`) pins the Flux toolchain to

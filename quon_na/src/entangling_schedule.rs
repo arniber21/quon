@@ -83,20 +83,51 @@ pub enum EntanglingScheduleError<V = LogicalQubitId> {
     #[error("unknown interaction {0:?} referenced by a segment")]
     UnknownInteraction(InteractionId),
 }
-
-/// Ceiling of `n / cap` layers needed to host `n` parallel pairs under capacity `cap`.
+/// Error from [`capacity_layer_count`] when the capacity is zero (issue #411).
 ///
-/// Returns `0` when `n == 0`.
+/// `capacity_layer_count` accepts a nonzero capacity (Flux precondition
+/// `cap > 0`) or returns this typed error when `cap == 0` and `n > 0` in the
+/// stable build. The scheduler (`schedule_entangling_layers`) independently
+/// rejects zero capacity before calling, so this is a defense-in-depth guard
+/// for direct callers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum CapacityLayerError {
+    #[error("capacity must be ≥ 1 to host {0} pairs, got 0")]
+    ZeroCapacity(u32),
+}
+
+/// Ceiling of `n / cap` layers needed to host `n` parallel pairs under
+/// capacity `cap` (issue #411).
+///
+/// Returns `Ok(0)` when `n == 0` (no pairs → no layers regardless of cap).
+/// Returns `Err(CapacityLayerError::ZeroCapacity)` when `cap == 0` and
+/// `n > 0` (cannot host pairs with zero capacity). Under the Flux
+/// precondition `cap > 0`, the error path is unreachable and Flux proves the
+/// successful-result postcondition.
 #[cfg_attr(
     feature = "flux",
-    spec(fn(n: u32, cap: u32{v: v > 0}) -> u32{v: (n == 0 && v == 0) || (n > 0 && v >= 1)})
+    spec(fn(n: u32, cap: u32{v: v > 0}) -> Result<u32, CapacityLayerError>{v: (n == 0 && v == 0) || (n > 0 && v >= 1)})
 )]
-pub fn capacity_layer_count(n: u32, cap: u32) -> u32 {
+pub fn capacity_layer_count(n: u32, cap: u32) -> Result<u32, CapacityLayerError> {
     if n == 0 {
-        return 0;
+        return Ok(0);
     }
-    debug_assert!(cap > 0);
-    n.div_ceil(cap)
+    if cap == 0 {
+        return Err(CapacityLayerError::ZeroCapacity(n));
+    }
+    Ok(n.div_ceil(cap))
+}
+
+/// Negative compile fixture (issue #411): `capacity_layer_count`'s Flux
+/// precondition `cap > 0` is load-bearing. The `#[should_fail]` attribute
+/// encodes that flux *must* reject the zero-capacity call. If someone drops
+/// the precondition, this function would verify and flux would error on
+/// `should_fail`.
+#[allow(dead_code)]
+#[cfg_attr(feature = "flux", should_fail)]
+#[cfg_attr(feature = "flux", sig(fn() -> Result<u32, CapacityLayerError>))]
+fn capacity_layer_count_zero_cap_is_rejected() -> Result<u32, CapacityLayerError> {
+    capacity_layer_count(5, 0)
 }
 
 /// Fill `req.layers` with entangling actions from the interaction graph.
@@ -596,11 +627,31 @@ mod tests {
 
     #[test]
     fn capacity_layer_count_ceil_divides() {
-        assert_eq!(capacity_layer_count(0, 5), 0);
-        assert_eq!(capacity_layer_count(1, 5), 1);
-        assert_eq!(capacity_layer_count(5, 5), 1);
-        assert_eq!(capacity_layer_count(6, 5), 2);
-        assert_eq!(capacity_layer_count(10, 3), 4);
+        assert_eq!(capacity_layer_count(0, 5), Ok(0));
+        assert_eq!(capacity_layer_count(1, 5), Ok(1));
+        assert_eq!(capacity_layer_count(5, 5), Ok(1));
+        assert_eq!(capacity_layer_count(6, 5), Ok(2));
+        assert_eq!(capacity_layer_count(10, 3), Ok(4));
+    }
+
+    #[test]
+    fn capacity_layer_count_zero_cap_is_typed_error() {
+        // Zero capacity with n > 0 returns a typed error, not a panic.
+        assert_eq!(
+            capacity_layer_count(5, 0),
+            Err(CapacityLayerError::ZeroCapacity(5))
+        );
+        // Zero capacity with n == 0 is vacuously zero layers.
+        assert_eq!(capacity_layer_count(0, 0), Ok(0));
+    }
+
+    #[test]
+    fn capacity_layer_count_machine_boundaries() {
+        // u32::MAX pairs at capacity 1 — the worst-case layer count.
+        assert_eq!(capacity_layer_count(u32::MAX, 1), Ok(u32::MAX));
+        // One pair at max capacity — still one layer.
+        assert_eq!(capacity_layer_count(1, u32::MAX), Ok(1));
+        assert_eq!(capacity_layer_count(u32::MAX, u32::MAX), Ok(1));
     }
 
     #[test]
@@ -679,7 +730,7 @@ mod tests {
         let req = schedule_from_graph(graph).expect("stub");
         let result = schedule_entangling_layers(req, 1).expect("schedule");
         assert_eq!(result.request.layers.len(), 3);
-        assert_eq!(capacity_layer_count(3, 1), 3);
+        assert_eq!(capacity_layer_count(3, 1), Ok(3));
         for u in &result.utilizations {
             assert_eq!(u.entangling_pairs, 1);
             assert_eq!(u.capacity, 1);

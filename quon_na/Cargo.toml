@@ -12,7 +12,7 @@ default = []
 # Opt-in Flux refinement-type checking. Off by default so the stable workspace
 # build never compiles `flux-rs`; enabled by `cargo flux -p quon_na
 # --no-default-features --features flux` (nightly).
-flux = ["dep:flux-rs", "backend/flux", "quon_qec/flux"]
+flux = ["dep:flux-rs", "backend/flux", "quon_core/flux", "quon_qec/flux"]
 mlir = ["dep:melior", "dep:mlir_bridge"]
 # Opt-in exact SMT solver (issue #302): z3-backed optimal placement + state-prep
 # scheduling. Mirrors frontend's `analyze` optional-z3 pattern (ADR-0038): the

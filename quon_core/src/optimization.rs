@@ -39,15 +39,34 @@ pub fn depth_after_removal(current: u64, removed: u64) -> u64 {
     }
 }
 
-/// Sequential composition depth (`a |> b`): depths add. The result bounds each
-/// operand from below — composing circuits never shrinks depth. Depths are gate
-/// counts, far below `u64::MAX`, so the addition cannot realistically overflow.
+/// Sequential composition depth (`a |> b`): depths add. The result equals the
+/// mathematical sum and bounds each operand from below — composing circuits
+/// never shrinks depth.
+///
+/// Flux proves `v == a + b` under the no-overflow precondition
+/// `a + b <= u64::MAX`: the addition cannot overflow, so the contract is
+/// load-bearing rather than merely documented. Depths are gate counts, far
+/// below `u64::MAX`, so every verified caller satisfies the precondition; a
+/// direct call past the machine maximum (`a + b > u64::MAX`) violates the
+/// documented contract rather than panicking in a debug build (issue #411).
 #[cfg_attr(
     feature = "flux",
-    spec(fn(a: u64, b: u64) -> u64{v: a <= v && b <= v})
+    spec(fn(a: u64, b: u64) -> u64{v: a <= v && b <= v && v == a + b})
 )]
 pub fn seq_depth(a: u64, b: u64) -> u64 {
     a + b
+}
+
+/// Negative compile fixture (issue #411): `seq_depth`'s exact-sum
+/// postcondition `v == a + b` is load-bearing. The `#[should_fail]`
+/// attribute encodes that flux *must* reject the off-by-one claim. If
+/// someone weakens the spec to `v >= a + b` (dropping the equality), this
+/// function would verify and flux would error on `should_fail`.
+#[allow(dead_code)]
+#[cfg_attr(feature = "flux", should_fail)]
+#[cfg_attr(feature = "flux", sig(fn(a: u64, b: u64) -> u64{v: v == a + b + 1}))]
+fn seq_depth_exact_sum_is_load_bearing(a: u64, b: u64) -> u64 {
+    seq_depth(a, b)
 }
 
 /// Parallel composition depth (`a ∥ b`): the maximum. An upper bound on both
@@ -126,5 +145,16 @@ mod tests {
         assert!(!arity_preserved(2, 1));
         assert!(single_qubit_pair(1, 1));
         assert!(!single_qubit_pair(1, 2));
+    }
+
+    #[test]
+    fn seq_depth_machine_boundaries() {
+        // Zero + zero = zero.
+        assert_eq!(seq_depth(0, 0), 0);
+        // Max minus one + one = max (no overflow).
+        assert_eq!(seq_depth(u64::MAX - 1, 1), u64::MAX);
+        assert_eq!(seq_depth(1, u64::MAX - 1), u64::MAX);
+        // Symmetry: seq_depth(a, b) == seq_depth(b, a).
+        assert_eq!(seq_depth(1000, 2000), seq_depth(2000, 1000));
     }
 }

@@ -379,8 +379,14 @@ impl PartialOrd for DepthExpr {
         Some(self.cmp(other))
     }
 }
-
 /// The most-significant decimal digit of `n` as an ASCII byte.
+///
+/// `trusted` (flux refinement limitation, ADR-0027): flux-infer cannot prove
+/// the loop establishes `d < 10`, so it cannot discharge `b'0' + (d as u8)`
+/// against the u8 overflow check. This helper carries no flux spec, so
+/// trusting it skips no verification. Remove once flux-infer can infer loop
+/// invariants over `while … { d /= 10 }`.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn leading_decimal_byte(n: u64) -> u8 {
     let mut d = n;
     while d >= 10 {
@@ -392,6 +398,13 @@ fn leading_decimal_byte(n: u64) -> u8 {
 /// Write the decimal representation of `n` into `buf` (right-justified) and
 /// return the start index; the digits occupy `buf[start..20]`. No allocation.
 /// A `u64` has at most 20 decimal digits, so a 20-byte buffer always fits.
+///
+/// `trusted` (flux refinement limitation, ADR-0027): flux-infer cannot relate
+/// the `m > 0` loop guard to `i > 0` (loop-invariant weakness), so it flags
+/// `i -= 1` as a possible underflow and `buf[i]` as a possible out-of-bounds
+/// access. This helper carries no flux spec, so trusting it skips no
+/// verification. Remove once flux-infer can infer loop invariants here.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn write_decimal(n: u64, buf: &mut [u8; 20]) -> usize {
     if n == 0 {
         buf[19] = b'0';
