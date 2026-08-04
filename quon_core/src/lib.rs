@@ -89,6 +89,13 @@ pub mod metrics;
 pub mod optimization;
 pub mod qasm;
 
+/// Negative compile fixtures for the scalar Flux predicates (issue #414).
+/// Compiled only under the `flux` feature so the stable workspace build never
+/// pulls in the `#[should_fail]` / `#[spec]` fixtures; verified by
+/// `cargo flux -p quon_core --features flux`.
+#[cfg(feature = "flux")]
+pub mod neg_flux_fixtures;
+
 pub use depth::{DepthExpr, DepthParseError};
 pub use gates::{
     GateClass, GateInfo, REGISTRY, canonical_id, inverse, inverse_or_self, is_inverse_pair,

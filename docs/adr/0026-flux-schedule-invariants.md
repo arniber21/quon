@@ -116,8 +116,11 @@ marginal assurance over the runtime verifier.
 
 **Option B — Flux only on the scalar kernels, keep runtime verifier for the
 rest.** Accepted: prototype `cycle_is_monotonic` and `wait_barrier_ok` as Flux
-refinement-typed kernels. These pin the invariant at compile time and serve as
-documentation, even though the runtime verifier is the real safety net.
+refinement-typed kernels. These pin the invariant at compile time and, since
+#414, are **load-bearing**: `verify_schedule_ordering` in `dialect.rs` routes
+its cycle-monotonicity and wait-barrier checks through these kernels rather
+than re-implementing the comparisons inline. The runtime verifier remains
+authoritative for the collection-level invariants outside Flux's scope.
 
 **Option C — No Flux, rely entirely on the runtime verifier.** Rejected for this
 issue: the issue explicitly asks for a prototype to evaluate feasibility. The
@@ -129,6 +132,9 @@ prototype is the deliverable that answers the question.
   Flux-refined scalar kernels (`cycle_is_monotonic`, `wait_barrier_ok`).
 - The kernels are unit-tested and pinned in `flux_verify/src/lib.rs` smoke
   tests, matching the existing pattern.
-- No change to `dialect.rs` — the runtime verifier remains authoritative.
+- `dialect.rs` consumes the kernels: `verify_schedule_ordering` routes its
+  cycle-monotonicity and wait-barrier checks through `cycle_is_monotonic` /
+  `wait_barrier_ok` (#414), so the Flux postconditions guard the verifier's
+  error paths. The runtime verifier remains authoritative for the rest.
 - Future Flux work on `quantum.na` should wait until/unless geometry moves to
   fixed-point arithmetic.

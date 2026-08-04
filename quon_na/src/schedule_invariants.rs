@@ -7,8 +7,13 @@
 //! operations that Flux cannot reason about (see ADR-0026).
 //!
 //! Verified with `cargo flux -p quon_na --no-default-features --features flux`.
-//! The runtime verifier in [`crate::dialect`] remains authoritative; these
-//! kernels are compile-time proofs that document and pin the scalar invariants.
+//! The kernels are **load-bearing**: the authoritative runtime verifier
+//! `verify_schedule_ordering` in [`crate::dialect`] routes its cycle-
+//! monotonicity and wait-barrier checks through [`cycle_is_monotonic`] and
+//! [`wait_barrier_ok`] rather than re-implementing the comparisons inline, so
+//! the Flux postconditions (`prev <= curr`, `wait_cycle < after_cycle`) guard
+//! the verifier's error paths. The runtime verifier remains authoritative for
+//! the collection-level invariants that fall outside Flux's scope.
 
 #[cfg(feature = "flux")]
 use flux_rs::attrs::*;

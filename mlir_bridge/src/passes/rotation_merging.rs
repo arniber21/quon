@@ -169,7 +169,10 @@ fn merge_pair<'c, 'a>(
         base.erase_op(current.operation);
         base.erase_op(previous.operation);
         return (
-            previous.depth_contribution + current.depth_contribution,
+            quon_core::optimization::seq_depth(
+                previous.depth_contribution as u64,
+                current.depth_contribution as u64,
+            ) as i64,
             true,
         );
     }
@@ -194,7 +197,10 @@ fn merge_pair<'c, 'a>(
     base.erase_op(current.operation);
     base.erase_op(previous.operation);
     (
-        previous.depth_contribution + current.depth_contribution,
+        quon_core::optimization::seq_depth(
+            previous.depth_contribution as u64,
+            current.depth_contribution as u64,
+        ) as i64,
         false,
     )
 }
@@ -223,6 +229,19 @@ fn merge_once_in_block<'c, 'a>(context: &'c Context, block: melior::ir::BlockRef
             })
             && previous_info.axis == gate_info.axis
             && previous_info.result_keys == gate_info.operand_keys
+            // Flux-verified arity preservation + single-qubit fusion guard
+            // (quon_core::optimization): the merge is only sound when the
+            // producer and consumer thread the same qubit count and both act
+            // on exactly one wire, so the fused replacement preserves the
+            // func's in/out qubit arity.
+            && quon_core::optimization::arity_preserved(
+                previous_info.result_keys.len(),
+                gate_info.operand_keys.len(),
+            )
+            && quon_core::optimization::single_qubit_pair(
+                previous_info.result_keys.len(),
+                gate_info.operand_keys.len(),
+            )
         {
             let (removed, _) = merge_pair(
                 context,
