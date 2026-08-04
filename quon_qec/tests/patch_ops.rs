@@ -174,12 +174,9 @@ fn bare_merge_split_lowers_without_cx_phases() {
         .unwrap();
     let workload = b.finish();
 
-    // Expand just the blocks (no ops)
-    let block_workload = QecWorkload {
-        blocks: workload.blocks.clone(),
-        ops: vec![],
-    };
-    let expanded = expand_workload(&block_workload).expect("expand blocks");
+    // Expand the blocks to seed patch layouts; the construct rounds are
+    // unused (we lower the merge/split plan into a fresh `rounds` vec).
+    let expanded = expand_workload(&workload).expect("expand blocks");
     let max_atom = expanded
         .blocks
         .iter()

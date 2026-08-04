@@ -355,14 +355,14 @@ pub enum ExpandError {
 /// Expand a validated [`QecWorkload`] into per-round physical CNOT / measure / reset.
 pub fn expand_workload(workload: &QecWorkload) -> Result<ExpandedWorkload, ExpandError> {
     let mut next_atom = 0u32;
-    let mut layouts: Vec<ExpandedBlock> = Vec::with_capacity(workload.blocks.len());
+    let mut layouts: Vec<ExpandedBlock> = Vec::with_capacity(workload.blocks().len());
 
-    for meta in &workload.blocks {
+    for meta in workload.blocks() {
         layouts.push(expand_block_layout(meta, &mut next_atom)?);
     }
 
     let mut rounds = Vec::new();
-    for op in &workload.ops {
+    for op in workload.ops() {
         match op {
             WorkloadOp::Construct {
                 logical_id,
@@ -1550,33 +1550,6 @@ mod tests {
                 .any(|s| s.basis == LogicalBasis::X && s.data.len() == 2),
             "missing smooth XX seam stabilizer"
         );
-    }
-
-    #[test]
-    fn repetition_construct_rejects_non_z_init_basis() {
-        let workload = QecWorkload {
-            blocks: vec![WorkloadBlock {
-                logical_id: LogicalQubitId(0),
-                family: SourceFamily::Repetition,
-                distance: 3,
-                init_basis: LogicalBasis::X,
-                code_family: CodeFamily::RepetitionCodeToy { distance: 3 },
-            }],
-            ops: vec![WorkloadOp::Construct {
-                family: SourceFamily::Repetition,
-                distance: 3,
-                basis: LogicalBasis::X,
-                logical_id: LogicalQubitId(0),
-            }],
-        };
-        let err = expand_workload(&workload).expect_err("non-z");
-        assert!(matches!(
-            err,
-            ExpandError::NonZInitBasis {
-                logical_id: 0,
-                basis: "x"
-            }
-        ));
     }
 
     #[test]

@@ -386,16 +386,16 @@ mod tests {
             );
 
             let workload = collect_qec_workload(&module).expect("collect");
-            assert_eq!(workload.blocks.len(), 1);
-            assert_eq!(workload.blocks[0].family, SourceFamily::Repetition);
-            assert_eq!(workload.blocks[0].distance, 3);
+            assert_eq!(workload.blocks().len(), 1);
+            assert_eq!(workload.blocks()[0].family, SourceFamily::Repetition);
+            assert_eq!(workload.blocks()[0].distance, 3);
             assert_eq!(
-                workload.blocks[0].code_family,
+                workload.blocks()[0].code_family,
                 CodeFamily::RepetitionCodeToy { distance: 3 }
             );
             assert_eq!(workload.memory_round_count(), 2);
             assert_eq!(
-                workload.ops.last(),
+                workload.ops().last(),
                 Some(&WorkloadOp::MeasureLogical {
                     logical_id: LogicalQubitId(0),
                     basis: LogicalBasis::Z,
@@ -432,8 +432,8 @@ mod tests {
             );
 
             let workload = collect_qec_workload(&module).expect("collect");
-            assert_eq!(workload.blocks.len(), 2);
-            let block0 = &workload.blocks[0];
+            assert_eq!(workload.blocks().len(), 2);
+            let block0 = &workload.blocks()[0];
             assert_eq!(block0.family, SourceFamily::Surface);
             assert_eq!(block0.distance, 3);
             assert_eq!(block0.init_basis, LogicalBasis::Z);
@@ -441,7 +441,7 @@ mod tests {
                 block0.code_family,
                 CodeFamily::SurfaceCodeLike { distance: 3 }
             );
-            let block1 = &workload.blocks[1];
+            let block1 = &workload.blocks()[1];
             assert_eq!(block1.family, SourceFamily::Surface);
             assert_eq!(block1.distance, 3);
             assert_eq!(block1.init_basis, LogicalBasis::X);
@@ -450,7 +450,7 @@ mod tests {
                 CodeFamily::SurfaceCodeLike { distance: 3 }
             );
             assert_eq!(
-                workload.ops,
+                workload.ops(),
                 vec![
                     WorkloadOp::Construct {
                         family: SourceFamily::Surface,
@@ -658,9 +658,9 @@ mod tests {
             );
 
             let workload = collect_qec_workload(&module).expect("collect");
-            assert_eq!(workload.blocks.len(), 3);
+            assert_eq!(workload.blocks().len(), 3);
             assert_eq!(
-                workload.ops,
+                workload.ops(),
                 vec![
                     WorkloadOp::Construct {
                         family: SourceFamily::Surface,
