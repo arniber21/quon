@@ -138,16 +138,80 @@ class QuoncNotFoundErrorTests(unittest.TestCase):
         self.assertIn("cargo build --release -p quonc", message)
 
     def test_compile_to_qasm_raises_actionable_error_on_nonzero_exit(self) -> None:
-        with mock.patch(
-            "quon_aer.subprocess.run",
-            side_effect=subprocess.CalledProcessError(
-                returncode=1, cmd=["quonc"], stderr="type error: ..."
-            ),
-        ):
-            with self.assertRaises(quon_aer.QuoncCompileError) as ctx:
-                quon_aer.compile_to_qasm("bad.qn")
+        # $QUONC must resolve so quonc_binary() returns a name and the
+        # mocked subprocess.run is actually reached (otherwise the new
+        # auto-discovery in quonc_binary() raises before invocation).
+        with mock.patch.dict(os.environ, {"QUONC": "quonc"}):
+            with mock.patch(
+                "quon_aer.subprocess.run",
+                side_effect=subprocess.CalledProcessError(
+                    returncode=1, cmd=["quonc"], stderr="type error: ..."
+                ),
+            ):
+                with self.assertRaises(quon_aer.QuoncCompileError) as ctx:
+                    quon_aer.compile_to_qasm("bad.qn")
         self.assertIn("bad.qn", str(ctx.exception))
         self.assertIn("type error", str(ctx.exception))
+
+
+class QuoncBinaryResolutionTests(unittest.TestCase):
+    """Executable-resolution precedence (issue #375)."""
+
+    def test_explicit_quonc_takes_precedence_over_path_and_local_builds(self) -> None:
+        # QUONC wins even when quonc is on PATH and a local build exists.
+        with mock.patch.dict(os.environ, {"QUONC": "/explicit/quonc"}):
+            with mock.patch("quon_aer.shutil.which", return_value="/path/quonc"):
+                with mock.patch("quon_aer.os.path.isfile", return_value=True):
+                    with mock.patch("quon_aer.os.access", return_value=True):
+                        self.assertEqual(quon_aer.quonc_binary(), "/explicit/quonc")
+
+    def test_path_quonc_takes_precedence_over_local_builds(self) -> None:
+        # No QUONC; quonc on PATH wins over a present local build.
+        env = {k: v for k, v in os.environ.items() if k != "QUONC"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("quon_aer.shutil.which", return_value="/path/quonc"):
+                with mock.patch("quon_aer.os.path.isfile", return_value=True):
+                    with mock.patch("quon_aer.os.access", return_value=True):
+                        self.assertEqual(quon_aer.quonc_binary(), "/path/quonc")
+
+    def test_release_build_probed_before_debug(self) -> None:
+        # No QUONC, no PATH quonc; release candidate wins over debug.
+        env = {k: v for k, v in os.environ.items() if k != "QUONC"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("quon_aer.shutil.which", return_value=None):
+                # Both candidates exist -> release is returned.
+                with mock.patch("quon_aer.os.path.isfile", return_value=True):
+                    with mock.patch("quon_aer.os.access", return_value=True):
+                        result = quon_aer.quonc_binary()
+                        self.assertTrue(result.endswith("target/release/quonc"))
+
+    def test_debug_build_used_when_release_absent(self) -> None:
+        # No QUONC, no PATH quonc, no release -> debug is returned.
+        env = {k: v for k, v in os.environ.items() if k != "QUONC"}
+        release = quon_aer._LOCAL_QUONC_CANDIDATES[0]
+        debug = quon_aer._LOCAL_QUONC_CANDIDATES[1]
+
+        def fake_isfile(path: str) -> bool:
+            return path == debug
+
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("quon_aer.shutil.which", return_value=None):
+                with mock.patch("quon_aer.os.path.isfile", side_effect=fake_isfile):
+                    with mock.patch("quon_aer.os.access", return_value=True):
+                        result = quon_aer.quonc_binary()
+                        self.assertTrue(result.endswith("target/debug/quonc"))
+
+    def test_raises_actionable_error_when_nothing_resolves(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "QUONC"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("quon_aer.shutil.which", return_value=None):
+                with mock.patch("quon_aer.os.path.isfile", return_value=False):
+                    with self.assertRaises(quon_aer.QuoncNotFoundError) as ctx:
+                        quon_aer.quonc_binary()
+        message = str(ctx.exception)
+        self.assertIn("target/release/quonc", message)
+        self.assertIn("target/debug/quonc", message)
+        self.assertIn("cargo build --release -p quonc", message)
 
 
 class SimulationDependencyMissingErrorTests(unittest.TestCase):
@@ -157,6 +221,27 @@ class SimulationDependencyMissingErrorTests(unittest.TestCase):
         self.assertIn("qiskit-qasm3-import", message)
         self.assertIn("qiskit_qasm3_import", message)
         self.assertIn("pip install -r python/requirements.txt", message)
+
+    def test_message_names_active_python_executable(self) -> None:
+        err = quon_aer.SimulationDependencyMissingError("qiskit-aer")
+        message = str(err)
+        self.assertIn(f"Active Python: {sys.executable}", message)
+
+    def test_message_suggests_venv_python_when_venv_exists(self) -> None:
+        venv_python = os.path.join(
+            quon_aer._REPO_ROOT, ".venv", "bin", "python"
+        )
+        with mock.patch("quon_aer.os.path.isfile", return_value=True):
+            err = quon_aer.SimulationDependencyMissingError("qiskit-aer")
+            message = str(err)
+        self.assertIn(f"{venv_python} -m pip install -r python/requirements.txt", message)
+
+    def test_message_suggests_plain_pip_when_no_venv(self) -> None:
+        with mock.patch("quon_aer.os.path.isfile", return_value=False):
+            err = quon_aer.SimulationDependencyMissingError("qiskit-aer")
+            message = str(err)
+        self.assertIn("pip install -r python/requirements.txt", message)
+        self.assertNotIn(".venv/bin/python", message)
 
     @unittest.skipUnless(HAS_QISKIT, "requires qiskit to exercise the real import path")
     def test_load_circuit_wraps_missing_qasm3_importer(self) -> None:

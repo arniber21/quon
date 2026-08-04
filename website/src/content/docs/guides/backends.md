@@ -121,14 +121,25 @@ Install the optional verification dependencies and build the compiler:
 just setup-python
 source .venv/bin/activate
 cargo build -p quonc
-export QUONC="$PWD/target/debug/quonc"
 ```
 
-`python/quon_aer.py` accepts either Quon source or OpenQASM on standard input:
+No `QUONC` export is needed. After `cargo build`, the Aer bridge
+auto-discovers the local compiler binary, probing `target/release/quonc`
+then `target/debug/quonc` before falling back to `quonc` on `PATH`
+([#375](https://github.com/arniber21/quon/issues/375)). Set `QUONC`
+explicitly only to override that order — for example, to pin a binary
+built with non-default features.
+
+`python/quon_aer.py` accepts either Quon source or OpenQASM on standard
+input — one copy-paste command from source to Aer counts:
 
 ```bash
 python python/quon_aer.py test/verify/bell.qn --shots 4096 --seed 1234
+```
 
+Or pipe emitted QASM through a constrained target:
+
+```bash
 cargo run -p quonc -- test/verify/bell.qn \
   --target backend/tests/fixtures/device_5q.json \
   --emit-qasm |
@@ -137,21 +148,24 @@ cargo run -p quonc -- test/verify/bell.qn \
 
 The bridge imports the emitted OpenQASM and runs an ideal `AerSimulator`.
 `--seed` makes sampling reproducible. The printed counts are raw simulation
-results, not live-hardware performance estimates.
+results, not live-hardware performance estimates. When a required Python
+package is missing, the error names the active Python executable and prints
+a ready-to-run install command using the project `.venv` when one exists.
 
 ## Run reference verifiers
 
 The scripts in `test/verify/` add assertions to compilation and simulation.
-Run all same-stem `.qn`/`.py` cases:
+Run all same-stem `.qn`/`.py` cases — the compiler binary is auto-discovered,
+so no `QUONC` prefix is required after a build:
 
 ```bash
-QUONC="$PWD/target/debug/quonc" bash test/verify/run_e2e.sh
+bash test/verify/run_e2e.sh
 ```
 
 Or run one case by stem:
 
 ```bash
-QUONC="$PWD/target/debug/quonc" bash test/verify/run_e2e.sh bell
+bash test/verify/run_e2e.sh bell
 ```
 
 The reference oracles cover Bell, teleportation, Bernstein-Vazirani, Grover,
@@ -161,5 +175,8 @@ The routing verifier checks constrained fixed targets against the all-to-all
 baseline:
 
 ```bash
-QUONC="$PWD/target/debug/quonc" python test/verify/routing.py
+python test/verify/routing.py
 ```
+
+Set `QUONC` only when you need to point at a specific binary instead of the
+auto-discovered one.

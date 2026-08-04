@@ -83,11 +83,13 @@ TSP-to-Ising reformulation emits. Tour decoding, constraint enforcement, and
 
 ## Reproducing
 
-Build the compiler, then run any checker:
+Build the compiler, then run any checker — the Aer bridge auto-discovers
+`target/release/quonc` ([#375](https://github.com/arniber21/quon/issues/375)),
+so no `QUONC` export is needed:
 
 ```sh
 cargo build --release -p quonc
-QUONC=target/release/quonc python test/verify/maxcut_prism6.py
+python test/verify/maxcut_prism6.py
 ```
 
 Every `ci: smoke` catalog entry is also compiled with `quonc` in CI (the
