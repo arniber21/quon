@@ -58,7 +58,26 @@ export default defineConfig({
 				{
 					label: 'Cookbook',
 					items: [
-						{ autogenerate: { directory: 'cookbook' } },
+						{ label: 'Cookbook', slug: 'cookbook' },
+						{ label: 'Bell state', slug: 'cookbook/bell' },
+						{ label: 'Quantum teleportation', slug: 'cookbook/teleportation' },
+						{ label: 'Bernstein–Vazirani', slug: 'cookbook/bernstein-vazirani' },
+						{ label: 'Grover search', slug: 'cookbook/grover' },
+						{ label: 'Quantum Fourier transform', slug: 'cookbook/qft' },
+						{ label: 'Transverse-field Ising', slug: 'cookbook/ising' },
+						{ label: 'QAOA MaxCut', slug: 'cookbook/qaoa' },
+						{ label: 'Shor quantum kernel', slug: 'cookbook/shor-kernel' },
+						{ label: 'NA QAOA schedule', slug: 'cookbook/na-qaoa' },
+						{
+							label: 'Sample discovery (optional)',
+							collapsed: true,
+							items: [
+								{ label: 'More samples', slug: 'cookbook/samples' },
+								{ label: 'Deutsch–Jozsa', slug: 'cookbook/deutsch-jozsa' },
+								{ label: "Simon's algorithm", slug: 'cookbook/simon' },
+								{ label: 'Phase estimation', slug: 'cookbook/phase-estimation' },
+							],
+						},
 					],
 				},
 				{

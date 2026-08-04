@@ -2,10 +2,17 @@
 title: More samples
 description: The full samples/ corpus — a catalog of narrative demos beyond this cookbook.
 sidebar:
-  order: 10
+  order: 11
 ---
 
 import catalog from '../../../../../samples/catalog.yaml?raw';
+
+> **Optional detour.** This page is not part of the cookbook curriculum —
+> the canonical sequence is Bell → teleportation → Bernstein–Vazirani →
+> Grover → QFT → Ising → QAOA → Shor → NA QAOA schedule (the capstone).
+> Browse this catalog whenever you like. To resume the curriculum, return to
+> the [Cookbook overview](./) or continue from the capstone,
+> [NA QAOA schedule](./na-qaoa/).
 
 This cookbook's eight pages are a fixed, hand-curated tour of the compiler's
 own end-to-end fixtures. The repository also carries a growing
@@ -37,6 +44,18 @@ for the taxonomy and pack-ownership table, or browse the catalog directly:
 ## Current catalog
 
 <pre><code>{catalog}</code></pre>
+
+## Sample-based recipes in this cookbook
+
+Three cookbook pages draw their source from the `samples/algorithms/` corpus
+rather than the compiler's own end-to-end fixtures, so they live in the
+optional sidebar group alongside this catalog:
+
+- [Deutsch–Jozsa](./deutsch-jozsa/) — constant-vs-balanced oracle in one query.
+- [Simon's algorithm](./simon/) — hidden-period recovery with GF(2) post-processing.
+- [Phase estimation](./phase-estimation/) — single-counting-qubit QPE.
+
+These are independent of the curriculum; read them in any order.
 
 ## CI
 
