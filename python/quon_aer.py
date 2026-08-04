@@ -26,8 +26,33 @@ CLI usage (unchanged since issue #29):
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
+
+# ---------------------------------------------------------------------------
+# Repository root — local build probing (#375) and venv discovery
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_LOCAL_QUONC_CANDIDATES = (
+    os.path.join(_REPO_ROOT, "target", "release", "quonc"),
+    os.path.join(_REPO_ROOT, "target", "debug", "quonc"),
+)
+
+
+def _venv_install_hint() -> str:
+    """A ready-to-run install command using the project venv when it exists.
+
+    Issue #375: the missing-dependency diagnostic should point at the exact
+    interpreter missing the package. When `.venv/bin/python` exists, use it
+    so the install lands in the project environment instead of the ambient
+    interpreter the bridge happened to be invoked with.
+    """
+    venv_python = os.path.join(_REPO_ROOT, ".venv", "bin", "python")
+    if os.path.isfile(venv_python):
+        return f"{venv_python} -m pip install -r python/requirements.txt"
+    return "pip install -r python/requirements.txt"
 
 # ---------------------------------------------------------------------------
 # Errors — actionable failure modes (issue #204)
@@ -40,13 +65,30 @@ class VerificationError(Exception):
 
 
 class QuoncNotFoundError(VerificationError):
-    def __init__(self, binary: str) -> None:
-        super().__init__(
-            f"quonc binary {binary!r} was not found on PATH or via $QUONC.\n"
-            "Build it and point at the binary:\n"
-            "  cargo build --release -p quonc\n"
-            "  export QUONC=$PWD/target/release/quonc"
-        )
+    def __init__(
+        self, binary: str | None = None, *, searched: list[str] | None = None
+    ) -> None:
+        if binary is not None:
+            # An explicit $QUONC (or PATH-resolved name) pointed at something
+            # subprocess.run could not execute.
+            super().__init__(
+                f"quonc binary {binary!r} was not found on PATH or via $QUONC.\n"
+                "Build it and point at the binary:\n"
+                "  cargo build --release -p quonc\n"
+                "  export QUONC=$PWD/target/release/quonc"
+            )
+        else:
+            # Auto-discovery (#375): QUONC unset, quonc not on PATH, and no
+            # local cargo build output found under target/.
+            tried = ", ".join(searched) if searched else ""
+            super().__init__(
+                "quonc was not found: $QUONC is unset, `quonc` is not on "
+                f"PATH, and no local build was found under target/ "
+                f"(searched: {tried}).\n"
+                "Build the compiler, then re-run — the bridge auto-discovers "
+                "target/release/quonc and target/debug/quonc (#375):\n"
+                "  cargo build --release -p quonc"
+            )
 
 
 class QuoncCompileError(VerificationError):
@@ -63,14 +105,21 @@ class SimulationDependencyMissingError(VerificationError):
     calls out a specific real-world confusion: the pip package name uses
     hyphens (`qiskit-qasm3-import`), while the Python import name it
     provides uses underscores (`qiskit_qasm3_import`).
+
+    Issue #375 deepened the diagnostic: it now names the active Python
+    executable (`sys.executable`) and prints a ready-to-run install command
+    that uses the project virtual environment (`.venv/bin/python`) when one
+    exists, so the failure points at the exact interpreter that is missing
+    the dependency rather than the ambient shell.
     """
 
     def __init__(self, package: str, cause: Exception | None = None) -> None:
         super().__init__(
             f"{package} is not installed (required for the Qiskit Aer "
             "verification seam, issue #204/#29).\n"
+            f"Active Python: {sys.executable}\n"
             "Install every verification dependency with:\n"
-            "  pip install -r python/requirements.txt\n"
+            f"  {_venv_install_hint()}\n"
             "(note: the pip package name uses hyphens, e.g. "
             "`qiskit-qasm3-import`; the `import qiskit_qasm3_import` "
             "statement it provides uses underscores — both refer to the "
@@ -86,8 +135,29 @@ class SimulationDependencyMissingError(VerificationError):
 
 
 def quonc_binary() -> str:
-    """The quonc executable: the QUONC env var if set, else `quonc` on PATH."""
-    return os.environ.get("QUONC", "quonc")
+    """Resolve the quonc executable (issue #375 adds local-build probing).
+
+    Precedence:
+    1. $QUONC — an explicit user choice always wins, even if it points at a
+       binary that does not exist (the subsequent subprocess call surfaces
+       that as a QuoncNotFoundError with the offending name).
+    2. `quonc` on $PATH — the installed/packaged case.
+    3. Local cargo build outputs under the repository's `target/` — release
+       before debug — so a freshly built compiler is discovered without
+       manually exporting $QUONC.
+
+    Raises QuoncNotFoundError when none of the above resolve.
+    """
+    explicit = os.environ.get("QUONC")
+    if explicit:
+        return explicit
+    on_path = shutil.which("quonc")
+    if on_path:
+        return on_path
+    for candidate in _LOCAL_QUONC_CANDIDATES:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    raise QuoncNotFoundError(searched=list(_LOCAL_QUONC_CANDIDATES))
 
 
 def compile_to_qasm(
