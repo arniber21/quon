@@ -1,10 +1,17 @@
 id: serde-deny-unknown-fields-on-dto
 language: Rust
-severity: warning
+severity: error
 message: Deserialize wire DTOs should use #[serde(deny_unknown_fields)] to reject typos
 note: |
   JSON target descriptors and similar wire types must fail on unknown keys.
   See backend/src/descriptor.rs and docs/agents/code-quality.md.
+  Internal diagnostic/tool types and test fixtures are excluded.
+ignores:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/tests.rs"
+  - "**/test.rs"
+  - "quonlint/**"
 rule:
   kind: struct_item
   follows:
