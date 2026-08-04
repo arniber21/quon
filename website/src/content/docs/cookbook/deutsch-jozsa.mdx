@@ -8,8 +8,8 @@ sidebar:
 ## What we're building and why
 
 The Deutsch–Jozsa algorithm solves a problem that takes up to
-2^{n-1}+1 queries classically but only *one* quantum query: given an
-oracle f : {0,1}^n → {0,1} promised to be either constant or balanced,
+`2^{n-1}+1` queries classically but only *one* quantum query: given an
+oracle `f : {0,1}^n → {0,1}` promised to be either constant or balanced,
 decide which. It is the textbook demonstration of *phase kickback* — the
 mechanism where a computational-basis query is transformed into a phase
 that carries information, which Hadamard gates then convert into
@@ -71,7 +71,7 @@ QUONC=target/release/quonc python test/verify/deutsch_jozsa.py
 Every shot yields query bits (1, 1, 1) — non-zero, confirming f is
 balanced. The [`deutsch_jozsa.py`](https://github.com/arniber21/quon/blob/main/test/verify/deutsch_jozsa.py)
 verifier checks that the set of recovered query-bit triples is exactly
-{(1, 1, 1)}.
+`{(1, 1, 1)}`.
 
 → Next: [Simon's algorithm](./simon/) — recover a hidden string with
   quantum queries and classical GF(2) post-processing.

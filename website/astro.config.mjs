@@ -117,6 +117,14 @@ export default defineConfig({
 						{ label: 'Style guide', slug: 'contribute/style-guide' },
 					],
 				},
+			{
+				label: 'Reference',
+				items: [
+					{ label: 'Overview', slug: 'reference' },
+					{ label: 'quonc CLI', slug: 'reference/quonc' },
+					{ label: 'Compiler pipeline', slug: 'reference/compiler' },
+				],
+			},
 			],
 		}),
 	],
