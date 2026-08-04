@@ -24,6 +24,7 @@ Static analysis and refinement-type checks for the Quon workspace.
 | `just na-rap-sweep` | #306 local-only: both `--na-placer` modes over every checked-in RAP Table I row (`ising_n42`, `ising_n98`), one qmap-comparable CSV (`python/na_rap_table_i_sweep.py`). Not CI — see `docs/neutral_atom/rap_table_i_methodology.md`'s "Full sweep harness (#306)". |
 | `just ci-docs-assert` | `./scripts/assert-validation-docs.sh` |
 | `just ci-rustdoc` | Workspace Rustdoc with warnings denied (`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude flux_verify --no-deps`); unresolved intra-doc links, private-item references, output collisions, and accidental citation links all fail (#406). Also run as a step in `just ci-rust`. |
+| `just ci-docs-assert` | `./scripts/assert-validation-docs.sh` — stale-claim anchors **plus** the documentation quality-gate corpus validator (`scripts/assert-docs-corpus.py`, #377). See [doc-quality.md](./doc-quality.md) for the contract and the `docs/doc-manifest.yaml` corpus. |
 | `just ci-website` | Starlight `pnpm build` under `website/` |
 
 Inside Devbox: `devbox run -- just <recipe>` (or `just` after `devbox shell`).
@@ -186,3 +187,12 @@ cargo install cargo-llvm-cov
 ```
 
 CI: `.github/workflows/coverage.yml` runs on pull requests (non-blocking summary). Same exclusions as the main `ci.yml` test job.
+
+## Documentation quality-gate contract (#377)
+
+The documentation corpus — executable examples, generated excerpts, internal
+links, and commands — is mechanically validated by
+`scripts/assert-docs-corpus.py` (run via `just ci-docs-assert`). The declared
+corpus lives in `docs/doc-manifest.yaml`; the four-way policy (executable vs
+generated vs stale vs illustrative) and the contributor workflow for adding a
+checked example are in [doc-quality.md](./doc-quality.md).

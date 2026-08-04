@@ -181,6 +181,7 @@ cargo run -p quonc -- \
 ```
 
 See the [quonc CLI reference](../quonc/) for command examples, the [diagnostic catalog](../diagnostics/) for error-specific guidance, and the
+See the [quonc CLI reference](./quonc/) for command examples and the
 [maturation path](/guides/roadmap/) for the production-hardening direction.
 
 ## Where to go next

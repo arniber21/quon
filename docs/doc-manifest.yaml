@@ -1,0 +1,249 @@
+# Documentation quality-gate manifest (issue #377).
+#
+# Records every MECHANICALLY CHECKED documentation example and its
+# verification mode, plus page-level link/command checks. See
+# docs/agents/doc-quality.md for the policy and the contributor
+# workflow for adding a checked example. Run with:
+#   just ci-docs-assert
+#
+# Schema:
+#   version : 1
+#   pages   : list of {page, checks, examples}
+#     page     : repo-relative path to a doc page (.md/.mdx).
+#     checks   : page-level mechanical checks applied to EVERY
+#                matching fence on the page:
+#                  commands - every sh/bash fence: `just <recipe>`,
+#                             `./scripts/<x>`, and repo-relative paths
+#                             (first component a known top-level dir)
+#                             must resolve. Illustrative placeholders
+#                             like src/main.qn are not flagged.
+#                  links    - every internal markdown link and every
+#                             github.com/arniber21/quon/blob/<ref>/<path>
+#                             must resolve to a checked-in page or
+#                             section directory.
+#     examples : per-fence records. A fence NOT listed here is
+#                `illustrative` by default (recorded but not
+#                mechanically verified — see the policy). Each entry:
+#                  lang     : fence info-string (qn, kotlin, mlir,
+#                             json, markdown, text, ...).
+#                  ordinal  : 1-based index among fences with that lang.
+#                  mode     : executable | generated | stale
+#                  verify   : mirror (for executable) — the fence's
+#                             code, with -- comments stripped and
+#                             whitespace collapsed, must be a substring
+#                             of `source` (or each blank-line-separated
+#                             chunk must be — tolerating elision).
+#                  source   : canonical tested fixture (compiled/lowered
+#                             by `just ci-rust`) the excerpt mirrors.
+#                  regen    : for generated — the command/recipe that
+#                             regenerates the excerpt (must name a known
+#                             just recipe, ./scripts/ file, or allowed bin).
+#                  reason   : for stale — why intentionally-historical
+#                             material is kept.
+#
+# Modes (the four-way policy distinction, issue #377):
+#   executable - real Quon that compiles; drift-checked against a tested
+#               fixture (the source-compatibility discipline from #377).
+#   generated  - tool output (MLIR/QASM/JSON reports); must declare a
+#               regenerator. Byte-fidelity is not asserted for excerpts
+#               with elisions; a `golden` may name a checked-in artifact.
+#   stale      - intentionally-retained historical material; requires a
+#               reason so stale prose is explicit, not accidental.
+#   illustrative (default) - hand-written pseudocode, schematic IR, or
+#               pedagogical fragments not claimed to compile.
+version: 1
+pages:
+  - page: website/src/content/docs/architecture/compiler-internals.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/architecture/na-model.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/cookbook/bell.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: test/verify/bell.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: test/verify/bell.qn }
+      - { lang: qn, ordinal: 3, mode: executable, verify: mirror, source: test/verify/bell.qn }
+  - page: website/src/content/docs/cookbook/bernstein-vazirani.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: test/verify/bernstein_vazirani.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: test/verify/bernstein_vazirani.qn }
+      - { lang: qn, ordinal: 3, mode: executable, verify: mirror, source: test/verify/bernstein_vazirani.qn }
+  - page: website/src/content/docs/cookbook/deutsch-jozsa.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: samples/algorithms/deutsch_jozsa.qn }
+  - page: website/src/content/docs/cookbook/grover.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: test/verify/grover.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: test/verify/grover.qn }
+      - { lang: qn, ordinal: 3, mode: executable, verify: mirror, source: test/verify/grover.qn }
+  - page: website/src/content/docs/cookbook/index.mdx
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/cookbook/ising.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: test/verify/ising.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: test/verify/ising.qn }
+      - { lang: qn, ordinal: 3, mode: executable, verify: mirror, source: test/verify/ising.qn }
+  - page: website/src/content/docs/cookbook/na-qaoa.mdx
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/cookbook/phase-estimation.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: samples/algorithms/phase_estimation.qn }
+  - page: website/src/content/docs/cookbook/qaoa.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: test/verify/qaoa.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: test/verify/qaoa.qn }
+      - { lang: qn, ordinal: 3, mode: executable, verify: mirror, source: test/verify/qaoa.qn }
+  - page: website/src/content/docs/cookbook/qft.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: test/verify/qft.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: test/verify/qft.qn }
+      - { lang: qn, ordinal: 3, mode: executable, verify: mirror, source: test/verify/qft.qn }
+  - page: website/src/content/docs/cookbook/samples.mdx
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/cookbook/shor-kernel.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: test/verify/shor.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: test/verify/shor.qn }
+      - { lang: qn, ordinal: 3, mode: executable, verify: mirror, source: test/verify/shor.qn }
+      - { lang: qn, ordinal: 4, mode: executable, verify: mirror, source: test/verify/shor.qn }
+      - { lang: qn, ordinal: 5, mode: executable, verify: mirror, source: test/verify/shor.qn }
+  - page: website/src/content/docs/cookbook/simon.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: samples/algorithms/simon.qn }
+  - page: website/src/content/docs/cookbook/teleportation.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: test/verify/teleport.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: test/verify/teleport.qn }
+      - { lang: qn, ordinal: 3, mode: executable, verify: mirror, source: test/verify/teleport.qn }
+  - page: website/src/content/docs/getting-started/install.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/getting-started/quickstart.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/getting-started/second-program.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/guides/applications.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/guides/backends.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/guides/creative.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/guides/na-ft-demo.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: json, ordinal: 1, mode: generated, regen: "devbox run -- cargo run -p quonc --emit-na-schedule" }
+      - { lang: text, ordinal: 1, mode: generated, regen: "devbox run -- cargo run -p quonc --emit-qec-validation" }
+      - { lang: markdown, ordinal: 1, mode: generated, regen: "devbox run -- cargo run -p quonc --emit-resource-report" }
+      - { lang: json, ordinal: 2, mode: generated, regen: "devbox run -- cargo run -p quonc --emit-qec-validation" }
+      - { lang: json, ordinal: 3, mode: generated, regen: "devbox run -- cargo run -p quonc --emit-qec-validation" }
+      - { lang: markdown, ordinal: 2, mode: generated, regen: "devbox run -- cargo run -p quonc --emit-resource-report" }
+  - page: website/src/content/docs/guides/naviz-visualization.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/guides/results-and-plotting.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/guides/roadmap.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/guides/tooling.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/index.mdx
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/borrow.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/circuits.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/clifford.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/depth.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/introduction.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/linearity.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/measurement.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/monad.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/parallel.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/putting-together.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/qec.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/language/qubits.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/learn/01-hello-quon.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: samples/learning/hello_quon.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: samples/learning/hello_quon.qn }
+  - page: website/src/content/docs/learn/02-states-measurement.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: samples/learning/states_measurement.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: samples/learning/states_measurement.qn }
+  - page: website/src/content/docs/learn/03-gates-composition.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: samples/learning/gates_composition.qn }
+      - { lang: qn, ordinal: 2, mode: executable, verify: mirror, source: samples/learning/gates_composition.qn }
+  - page: website/src/content/docs/learn/04-linearity-borrow.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: samples/learning/linearity_borrow.qn }
+  - page: website/src/content/docs/learn/05-entanglement.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: samples/learning/entanglement.qn }
+  - page: website/src/content/docs/learn/06-oracles-algorithms.mdx
+    checks: [commands, links]
+    examples:
+      - { lang: qn, ordinal: 1, mode: executable, verify: mirror, source: samples/learning/oracles_algorithms.qn }
+  - page: website/src/content/docs/learn/index.mdx
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/reference/compiler.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/reference/quonc.md
+    checks: [commands, links]
+    examples: []
+  - page: website/src/content/docs/why-quon/philosophy.md
+    checks: [commands, links]
+    examples: []

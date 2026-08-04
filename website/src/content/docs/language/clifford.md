@@ -263,4 +263,4 @@ Now we leave the pure unitary world. The Quantum Monad allows allocation,
 measurement, and feed-forward — operations that are not unitary but are
 essential for real quantum programs.
 
-→ [The Quantum Monad](../monad/)
+→ [The Quantum Monad](./monad/)
