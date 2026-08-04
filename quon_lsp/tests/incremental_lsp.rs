@@ -179,3 +179,52 @@ fn did_close_clears_diagnostics() {
 
     client.shutdown_and_exit();
 }
+
+#[test]
+fn did_close_cancels_pending_analysis() {
+    // Nonzero debounce keeps the analysis task in its debounce-sleep phase while
+    // we close, exercising the close-cancels-pending path.
+    let mut client = LspClient::spawn_with_env(&[("QUON_LSP_DEBOUNCE_MS", "400")]);
+    init_client(&mut client);
+
+    client.send_notification(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": TEST_URI,
+                "languageId": "quon",
+                "version": 1,
+                "text": INVALID_SRC,
+            }
+        }),
+    );
+
+    // Close before the debounce window elapses.
+    client.send_notification(
+        "textDocument/didClose",
+        json!({
+            "textDocument": { "uri": TEST_URI },
+        }),
+    );
+
+    // The only diagnostics published must be the empty clear from didClose.
+    let params = client
+        .wait_publish_diagnostics(TEST_URI, Duration::from_secs(5))
+        .expect("didClose should publish empty diagnostics");
+    let diags = params["diagnostics"].as_array().expect("diagnostics array");
+    assert!(
+        diags.is_empty(),
+        "didClose should clear diagnostics, not publish stale analysis"
+    );
+
+    // No analysis survives the close: past the debounce window there must be no
+    // further (stale) diagnostic publish for the closed document.
+    assert!(
+        client
+            .wait_publish_diagnostics(TEST_URI, Duration::from_millis(900))
+            .is_none(),
+        "no stale diagnostics should be published for a closed document"
+    );
+
+    client.shutdown_and_exit();
+}

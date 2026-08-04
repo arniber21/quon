@@ -35,6 +35,14 @@ impl QuonLanguageServer {
             scheduler,
         }
     }
+
+    /// Borrow the analysis scheduler. Test-only: lets scheduler cleanup tests
+    /// drive `request_analysis`/`cancel_analysis`/`shutdown` and inspect
+    /// `pending_count` without spawning the LSP subprocess.
+    #[cfg(test)]
+    pub fn scheduler(&self) -> &AnalysisScheduler {
+        &self.scheduler
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -103,6 +111,8 @@ impl LanguageServer for QuonLanguageServer {
     async fn initialized(&self, _: InitializedParams) {}
 
     async fn shutdown(&self) -> Result<()> {
+        // Abort outstanding analyses so no analysis work outlives the server.
+        self.scheduler.shutdown();
         Ok(())
     }
 
@@ -145,6 +155,10 @@ impl LanguageServer for QuonLanguageServer {
         } else {
             tracing::error!("document store write lock poisoned");
         }
+        // Cancel any in-flight debounced analysis so it cannot publish stale
+        // diagnostics for a document that is no longer open, and reclaim the
+        // task handle.
+        self.scheduler.cancel_analysis(&uri);
         self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
