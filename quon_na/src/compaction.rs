@@ -10,10 +10,10 @@
 //!
 //! Independent layers are serialized (makespan can exceed the critical-path
 //! lower bound). **True ASAP** (independent work may share a cycle) is what
-//! [Enola] Sec. 3 stage-optimality refers to; that notion is **not** the v0
+//! \[Enola\] Sec. 3 stage-optimality refers to; that notion is **not** the v0
 //! baseline API.
 //!
-//! Cite [Enola] Sec. 3 only for: (1) critical-path **lower bound** reporting
+//! Cite \[Enola\] Sec. 3 only for: (1) critical-path **lower bound** reporting
 //! (`CriticalPathReport.critical_path_length`), (2) describing true ASAP, and
 //! (3) the optional note that on **dependency chains** exclusive-cycle and
 //! true ASAP coincide numerically. Do **not** claim that exclusive-cycle ASAP

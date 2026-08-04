@@ -21,7 +21,7 @@
 //! # Forbidden entries
 //!
 //! Occupancy-illegal and repair-forbidden `(gate, pair)` edges are encoded as
-//! [`FORBIDDEN_COST`]: a *finite* sentinel larger than any real travel distance
+//! `FORBIDDEN_COST`: a *finite* sentinel larger than any real travel distance
 //! (µm sums are at most a few thousand on the anchored fixtures, so `1e15`
 //! leaves ~12 orders of headroom). Finiteness is load-bearing — `f64::INFINITY`
 //! would make the potential updates `∞ − ∞ = NaN` and corrupt the assignment.

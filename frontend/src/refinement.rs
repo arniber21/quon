@@ -72,7 +72,7 @@ impl RefinementCtx {
     }
 
     /// Verify that `inferred` equals `annotated` for all assignments — the no-assumption
-    /// equality used by branch-join reconciliation. A thin wrapper over [`prove_eq`].
+    /// equality used by branch-join reconciliation. A thin wrapper over [`Self::prove_eq`].
     pub fn verify_equal(
         &self,
         inferred: &DepthExpr,
@@ -109,7 +109,7 @@ impl RefinementCtx {
 
     /// Prove `lhs ≤ rhs` under `assumptions` — the depth-as-upper-bound check (SPEC §3.3): a
     /// synthesized depth `lhs` satisfies an annotation `rhs` when it is no larger. `Hole` on the
-    /// annotation side accepts anything; equal/constant fast paths mirror [`prove_eq`].
+    /// annotation side accepts anything; equal/constant fast paths mirror [`Self::prove_eq`].
     pub fn prove_le(
         &self,
         assumptions: &[Assumption],

@@ -8,14 +8,14 @@
 //! - B7 second packing pass that serializes dual legs,
 //! - B8/B13 multi-layer reuse / eviction / partial-overlap reclaim.
 //!
-//! [Enola] Sec. 5 is cited **only** for: (1) three per-axis move conflict types
+//! \[Enola\] Sec. 5 is cited **only** for: (1) three per-axis move conflict types
 //! and (2) the greedy longest-first maximal independent-set *idea* (sortIS
 //! spirit — not KaMIS). Enola Sec. 5 duals are one-atom "move either endpoint"
 //! candidates; **this planner does not implement those duals**.
 //!
 //! # Not in scope
 //!
-//! - RAP zoned joint placement-routing ([RAP] / issue #107) — use
+//! - RAP zoned joint placement-routing (\[RAP\] / issue #107) — use
 //!   [`crate::zoned::schedule_zoned`] instead.
 //! - Atomique's flat 300 µs stage cost — duration uses shared √-law helpers
 //!   [`crate::geometry::movement_duration_us`] / [`crate::geometry::euclidean_um`].
@@ -48,12 +48,12 @@
 //!
 //! | Submodule | Responsibility |
 //! | --- | --- |
-//! | [`types`] | Params, results, errors, leg/pair/spec payloads |
-//! | [`geometry`] | R1–R3 predicates, AOD legality, conflict oracle |
-//! | [`bank`] | Interaction-pair bank creation / detection |
-//! | [`duals`] | Dual generation, sortIS selection, greedy packing |
-//! | [`emit`] | EmitCtx: load→move→store stages, reclaim/evict, layer helpers |
-//! | [`plan`] | `plan_aod_movement` orchestrator |
+//! | `types` | Params, results, errors, leg/pair/spec payloads |
+//! | `geometry` | R1–R3 predicates, AOD legality, conflict oracle |
+//! | `bank` | Interaction-pair bank creation / detection |
+//! | `duals` | Dual generation, sortIS selection, greedy packing |
+//! | `emit` | EmitCtx: load→move→store stages, reclaim/evict, layer helpers |
+//! | `plan` | `plan_aod_movement` orchestrator |
 
 mod bank;
 mod duals;

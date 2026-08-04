@@ -1,7 +1,7 @@
 //! `SpecializedCircuit` — the Melior-free first-order gate DAG between
 //! `elaborate` and `lower` (issue #206).
 //!
-//! Parametric specialization ([`elaborate`](crate::elaborate)) already produces
+//! Parametric specialization ([`crate::elaborate`]) already produces
 //! a first-order gate tree — `Compose` / `GateApp` / `Adjoint` over concrete
 //! qubit indices and literal rotation angles — but the interface stayed surface
 //! `Expr`, and the inverse / placement / `flatten_app` helpers were duplicated
@@ -11,9 +11,8 @@
 //! - **Interface** ([`SpecializedCircuit`]): the elaborator's output and lower's
 //!   only input — a gate DAG with resolved in/out widths, depth, and Clifford
 //!   class. No classical parameters remain.
-//! - **Implementation** ([`SpecializedCircuit::specialize`],
-//!   [`SpecializedCircuit::adjoint`], [`collect_gate_placements`],
-//!   [`reverse_and_invert`]): specialization, adjoint/inverse normalization, and
+//!   [`SpecializedCircuit::adjoint`], `collect_gate_placements`,
+//!   `reverse_and_invert`): specialization, adjoint/inverse normalization, and
 //!   placement — all Melior-free, all living once here.
 //! - **Adapter** (in `lower.rs`): Melior builders that consume a
 //!   `SpecializedCircuit` and emit `quantum.circ`. Nothing in this module
@@ -206,7 +205,7 @@ impl SpecializedCircuit {
     /// The adjoint circuit: reverse gate order and invert each gate, swapping
     /// the in/out widths (`Circuit<n,m>† : Circuit<m,n>`). Depth and Clifford
     /// class are preserved. This is the typed adjoint normalization; the
-    /// AST-level kernel is [`reverse_and_invert`].
+    /// AST-level kernel is `reverse_and_invert`.
     pub fn adjoint(&self) -> Result<Self, ElabError> {
         let body = reverse_and_invert(&self.body)?;
         Ok(Self {

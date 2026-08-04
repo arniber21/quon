@@ -289,7 +289,7 @@ pub fn generate_syndrome_rounds(
     Ok(rounds)
 }
 
-/// A simple toy [[5,1,3]] code (5-qubit code) for testing.
+/// A simple toy \[\[5,1,3\]\] code (5-qubit code) for testing.
 pub fn toy_5qubit_graph() -> ParityCheckGraph {
     ParityCheckGraph {
         n_data: 5,

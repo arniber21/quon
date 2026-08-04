@@ -6,7 +6,7 @@
 //! with its own copy of the qubit-wire-identity tracker needed to keep a
 //! logical qubit's identity continuous across those region boundaries. This
 //! module is the one walk: it owns the recursion and the
-//! [`WireTracker`](crate::passes::qubit_wiring::WireTracker) threading, and
+//! `WireTracker` threading, and
 //! calls back into a [`DynamicVisitor`] for every structural element (gate,
 //! barrier, measure, reset, unitary_region enter/exit, if-arm enter/exit).
 //! Consumers implement aggregation, not recursion.
@@ -49,7 +49,7 @@ impl IfArm {
 /// Callbacks for one recursive descent over a `quantum.dynamic` block.
 ///
 /// Every method defaults to a no-op, so a visitor implements only the events
-/// it needs. `qubit_roots` are [`WireTracker`] root ids: stable identifiers
+/// it needs. `qubit_roots` are `WireTracker` root ids: stable identifiers
 /// for a logical qubit's wire that survive `unitary_region`/`if` boundaries
 /// (a region's block argument aliases the enclosing op's operand root), not
 /// raw SSA pointer identity.
@@ -128,7 +128,7 @@ fn read_i32_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str)
 /// Resolves the qubit identity for a gate's operands from the **canonical SSA
 /// wiring channel** (ADR-0034).
 ///
-/// `qubit_roots` are [`WireTracker`] root ids: stable identifiers for a logical
+/// `qubit_roots` are `WireTracker` root ids: stable identifiers for a logical
 /// qubit's wire that survive `unitary_region`/`if` boundaries (a region's block
 /// argument aliases the enclosing op's operand root). When roots are available
 /// — the normal case after SABRE routing, threaded across region boundaries by
@@ -155,7 +155,7 @@ pub fn resolve_phys_qubits<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
         .unwrap_or_default()
 }
 
-/// Walks `block`, seeding a fresh [`WireTracker`] from its own block
+/// Walks `block`, seeding a fresh `WireTracker` from its own block
 /// arguments. Use this for a module's top-level executed body, or a
 /// standalone `quantum.circ.func`/module body — each is an independent qubit
 /// register and gets its own tracker.

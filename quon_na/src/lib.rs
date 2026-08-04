@@ -5,12 +5,12 @@
 //! code-block expansion, and resource reports without registering dialects or
 //! requiring an MLIR context.
 //!
-//! Interaction-graph extraction (#103) follows [Enola] (interaction graph /
-//! dependency segments) and [Atomique] (layer-decayed `γ^l` edge weights); see
+//! Interaction-graph extraction (#103) follows \[Enola\] (interaction graph /
+//! dependency segments) and \[Atomique\] (layer-decayed `γ^l` edge weights); see
 //! `docs/neutral_atom/architecture_model.md` §4.
 //!
 //! Placement (#104) maps logical qubits onto SLM sites with row-major,
-//! degree-based, and interaction-clustering heuristics inspired by [Atomique]
+//! degree-based, and interaction-clustering heuristics inspired by \[Atomique\]
 //! Sec. III-B; see `docs/neutral_atom/architecture_model.md` §4.
 //!
 //! Entangling-layer scheduling (#105) uses Misra–Gries edge coloring on
@@ -22,7 +22,7 @@
 //! packing (not Enola one-atom duals; not RAP zoned routing). See
 //! `docs/neutral_atom/architecture_model.md` §5–§6 and [`movement`].
 //!
-//! Zoned routing-aware placement (#107) follows [RAP] (placement cost = routing
+//! Zoned routing-aware placement (#107) follows \[RAP\] (placement cost = routing
 //! cost, Eqs. (1)–(2)); see `docs/neutral_atom/architecture_model.md` §7.
 //!
 //! Schedule compaction (#108) is engineering glue: exclusive-cycle ASAP baseline

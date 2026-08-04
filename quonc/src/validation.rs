@@ -2,7 +2,7 @@
 //!
 //! A [`ValidationReport`] is a **new, separate** compiler artifact
 //! (`*.validation.json` / `*.validation.md`) that places the analytic compiler
-//! [`ResourceReport`](quon_na::ResourceReport) beside sampled Stim/Sinter
+//! [`quon_na::ResourceReport`] beside sampled Stim/Sinter
 //! evidence, with clear provenance. It is **not** a mutation of the primary
 //! `ResourceReport` DTO and **not** a threshold claim: the two evidence kinds
 //! stay in clearly labeled `analytic` and `sampled` sections (ADR-0020).

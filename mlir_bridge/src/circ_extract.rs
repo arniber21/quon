@@ -16,7 +16,7 @@
 //!
 //! ## Wire tracking
 //!
-//! Logical qubit indices are recovered from SSA values via [`WireTracker`],
+//! Logical qubit indices are recovered from SSA values via `WireTracker`,
 //! not from operand positions. This makes multi-qubit extraction faithful:
 //! after a `CNOT` on wires `[0, 1]`, a subsequent gate on wire `1` correctly
 //! records `qubits: [1]`, whereas the old operand-position encoding always
@@ -158,7 +158,7 @@ fn read_bool_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str
 /// Faithfully extracts a `quantum.circ.func` body into a Melior-free [`CircIr`].
 ///
 /// Walks the func's single block in order, tracking logical wire indices through
-/// SSA values via [`WireTracker`]. Each `quantum.circ.gate` op becomes a
+/// SSA values via `WireTracker`. Each `quantum.circ.gate` op becomes a
 /// [`CircGate`] whose `name` is the **canonical registry id** (looked up
 /// through `quon_core::gates`), whose `qubits` are the faithful logical wire
 /// indices, and whose `angle`/`depth_contribution`/`clifford` are preserved
@@ -336,7 +336,7 @@ pub fn rebuild<'c, 'a>(
 
 // --- ZX kernel interop -----------------------------------------------------
 
-/// Converts a [`CircGate`] to the `zx` crate's [`GateRef`] for ZX translation.
+/// Converts a [`CircGate`] to the `zx` crate's [`zx::GateRef`] for ZX translation.
 ///
 /// Drops `depth_contribution`/`clifford` (the ZX kernel does not use them).
 /// Used by the ZX simplification pass to feed the shared seam's [`CircIr`]
@@ -349,7 +349,7 @@ pub fn circ_gate_to_gate_ref(gate: &CircGate) -> zx::GateRef {
     }
 }
 
-/// Converts a `zx` crate [`GateRef`] back to a [`CircGate`] for rebuilding.
+/// Converts a `zx` crate [`zx::GateRef`] back to a [`CircGate`] for rebuilding.
 ///
 /// Looks up the registry for the Clifford classification and defaults
 /// `depth_contribution` to 1 (one gate per step). Used by the ZX

@@ -1,9 +1,9 @@
 //! Bidirectional type checker facade — dispatches into one judgment module per form
 //! (issue #9, SPEC §3.8; epic #207). The **classical Γ** judgment (synth/check, unify
-//! coordination, exhaustiveness, patterns) lives in [`classical`]; the **Circuit**
-//! judgment lives in [`circuit`] (#323, ADR-0028); first-order unification in [`unify`]
-//! (`Table`); exhaustiveness/reachability in [`exhaust`]; the linear context `Δ` in
-//! [`linear`]. The quantum monad (`Q<τ>`, `<-` binds, `run { }`), the borrow block, and
+//! coordination, exhaustiveness, patterns) lives in `classical`; the **Circuit**
+//! judgment lives in `circuit` (#323, ADR-0028); first-order unification in `unify`
+//! (`Table`); exhaustiveness/reachability in `exhaust`; the linear context `Δ` in
+//! `linear`. The quantum monad (`Q<τ>`, `<-` binds, `run { }`), the borrow block, and
 //! the Z3 refinement bridge stay here as slices #325 and #326.
 //!
 //! Judgment form:
@@ -22,11 +22,11 @@
 //!
 //! * **Bidirectional, not full inference.** User functions are fully annotated, so the
 //!   only polymorphism is the classical prelude (`map`, `fold`, `zip`, …). Those are
-//!   [`Scheme`]s instantiated with fresh metavariables at each use; everything else flows
+//!   `Scheme`s instantiated with fresh metavariables at each use; everything else flows
 //!   through synthesis and checking. There is no let-generalization.
 //! * **One unifier.** Application, branch joining, and subsumption all bottom out in
-//!   [`Table::unify`]. Metavariables are zonked away before a type is returned to a caller.
-//! * **Exhaustiveness** is delegated to the [`exhaust`] usefulness algorithm.
+//!   `Table::unify`. Metavariables are zonked away before a type is returned to a caller.
+//! * **Exhaustiveness** is delegated to the `exhaust` usefulness algorithm.
 
 pub(crate) mod builtins;
 pub(crate) mod circuit;
@@ -182,7 +182,7 @@ impl TypeChecker {
 
     /// Initialize the LSP annotation/resolution sinks (issue #45). When enabled, the
     /// checker owns the sinks for the duration of `check_decls` and records into them
-    /// during synthesis; call [`take_sinks`] to extract the accumulated results.
+    /// during synthesis; call [`Self::take_sinks`] to extract the accumulated results.
     pub fn enable_sinks(&mut self) {
         self.annotations = Some(TypeAnnotations::default());
         self.resolutions = Some(ResolutionMap::default());
@@ -350,7 +350,7 @@ impl TypeChecker {
         }
     }
 
-    /// Resolved top-level function type after [`check_decls`] (issue #16 lowering).
+    /// Resolved top-level function type after [`Self::check_decls`] (issue #16 lowering).
     pub fn fn_type_of(&self, name: &str) -> Option<&Ty> {
         self.globals.get(name)
     }

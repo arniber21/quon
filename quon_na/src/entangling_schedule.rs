@@ -17,7 +17,7 @@
 //! left unchanged; atom identity is `AtomId(vertex.index())` (same as
 //! placement #104).
 //!
-//! References: [Enola] Sec. 3 / Theorem 1; Misra & Gries, "A constructive proof
+//! References: \[Enola\] Sec. 3 / Theorem 1; Misra & Gries, "A constructive proof
 //! of Vizing's theorem", IPL 1992.
 
 use std::collections::{BTreeMap, BTreeSet};

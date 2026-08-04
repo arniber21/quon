@@ -139,7 +139,7 @@ impl CliffordClass {
 
 // ── Nat expressions ───────────────────────────────────────────────────────────
 
-/// Type-level natural number expression (appears in QReg<n>, Circuit<n,...>).
+/// Type-level natural number expression (appears in `QReg<n>`, `Circuit<n,…>`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum NatExpr {
     Lit(u64),

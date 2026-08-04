@@ -146,6 +146,10 @@ ci-rust: setup-python
     set -euo pipefail
     cargo fmt --all -- --check
     cargo clippy --workspace {{WORKSPACE_EXCLUDE}} --all-targets -- -D warnings
+    # Workspace Rustdoc must be warning-free (#406): unresolved intra-doc links,
+    # private-item references, output collisions, and accidental citation links
+    # are all denied. --no-deps scopes the check to workspace crates only.
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace {{WORKSPACE_EXCLUDE}} --no-deps
     cargo build --release --workspace {{WORKSPACE_EXCLUDE}}
     cargo build --examples --workspace {{WORKSPACE_EXCLUDE}}
     # MLIR-free module-seam feature combinations (issue #407). Runs after
@@ -270,6 +274,12 @@ tooling-full: _tooling-build
 # Assert agent validation docs match Justfile / CI reality (#203).
 ci-docs-assert:
     ./scripts/assert-validation-docs.sh
+
+# Workspace Rustdoc with warnings denied (#406): unresolved intra-doc links,
+# private-item references, output collisions, and accidental citation links.
+# Also run as part of `ci-rust`; this recipe runs it in isolation.
+ci-rustdoc:
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace {{WORKSPACE_EXCLUDE}} --no-deps
 
 # Local convenience: re-run just the sample corpus catalog lint (schema,
 # path existence, category coverage, required README sections, and a real
