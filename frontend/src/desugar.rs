@@ -218,7 +218,10 @@ fn desugar_run_block(
     // expression. A trailing `<-` bind or `let` has no continuation to bind
     // into; report it and recover with the bound right-hand side so we can keep
     // collecting errors from the rest of the block.
-    let (last_stmt, mut current_span) = iter.next().unwrap();
+    let (last_stmt, mut current_span) = match iter.next() {
+        Some(item) => item,
+        None => unreachable!("checked non-empty: run block has a trailing statement"),
+    };
     let mut current_expr = match last_stmt {
         Stmt::Expr(e) => desugar_expr_acc(e, errors),
         Stmt::Bind { rhs, .. } => {

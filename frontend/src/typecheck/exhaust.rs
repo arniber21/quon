@@ -108,7 +108,10 @@ fn specialize<'a>(rows: &[Vec<&'a Pat>], ctor: &Ctor) -> Vec<Vec<&'a Pat>> {
     let arity = ctor.arity();
     let mut out = Vec::new();
     for row in rows {
-        let (first, rest) = row.split_first().expect("specialize on width-0 row");
+        let (first, rest) = match row.split_first() {
+            Some(split) => split,
+            None => unreachable!("specialize on width-0 row"),
+        };
         match first {
             Pat::Wildcard | Pat::Var(_) => {
                 let mut new_row = vec![&WILDCARD; arity];
@@ -142,7 +145,10 @@ fn specialize<'a>(rows: &[Vec<&'a Pat>], ctor: &Ctor) -> Vec<Vec<&'a Pat>> {
 fn default_matrix<'a>(rows: &[Vec<&'a Pat>]) -> Vec<Vec<&'a Pat>> {
     rows.iter()
         .filter_map(|row| {
-            let (first, rest) = row.split_first().expect("default on width-0 row");
+            let (first, rest) = match row.split_first() {
+                Some(split) => split,
+                None => unreachable!("default on width-0 row"),
+            };
             matches!(first, Pat::Wildcard | Pat::Var(_)).then(|| rest.to_vec())
         })
         .collect()
@@ -243,7 +249,10 @@ fn useful(rows: &[Vec<&Pat>], q: &[&Pat], types: &[Ty]) -> bool {
     let Some((col_ty, rest_ty)) = types.split_first() else {
         return rows.is_empty();
     };
-    let (q_head, q_rest) = q.split_first().expect("useful: query narrower than types");
+    let (q_head, q_rest) = match q.split_first() {
+        Some(split) => split,
+        None => unreachable!("useful: query narrower than types"),
+    };
 
     match head_ctor(q_head) {
         Some(ctor) => {

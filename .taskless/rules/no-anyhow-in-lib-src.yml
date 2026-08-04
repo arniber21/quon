@@ -1,6 +1,6 @@
 id: no-anyhow-in-lib-src
 language: Rust
-severity: warning
+severity: error
 message: Avoid anyhow in library source — use thiserror enums and Result in crate APIs
 note: |
   Reserve anyhow for the quonc CLI driver. Library crates (frontend, mlir_bridge,

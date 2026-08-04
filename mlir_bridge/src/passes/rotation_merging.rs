@@ -185,9 +185,9 @@ fn merge_pair<'c, 'a>(
             inputs[0],
             location,
         )
-        .expect("merged rotation builds"),
+        .unwrap_or_else(|_| unreachable!("merged rotation builds")),
     );
-    let merged_out = Value::from(merged.result(0).expect("merged result"));
+    let merged_out = Value::from(merged.result(0).unwrap_or_else(|_| unreachable!("merged result")));
     for output in outputs {
         base.replace_all_uses_with(output, merged_out);
     }

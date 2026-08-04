@@ -1,15 +1,26 @@
 id: no-unwrap-expect-in-src
 language: Rust
-severity: warning
+severity: error
 message: Avoid unwrap() and expect() in library source — propagate errors with Result
 note: |
-  Workspace crates are library code; prefer ? and typed errors (thiserror/anyhow).
-  Tests and the quonc driver may use expect() sparingly.
+  Workspace crates are library code; prefer ? and typed errors (thiserror).
+  Tests and the quonc driver may use expect() sparingly, so cfg(test)
+  modules and test directories are excluded from this gate.
 ignores:
   - "**/tests/**"
   - "**/test/**"
+  - "**/tests.rs"
+  - "**/test.rs"
   - "quonc/**"
 rule:
-  any:
-    - pattern: $EXPR.unwrap()
-    - pattern: $EXPR.expect($MSG)
+  all:
+    - any:
+        - pattern: $EXPR.unwrap()
+        - pattern: $EXPR.expect($MSG)
+    - not:
+        inside:
+          stopBy: end
+          kind: mod_item
+          follows:
+            kind: attribute_item
+            regex: cfg\(.*test

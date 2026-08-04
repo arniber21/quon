@@ -385,7 +385,7 @@ fn validate_coloring(
 ) {
     let mut seen: Vec<BTreeSet<u32>> = vec![BTreeSet::new(); n];
     for (idx, &(u, v, _)) in edges.iter().enumerate() {
-        let c = edge_color[idx].expect("colored");
+        let c = edge_color[idx].unwrap_or_else(|| unreachable!("colored"));
         assert!(c <= delta, "color {c} exceeds Δ+1 palette (Δ={delta})");
         assert!(seen[u].insert(c), "vertex {u} reuses color {c}");
         assert!(seen[v].insert(c), "vertex {v} reuses color {c}");
@@ -413,7 +413,7 @@ fn color_edge(
     let mut fan: Vec<usize> = vec![v];
     let mut in_fan: BTreeSet<usize> = BTreeSet::from([v]);
     loop {
-        let tip = *fan.last().expect("fan non-empty");
+        let tip = fan.last().copied().unwrap_or_else(|| unreachable!("fan non-empty"));
         let free_at_tip = free_color(&color_to_edge[tip]);
         let mut next = None;
         for (&w, &eidx) in &adj[u] {
@@ -435,7 +435,7 @@ fn color_edge(
     }
 
     let c = free_color(&color_to_edge[u]);
-    let tip = *fan.last().expect("fan non-empty");
+    let tip = fan.last().copied().unwrap_or_else(|| unreachable!("fan non-empty"));
     let d = free_color(&color_to_edge[tip]);
 
     // Always invert the cd-path at u. Because c is free at u, any non-empty

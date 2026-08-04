@@ -195,7 +195,7 @@ fn rebuild_block<'c, 'a>(
     // Build new gates, inserting before the return op.
     let location = return_op.location();
     let mut wires: Vec<Value<'c, 'a>> = (0..n_qubits)
-        .map(|i| Value::from(block.argument(i).expect("block argument")))
+        .map(|i| Value::from(block.argument(i).unwrap_or_else(|_| unreachable!("block {i} has argument {i}"))))
         .collect();
 
     for (gate_name, targets) in new_gates {
@@ -204,10 +204,10 @@ fn rebuild_block<'c, 'a>(
         let new_op = block.insert_operation_before(
             return_op,
             quantum_circ::gate(context, gate_name, 1, is_clifford, &operands, location)
-                .expect("rebuilt gate builds"),
+                .unwrap_or_else(|_| unreachable!("rebuilt gate builds")),
         );
         for (i, &target) in targets.iter().enumerate() {
-            wires[target] = Value::from(new_op.result(i).expect("rebuilt result"));
+            wires[target] = Value::from(new_op.result(i).unwrap_or_else(|_| unreachable!("rebuilt result {i}")));
         }
     }
 

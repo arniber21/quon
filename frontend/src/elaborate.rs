@@ -1143,7 +1143,10 @@ fn gate_app(name: &str, qubit: &Sp<Expr>, span: chumsky::span::SimpleSpan) -> Sp
 
 fn compose(steps: Vec<Sp<Expr>>, span: chumsky::span::SimpleSpan) -> Sp<Expr> {
     let mut iter = steps.into_iter();
-    let first = iter.next().expect("compose called with no steps");
+    let first = match iter.next() {
+        Some(step) => step,
+        None => unreachable!("compose called with no steps"),
+    };
     iter.fold(first, |acc, step| {
         (Expr::Compose(Box::new(acc), Box::new(step)), span)
     })

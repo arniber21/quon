@@ -8,6 +8,30 @@ valid:
     fn ok() -> Option<i32> {
         Some(1)
     }
+  - |
+    fn prod() -> i32 {
+        let v: Result<i32, ()> = Ok(1);
+        v.unwrap_or(2)
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        fn helper() -> i32 {
+            "42".parse().unwrap()
+        }
+        #[test]
+        fn it_works() {
+            "42".parse().expect("must parse");
+        }
+    }
+  - |
+    #[cfg(all(test, feature = "mlir"))]
+    mod tests {
+        fn helper() -> i32 {
+            "42".parse().unwrap()
+        }
+    }
 invalid:
   - |
     fn bad() -> i32 {
@@ -16,4 +40,11 @@ invalid:
   - |
     fn worse() -> i32 {
         "42".parse().expect("must parse")
+    }
+  - |
+    struct S;
+    impl S {
+        fn boom(&self) -> i32 {
+            "42".parse().unwrap()
+        }
     }
