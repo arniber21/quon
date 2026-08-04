@@ -38,7 +38,7 @@ This table is an adapter of the **Justfile** recipes invoked by `.github/workflo
 | [ci.yml](../../.github/workflows/ci.yml) `tooling` | every push and PR | `just ci-tooling`: `quonfmt --check`, `quonlint`, `quon_lsp` smoke on CI corpus |
 | [release.yml](../../.github/workflows/release.yml) | tags `v*` (+ manual dry-run) | `devbox run release` — static MLIR/LLVM + release-built static libz3; link audit; upload `quon-{version}-{arch}-{os}.tar.gz` to GitHub Releases |
 | [taskless.yml](../../.github/workflows/taskless.yml) | every PR (diff-scoped); push to `main` (full) | `@taskless/cli check` (Node 22+) |
-| [flux.yml](../../.github/workflows/flux.yml) | PR when `flux_verify/`, `quon_core/`, `backend/`, or lockfile changes; push to `main` (unconditional) | `cargo flux -p flux_verify`, `cargo flux -p quon_core --features flux`, `cargo flux -p backend --features flux` (nightly + z3) |
+| [flux.yml](../../.github/workflows/flux.yml) | PR when `flux_verify/`, `quon_core/`, `backend/`, `quon_qec/`, `quon_na/`, or lockfile changes; push to `main` (unconditional) | Pinned Flux toolchain (`57773e946c…`, issue #404) + z3. Hard gates: `cargo flux -p quon_core --features flux`, `cargo flux -p backend --features flux`, `cargo flux -p quon_qec --features flux`. Non-blocking (`continue-on-error`): `cargo flux -p flux_verify` and `cargo flux -p quon_na --no-default-features --features flux` — flux-infer ICEs, see [ADR-0027](../adr/0027-flux-infer-iterator-closure-ice.md) |
 | [coverage.yml](../../.github/workflows/coverage.yml) | every PR (non-blocking) | `cargo llvm-cov` summary via `./scripts/coverage.sh` (stable, excludes `flux_verify`; needs LLVM 22 + MLIR) |
 | [vscode-extension.yml](../../.github/workflows/vscode-extension.yml) | path-filtered push/PR | tree-sitter corpus + VS Code extension package checks |
 
@@ -135,6 +135,23 @@ Run `cargo flux -p flux_verify` locally (or rely on `.github/workflows/flux.yml`
 - Introduce Rust code where a refinement spec is the primary correctness argument
 
 Flux uses **nightly** and **z3**; it is intentionally excluded from the stable `cargo test` / clippy CI job. The stable workspace must still build without Flux installed.
+
+### Exact Flux commands (match CI)
+
+The workflow pins the Flux toolchain to commit `57773e946c619199a733350023164eaeca49e1a0` (`flux --version` reports `flux 57773e946c (2026-06-29)`); bump it deliberately, never reverting to a moving `main` clone. With `cargo-flux` + `z3` installed, run the same checks CI does:
+
+```bash
+# Hard gates (must pass)
+cargo flux -p quon_core --features flux
+cargo flux -p backend      --features flux
+cargo flux -p quon_qec     --features flux
+
+# Non-blocking: known flux-infer ICEs (ADR-0027); reproducible on the pinned toolchain
+cargo flux -p flux_verify
+cargo flux -p quon_na --no-default-features --features flux
+```
+
+`quon_na` uses `--no-default-features` to keep the `mlir` feature (nightly + MLIR libs) out of the Flux check; `flux` is the intended feature set (see `quon_na/Cargo.toml`).
 
 ### Testing and static analysis expectations
 

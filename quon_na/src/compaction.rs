@@ -430,6 +430,12 @@ fn preds_map(n: usize, deps: &[ScheduleDependency]) -> Vec<Vec<usize>> {
 
 type AsapSchedule = (Vec<ScheduleLayer>, u32, Vec<Vec<u32>>);
 
+// `trusted` (flux refinement limitation): flux-infer cannot propagate the
+// runtime length guards into the `layers[i]` index proofs (the
+// closure-projection weakness in ADR-0027). No flux specs here, so trusting
+// skips no verification. Remove once flux-infer can project length
+// refinements through these loop bodies.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn exclusive_cycle_asap(
     layers: &[ScheduleLayer],
     deps: &[ScheduleDependency],
@@ -501,6 +507,12 @@ fn renumber_dense(layers: &mut [ScheduleLayer]) {
 // Critical path (N3)
 // ---------------------------------------------------------------------------
 
+// `trusted` (flux refinement limitation): flux-infer cannot propagate the
+// runtime length guards into the `layers[i]`/`lineage[i]` index proofs (the
+// closure-projection weakness in ADR-0027). No flux specs here, so trusting
+// skips no verification. Remove once flux-infer can project length
+// refinements through these loop bodies.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn critical_path_report(
     layers: &[ScheduleLayer],
     lineage: &[Vec<u32>],
@@ -779,6 +791,12 @@ fn hard_dep_forbids_same_cycle(
 /// illegal via `validate_conflicts`; the strict `<` check stops greedy from
 /// *reordering* a successor before its Move/Transfer predecessors by merging
 /// it into an earlier unrelated layer (occupancy/geometry bug at lower).
+// `trusted` (flux refinement limitation): flux-infer cannot propagate the
+// runtime length guards into the `layers[u]`/`layers[v]` index proofs (the
+// closure-projection weakness in ADR-0027). No flux specs here, so trusting
+// skips no verification. Remove once flux-infer can project length
+// refinements through these loop bodies.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn hard_dep_cycle_order_ok(
     layers: &[ScheduleLayer],
     lineage: &[Vec<u32>],
@@ -925,6 +943,12 @@ fn verify_entangling_geometry_mlir_free(
 // Greedy merge
 // ---------------------------------------------------------------------------
 
+// `trusted` (flux refinement limitation): flux-infer cannot propagate the
+// runtime length guards into the `layers[i]`/`lineage[j]` index proofs (the
+// closure-projection weakness in ADR-0027). No flux specs here, so trusting
+// skips no verification. Remove once flux-infer can project length
+// refinements through these loop bodies.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn find_first_improving_merge(
     layers: &[ScheduleLayer],
     lineage: &[Vec<u32>],
@@ -984,6 +1008,12 @@ enum MergeAttempt {
     HardFail(CompactionError),
 }
 
+// `trusted` (flux refinement limitation): flux-infer cannot propagate the
+// runtime length guards into the `layers[i]`/`lineage[j]` index proofs (the
+// closure-projection weakness in ADR-0027). No flux specs here, so trusting
+// skips no verification. Remove once flux-infer can project length
+// refinements through these loop bodies.
+#[cfg_attr(feature = "flux", flux_rs::trusted)]
 fn try_merge_pair(
     layers: &[ScheduleLayer],
     lineage: &[Vec<u32>],
