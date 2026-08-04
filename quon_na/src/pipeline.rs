@@ -72,10 +72,12 @@ pub enum StatePrepMode {
     #[default]
     Heuristic,
     /// Exact SMT state-prep scheduling via z3 (requires `solver` feature).
-    /// The standalone solver (`exact::state_prep::schedule_exact`) is
-    /// implemented, but pipeline wiring into the QEC per-CNOT-phase
-    /// scheduler is not yet done, so requesting this currently logs a
-    /// fallback to the heuristic scheduler (issue #302, Deliverable A).
+    /// Each QEC CNOT phase is coloured by z3 into the minimum number of
+    /// movement-compatible stages (issue #302 / #397). On solver timeout the
+    /// heuristic Misra–Gries scheduler runs and the report labels the
+    /// schedule `Heuristic`; a `solver`-free build rejects the request with
+    /// [`NaPipelineError::ExactStatePrepRequiresSolver`] (fail-closed, never
+    /// a silent heuristic fallback).
     Exact,
 }
 
@@ -211,6 +213,24 @@ pub enum NaPipelineError<V = LogicalQubitId> {
          fidelity) — mirrors --emit-resource-report fail-closed discipline (ADR-0017)"
     )]
     MissingErrorModelForObjective,
+    /// Exact state-prep scheduling (`--na-state-prep exact`) requested on a
+    /// build without the `solver` feature (issue #397). z3 is not linked, so
+    /// the exact scheduler cannot run. Rebuild `quon_na` with
+    /// `--features solver` or use heuristic state-prep. Fail-closed rather
+    /// than silently running the heuristic — mirrors
+    /// `MissingErrorModelForObjective` discipline (ADR-0017).
+    #[error(
+        "exact state-prep scheduling (--na-state-prep exact) requires the `solver` \
+         feature; rebuild quon_na with --features solver or use heuristic state-prep"
+    )]
+    ExactStatePrepRequiresSolver,
+    /// z3-backed exact state-prep scheduler returned an internal failure
+    /// (issue #397). This is an unexpected solver error — the timeout path
+    /// falls back to the heuristic scheduler and labels the schedule
+    /// `Heuristic`, it does not produce this variant.
+    #[cfg(feature = "solver")]
+    #[error("exact state-prep scheduling failed: {0}")]
+    ExactStatePrepFailed(String),
     #[error("resource report failed: {0}")]
     Report(#[from] crate::report::ReportError),
 }
