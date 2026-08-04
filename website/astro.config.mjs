@@ -103,6 +103,7 @@ export default defineConfig({
 				{
 					label: 'Reference',
 					items: [
+						{ label: 'Feature support matrix', slug: 'reference/support-matrix' },
 						{ label: 'quonc CLI', slug: 'reference/quonc' },
 						{ label: 'Compiler pipeline', slug: 'reference/compiler' },
 						{ label: 'Diagnostic catalog', slug: 'reference/diagnostics' },
