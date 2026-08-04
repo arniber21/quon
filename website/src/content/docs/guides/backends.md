@@ -178,5 +178,13 @@ baseline:
 python test/verify/routing.py
 ```
 
+<<<<<<< HEAD
 Set `QUONC` only when you need to point at a specific binary instead of the
 auto-discovered one.
+=======
+## Diagnostic catalog
+
+When a backend target or emission flag is rejected, the
+[diagnostic catalog](/reference/diagnostics/#backend-target-and-artifact-emission)
+lists every target-descriptor and emission error with its cause and repair.
+>>>>>>> 4b74572 (docs: create task-oriented Quon diagnostic catalog (#381))

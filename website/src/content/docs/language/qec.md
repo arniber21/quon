@@ -253,6 +253,7 @@ see the scheduling cost of each round — placement, movement, entangling,
 measurement — as a breakdown, which is essential for tuning the code distance
 against the hardware's coherence time.
 
+When a QEC type is rejected, the [diagnostic catalog](/reference/diagnostics/#qec-and-target-capability) explains the distance, family, or logical-operation error and the supported repair.
 ## Next
 
 Now you've seen every concept in the language. The final page walks through

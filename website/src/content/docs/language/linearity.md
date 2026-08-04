@@ -325,6 +325,7 @@ trustworthy. Without it, the depth bounds, width checks, and classification
 rules would all be checking properties of a program that might not even be
 physically realizable.
 
+For the exact diagnostic message and repair for each linearity error, see the [diagnostic catalog](/reference/diagnostics/#linearity).
 ## Next
 
 Now that you understand how resources are tracked, the next page shows how
