@@ -46,16 +46,85 @@ use std::collections::{BTreeMap, HashSet};
 // PhasePolynomial
 // ---------------------------------------------------------------------------
 
+/// A parity bitvector — a linear Boolean function over qubit inputs.
+///
+/// Backed by a dynamic bitset (`Vec<u64>`) so it supports arbitrary qubit
+/// counts (well beyond the 128-qubit limit of a fixed `u128`). Trailing
+/// zero words are trimmed, giving a canonical representation: two equal
+/// parities compare, order, and hash identically regardless of how many
+/// words were allocated.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Parity {
+    /// Little-endian words: bit `i` lives in `bits[i / 64]` at position `i % 64`.
+    bits: Vec<u64>,
+}
+
+impl Parity {
+    /// Number of `u64` words needed to address `n` qubits (`ceil(n / 64)`).
+    const fn width(n: usize) -> usize {
+        (n + 63) / 64
+    }
+
+    /// The zero parity (no bits set).
+    pub fn zero() -> Self {
+        Self { bits: Vec::new() }
+    }
+
+    /// The `i`-th basis vector over `n` qubits: bit `i` set, all others clear.
+    pub fn basis(n: usize, i: usize) -> Self {
+        debug_assert!(i < n, "basis index {i} out of range for {n} qubits");
+        let mut bits = vec![0u64; Self::width(n)];
+        bits[i / 64] |= 1u64 << (i % 64);
+        Self::normalized(bits)
+    }
+
+    /// Construct a parity from the low 128 bits of `value`, sized for `n` qubits.
+    /// Bits beyond `n` are masked off by the fixed width allocation. Primarily
+    /// used to build expected parities in tests.
+    pub fn from_u128(n: usize, value: u128) -> Self {
+        let mut bits = vec![0u64; Self::width(n)];
+        if !bits.is_empty() {
+            bits[0] = value as u64;
+        }
+        if bits.len() >= 2 {
+            bits[1] = (value >> 64) as u64;
+        }
+        Self::normalized(bits)
+    }
+
+    /// XOR `other` into `self` in place, extending `self` if needed and
+    /// re-trimming trailing zero words to keep the representation canonical.
+    pub fn xor_in_place(&mut self, other: &Self) {
+        if self.bits.len() < other.bits.len() {
+            self.bits.resize(other.bits.len(), 0);
+        }
+        for (w, &o) in self.bits.iter_mut().zip(other.bits.iter()) {
+            *w ^= o;
+        }
+        while let Some(&0) = self.bits.last() {
+            self.bits.pop();
+        }
+    }
+
+    /// Trim trailing zero words for a canonical representation.
+    fn normalized(mut bits: Vec<u64>) -> Self {
+        while let Some(&0) = bits.last() {
+            bits.pop();
+        }
+        Self { bits }
+    }
+}
+
 /// A phase polynomial over `n` qubits.
 ///
-/// Maps each linear Boolean function (represented as a bitvector of qubit
-/// parities) to an integer coefficient in units of π/4 (mod 8).
+/// Maps each linear Boolean function (represented as a [`Parity`] bitvector
+/// of qubit parities) to an integer coefficient in units of π/4 (mod 8).
 #[derive(Clone, Debug)]
 pub struct PhasePolynomial {
     /// Number of qubits.
     n: usize,
-    /// Parity (bitvector) → coefficient (mod 8, range 0..8).
-    terms: BTreeMap<u128, u8>,
+    /// Parity → coefficient (mod 8, range 0..8).
+    terms: BTreeMap<Parity, u8>,
 }
 
 impl PhasePolynomial {
@@ -74,17 +143,18 @@ impl PhasePolynomial {
 
     /// Add `coeff` (in π/4 units) to the term with parity `p`.
     /// Coefficient is normalized mod 8; zero terms are removed.
-    pub fn add_term(&mut self, p: u128, coeff: i8) {
-        let entry = self.terms.entry(p).or_insert(0);
-        *entry = (*entry as i8 + coeff).rem_euclid(8) as u8;
-        if *entry == 0 {
+    pub fn add_term(&mut self, p: Parity, coeff: i8) {
+        let new_coeff = (self.coeff(&p) as i8 + coeff).rem_euclid(8) as u8;
+        if new_coeff == 0 {
             self.terms.remove(&p);
+        } else {
+            self.terms.insert(p, new_coeff);
         }
     }
 
     /// Get the coefficient (mod 8) for parity `p`, or 0 if absent.
-    pub fn coeff(&self, p: u128) -> u8 {
-        self.terms.get(&p).copied().unwrap_or(0)
+    pub fn coeff(&self, p: &Parity) -> u8 {
+        self.terms.get(p).copied().unwrap_or(0)
     }
 
     /// Number of distinct non-zero phase terms.
@@ -98,8 +168,8 @@ impl PhasePolynomial {
     }
 
     /// Iterate over (parity, coefficient) pairs.
-    pub fn terms(&self) -> impl Iterator<Item = (u128, u8)> + '_ {
-        self.terms.iter().map(|(&p, &c)| (p, c))
+    pub fn terms(&self) -> impl Iterator<Item = (&Parity, u8)> + '_ {
+        self.terms.iter().map(|(p, &c)| (p, c))
     }
 }
 
@@ -134,7 +204,7 @@ pub fn count_t_gates(gates: &[(String, Vec<usize>)]) -> usize {
 pub fn extract(n: usize, gates: &[(String, Vec<usize>)]) -> PhasePolynomial {
     let mut poly = PhasePolynomial::new(n);
     // p[i] = current parity of qubit i, as a bitvector over input bits.
-    let mut parity: Vec<u128> = (0..n).map(|i| 1u128 << i).collect();
+    let mut parity: Vec<Parity> = (0..n).map(|i| Parity::basis(n, i)).collect();
 
     for (name, qubits) in gates {
         let canonical = quon_core::gates::canonical_id(name).unwrap_or(name);
@@ -142,15 +212,16 @@ pub fn extract(n: usize, gates: &[(String, Vec<usize>)]) -> PhasePolynomial {
             "CNOT" => {
                 let c = qubits[0];
                 let t = qubits[1];
-                parity[t] ^= parity[c];
+                let pc = parity[c].clone();
+                parity[t].xor_in_place(&pc);
             }
             "T" => {
                 let q = qubits[0];
-                poly.add_term(parity[q], 1);
+                poly.add_term(parity[q].clone(), 1);
             }
             "T_dag" => {
                 let q = qubits[0];
-                poly.add_term(parity[q], -1);
+                poly.add_term(parity[q].clone(), -1);
             }
             _ => {} // skip non-block gates
         }
@@ -193,8 +264,8 @@ pub fn synthesize(
     n: usize,
 ) -> Vec<(String, Vec<usize>)> {
     let mut result = Vec::new();
-    let mut parity: Vec<u128> = (0..n).map(|i| 1u128 << i).collect();
-    let mut emitted: HashSet<u128> = HashSet::new();
+    let mut parity: Vec<Parity> = (0..n).map(|i| Parity::basis(n, i)).collect();
+    let mut emitted: HashSet<Parity> = HashSet::new();
 
     for (name, qubits) in original {
         let canonical = quon_core::gates::canonical_id(name).unwrap_or(name);
@@ -203,13 +274,14 @@ pub fn synthesize(
                 result.push((name.clone(), qubits.clone()));
                 let c = qubits[0];
                 let t = qubits[1];
-                parity[t] ^= parity[c];
+                let pc = parity[c].clone();
+                parity[t].xor_in_place(&pc);
             }
             "T" | "T_dag" => {
                 let q = qubits[0];
-                let p = parity[q];
-                if !emitted.contains(&p) {
-                    emitted.insert(p);
+                let p = &parity[q];
+                if !emitted.contains(p) {
+                    emitted.insert(p.clone());
                     let coeff = poly.coeff(p);
                     for gate_name in coeff_to_gates(coeff) {
                         result.push((gate_name.to_string(), vec![q]));
@@ -276,6 +348,28 @@ pub fn optimize_t_count(
     gates: &[(String, Vec<usize>)],
     n: usize,
 ) -> Option<Vec<(String, Vec<usize>)>> {
+    // Validate operands before any indexing into parity state: every qubit
+    // operand must be within the declared width `n`, and CNOT/T/T† gates must
+    // carry their expected arity. Malformed inputs decline optimization
+    // (return `None`) rather than risk a panic deep in extraction/synthesis.
+    for (name, qubits) in gates {
+        let canonical = quon_core::gates::canonical_id(name).unwrap_or(name);
+        let expected_arity = match canonical {
+            "CNOT" => Some(2),
+            "T" | "T_dag" => Some(1),
+            _ => None,
+        };
+        if let Some(arity) = expected_arity
+            && qubits.len() != arity
+        {
+            return None;
+        }
+        for &q in qubits {
+            if q >= n {
+                return None;
+            }
+        }
+    }
     let segments = split_into_blocks(gates);
     let mut result = Vec::new();
     let mut changed = false;
@@ -310,6 +404,11 @@ pub fn optimize_t_count(
 mod tests {
     use super::*;
 
+    /// Build a `Parity` from a small bit pattern (low 128 bits) for `n` qubits.
+    fn p(n: usize, v: u128) -> Parity {
+        Parity::from_u128(n, v)
+    }
+
     // --- PhasePolynomial ---------------------------------------------------
 
     #[test]
@@ -322,27 +421,27 @@ mod tests {
     #[test]
     fn add_and_merge_terms() {
         let mut poly = PhasePolynomial::new(2);
-        poly.add_term(0b01, 1); // T on parity {0}
-        poly.add_term(0b01, 1); // another T on same parity → coeff 2 (S)
-        assert_eq!(poly.coeff(0b01), 2);
+        poly.add_term(p(2, 0b01), 1); // T on parity {0}
+        poly.add_term(p(2, 0b01), 1); // another T on same parity → coeff 2 (S)
+        assert_eq!(poly.coeff(&p(2, 0b01)), 2);
         assert_eq!(poly.t_count(), 0); // even → 0 T gates
     }
 
     #[test]
     fn add_canceling_terms() {
         let mut poly = PhasePolynomial::new(1);
-        poly.add_term(1, 1); // T
-        poly.add_term(1, -1); // T†
+        poly.add_term(p(1, 1), 1); // T
+        poly.add_term(p(1, 1), -1); // T†
         assert_eq!(poly.num_terms(), 0); // cancelled
     }
 
     #[test]
     fn coeff_mod_8() {
         let mut poly = PhasePolynomial::new(1);
-        poly.add_term(1, 1);
-        poly.add_term(1, 1);
-        poly.add_term(1, 1);
-        assert_eq!(poly.coeff(1), 3); // T³
+        poly.add_term(p(1, 1), 1);
+        poly.add_term(p(1, 1), 1);
+        poly.add_term(p(1, 1), 1);
+        assert_eq!(poly.coeff(&p(1, 1)), 3); // T³
         assert_eq!(poly.t_count(), 1); // odd → 1 T gate
     }
 
@@ -353,7 +452,7 @@ mod tests {
         let gates = vec![("T".to_string(), vec![0usize])];
         let poly = extract(1, &gates);
         assert_eq!(poly.num_terms(), 1);
-        assert_eq!(poly.coeff(1), 1);
+        assert_eq!(poly.coeff(&p(1, 1)), 1);
         assert_eq!(poly.t_count(), 1);
     }
 
@@ -367,7 +466,7 @@ mod tests {
         ];
         let poly = extract(2, &gates);
         assert_eq!(poly.num_terms(), 1); // merged
-        assert_eq!(poly.coeff(1), 2); // T² = S
+        assert_eq!(poly.coeff(&p(2, 1)), 2); // T² = S
         assert_eq!(poly.t_count(), 0); // S is Clifford
     }
 
@@ -381,8 +480,8 @@ mod tests {
         ];
         let poly = extract(2, &gates);
         assert_eq!(poly.num_terms(), 2); // not merged
-        assert_eq!(poly.coeff(0b10), 1); // parity {1}
-        assert_eq!(poly.coeff(0b11), 1); // parity {0,1}
+        assert_eq!(poly.coeff(&p(2, 0b10)), 1); // parity {1}
+        assert_eq!(poly.coeff(&p(2, 0b11)), 1); // parity {0,1}
         assert_eq!(poly.t_count(), 2);
     }
 
@@ -408,7 +507,7 @@ mod tests {
         ];
         let poly = extract(2, &gates);
         assert_eq!(poly.num_terms(), 1);
-        assert_eq!(poly.coeff(1), 2); // T² = S
+        assert_eq!(poly.coeff(&p(2, 1)), 2); // T² = S
         assert_eq!(poly.t_count(), 0);
     }
 
@@ -453,7 +552,7 @@ mod tests {
             ("T".to_string(), vec![0]),
         ];
         let poly = extract(2, &original);
-        assert_eq!(poly.coeff(1), 3); // T³
+        assert_eq!(poly.coeff(&p(2, 1)), 3); // T³
         let result = synthesize(&poly, &original, 2);
         assert_eq!(count_t_gates(&result), 1); // reduced from 3 to 1
     }
@@ -551,6 +650,89 @@ mod tests {
         let gates = vec![("CNOT".to_string(), vec![0usize, 1])];
         let result = optimize_t_count(&gates, 2);
         assert!(result.is_none());
+    }
+
+    // --- Wide-circuit safety (issue #392) ---------------------------------
+
+    #[test]
+    fn optimize_width_zero_empty() {
+        let gates: Vec<(String, Vec<usize>)> = vec![];
+        assert!(optimize_t_count(&gates, 0).is_none());
+    }
+
+    #[test]
+    fn optimize_width_one_single_t() {
+        // Single T on a 1-qubit circuit: no merging possible → no improvement.
+        let gates = vec![("T".to_string(), vec![0usize])];
+        assert!(optimize_t_count(&gates, 1).is_none());
+    }
+
+    #[test]
+    fn extract_width_128_no_overflow() {
+        // Bit 127 is the top bit of a u128; under the old representation
+        // `1u128 << 127` worked but left no headroom. Verify extraction still
+        // produces a single term at the basis parity for qubit 127.
+        let gates = vec![("T".to_string(), vec![127usize])];
+        let poly = extract(128, &gates);
+        assert_eq!(poly.num_terms(), 1);
+        assert_eq!(poly.coeff(&Parity::basis(128, 127)), 1);
+        assert_eq!(poly.t_count(), 1);
+    }
+
+    #[test]
+    fn optimize_width_128_single_t() {
+        let gates = vec![("T".to_string(), vec![127usize])];
+        assert!(optimize_t_count(&gates, 128).is_none()); // single T, no reduction
+    }
+
+    #[test]
+    fn extract_width_129_no_panic() {
+        // 129 qubits overflows the old u128 basis (`1u128 << 128 == 0`).
+        // The dynamic Parity bitset must handle qubit 128 without panic.
+        let gates = vec![("T".to_string(), vec![128usize])];
+        let poly = extract(129, &gates);
+        assert_eq!(poly.num_terms(), 1);
+        assert_eq!(poly.coeff(&Parity::basis(129, 128)), 1);
+        assert_eq!(poly.t_count(), 1);
+    }
+
+    #[test]
+    fn optimize_width_129_merges_t_pair() {
+        // T(128), CNOT(128,0), T(128) — both T on parity {128}; merges to S.
+        // Proves optimization still reduces T-count beyond 128 qubits.
+        let gates = vec![
+            ("T".to_string(), vec![128usize]),
+            ("CNOT".to_string(), vec![128, 0]),
+            ("T".to_string(), vec![128]),
+        ];
+        let result = optimize_t_count(&gates, 129);
+        assert!(result.is_some());
+        assert_eq!(count_t_gates(&result.unwrap()), 0);
+    }
+
+    #[test]
+    fn optimize_out_of_range_t_operand() {
+        // T on qubit 130 in a 129-qubit circuit → decline optimization.
+        let gates = vec![("T".to_string(), vec![130usize])];
+        assert!(optimize_t_count(&gates, 129).is_none());
+    }
+
+    #[test]
+    fn optimize_out_of_range_cnot_operand() {
+        // CNOT targeting qubit 130 in a 129-qubit circuit → decline.
+        let gates = vec![
+            ("T".to_string(), vec![0usize]),
+            ("CNOT".to_string(), vec![0, 130]),
+        ];
+        assert!(optimize_t_count(&gates, 129).is_none());
+    }
+
+    #[test]
+    fn optimize_malformed_cnot_arity() {
+        // CNOT with a single operand would index out of bounds in extraction;
+        // the entry-point validation must decline instead of panicking.
+        let gates = vec![("CNOT".to_string(), vec![0usize])];
+        assert!(optimize_t_count(&gates, 2).is_none());
     }
 
     // --- coeff_to_gates ----------------------------------------------------
