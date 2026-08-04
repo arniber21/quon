@@ -69,6 +69,19 @@ fn unterminated_block_comment_has_code() {
     assert_code(src, "quon.lex.unterminated-comment");
 }
 
+
+#[test]
+fn c_style_comment_has_code() {
+    // `//` is the common C-style comment mistake; it must surface as a stable
+    // lexer diagnostic that recommends the supported `--` spelling.
+    let src = "fn f(): Int = 1 // oops";
+    assert_code(src, "quon.lex.unsupported-comment");
+    let d = first_with_code(src, "quon.lex.unsupported-comment");
+    let slashes = src.find("//").unwrap();
+    assert_eq!(d.span.start, slashes);
+    assert!(d.message.contains("--"), "message should recommend `--`: {}", d.message);
+}
+
 #[test]
 fn desugar_run_trailing_bind_has_code() {
     let src = "fn f(): Q<Int> = run { x <- measure(qubit()) }\n";
