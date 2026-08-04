@@ -16,6 +16,8 @@ use backend::AodSpeedModelKind as BackendSpeedModelKind;
 use serde::{Deserialize, Serialize};
 
 use crate::layout::Position;
+#[cfg(feature = "flux")]
+use flux_rs::attrs::*;
 
 /// Euclidean distance between two positions (µm).
 pub fn euclidean_um(a: Position, b: Position) -> f64 {
@@ -196,6 +198,17 @@ pub fn movement_duration_for_model(d_max_um: f64, model: &SpeedModel) -> u64 {
 /// return `sqrt(d_max_um)` when comparing placements at fixed `a` (Eq. (1)
 /// factor `1/√a` cancels in argmin). For absolute time use
 /// [`movement_duration_us`].
+///
+/// Issue #411: the input must be a finite nonnegative scalar. Flux proves the
+/// output is nonnegative under the precondition `d_max_um >= 0.0`, which also
+/// excludes NaN (NaN >= 0.0 is false). The function guards the non-positive
+/// case at runtime (returns 0.0), so the `else` branch executes only for
+/// strictly positive finite inputs, where `sqrt` is well-defined and
+/// nonnegative.
+#[cfg_attr(
+    feature = "flux",
+    spec(fn(d_max_um: f64{v: 0.0 <= v}) -> f64{v: 0.0 <= v})
+)]
 pub fn sqrt_d_max(d_max_um: f64) -> f64 {
     if d_max_um <= 0.0 {
         0.0

@@ -472,9 +472,16 @@ pub enum ZonedScheduleError {
 /// return `sqrt(d_max_um)` when comparing placements at fixed a (Eq. (1)
 /// factor 1/√a cancels in argmin). For absolute time use
 /// [`movement_duration_us`].
+///
+/// Issue #411: the input must be a finite nonnegative scalar. Flux proves the
+/// output is nonnegative under the precondition `d_max_um >= 0.0`, which also
+/// excludes NaN (NaN >= 0.0 is false). The function guards the non-positive
+/// case at runtime (returns 0.0), so the `else` branch executes only for
+/// strictly positive finite inputs, where `sqrt` is well-defined and
+/// nonnegative.
 #[cfg_attr(
     feature = "flux",
-    spec(fn(d_max_um: f64) -> f64{v: v >= 0.0})
+    spec(fn(d_max_um: f64{v: 0.0 <= v}) -> f64{v: 0.0 <= v})
 )]
 pub fn sqrt_d_max(d_max_um: f64) -> f64 {
     if d_max_um <= 0.0 {
@@ -2498,6 +2505,19 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn sqrt_d_max_nan_and_infinity_boundaries() {
+        // NaN input: the runtime guard (d <= 0.0) is false for NaN, so the else
+        // branch returns NaN. The Flux precondition d >= 0.0 excludes NaN at
+        // verified call sites; this test documents the unchecked behavior.
+        assert!(sqrt_d_max(f64::NAN).is_nan());
+        // Infinity input: sqrt(inf) = inf (nonnegative per the output spec).
+        assert!(sqrt_d_max(f64::INFINITY).is_infinite());
+        assert!(sqrt_d_max(f64::INFINITY) > 0.0);
+        // Negative infinity: the guard catches it (returns 0.0).
+        assert_eq!(sqrt_d_max(f64::NEG_INFINITY), 0.0);
     }
 
     #[test]

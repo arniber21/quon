@@ -71,8 +71,8 @@ pub use compaction::{
     feed_forward_dependencies, force_merge_layers, infer_atom_dependencies,
 };
 pub use entangling_schedule::{
-    EntanglingScheduleError, EntanglingScheduleResult, LayerUtilization, capacity_layer_count,
-    schedule_entangling_layers,
+    CapacityLayerError, EntanglingScheduleError, EntanglingScheduleResult, LayerUtilization,
+    capacity_layer_count, schedule_entangling_layers,
 };
 pub use geometry::{
     SpeedModel, SpeedModelKind, movement_duration_for_model, movement_duration_us,

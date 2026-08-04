@@ -8,10 +8,40 @@
 
 use flux_rs::attrs::*;
 
-/// Returns a value strictly greater than the input.
-#[spec(fn(x: i32) -> i32{v: x < v})]
+/// Returns a value strictly greater than the input (issue #411).
+///
+/// Flux proves `x < x + 1` under the machine-maximum precondition `x < i32::MAX`:
+/// without it, `x + 1` could overflow and the postcondition would be
+/// unprovable. The precondition is load-bearing — a direct call at
+/// `i32::MAX` violates the documented contract rather than wrapping.
+#[spec(fn(x: i32{v: v < 2147483647}) -> i32{v: x < v})]
 pub fn inc(x: i32) -> i32 {
     x + 1
+}
+
+/// Negative compile fixture (issue #411): `inc` at the machine maximum must
+/// be rejected. The `#[should_fail]` attribute encodes that expectation —
+/// flux *must* reject this call (overflow violates the `x < v`
+/// postcondition). If someone weakens `inc`'s precondition to allow
+/// `i32::MAX`, this function would verify and flux would error on the
+/// `should_fail` marker, surfacing the regression.
+#[allow(dead_code)]
+#[should_fail]
+#[sig(fn() -> i32[false])]
+fn inc_at_machine_max_is_rejected() -> i32 {
+    inc(2147483647)
+}
+
+/// Negative compile fixture (issue #411): `seq_depth`'s exact-sum
+/// postcondition `v == a + b` is load-bearing. The `#[should_fail]`
+/// attribute encodes that flux *must* reject the off-by-one claim. If
+/// someone weakens the spec to `v >= a + b` (dropping the equality), this
+/// function would verify and flux would error on `should_fail`.
+#[allow(dead_code)]
+#[should_fail]
+#[sig(fn(a: u64, b: u64) -> u64{v: v == a + b + 1})]
+fn seq_depth_exact_sum_is_load_bearing(a: u64, b: u64) -> u64 {
+    quon_core::seq_depth(a, b)
 }
 
 /// Natural numbers are non-negative.
@@ -26,6 +56,18 @@ mod smoke {
     use quon_core::linearity::{
         UseCountViolation, classify_use_count, is_linear_use_count, is_reuse_after_measure,
     };
+
+    #[test]
+    fn inc_respects_machine_max_precondition() {
+        // The Flux precondition x < i32::MAX ensures x + 1 doesn't overflow.
+        assert_eq!(inc(0), 1);
+        assert_eq!(inc(41), 42);
+        assert_eq!(inc(i32::MAX - 1), i32::MAX);
+        // At the boundary: inc(i32::MAX) would overflow — the precondition
+        // excludes this call. In debug Rust it panics (wraps in release);
+        // the Flux spec makes it a contract violation at verified call sites.
+    }
+
 
     #[test]
     fn quon_core_linearity_kernels_match_issue6() {
