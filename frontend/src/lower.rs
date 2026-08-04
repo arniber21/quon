@@ -3,6 +3,7 @@
 // Circuit<n,m,d,C> indices are encoded as op attributes (ADR-0002).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use melior::Context;
 use melior::ir::attribute::{BoolAttribute, StringAttribute};
@@ -76,13 +77,13 @@ pub struct LoweringCtx<'c> {
     location: Location<'c>,
     checker: TypeChecker,
     /// Bodies of zero-parameter circuit functions, for inlining and adjoint.
-    bodies: HashMap<Name, Sp<Expr>>,
+    bodies: Arc<HashMap<Name, Sp<Expr>>>,
     /// Metadata for each circuit function.
     func_meta: HashMap<Name, FuncMeta>,
     /// Parametric (`Nat`/`Int`/`Float`-parameterized) circuit function
     /// definitions, specialized on demand at a concrete call site (issue #1,
     /// MVP milestone M2) — see `elaborate.rs`.
-    parametric: HashMap<Name, elaborate::ParametricDef>,
+    parametric: Arc<HashMap<Name, elaborate::ParametricDef>>,
     /// Memoizes specializations already emitted, keyed by a canonical
     /// `"name(arg1,arg2,...)"` string, so the same call site (e.g.
     /// `hadamard_all(n)` reached twice with `n = 3`) is not re-emitted.
@@ -118,9 +119,9 @@ impl<'c> LoweringCtx<'c> {
             module: Module::new(location),
             location,
             checker: TypeChecker::new(),
-            bodies: HashMap::new(),
+            bodies: Arc::new(HashMap::new()),
             func_meta: HashMap::new(),
-            parametric: HashMap::new(),
+            parametric: Arc::new(HashMap::new()),
             specialized: HashMap::new(),
             next_synth_id: 0,
             next_logical_id: 0,
@@ -160,7 +161,7 @@ impl<'c> LoweringCtx<'c> {
                             out_qubits: const_width(&m, "out_qubits")?,
                         },
                     );
-                    self.bodies.insert(name.0.clone(), body.clone());
+                    Arc::make_mut(&mut self.bodies).insert(name.0.clone(), body.clone());
                 } else {
                     // A parametric circuit function (e.g. `hadamard_all(n)`):
                     // not emitted yet — every parameter must be `Nat`/`Int`/
@@ -168,7 +169,7 @@ impl<'c> LoweringCtx<'c> {
                     // are out of scope, see docs/plans/mvp-landing-plan.md
                     // §5), specialized on demand at each concrete call site
                     // (`specialize_named_fn`).
-                    self.parametric.insert(
+                    Arc::make_mut(&mut self.parametric).insert(
                         name.0.clone(),
                         elaborate::ParametricDef {
                             params: params.iter().map(|(p, _)| p.0.clone()).collect(),
@@ -290,7 +291,7 @@ impl<'c> LoweringCtx<'c> {
                 out_qubits,
             },
         );
-        self.bodies.insert(name.to_string(), body.clone());
+        Arc::make_mut(&mut self.bodies).insert(name.to_string(), body.clone());
 
         let region = Region::new();
         let qubit = qc::qubit_type(self.context);
@@ -360,17 +361,16 @@ impl<'c> LoweringCtx<'c> {
     /// resolve a bare `par { f() } * n` / `par { …, f(), … }` callee's width
     /// by inlining `f`'s body during unrolling.
     fn elab_ctx(&self) -> elaborate::ElabCtx {
+        // Share the definition tables by reference (`Arc::clone` is a refcount
+        // bump, O(1)) rather than deep-cloning every entry into a fresh
+        // `HashMap` per specialization. The tables are read-only during
+        // elaboration; mutation happens only in the lowerer's collection /
+        // emission passes, which `Arc::make_mut` keeps cheap (in-place when no
+        // `ElabCtx` borrows the table — see the scoped `ctx` at each call site
+        // that emits immediately after elaborating).
         elaborate::ElabCtx {
-            parametric: self
-                .parametric
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            bodies: self
-                .bodies
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            parametric: Arc::clone(&self.parametric),
+            bodies: Arc::clone(&self.bodies),
             expanding: std::cell::RefCell::new(std::collections::HashSet::new()),
         }
     }
@@ -413,8 +413,14 @@ impl<'c> LoweringCtx<'c> {
         self.specialized
             .insert(cache_key.clone(), synth_name.clone());
 
-        let ctx = self.elab_ctx();
-        let circuit = SpecializedCircuit::specialize(&def, args, classical_env, &ctx)?;
+        // Scope `ctx` so the shared `Arc` body table is released (refcount
+        // drops to 1) before `emit_specialized` mutates `self.bodies` via
+        // `Arc::make_mut`, keeping that insert an O(1) in-place mutation
+        // rather than a deep clone of the whole table.
+        let circuit = {
+            let ctx = self.elab_ctx();
+            SpecializedCircuit::specialize(&def, args, classical_env, &ctx)?
+        };
         self.emit_specialized(&synth_name, &circuit)?;
         Ok(synth_name)
     }
@@ -440,8 +446,12 @@ impl<'c> LoweringCtx<'c> {
         }
 
         let mut fuel = elaborate::fresh_fuel();
-        let ctx = self.elab_ctx();
-        let elaborated = elaborate::elaborate_circuit_body(gate, &HashMap::new(), &ctx, &mut fuel)?;
+        // Scope `ctx` so the shared body table is released before the emit
+        // below mutates `self.bodies` (keeps `Arc::make_mut` O(1)).
+        let elaborated = {
+            let ctx = self.elab_ctx();
+            elaborate::elaborate_circuit_body(gate, &HashMap::new(), &ctx, &mut fuel)?
+        };
         let circuit = SpecializedCircuit::anonymous(elaborated)?;
 
         let synth_name = format!("__anon_circuit{}", self.next_synth_id);
