@@ -5,9 +5,10 @@
 //! hand-rolled parser covers the benchmark QASM2/3 subset — the `OPENQASM`
 //! header, `include` directives, `qreg`/`qubit` declarations, gate
 //! statements (`name [params] q[i],q[j];`), `creg`/`bit` classical
-//! declarations (ignored for the NA path), `measure`/`reset` (ignored —
-//! not interactions), `barrier` (segment flush), and `//` / `/* */`
-//! comments. No external QASM crate is pulled in (issue constraint).
+//! declarations (ignored for the NA path), `measure`/`reset` (rejected —
+//! #405: not interactions, and silently dropping them would lose operations),
+//! `barrier` (segment flush), and `//` / `/* */` comments. No external
+//! QASM crate is pulled in (issue constraint).
 //!
 //! The parsed program is lowered to the same contract
 //! `quon_na::extract::extract_interaction_graph_and_local_gates` produces
@@ -19,9 +20,11 @@
 //! interaction on their qubit. Qubit operands map to `LogicalQubitId`s
 //! dense in declaration order across `qreg`/`qubit` registers.
 //!
-//! Scope is deliberately the benchmark subset: `gate`/`opaque` definitions
-//! and classical control flow (`if`/`for`/`while`) are rejected with
-//! actionable, line-tagged errors rather than silently dropped.
+//! Scope is deliberately the benchmark subset: `gate`/`opaque` definitions,
+//! classical control flow (`if`/`for`/`while`), `measure`, `reset`, and any
+//! gate whose parameters exceed the single-`angle` NA ingestion seam
+//! (e.g. `u2`/`u3`) are rejected with actionable, line-tagged errors rather
+//! than silently dropped (#405).
 
 use std::collections::HashMap;
 
@@ -44,12 +47,12 @@ pub struct QasmQreg {
 #[derive(Clone, Debug, PartialEq)]
 pub struct QasmGate {
     pub name: String,
-    /// Resolved angle parameters (empty for fixed gates). Only the first is
-    /// carried into [`LocalGateExtract::angle`] today, mirroring
-    /// `quon_na::extract`'s single-`angle` capture; multi-parameter gates
-    /// (`u2`/`u3`) lose their trailing params at this seam (a known
-    /// limitation, documented in #304 — the benchmark subset uses at most
-    /// one parameter per 1-qubit gate).
+    /// Resolved angle parameters (empty for fixed gates). At most one is
+    /// carried into [`LocalGateExtract::angle`] — the NA ingestion seam is
+    /// single-`angle`. Multi-parameter 1-qubit gates (`u2`/`u3`) and any
+    /// ≥2-qubit gate carrying parameters would lose trailing params at that
+    /// seam, so [`build_interaction_graph`] rejects them (#405) rather than
+    /// silently discarding.
     pub params: Vec<f64>,
     /// `(register, index)` operands in source order.
     pub operands: Vec<(String, u32)>,
@@ -81,7 +84,7 @@ pub enum QasmError {
     #[error("line {line}: {message}")]
     Parse { line: u32, message: String },
     #[error(
-        "line {line}: unsupported QASM construct `{construct}` — only the benchmark subset is supported (gate calls, qreg/qubit, creg/bit, measure, reset, barrier, include, OPENQASM header)"
+        "line {line}: unsupported QASM construct `{construct}` — only the benchmark subset is supported (gate calls, qreg/qubit, creg/bit, barrier, include, OPENQASM header); `measure`/`reset`, gate/opaque definitions, and classical control flow are rejected (#405)"
     )]
     Unsupported { line: u32, construct: String },
     #[error("line {line}: qubit index {index} out of range for register `{reg}` of size {size}")]
@@ -95,6 +98,15 @@ pub enum QasmError {
     UnknownRegister { line: u32, reg: String },
     #[error("line {line}: gate `{gate}` got {got} qubit operand(s) but needs at least 1")]
     EmptyOperands { line: u32, gate: String, got: usize },
+    #[error(
+        "line {line}: gate `{gate}` has {got} parameter(s) but the NA ingestion seam preserves at most {max} — refuse to silently drop trailing parameters (#405)"
+    )]
+    TooManyParams {
+        line: u32,
+        gate: String,
+        got: usize,
+        max: usize,
+    },
     #[error(
         "line {line}: no qubit register declared before this gate — add a `qreg`/`qubit` declaration"
     )]
@@ -418,8 +430,18 @@ impl Parser {
                             });
                         }
                         "barrier" => self.parse_barrier(line)?,
-                        "measure" => self.skip_measure(line)?,
-                        "reset" => self.skip_reset(line)?,
+                        "measure" => {
+                            return Err(QasmError::Unsupported {
+                                line,
+                                construct: "measure".to_string(),
+                            });
+                        }
+                        "reset" => {
+                            return Err(QasmError::Unsupported {
+                                line,
+                                construct: "reset".to_string(),
+                            });
+                        }
                         _ => self.parse_gate_call(line)?,
                     }
                 }
@@ -607,51 +629,6 @@ impl Parser {
             self.segment_starts.push(start);
         }
         Ok(())
-    }
-
-    /// `measure <qoperand> (-> <coperand>)? ;` — ignored for the NA path
-    /// (measurement is orchestrated separately by the `.qn` `measure_all`
-    /// construct; QASM benchmarks without measurement stay measurement-free).
-    fn skip_measure(&mut self, line: u32) -> Result<(), QasmError> {
-        self.pos += 1; // measure
-        // qubit operand(s) — accept `q[i]` or a bare register; tolerate `->` target.
-        self.skip_operands_until_semicolon(line)?;
-        Ok(())
-    }
-
-    /// `reset <qoperand> ;` — ignored (not an interaction).
-    fn skip_reset(&mut self, line: u32) -> Result<(), QasmError> {
-        self.pos += 1; // reset
-        self.skip_operands_until_semicolon(line)?;
-        Ok(())
-    }
-
-    /// Consume operands (and an optional `->` classical target) up to `;`.
-    fn skip_operands_until_semicolon(&mut self, line: u32) -> Result<(), QasmError> {
-        while let Some(tok) = self.tokens.get(self.pos) {
-            match &tok.kind {
-                Tok::Semicolon => {
-                    self.pos += 1;
-                    return Ok(());
-                }
-                Tok::Arrow => {
-                    self.pos += 1;
-                }
-                Tok::Ident(_) | Tok::LBracket | Tok::RBracket | Tok::Num(_) | Tok::Comma => {
-                    self.pos += 1;
-                }
-                k => {
-                    return Err(QasmError::Parse {
-                        line: tok.line,
-                        message: format!("unexpected token `{k:?}` in measure/reset"),
-                    });
-                }
-            }
-        }
-        Err(QasmError::Parse {
-            line,
-            message: "measure/reset missing trailing `;`".to_string(),
-        })
     }
 
     /// `<name> [ ( <params> ) ] <operand> (, <operand>)* ;`
@@ -1035,6 +1012,21 @@ pub fn build_interaction_graph(
             })
             .collect::<Result<_, _>>()?;
 
+        // The NA ingestion seam preserves at most one parameter (1-qubit
+        // gates carry a single `angle`; ≥2-qubit interactions carry none at
+        // all — only the gate name survives). Refuse to silently drop
+        // trailing parameters (#405): reject any gate exceeding that capacity
+        // before it reaches the graph.
+        let max_params = if qubits.len() == 1 { 1 } else { 0 };
+        if gate.params.len() > max_params {
+            return Err(QasmError::TooManyParams {
+                line: gate.line,
+                gate: gate.name.clone(),
+                got: gate.params.len(),
+                max: max_params,
+            });
+        }
+
         if qubits.len() == 1 {
             let qubit = qubits[0];
             local_gates.push(LocalGateExtract {
@@ -1240,5 +1232,124 @@ mod tests {
             graph.interactions[0].qubits,
             [LogicalQubitId(0), LogicalQubitId(3)]
         );
+    }
+
+    #[test]
+    fn measure_is_rejected_with_line_tag() {
+        let err = parse("OPENQASM 2.0;\nqreg q[2];\nmeasure q[0];\n").unwrap_err();
+        match err {
+            QasmError::Unsupported { line, construct } => {
+                assert_eq!(line, 3);
+                assert_eq!(construct, "measure");
+            }
+            other => panic!("expected Unsupported for measure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reset_is_rejected_with_line_tag() {
+        let err = parse("OPENQASM 3.0;\nqubit[2] q;\nreset q[0];\n").unwrap_err();
+        match err {
+            QasmError::Unsupported { line, construct } => {
+                assert_eq!(line, 3);
+                assert_eq!(construct, "reset");
+            }
+            other => panic!("expected Unsupported for reset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn u3_three_params_is_rejected_before_graph() {
+        // parse succeeds (syntax is fine); rejection happens at the lowering
+        // seam before graph construction, since the NA `angle` carries at
+        // most one parameter.
+        let program = parse("qreg q[1];\nu3(0.1, -pi/2, 0) q[0];\n").unwrap();
+        assert_eq!(program.gates[0].params.len(), 3);
+        let err = build_interaction_graph(&program).unwrap_err();
+        match err {
+            QasmError::TooManyParams { line, gate, got, max } => {
+                assert_eq!(line, 2);
+                assert_eq!(gate, "u3");
+                assert_eq!(got, 3);
+                assert_eq!(max, 1);
+            }
+            other => panic!("expected TooManyParams for u3, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn u2_two_params_is_rejected_before_graph() {
+        let err = parse_to_graph("qreg q[1];\nu2(pi/2, 0) q[0];\n").unwrap_err();
+        match err {
+            QasmError::TooManyParams { line, gate, got, max } => {
+                assert_eq!(line, 2);
+                assert_eq!(gate, "u2");
+                assert_eq!(got, 2);
+                assert_eq!(max, 1);
+            }
+            other => panic!("expected TooManyParams for u2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_qubit_gate_with_params_is_rejected() {
+        // ≥2-qubit interactions carry no parameters at all (only the gate
+        // name survives in `Interaction`); a parameterized entangler would
+        // lose its angle entirely, so reject it.
+        let err = parse_to_graph("qreg q[2];\ncrz(0.5) q[0],q[1];\n").unwrap_err();
+        match err {
+            QasmError::TooManyParams { line, gate, got, max } => {
+                assert_eq!(line, 2);
+                assert_eq!(gate, "crz");
+                assert_eq!(got, 1);
+                assert_eq!(max, 0);
+            }
+            other => panic!("expected TooManyParams for crz, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_param_one_qubit_gate_is_preserved() {
+        // Regression: a single-parameter 1-qubit gate stays within the
+        // single-`angle` seam and must NOT be rejected.
+        let (graph, local) = parse_to_graph("qreg q[2];\nrx(0.25) q[0];\ncz q[0],q[1];\n").unwrap();
+        assert_eq!(graph.interactions.len(), 1);
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].gate_name, "rx");
+        assert!((local[0].angle.unwrap() - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn e2e_accepted_operations_match_resulting_contract() {
+        // Every accepted operation must be faithfully represented in the
+        // lowered graph + local-gate contract — no operation or parameter
+        // dropped (#405).
+        let src = "\
+qreg q[3];
+h q[0];
+cz q[0],q[1];
+rz(pi/4) q[0];
+cx q[1],q[2];
+ry(1.0) q[2];
+";
+        let (graph, local) = parse_to_graph(src).unwrap();
+
+        // Two ≥2-qubit gates → two interactions, names and operands preserved.
+        assert_eq!(graph.interactions.len(), 2);
+        assert_eq!(graph.interactions[0].gate_name, "cz");
+        assert_eq!(graph.interactions[0].qubits, [LogicalQubitId(0), LogicalQubitId(1)]);
+        assert_eq!(graph.interactions[1].gate_name, "cx");
+        assert_eq!(graph.interactions[1].qubits, [LogicalQubitId(1), LogicalQubitId(2)]);
+
+        // Three 1-qubit gates → three local extracts with names + angles kept.
+        assert_eq!(local.len(), 3);
+        assert_eq!(local[0].gate_name, "h");
+        assert!(local[0].angle.is_none());
+        assert_eq!(local[1].gate_name, "rz");
+        assert!((local[1].angle.unwrap() - std::f64::consts::FRAC_PI_4).abs() < 1e-12);
+        assert_eq!(local[1].after, Some(InteractionId(0)));
+        assert_eq!(local[2].gate_name, "ry");
+        assert!((local[2].angle.unwrap() - 1.0).abs() < 1e-12);
+        assert_eq!(local[2].after, Some(InteractionId(1)));
     }
 }
