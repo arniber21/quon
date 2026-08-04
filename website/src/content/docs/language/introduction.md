@@ -4,6 +4,13 @@ description: Quon is a functional quantum language with linear types, where a ci
 sidebar:
   order: 1
 ---
+<!--
+  BELL WALKTHROUGH OWNERSHIP (issue #384):
+  This page is the CANONICAL OWNER of the Bell concept explanation —
+  circuits as values, the Circuit<n,m,d,C> type, the circuit/run boundary.
+  Other pages should link here for progressive concept teaching.
+  Audit: website/scripts/audit-bell-walkthrough.sh
+-->
 
 Quon is a statically typed, functional language for writing quantum programs.
 Its compiler is written in Rust and lowers through MLIR to backend-specific

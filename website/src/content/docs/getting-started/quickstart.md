@@ -2,6 +2,13 @@
 title: Quickstart
 description: Compile a Bell pair from Quon to OpenQASM 3, sample it with Qiskit Aer, and emit a neutral-atom schedule — in four commands.
 ---
+<!--
+  BELL WALKTHROUGH OWNERSHIP (issue #384):
+  This page is the CANONICAL OWNER of the Bell execution walkthrough —
+  compilation, Aer sampling, and artifact inspection. Other pages should link
+  here rather than duplicating the full program + commands.
+  Audit: website/scripts/audit-bell-walkthrough.sh
+-->
 
 This walkthrough uses a checked-in Bell program, compiles it to OpenQASM 3, and
 samples the emitted program through Quon's Qiskit Aer verification seam. Run the

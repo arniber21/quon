@@ -22,6 +22,18 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
+<!--
+  BELL WALKTHROUGH OWNERSHIP (issue #384):
+  This page is a TEASER ONLY. It shows the Bell circuit once, as a motivating
+  example, and links out to the canonical owners:
+    - /getting-started/quickstart/  — execution + artifact inspection
+    - /language/introduction/       — progressive concept explanation
+    - /cookbook/bell/               — verified algorithm/artifact analysis
+  Do NOT paste the full run block, type annotations, MLIR excerpts, or Aer
+  output here. The audit script (website/scripts/audit-bell-walkthrough.sh)
+  enforces this.
+-->
+
 ## A typed quantum compiler
 
 Quon is a typed quantum compiler. Programs carry depth bounds, Clifford
@@ -45,9 +57,11 @@ fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
 }
 ```
 
-The return type `Circuit<2, 2, 2, Clifford>` is a contract: two qubits in, two
-out, depth exactly two, Clifford class. The compiler checks that `H` followed by
-`CNOT` satisfies all four parameters before it emits a single line of OpenQASM 3.
+The return type `Circuit<2, 2, 2, Clifford>` is a contract: two qubits in,
+two out, depth exactly two, Clifford class — all four checked before a single
+gate is lowered. The [language guide](/language/introduction/) unpacks the
+types from first principles; the [cookbook](/cookbook/bell/) verifies the
+circuit end to end.
 
 <CardGrid>
 	<Card title="Learn the language" icon="book-open">
@@ -82,19 +96,13 @@ target receives a movement schedule and a resource report. The types survive the
 entire pipeline — depth bounds and Clifford classifications inform optimization
 passes, not just the frontend.
 
-```kotlin
-fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
-    H @0 |> CNOT @(0, 1)
-}
-```
-
-Compile for a fixed gate-model target:
+Compile the Bell program for a fixed gate-model target:
 
 ```bash
 cargo run -p quonc -- test/verify/bell.qn --emit-qasm
 ```
 
-Compile for a reconfigurable neutral-atom target:
+Compile it for a reconfigurable neutral-atom target:
 
 ```bash
 cargo run -p quonc -- test/na/bell.qn \
@@ -102,3 +110,6 @@ cargo run -p quonc -- test/na/bell.qn \
   --emit-na-schedule \
   --emit-resource-report
 ```
+
+The [quickstart](/getting-started/quickstart/) walks both targets end to end —
+compilation, Aer sampling, and artifact inspection.
