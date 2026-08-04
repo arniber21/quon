@@ -334,4 +334,4 @@ Now that you understand how resources are tracked, the next page shows how
 circuits compose in parallel and how `Nat` parameters make circuits reusable
 at any width.
 
-→ [Parallel composition](../parallel/)
+→ [Parallel composition](./parallel/)

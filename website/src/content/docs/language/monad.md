@@ -253,4 +253,4 @@ The most important effectful operation is measurement — and what you can do
 with its result. The next page covers measurement, classical `if` control,
 and feed-forward corrections.
 
-→ [Measurement and control](../measurement/)
+→ [Measurement and control](./measurement/)

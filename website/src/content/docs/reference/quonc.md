@@ -380,7 +380,7 @@ Fixed targets use `--emit-qasm`. Neutral-atom targets use
 Every compile parses and typechecks the source, elaborates circuit calls,
 lowers through MLIR generic-form IR, runs optimization and normalization
 passes, then adapts to the selected target family. See the
-[compiler pipeline reference](../compiler/).
+[compiler pipeline reference](./compiler/).
 
 For baseline formats, tolerance semantics, watch behavior, output routing, and
 exit codes, read the

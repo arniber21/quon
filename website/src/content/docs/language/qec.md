@@ -261,4 +261,4 @@ For the normative form of QEC builtins — syntax, typing contract, constraints,
 Now you've seen every concept in the language. The final page walks through
 a complete program that uses all of them.
 
-→ [Putting it together](../putting-together/)
+→ [Putting it together](./putting-together/)

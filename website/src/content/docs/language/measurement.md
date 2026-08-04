@@ -258,4 +258,4 @@ Not all qubits need to be allocated up front. Borrow blocks let you
 request temporary ancilla qubits with scoped lifetimes and no-escape
 guarantees.
 
-→ [Borrow blocks](../borrow/)
+→ [Borrow blocks](./borrow/)

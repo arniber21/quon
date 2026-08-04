@@ -255,4 +255,4 @@ The fourth type parameter — Clifford classification — tells the compiler
 which optimization strategy to apply. The next page explains the
 Clifford/Universal distinction and how it drives the Clifford+T optimizer.
 
-→ [Clifford classification](../clifford/)
+→ [Clifford classification](./clifford/)

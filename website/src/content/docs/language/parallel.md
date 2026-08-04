@@ -254,4 +254,4 @@ The depth bounds in these types are symbolic expressions with their own
 algebra. The next page explains how depth arithmetic works and why the
 typechecker can prove bounds like `steps * 2 * (n - 1)`.
 
-→ [Depth bounds](../depth/)
+→ [Depth bounds](./depth/)

@@ -264,4 +264,4 @@ For the normative form of borrow blocks and ancilla cleanup — syntax, typing c
 For fault-tolerant computing, Quon introduces encoded logical qubits with
 QEC code families. The next page covers `QecBlock` and the QEC builtins.
 
-→ [QEC blocks](../qec/)
+→ [QEC blocks](./qec/)

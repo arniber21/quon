@@ -145,3 +145,7 @@ if [[ "$FAILED" -ne 0 ]]; then
 fi
 
 echo "assert-validation-docs: OK"
+
+# Documentation quality-gate corpus (issue #377): validate the declared docs
+# corpus — executable examples, generated excerpts, internal links, commands.
+python3 "$ROOT/scripts/assert-docs-corpus.py"

@@ -296,8 +296,8 @@ For the normative form of every construct in this program — syntax, typing con
 
 - **[Cookbook](../cookbook/)** — deeper worked examples: teleportation,
   QFT, QAOA, Shor's kernel, and a neutral-atom QAOA schedule.
-- **[Compiler internals](../../architecture/compiler-internals/)** — how
+- **[Compiler internals](../architecture/compiler-internals/)** — how
   the compiler turns this program into MLIR, optimizes it, and emits
   OpenQASM 3 or neutral-atom schedule artifacts.
-- **[quonc CLI](../../reference/quonc/)** — the command-line tool that
+- **[quonc CLI](../reference/quonc/)** — the command-line tool that
   compiles `.qn` files.
