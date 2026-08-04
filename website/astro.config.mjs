@@ -86,6 +86,13 @@ export default defineConfig({
 						{ label: 'Compiler pipeline', slug: 'reference/compiler' },
 					],
 				},
+				{
+					label: 'Contributing',
+					items: [
+						{ label: 'Documenting Quon', slug: 'contribute' },
+						{ label: 'Style guide', slug: 'contribute/style-guide' },
+					],
+				},
 			],
 		}),
 	],

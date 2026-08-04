@@ -79,6 +79,17 @@ New samples go under [`samples/`](samples/) with a row in
 [`samples/CONTRIBUTING.md`](samples/CONTRIBUTING.md) for the taxonomy,
 catalog schema, and CI smoke requirements.
 
+## Documentation
+
+The public docs site lives in [`website/`](website/) (Astro Starlight). Before
+adding or revising learning material, reference entries, recipes, architecture
+notes, or guides, read the
+[documenting Quon guide](https://quon.arnabg.me/contribute/) for the page
+taxonomy, canonical-source rules, local preview, and review expectations, and
+the companion [style guide](https://quon.arnabg.me/contribute/style-guide/).
+Report wrong, stale, or misleading documentation with the
+[documentation bug template](https://github.com/arniber21/quon/issues/new?template=documentation_bug.yml).
+
 ## Licensing
 
 Quon is licensed under the [Business Source License 1.1](LICENSE) (BSL). After
