@@ -1,0 +1,19 @@
+-- Issue #374: a named parametric circuit (parameterized by a natural-number
+-- step count) wrapped in `controlled(...)` must elaborate end to end. The
+-- single-qubit `trotter_evolve(n_steps, theta)` product-formula evolution is
+-- unrolled and control is distributed over every gate of its body.
+
+fn trotter_step(theta: Float): Circuit<1, 1, 1, Universal> = circuit { Rz(theta) @0 }
+
+fn trotter_evolve(n_steps: Nat, theta: Float): Circuit<1, 1, n_steps, Universal> = repeat(n_steps, trotter_step(theta))
+
+fn controlled_trotter(): Circuit<2, 2, 4, Universal> = circuit {
+        controlled(trotter_evolve(3, PI / 4.0)) @(0, 1)
+}
+
+fn run_controlled_trotter(): Q<(Bit, Bit)> = run {
+        (q0, q1) <- (controlled_trotter()) @ (qreg 2)
+        b0       <- measure q0
+        b1       <- measure q1
+        return (b0, b1)
+}

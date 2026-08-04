@@ -325,3 +325,82 @@ fn parametric_entry_point_with_circuit_valued_param_fails_with_explicit_deferral
         );
     }
 }
+
+/// Issue #374: a named parametric circuit wrapped in `controlled(...)` must
+/// compile end to end to OpenQASM 3.0. The controlled trotter evolution
+/// unrolls into three controlled-Rz decompositions on the control-plus-target
+/// (2-qubit) register, each a `Rz |> CX |> Rz |> CX` gadget.
+#[test]
+fn controlled_named_parametric_circuit_emits_openqasm3() {
+    let source = workspace_path("../frontend/tests/fixtures/controlled_parametric.qn");
+    let output = quonc()
+        .arg("--emit-qasm")
+        .arg(&source)
+        .output()
+        .expect("failed to run quonc");
+
+    assert!(
+        output.status.success(),
+        "quonc failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let qasm = String::from_utf8_lossy(&output.stdout);
+    // Control-plus-target width: a 2-qubit register.
+    assert!(
+        qasm.contains("qubit[2] q;"),
+        "expected a 2-qubit (control-plus-target) register: {qasm}"
+    );
+    // The controlled-Rz decomposition is `Rz |> CNOT |> Rz |> CNOT`; three
+    // unrolled steps contribute three CNOTs on the control wire. The emitted
+    // QASM mirrors the circ.func definition plus the inlined run block, so
+    // each CNOT appears twice — six total.
+    assert_eq!(
+        qasm.matches("cx q[0], q[1];").count(),
+        6,
+        "expected six CNOTs (three per emitted body): {qasm}"
+    );
+    // The decomposition's rotations land on the target wire `q[1]`.
+    assert!(
+        qasm.contains("rz(") && qasm.contains("q[1];"),
+        "expected controlled-Rz rotations on the target: {qasm}"
+    );
+}
+
+/// Issue #374: the same program compiles through the neutral-atom schedule
+/// path. The controlled decomposition's three CNOTs contribute six
+/// entangling-pair stages on a 2-logical-qubit (control-plus-target) layout.
+#[test]
+fn controlled_named_parametric_circuit_schedules_on_neutral_atom() {
+    let source = workspace_path("../frontend/tests/fixtures/controlled_parametric.qn");
+    let target = workspace_path("../targets/neutral_atom/generic_rna_v0.json");
+    let output = quonc()
+        .arg(&source)
+        .arg("--target")
+        .arg(&target)
+        .arg("--emit-na-schedule")
+        .arg("-")
+        .arg("--quiet")
+        .output()
+        .expect("failed to run quonc");
+
+    assert!(
+        output.status.success(),
+        "quonc NA failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r#""kind": "na_schedule_view""#),
+        "missing schedule envelope: {stdout}"
+    );
+    // Control-plus-target width.
+    assert!(
+        stdout.contains(r#""logical_qubits": 2"#),
+        "expected 2 logical qubits (control-plus-target): {stdout}"
+    );
+    // Three CNOTs from the controlled decomposition.
+    assert!(
+        stdout.contains(r#""entangle2_count": 6"#),
+        "expected six entangle2 stages (three CNOTs): {stdout}"
+    );
+}
