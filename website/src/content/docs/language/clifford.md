@@ -255,6 +255,8 @@ fixpoint iterates until no pass makes a change, so reductions that *enable*
 further peephole cancellations are caught in later rounds.
 
 When a Clifford annotation is rejected, the [diagnostic catalog](/reference/diagnostics/#refinement-clifford-and-depth) explains the mismatch and offers a repair.
+For the normative form of Clifford classification — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#clifford-classification).
+
 ## Next
 
 Now we leave the pure unitary world. The Quantum Monad allows allocation,

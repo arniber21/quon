@@ -243,6 +243,8 @@ destructures it in the same binding. The typechecker verifies that the circuit's
 output width (2) matches the pattern's arity (2) — a width mismatch here is the
 same kind of error as the `qreg` mismatch above.
 
+For the normative form of qubit and register types — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#types-and-kinds).
+
 ## Next
 
 You have now seen that qubits are linear values consumed exactly once — but we

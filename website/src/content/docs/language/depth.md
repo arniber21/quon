@@ -247,6 +247,8 @@ the typechecker's gift to the optimizer: a proven ceiling that makes
 aggressive rewriting safe.
 
 When a depth annotation is rejected, the [diagnostic catalog](/reference/diagnostics/#refinement-clifford-and-depth) explains the mismatch and offers a repair.
+For the normative form of depth bounds — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#depth-bounds).
+
 ## Next
 
 The fourth type parameter — Clifford classification — tells the compiler

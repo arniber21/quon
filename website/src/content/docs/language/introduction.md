@@ -283,6 +283,7 @@ pages in order the first time; afterward each page stands on its own as a
 reference, and every page ends with a link to the next.
 
 When the compiler rejects your program, the [diagnostic catalog](/reference/diagnostics/) lists every error by family, with a minimal reproducer and the smallest supported repair.
+For the normative form of the language constructs above — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language).
 
 ## Next
 

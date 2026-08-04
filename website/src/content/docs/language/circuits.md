@@ -323,6 +323,8 @@ The dynamic, effectful side (which you will meet soon) gets none of those
 optimizations, which is exactly why Quon keeps the two worlds separate.
 
 When a circuit composition fails, the [diagnostic catalog](/reference/diagnostics/) lists the exact error, a minimal reproducer, and the smallest repair.
+For the normative form of circuits and gate placement — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#circuits).
+
 ## Next
 
 Circuits act on qubits, but so far we have only referred to qubits by position.

@@ -290,6 +290,8 @@ This program exercised:
 - **The optimizer fixpoint** (five passes, convergence, no-op for this circuit)
 - **OpenQASM emission** (the final artifact)
 
+For the normative form of every construct in this program — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#implementation-status).
+
 ## Where to go next
 
 - **[Cookbook](../cookbook/)** — deeper worked examples: teleportation,

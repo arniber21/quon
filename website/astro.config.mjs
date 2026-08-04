@@ -55,7 +55,6 @@ export default defineConfig({
 						{ label: 'Putting it together', slug: 'language/putting-together' },
 					],
 				},
-<<<<<<< HEAD
 				{
 					label: 'Cookbook',
 					items: [
@@ -104,6 +103,7 @@ export default defineConfig({
 					label: 'Reference',
 					items: [
 						{ label: 'Feature support matrix', slug: 'reference/support-matrix' },
+						{ label: 'Language reference', slug: 'reference/language' },
 						{ label: 'quonc CLI', slug: 'reference/quonc' },
 						{ label: 'Compiler pipeline', slug: 'reference/compiler' },
 						{ label: 'Diagnostic catalog', slug: 'reference/diagnostics' },
@@ -116,40 +116,6 @@ export default defineConfig({
 						{ label: 'Style guide', slug: 'contribute/style-guide' },
 					],
 				},
-=======
-			{
-				label: 'Cookbook',
-				items: [
-					{ autogenerate: { directory: 'cookbook' } },
-				],
-			},
-			{
-				label: 'Reference',
-				items: [
-					{ label: 'quonc CLI', slug: 'reference/quonc' },
-					{ label: 'Compiler pipeline', slug: 'reference/compiler' },
-				],
-			},
-			{
-				label: 'Architecture',
-				items: [
-					{ label: 'Compiler internals', slug: 'architecture/compiler-internals' },
-					{ label: 'Neutral-atom model', slug: 'architecture/na-model' },
-				],
-			},
-			{
-				label: 'Guides',
-				items: [
-					{ label: 'Developer tooling', slug: 'guides/tooling' },
-					{ label: 'Backends and verification', slug: 'guides/backends' },
-					{ label: 'Results and plotting', slug: 'guides/results-and-plotting' },
-					{ label: 'Neutral-atom FT demo', slug: 'guides/na-ft-demo' },
-					{ label: 'Maturation path', slug: 'guides/roadmap' },
-					{ label: 'Application demos', slug: 'guides/applications' },
-					{ label: 'Creative & games', slug: 'guides/creative' },
-				],
-			},
->>>>>>> b09b4cb (docs: clarify Language, Reference, and Architecture handoffs (#386))
 			],
 		}),
 	],
