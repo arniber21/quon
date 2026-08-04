@@ -14,7 +14,8 @@ export default defineConfig({
 				{
 					label: 'Getting Started',
 					items: [
-						{ label: 'Install Quon', slug: 'getting-started/install' },
+					{ label: 'Choose your path', slug: 'getting-started/choose-your-path' },
+					{ label: 'Install Quon', slug: 'getting-started/install' },
 						{ label: 'Quickstart', slug: 'getting-started/quickstart' },
 						{ label: 'Your second program', slug: 'getting-started/second-program' },
 					],
