@@ -326,5 +326,7 @@ and every `error_budget` multiplier — see
 [architecture_model.md](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/architecture_model.md)
 in the repository.
 
-Continue to the [compiler pipeline reference](../reference/compiler/) for how
-the neutral-atom stages fit into the overall `quonc` flow.
+Continue to the [compiler pipeline reference](../reference/compiler/) `(contract — Reference)` for how
+the neutral-atom stages fit into the overall `quonc` flow, or step back to the
+[Language guide: QEC blocks](/language/qec/) `(concept — Language guide)` for
+the source-level concept a QEC block lowers into this hardware model.

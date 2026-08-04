@@ -361,3 +361,15 @@ passes, then adapts to the selected target family. See the
 For baseline formats, tolerance semantics, watch behavior, output routing, and
 exit codes, read the
 [experiment-loop guide](https://github.com/arniber21/quon/blob/main/docs/agents/experiment-loop.md).
+
+## Where to go next
+
+- **[Compiler pipeline](../compiler/)** — the companion reference page: the
+  per-stage contract this CLI drives.
+- **[Language guide: Introduction](/language/introduction/)** `(concept —
+  Language guide)` — step back when a flag's behavior depends on a
+  source-language concept (linear types, the circuit/monad split, depth bounds)
+  you have not yet met.
+- **[Compiler internals](/architecture/compiler-internals/)** `(rationale —
+  Architecture)` — step forward to where each flag's stage lives in the
+  compiler source and why the ADRs shaped it that way.

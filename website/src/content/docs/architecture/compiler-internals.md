@@ -3,7 +3,29 @@ title: Compiler internals
 description: How the Quon compiler transforms typed source into hardware-specific artifacts.
 ---
 
-The high-level pipeline on the [reference page](/reference/compiler/) lists the
+## Use this when
+
+This is the **Architecture** section — the *rationale layer* of Quon's docs.
+Use it when you will *read or extend compiler code*: where each pipeline stage
+lives, what invariant it owns, and why the ADRs made it the way it is. Every
+stage below is implemented and exercised by the test corpus; the cited ADRs are
+the authoritative record of *why*.
+
+Quon's docs come in three depths. This page is the deepest and links back to
+the other two, each labelled so you know what you are stepping into:
+
+- **Language guide** *(concept)* — what a `.qn` program means and why the
+  language is shaped the way it is. Step back here to learn the source-level
+  concept a stage implements. → [Introduction](/language/introduction/).
+- **Reference** *(contract)* — stable lookup of what each pipeline stage and
+  `quonc` flag guarantees, frozen against the implementation. Step back here
+  for the per-stage contract without the code map. →
+  [Compiler pipeline](/reference/compiler/), [quonc CLI](/reference/quonc/).
+
+Cross-links out of this page are marked `(concept — Language guide)` or
+`(contract — Reference)`.
+
+The high-level pipeline on the [reference page](/reference/compiler/) `(contract — Reference)` lists the
 stages `quonc` runs; this page goes inside them. The goal is to make the
 compiler legible to someone who will read its source or extend a pass: where
 each stage lives, what invariant it owns, and where the decisions that shape it
@@ -22,6 +44,15 @@ earlier ones made the transformations safe by construction.
 A Quon program travels through seven stages before it becomes a target
 artifact. Each stage has a single responsibility and a clean handoff to the
 next:
+
+> **Scope: rationale view.** This seven-stage breakdown is the code map — where
+> each stage lives and the invariant it owns. It is intentionally finer than
+> the contract list: parse and desugar are one stage in the
+> [reference](/reference/compiler/) `(contract — Reference)` but two here
+> because they are separate modules. For the concept-level map of features onto
+> stages, see the language guide's
+> [From source to artifact](/language/introduction/#from-source-to-artifact)
+> `(concept — Language guide)`.
 
 1. **Parse** — the Tree-sitter grammar plus a Rust parser turn `.qn` source into
    the surface AST. Syntax errors stop here.
@@ -298,3 +329,17 @@ wiring is shared, because the round barriers and shared layout across rounds
 are what keep the schedule verifiable.
 
 → Next: [Neutral-atom model](/architecture/na-model/)
+
+## Where to step back
+
+This page is the rationale layer. When you want the *contract* a stage
+guarantees without the code map, or the *concept* it implements in source
+language terms:
+
+- **[Compiler pipeline](/reference/compiler/)** `(contract — Reference)` —
+  the frozen per-stage contract this page goes inside.
+- **[quonc CLI](/reference/quonc/)** `(contract — Reference)` — every flag
+  that drives the stages above.
+- **[Language guide: Introduction](/language/introduction/)** `(concept —
+  Language guide)` — the source-level concepts each stage typechecks and
+  lowers.
