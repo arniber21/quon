@@ -1,6 +1,6 @@
 ---
 title: Cookbook
-description: Ten complete Quon programs, from Bell states to neutral-atom QAOA schedules.
+description: Nine complete Quon programs forming a canonical curriculum from Bell states to the neutral-atom capstone, plus an optional sample-discovery catalog.
 sidebar:
   order: 1
 ---
@@ -74,6 +74,13 @@ types; Ising adds Trotterization and partial evaluation; QAOA adds variational
 structure; Shor adds register algebra; and the NA QAOA page connects the
 gate-model cookbook to the neutral-atom scheduling pipeline.
 
+This Bell → teleportation → Bernstein–Vazirani → Grover → QFT → Ising → QAOA
+→ Shor → NA QAOA schedule sequence is the cookbook's **canonical curriculum**.
+The previous/next links, sidebar ordering, and each page's "Next" pointer all
+follow it. The [More samples](./samples/) catalog is an **optional detour** into
+the broader `samples/` corpus — it lives in its own sidebar group and does not
+interrupt the curriculum.
+
 ## Progressive difficulty ordering
 
 The recipes are ordered by increasing language and compiler complexity. Each
@@ -112,17 +119,27 @@ previous recipes did not use:
   (concatenation and splitting of qubit registers), `adjoint` synthesis, and
   the full value-dependent type system composed in one program. The most
   feature-complete recipe — a compiler integration test.
-- **NA QAOA schedule** (order 11) — the neutral-atom backend: interaction
+- **NA QAOA schedule** (order 10) — the neutral-atom backend: interaction
   graph extraction, Misra–Gries edge-coloring scheduling, AOD movement
   planning with geometric constraints, schedule compaction, and analytic
   resource reporting. A different compilation target producing a schedule
-  instead of QASM.
-- **More samples** (order 10) — a pointer to the broader `samples/` corpus
-  beyond this cookbook.
+  instead of QASM. This is the curriculum **capstone** — the last page in
+  the canonical sequence.
+
+### Optional: sample discovery
+
+Beyond the curriculum, the [More samples](./samples/) page catalogs the
+repository's broader `samples/` corpus (learning, algorithms, workflows,
+visualization, applications, research, neutral-atom pedagogy, creative/games),
+and links to sample-based recipes — [Deutsch–Jozsa](./deutsch-jozsa/),
+[Simon](./simon/), and [phase estimation](./phase-estimation/) — that are not
+part of the fixed curriculum. These live in the collapsed "Sample discovery
+(optional)" sidebar group, after the capstone, so they never interrupt the
+curriculum.
 
 ## Reference programs
 
-The table below summarizes all ten recipes with their key type signatures and
+The table below summarizes all nine curriculum recipes with their key type signatures and
 the compiler features each one exercises. Use it to find the recipe that
 demonstrates a feature you are interested in.
 
@@ -137,7 +154,7 @@ demonstrates a feature you are interested in.
 | [QAOA MaxCut](./qaoa/) | `Circuit<3, 3, n*n+1, Universal>` | Variational circuits, `pairs(n)`, depth as feasibility, ansatz preservation |
 | [Shor kernel](./shor-kernel/) | `Circuit<2*n, 2*n, 2*n*n, Universal>` | `tensored`/`split`, recursion, `adjoint`, `controlled(Rz)`, compiler integration test |
 | [NA QAOA schedule](./na-qaoa/) | `Circuit<4, 4, 8, Universal>` → NA schedule | Neutral-atom backend, interaction graphs, Misra–Gries scheduling, movement planning, resource report |
-| [More samples](./samples/) | — | The `samples/` corpus: learning, algorithms, workflows, NA pedagogy |
+| [More samples](./samples/) | — | *Optional:* the `samples/` corpus catalog (learning, algorithms, workflows, NA pedagogy) |
 
 ## What each recipe teaches about the compiler
 

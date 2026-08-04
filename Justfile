@@ -265,6 +265,7 @@ ci-website:
     #!/usr/bin/env bash
     cd website
     pnpm install --frozen-lockfile
+    node test/check-cookbook-navigation.mjs
     pnpm build
 
 # ---------------------------------------------------------------------------
