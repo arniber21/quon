@@ -29,15 +29,15 @@ pub const NAMESPACE: &str = "quantum.dynamic";
 /// Opaque MLIR type for a classical measurement result (source-language `Bit`).
 pub const BIT_TYPE: &str = "!quantum.bit";
 
-/// The five `quantum.dynamic` ops registered at dialect initialization.
-pub const OPS: [&str; 5] = [
+/// The six `quantum.dynamic` ops registered at dialect initialization.
+pub const OPS: [&str; 6] = [
     op::MEASURE,
     op::RESET,
     op::UNITARY_REGION,
     op::IF,
     op::BARRIER,
+    op::ALLOC,
 ];
-
 /// Operation names.
 pub mod op {
     /// Consumes a qubit and produces a classical bit.
@@ -50,6 +50,8 @@ pub mod op {
     pub const IF: &str = "quantum.dynamic.if";
     /// Synchronization point; identity threading on qubits.
     pub const BARRIER: &str = "quantum.dynamic.barrier";
+    /// Allocates `count` fresh qubits (the dynamic-IR allocation point).
+    pub const ALLOC: &str = "quantum.dynamic.alloc";
     /// Terminator for `if` branch regions. Auxiliary — not one of the five ops.
     pub const YIELD: &str = "quantum.dynamic.yield";
 }
@@ -233,6 +235,7 @@ pub fn verify<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(),
         op::MEASURE => verify_measure(operation),
         op::RESET => verify_reset(operation),
         op::UNITARY_REGION => verify_unitary_region(operation),
+        op::ALLOC => verify_alloc(operation),
         op::IF => verify_if(operation),
         op::BARRIER => verify_barrier(operation),
         op::YIELD => verify_yield(operation),
@@ -513,6 +516,41 @@ fn verify_barrier<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result
         )?;
     }
     verify_optional_physical_attrs(operation, op::BARRIER)
+}
+
+/// Verifies a `quantum.dynamic.alloc` op: it takes no operands and produces
+/// one or more fresh `!quantum.qubit` results (the dynamic-IR allocation point,
+/// replacing the unregistered `test.qubit` shape — issue #401). Result count is
+/// the allocation size; no separate size attribute is needed because every
+/// consumer (the OpenQASM reifier, the wiring walker) reads `result_count()`.
+fn verify_alloc<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Result<(), VerifyError> {
+    if operation.operand_count() != 0 {
+        return Err(VerifyError::Arity {
+            op: op::ALLOC,
+            role: "operand",
+            expected: "0".to_string(),
+            found: operation.operand_count(),
+        });
+    }
+    let results = operation.result_count();
+    if results == 0 {
+        return Err(VerifyError::Arity {
+            op: op::ALLOC,
+            role: "result",
+            expected: ">= 1".to_string(),
+            found: 0,
+        });
+    }
+    for index in 0..results {
+        expect_result_type(
+            operation,
+            op::ALLOC,
+            index,
+            quantum_circ::is_qubit_type,
+            quantum_circ::QUBIT_TYPE,
+        )?;
+    }
+    Ok(())
 }
 
 fn is_quantum_circ_op_name(name: &str) -> bool {
@@ -854,6 +892,18 @@ pub fn barrier<'c>(
             .add_operands(qubits)
             .add_results(&results),
     )
+}
+
+/// Builds a `quantum.dynamic.alloc` op allocating `count` fresh qubits (the
+/// dynamic-IR allocation point, replacing the unregistered `test.qubit` —
+/// issue #401). Produces `count` `!quantum.qubit` results and no operands.
+pub fn alloc<'c>(
+    context: &'c Context,
+    count: usize,
+    location: Location<'c>,
+) -> Result<Operation<'c>, BuildError> {
+    let results = vec![quantum_circ::qubit_type(context); count];
+    finish(OperationBuilder::new(op::ALLOC, location).add_results(&results))
 }
 
 /// Builds a `quantum.dynamic.unitary_region` op from a populated region.

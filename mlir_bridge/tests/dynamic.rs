@@ -19,7 +19,7 @@ fn registration_is_idempotent_and_panic_free() {
     qd::register_dialect(&context);
     qd::register_dialect(&context);
     assert!(context.allow_unregistered_dialects());
-    assert_eq!(qd::OPS.len(), 5);
+    assert_eq!(qd::OPS.len(), 6);
 }
 
 #[test]
@@ -64,6 +64,8 @@ fn all_builders_produce_verifiable_ops() {
     qd::reset(&context, q, location).expect("reset");
     qd::barrier(&context, &[q], location).expect("barrier");
 
+    qd::alloc(&context, 1, location).expect("alloc");
+    qd::alloc(&context, 3, location).expect("alloc(3)");
     let inner = Region::new();
     let inner_block = Block::new(&[(qubit, location)]);
     let arg = Value::from(inner_block.argument(0).unwrap());
@@ -144,30 +146,14 @@ fn every_op_round_trips_in_one_module() {
     let body = module.body();
 
     let q0 = Value::from(
-        body.append_operation(generic_op(
-            &context,
-            "test.qubit",
-            &[],
-            &[qubit],
-            &[],
-            vec![],
-            location,
-        ))
-        .result(0)
-        .unwrap(),
+        body.append_operation(qd::alloc(&context, 1, location).unwrap())
+            .result(0)
+            .unwrap(),
     );
     let q1 = Value::from(
-        body.append_operation(generic_op(
-            &context,
-            "test.qubit",
-            &[],
-            &[qubit],
-            &[],
-            vec![],
-            location,
-        ))
-        .result(0)
-        .unwrap(),
+        body.append_operation(qd::alloc(&context, 1, location).unwrap())
+            .result(0)
+            .unwrap(),
     );
 
     let bit_val = Value::from(
@@ -532,6 +518,54 @@ fn barrier_verifier_rejections() {
         qd::verify(&op),
         Err(qd::VerifyError::Arity { role: "result", .. })
     ));
+}
+
+#[test]
+fn alloc_verifier_rejections() {
+    let context = dynamic_context();
+    let location = Location::unknown(&context);
+    let qubit = qc::qubit_type(&context);
+    let bit = qd::bit_type(&context);
+    let block = support::scratch_block(&[qubit], location);
+    let q = Value::from(block.argument(0).unwrap());
+
+    // No results — an allocation must produce at least one qubit.
+    let op = generic_op(&context, qd::op::ALLOC, &[], &[], &[], vec![], location);
+    assert!(matches!(
+        qd::verify(&op),
+        Err(qd::VerifyError::Arity {
+            role: "result",
+            ..
+        })
+    ));
+
+    // Operands present — allocation takes no operands.
+    let op = generic_op(&context, qd::op::ALLOC, &[q], &[qubit], &[], vec![], location);
+    assert!(matches!(
+        qd::verify(&op),
+        Err(qd::VerifyError::Arity {
+            role: "operand",
+            ..
+        })
+    ));
+
+    // Wrong result type — must be !quantum.qubit, not !quantum.bit.
+    let op = generic_op(&context, qd::op::ALLOC, &[], &[bit], &[], vec![], location);
+    assert!(matches!(
+        qd::verify(&op),
+        Err(qd::VerifyError::WrongValueType {
+            role: "result",
+            ..
+        })
+    ));
+
+    // A well-formed single-qubit allocation verifies.
+    let op = qd::alloc(&context, 1, location).expect("alloc");
+    assert!(qd::verify(&op).is_ok());
+
+    // A multi-qubit allocation verifies.
+    let op = qd::alloc(&context, 4, location).expect("alloc(4)");
+    assert!(qd::verify(&op).is_ok());
 }
 
 #[test]

@@ -7,10 +7,10 @@
 // RUN: %dynamic-roundtrip < %s | FileCheck %s
 
 module {
-  // CHECK: "test.qubit"
-  %0 = "test.qubit"() : () -> !quantum.qubit
-  // CHECK: "test.qubit"
-  %1 = "test.qubit"() : () -> !quantum.qubit
+  // CHECK: "quantum.dynamic.alloc"
+  %0 = "quantum.dynamic.alloc"() : () -> !quantum.qubit
+  // CHECK: "quantum.dynamic.alloc"
+  %1 = "quantum.dynamic.alloc"() : () -> !quantum.qubit
   // CHECK: "quantum.dynamic.measure"
   %2 = "quantum.dynamic.measure"(%0) : (!quantum.qubit) -> !quantum.bit
   // CHECK: "quantum.dynamic.reset"

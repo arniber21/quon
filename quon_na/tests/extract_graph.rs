@@ -1,7 +1,7 @@
 //! Interaction-graph extraction from `quantum.dynamic` / `quantum.circ` fixtures.
 
 use melior::Context;
-use melior::ir::operation::{OperationBuilder, OperationLike};
+use melior::ir::operation::OperationLike;
 use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike, Value};
 
 use mlir_bridge::dialect::quantum_circ as qc;
@@ -34,14 +34,9 @@ fn foreign_qubit<'c: 'a, 'a, B: BlockLike<'c, 'a>>(
     location: Location<'c>,
 ) -> Value<'c, 'a> {
     Value::from(
-        body.append_operation(
-            OperationBuilder::new("test.qubit", location)
-                .add_results(&[qc::qubit_type(context)])
-                .build()
-                .expect("foreign qubit"),
-        )
-        .result(0)
-        .expect("result"),
+        body.append_operation(qd::alloc(context, 1, location).expect("alloc qubit"))
+            .result(0)
+            .expect("result"),
     )
 }
 

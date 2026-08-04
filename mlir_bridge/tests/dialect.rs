@@ -133,7 +133,7 @@ fn every_op_round_trips_in_one_module() {
     let ctrl = Value::from(
         body.append_operation(generic_op(
             &context,
-            "test.qubit",
+            "test.alloc_qubit",
             &[],
             &[qubit],
             &[],
