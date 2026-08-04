@@ -76,10 +76,10 @@ When adding fallible parsing or serialization, add at least: happy-path unit tes
 | **quonc** | `anyhow::Result` | CLI driver; may aggregate errors from the pipeline (`quonc/src/main.rs`). |
 | **frontend** | `thiserror` (`TypeError`, etc.) | Library API returns typed errors; span-aware reporting via `ariadne`. |
 | **backend** | `thiserror` (`BackendError`) | Descriptor JSON → domain conversion; every fallible path returns `Result` (`backend/src/error.rs`). |
-| **mlir_bridge** | `thiserror` per module + **`Diagnostics` monad** | Verifiers return `Result<(), E>`; passes accumulate with `Diagnostics::report` and flush once at the FFI boundary (`mlir_bridge/src/diagnostics.rs`). |
+| **mlir_bridge** | `thiserror` per module + **`Diagnostics` monad** | Verifiers return `Result<(), E>`; passes accumulate with `Diagnostics::report` and flush once at the FFI boundary (`mlir_bridge/src/ffi.rs`). |
 | **zx** | Typed errors (follow workspace convention) | Graph transforms; no `anyhow` in library code. |
 
-**Diagnostics monad (mlir_bridge):** Dialect verifiers and passes stay pure Rust. They build a `Diagnostics` accumulator, fold `Result` values with `.report(location, result)`, and only `Diagnostics::emit` crosses into unsafe MLIR C API. Do not call `mlirEmitError` outside `diagnostics.rs`.
+**Diagnostics monad (mlir_bridge):** Dialect verifiers and passes stay pure Rust. They build a `Diagnostics` accumulator, fold `Result` values with `.report(location, result)`, and only `Diagnostics::emit` flushes to MLIR — via the safe `ffi::emit_error` wrapper. The `ffi` module (`mlir_bridge/src/ffi.rs`) is the sole audited unsafe boundary: it owns `mlirEmitError`, `mlirOperationSetAttributeByName`, `mlirOperationSetOperand`, and external-pass context lifetime erasure (`PassContext`). The workspace denies `unsafe_code` everywhere else. Do not call `mlir-sys` functions outside `ffi.rs`.
 
 **anyhow:** Reserved for the **quonc** binary. Library crates should use `thiserror` enums (or plain `Result<T, E>` with a small `E`). Taskless rule `no-anyhow-in-lib-src` enforces this on new code.
 

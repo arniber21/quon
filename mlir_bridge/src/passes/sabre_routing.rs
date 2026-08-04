@@ -7,17 +7,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use backend::target::{BackendTarget, FixedTarget};
-use melior::StringRef;
 use melior::ir::attribute::IntegerAttribute;
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
-use melior::ir::{AttributeLike, BlockLike, Location, OperationRef, RegionLike, Value, ValueLike};
+use melior::ir::{BlockLike, Location, OperationRef, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef};
-use mlir_sys::{mlirOperationSetAttributeByName, mlirOperationSetOperand};
 use thiserror::Error;
 
 use crate::diagnostics::Diagnostics;
+use crate::ffi::{self, PassContext};
 use crate::dialect::{quantum_circ, quantum_dynamic};
 use crate::passes::qubit_wiring::{self, WireTracker};
 
@@ -27,13 +26,7 @@ fn set_i32_attr<'c>(context: &'c Context, op: OperationRef<'c, '_>, key: &str, v
         i64::from(value),
     )
     .into();
-    unsafe {
-        mlirOperationSetAttributeByName(
-            op.to_raw(),
-            StringRef::new(key).to_raw(),
-            attribute.to_raw(),
-        );
-    }
+    ffi::set_operation_attribute(op, key, &attribute);
 }
 #[derive(Clone, Copy, Debug)]
 pub struct SabreCost {
@@ -188,9 +181,7 @@ fn set_qubit_operands<'c, 'a>(gate: OperationRef<'c, 'a>, values: &[Value<'c, 'a
             continue;
         }
         if let Some(value) = values.get(qubit_index) {
-            unsafe {
-                mlirOperationSetOperand(gate.to_raw(), operand_index as isize, value.to_raw());
-            }
+            ffi::set_operation_operand(gate, operand_index as isize, value);
         }
         qubit_index += 1;
     }
@@ -740,7 +731,7 @@ static SABRE_ROUTING_PASS_ID: PassId = PassId;
 
 #[derive(Clone)]
 struct SabreRouting {
-    context: usize,
+    context: PassContext,
     target: Arc<BackendTarget>,
     cost: SabreCost,
 }
@@ -748,7 +739,7 @@ struct SabreRouting {
 impl SabreRouting {
     fn new(target: BackendTarget, cost: SabreCost) -> Self {
         Self {
-            context: 0,
+            context: PassContext::new(),
             target: Arc::new(target),
             cost,
         }
@@ -757,20 +748,24 @@ impl SabreRouting {
 
 impl<'c> RunExternalPass<'c> for SabreRouting {
     fn initialize(&mut self, context: ContextRef<'c>) {
-        self.context = unsafe { context.to_ref() as *const Context as usize };
+        self.context.capture(context);
     }
 
     fn run(&mut self, operation: OperationRef<'c, '_>, pass: ExternalPass<'_>) {
-        if self.context == 0 {
+        let Some(raw) = self.context.raw() else {
             pass.signal_failure();
             return;
-        }
-        let context = unsafe { &*(self.context as *const Context) };
-        let mut diagnostics = Diagnostics::new();
-        if let Some(target) = self.target.fixed_target() {
-            route_module(context, target, self.cost, operation, &mut diagnostics);
-        }
-        if !diagnostics.emit() {
+        };
+        let target = self.target.clone();
+        let cost = self.cost;
+        let success = crate::ffi::with_context(raw, |context| {
+            let mut diagnostics = Diagnostics::new();
+            if let Some(t) = target.fixed_target() {
+                route_module(context, t, cost, operation, &mut diagnostics);
+            }
+            diagnostics.emit()
+        });
+        if !success {
             pass.signal_failure();
         }
     }

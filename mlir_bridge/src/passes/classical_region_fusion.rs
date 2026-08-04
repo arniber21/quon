@@ -30,6 +30,7 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use thiserror::Error;
 
+use crate::ffi::PassContext;
 use crate::diagnostics::Diagnostics;
 use crate::dialect::{quantum_circ, quantum_dynamic};
 use crate::passes::qubit_wiring::{self, WireTracker};
@@ -688,29 +689,31 @@ static CLASSICAL_REGION_FUSION_PASS_ID: PassId = PassId;
 
 #[derive(Clone)]
 struct ClassicalRegionFusion {
-    context: usize,
+    context: PassContext,
 }
 
 impl ClassicalRegionFusion {
     fn new() -> Self {
-        Self { context: 0 }
+        Self { context: PassContext::new() }
     }
 }
 
 impl<'c> RunExternalPass<'c> for ClassicalRegionFusion {
     fn initialize(&mut self, context: ContextRef<'c>) {
-        self.context = unsafe { context.to_ref() as *const Context as usize };
+        self.context.capture(context);
     }
 
     fn run(&mut self, operation: OperationRef<'c, '_>, pass: ExternalPass<'_>) {
-        if self.context == 0 {
+        let Some(raw) = self.context.raw() else {
             pass.signal_failure();
             return;
-        }
-        let context = unsafe { &*(self.context as *const Context) };
-        let mut diagnostics = Diagnostics::new();
-        fuse_module(context, operation, &mut diagnostics);
-        if !diagnostics.emit() {
+        };
+        let success = crate::ffi::with_context(raw, |context| {
+            let mut diagnostics = Diagnostics::new();
+            fuse_module(context, operation, &mut diagnostics);
+            diagnostics.emit()
+        });
+        if !success {
             pass.signal_failure();
         }
     }

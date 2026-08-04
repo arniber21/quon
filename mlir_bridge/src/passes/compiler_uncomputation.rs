@@ -10,9 +10,9 @@ use melior::ir::r#type::TypeId;
 use melior::ir::{BlockLike, OperationRef, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
-use mlir_sys::mlirOperationSetOperand;
 
 use crate::dialect::quantum_circ::{self, attr};
+use crate::ffi::{self, PassContext};
 
 #[derive(Clone)]
 struct RecordedGate {
@@ -56,9 +56,7 @@ fn inverse_name(name: &str) -> Option<String> {
 
 fn set_return_operands<'c, 'a>(return_op: OperationRef<'c, 'a>, wires: &[Value<'c, 'a>]) {
     for (index, value) in wires.iter().enumerate() {
-        unsafe {
-            mlirOperationSetOperand(return_op.to_raw(), index as isize, value.to_raw());
-        }
+        ffi::set_operation_operand(return_op, index as isize, value);
     }
 }
 
@@ -192,26 +190,27 @@ static COMPILER_UNCOMPUTATION_PASS_ID: PassId = PassId;
 
 #[derive(Clone)]
 struct CompilerUncomputation {
-    context: usize,
+    context: PassContext,
 }
 
 impl CompilerUncomputation {
     fn new() -> Self {
-        Self { context: 0 }
+        Self { context: PassContext::new() }
     }
 }
 
 impl<'c> RunExternalPass<'c> for CompilerUncomputation {
     fn initialize(&mut self, context: ContextRef<'c>) {
-        self.context = unsafe { context.to_ref() as *const Context as usize };
+        self.context.capture(context);
     }
 
     fn run(&mut self, operation: OperationRef<'c, '_>, _pass: ExternalPass<'_>) {
-        if self.context == 0 {
+        let Some(raw) = self.context.raw() else {
             return;
-        }
-        let context = unsafe { &*(self.context as *const Context) };
-        uncompute_module(context, operation);
+        };
+        crate::ffi::with_context(raw, |context| {
+            uncompute_module(context, operation);
+        });
     }
 }
 

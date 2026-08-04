@@ -65,7 +65,10 @@ license-file = "LICENSE"
 repository = "https://github.com/arniber21/quon"
 
 [workspace.lints.rust]
-unsafe_code = "allow"
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
 
 [profile.release]
 lto = true

@@ -31,16 +31,15 @@
 
 use std::collections::HashMap;
 
-use melior::StringRef;
 use melior::ir::attribute::{BoolAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
-use melior::ir::{Attribute, AttributeLike, BlockLike, OperationRef, RegionLike, Value, ValueLike};
+use melior::ir::{Attribute, BlockLike, OperationRef, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
-use mlir_sys::mlirOperationSetAttributeByName;
 use quon_core::DepthExpr;
 
+use crate::ffi::{self, PassContext};
 use crate::dialect::quantum_circ::{self, attr};
 use crate::passes::{phase_polynomial, stabilizer_tableau};
 
@@ -84,13 +83,7 @@ fn read_depth_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> Depth
 
 fn set_func_depth<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>, depth: &DepthExpr) {
     let attribute: Attribute<'c> = StringAttribute::new(context, &depth.to_sexpr()).into();
-    unsafe {
-        mlirOperationSetAttributeByName(
-            func.to_raw(),
-            StringRef::new(attr::DEPTH).to_raw(),
-            attribute.to_raw(),
-        );
-    }
+    ffi::set_operation_attribute(func, attr::DEPTH, &attribute);
 }
 
 fn gate_is_clifford(name: &str) -> bool {
@@ -311,27 +304,28 @@ static CLIFFORD_T_OPT_PASS_ID: PassId = PassId;
 
 #[derive(Clone)]
 struct CliffordTOpt {
-    context: usize,
+    context: PassContext,
 }
 
 impl CliffordTOpt {
     fn new() -> Self {
-        Self { context: 0 }
+        Self { context: PassContext::new() }
     }
 }
 
 impl<'c> RunExternalPass<'c> for CliffordTOpt {
     fn initialize(&mut self, context: ContextRef<'c>) {
-        self.context = unsafe { context.to_ref() as *const Context as usize };
+        self.context.capture(context);
     }
 
     fn run(&mut self, operation: OperationRef<'c, '_>, pass: ExternalPass<'_>) {
-        if self.context == 0 {
+        let Some(raw) = self.context.raw() else {
             pass.signal_failure();
             return;
-        }
-        let context = unsafe { &*(self.context as *const Context) };
-        optimize_module(context, operation);
+        };
+        crate::ffi::with_context(raw, |context| {
+            optimize_module(context, operation);
+        });
     }
 }
 
