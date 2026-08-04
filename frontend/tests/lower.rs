@@ -109,6 +109,31 @@ fn cht_block(): Circuit<2, 2, 3, Universal> = circuit { controlled(circuit { H |
 }
 
 #[test]
+fn controlled_named_parametric_circuit_lowers() {
+    // Issue #374: `controlled(trotter_evolve(3))` must elaborate — the named
+    // parametric callee's body is unrolled, then control distributes over
+    // every gate. The result is a 2-qubit (control-plus-target) circuit
+    // whose decomposition is built from CNOT/Rz primitives.
+    let src = include_str!("fixtures/controlled_parametric.qn");
+    let text = lower_text(src);
+    assert!(
+        text.contains(r#"sym_name = "controlled_trotter""#),
+        "missing controlled_trotter: {text}"
+    );
+    // The controlled-Rz decomposition is `Rz |> CNOT |> Rz |> CNOT`, so the
+    // three unrolled steps contribute CNOTs (the control wire).
+    assert!(
+        text.contains(r#"gate_name = "CNOT""#),
+        "expected CNOT in the controlled decomposition: {text}"
+    );
+    // Width is preserved: control-plus-target = 2 qubits.
+    assert!(
+        text.contains("in_qubits = 2") && text.contains("out_qubits = 2"),
+        "expected a 2-qubit controlled circuit: {text}"
+    );
+}
+
+#[test]
 fn controlled_unsupported_body_is_diagnostic() {
     // `identity(1)` is a valid 1-qubit circuit value, but not a single-qubit
     // generator the controlled elaborator knows how to decompose.

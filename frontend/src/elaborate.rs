@@ -530,7 +530,9 @@ pub fn elaborate_circuit_body(
             }
             if let Expr::Controlled(inner) = &gate.0 {
                 let (control, target) = tuple2(&qubits)?;
-                return decompose_controlled(inner, &control, &target, classical_env, span);
+                return decompose_controlled(
+                    inner, &control, &target, classical_env, ctx, fuel, span,
+                );
             }
             let gate = subst_classical_vars(gate, classical_env)?;
             Ok((
@@ -1195,6 +1197,50 @@ fn cnot_app(qubits: Sp<Expr>, span: SimpleSpan) -> Sp<Expr> {
     gate_app("CNOT", &qubits, span)
 }
 
+/// If `inner` is a *named circuit callee* — a parametric circuit call
+/// (`f(args)`, head in [`ElabCtx::parametric`]) or a zero-arg circuit-function
+/// reference (`f()` / bare `f`, in [`ElabCtx::bodies`]) — elaborate its body
+/// into a concrete gate tree and return it, so [`decompose_controlled`] can
+/// distribute control over the fully-unrolled result. Returns `Ok(None)` for
+/// anything else (bare gate names, rotation applications, `Compose`/`par`/…)
+/// so the caller falls through to its per-construct decompositions.
+///
+/// Zero-arg callees reuse the cycle guard from [`elaborate_par_subbody`]: a
+/// self-referential `fn loop() = … controlled(loop()) …` would otherwise
+/// recurse without bound.
+fn elaborate_named_callee(
+    inner: &Sp<Expr>,
+    classical_env: &ClassicalEnv,
+    ctx: &ElabCtx,
+    fuel: &mut u32,
+) -> Result<Option<Sp<Expr>>, ElabError> {
+    // Parametric circuit call: head is a name recorded in `ctx.parametric`.
+    if let Expr::App(f, x) = &inner.0 {
+        let (head, _args) = flatten_app(f, x);
+        if let Expr::Var(name) = &head.0
+            && ctx.parametric.contains_key(name)
+        {
+            return Ok(Some(elaborate_circuit_body(
+                inner, classical_env, ctx, fuel,
+            )?));
+        }
+    }
+    // Zero-arg circuit function (`f()` App form or bare `Var f`) in `ctx.bodies`.
+    if let Some((callee, body)) = zero_arg_callee_body(inner, ctx) {
+        if ctx.expanding.borrow().contains(callee) {
+            return Err(ElabError::unsupported(
+                "self-referential zero-arg circuit function under controlled()",
+                inner.1,
+            ));
+        }
+        ctx.expanding.borrow_mut().insert(callee.to_string());
+        let result = elaborate_circuit_body(body, classical_env, ctx, fuel);
+        ctx.expanding.borrow_mut().remove(callee);
+        return Ok(Some(result?));
+    }
+    Ok(None)
+}
+
 /// `controlled(c) @ (control, target)` (SPEC §4.4 / issue #182).
 ///
 /// Control distributes over sequential composition and circuit blocks:
@@ -1203,29 +1249,45 @@ fn cnot_app(qubits: Sp<Expr>, span: SimpleSpan) -> Sp<Expr> {
 /// `target, target+1, …` when `body` is width-1 (the only shape this path
 /// places with a 2-tuple `(control, target)` start). Clifford+T single-qubit
 /// generators and `Rx`/`Ry`/`Rz` use known decompositions into `CNOT`/`CZ`/
-/// `CY`/`Rz`/local singles. Anything else is a span-accurate
-/// [`ElabError::Unsupported`].
+/// `CY`/`Rz`/local singles. A controlled call to a *named parametric circuit*
+/// or a zero-arg circuit function (issue #374) is elaborated first — its
+/// `for`/`repeat`/`let`/nested-call structure unrolled into a concrete gate
+/// tree — then control distributes over the result. Anything else is a
+/// span-accurate [`ElabError::Unsupported`].
 fn decompose_controlled(
     inner: &Sp<Expr>,
     control: &Sp<Expr>,
     target: &Sp<Expr>,
     classical_env: &ClassicalEnv,
+    ctx: &ElabCtx,
+    fuel: &mut u32,
     span: SimpleSpan,
 ) -> Result<Sp<Expr>, ElabError> {
+    // A controlled named circuit callee (parametric call or zero-arg circuit
+    // function) is elaborated first, then control distributes over the
+    // fully-unrolled gate tree — the same partial-evaluation pass a bare
+    // call site runs (issue #374).
+    if let Some(elaborated) = elaborate_named_callee(inner, classical_env, ctx, fuel)? {
+        return decompose_controlled(
+            &elaborated, control, target, classical_env, ctx, fuel, span,
+        );
+    }
     let fail = |construct: &'static str| ElabError::unsupported(construct, inner.1);
     match &inner.0 {
         Expr::Compose(lhs, rhs) => {
-            let left = decompose_controlled(lhs, control, target, classical_env, span)?;
-            let right = decompose_controlled(rhs, control, target, classical_env, span)?;
+            let left =
+                decompose_controlled(lhs, control, target, classical_env, ctx, fuel, span)?;
+            let right =
+                decompose_controlled(rhs, control, target, classical_env, ctx, fuel, span)?;
             Ok(compose_nonempty(left, right, span))
         }
         Expr::CircuitBlock(stmts) => {
             let body = circuit_block_expr(stmts, classical_env, inner.1)?;
-            decompose_controlled(&body, control, target, classical_env, span)
+            decompose_controlled(&body, control, target, classical_env, ctx, fuel, span)
         }
         Expr::Par(body, count) => {
-            let mut fuel = 10_000u32;
-            let k = eval_classical(count, classical_env, &mut fuel)?
+            let mut count_fuel = 10_000u32;
+            let k = eval_classical(count, classical_env, &mut count_fuel)?
                 .as_i64()
                 .ok_or_else(|| fail("controlled(par) count (expected Int)"))?;
             if k < 0 {
@@ -1238,7 +1300,8 @@ fn decompose_controlled(
             let mut composed = empty_circuit(span);
             for i in 0..k {
                 let t = shift_qubit_targets(target, i);
-                let step = decompose_controlled(body, control, &t, classical_env, span)?;
+                let step =
+                    decompose_controlled(body, control, &t, classical_env, ctx, fuel, span)?;
                 composed = compose_nonempty(composed, step, span);
             }
             Ok(composed)
@@ -1253,7 +1316,8 @@ fn decompose_controlled(
             let mut offset = 0i64;
             for elem in elems {
                 let t = shift_qubit_targets(target, offset);
-                let step = decompose_controlled(elem, control, &t, classical_env, span)?;
+                let step =
+                    decompose_controlled(elem, control, &t, classical_env, ctx, fuel, span)?;
                 let w = max_qubit_index(&step).map(|m| m as i64 + 1).unwrap_or(1);
                 offset += w;
                 composed = compose_nonempty(composed, step, span);
@@ -1263,7 +1327,8 @@ fn decompose_controlled(
         Expr::Adjoint(c) => {
             // For unitary `U`, `controlled(U†) = controlled(U)†` (control wire
             // is unchanged by the adjoint).
-            let controlled = decompose_controlled(c, control, target, classical_env, span)?;
+            let controlled =
+                decompose_controlled(c, control, target, classical_env, ctx, fuel, span)?;
             reverse_and_invert(&controlled)
         }
         Expr::Var(name) => controlled_named_gate(name, None, control, target, classical_env, span),
@@ -1277,6 +1342,49 @@ fn decompose_controlled(
             }
             let angle = subst_classical_vars(args[0], classical_env)?;
             controlled_named_gate(name, Some(angle), control, target, classical_env, span)
+        }
+        Expr::GateApp { gate, qubits } => {
+            // A placed gate from an elaborated named-callee body (issue #374):
+            // the body's gates sit on the callee's internal qubit indices.
+            // Width-1 bodies — the only shape this controlled path supports —
+            // place every gate on qubit 0, which `controlled(c) @ (control,
+            // target)` routes to `target`; emit the gate's controlled
+            // realization on (control, target).
+            let (name, angle) = match &gate.0 {
+                Expr::Var(n) => (n.as_str(), None),
+                Expr::App(f, x) => {
+                    let (head, args) = flatten_app(f, x);
+                    let Expr::Var(n) = &head.0 else {
+                        return Err(fail(
+                            "controlled() of an unrecognized gate in a named circuit body",
+                        ));
+                    };
+                    if args.len() != 1 {
+                        return Err(fail(
+                            "controlled() of a multi-argument gate in a named circuit body",
+                        ));
+                    }
+                    (n.as_str(), Some(args[0].clone()))
+                }
+                _ => {
+                    return Err(fail(
+                        "controlled() of an unrecognized gate in a named circuit body",
+                    ))
+                }
+            };
+            // Reject multi-qubit body gates: the controlled decomposition only
+            // knows single-qubit realizations, and placing a 2-qubit gate on a
+            // single `target` would silently miscompile.
+            if matches!(&qubits.0, Expr::Tuple(t) if t.len() > 1) {
+                return Err(fail(
+                    "controlled() of a multi-qubit gate in a named circuit body",
+                ));
+            }
+            let angle = match angle {
+                Some(a) => Some(subst_classical_vars(&a, classical_env)?),
+                None => None,
+            };
+            controlled_named_gate(name, angle, control, target, classical_env, span)
         }
         Expr::Controlled(_) => Err(fail(
             "nested controlled() (multi-controlled gates are not elaborated yet)",
@@ -1525,8 +1633,20 @@ mod controlled_tests {
         (Expr::Var(name.to_string()), no_span())
     }
 
+    fn empty_ctx() -> ElabCtx {
+        ElabCtx {
+            parametric: Arc::new(HashMap::new()),
+            bodies: Arc::new(HashMap::new()),
+            expanding: std::cell::RefCell::new(HashSet::new()),
+        }
+    }
+
     fn controlled_of(inner: Sp<Expr>) -> Result<Sp<Expr>, ElabError> {
-        decompose_controlled(&inner, &lit_int(0), &lit_int(1), &HashMap::new(), no_span())
+        let ctx = empty_ctx();
+        let mut fuel = 10_000u32;
+        decompose_controlled(
+            &inner, &lit_int(0), &lit_int(1), &HashMap::new(), &ctx, &mut fuel, no_span(),
+        )
     }
 
     fn ideal_controlled(u: M2) -> M4 {
@@ -1731,6 +1851,126 @@ mod controlled_tests {
                 assert_eq!((span.start, span.end), (10, 20));
             }
             other => panic!("unexpected {other}"),
+        }
+    }
+
+    /// Issue #374: `controlled(callee(...))` for a named parametric callee
+    /// elaborates the callee's body first, then distributes control over the
+    /// result. A width-1 `trotter_evolve(n_steps, theta)` body unrolls to a
+    /// `Compose` chain of `Rz(theta)` gates; control turns each into a
+    /// controlled-Rz gadget (`Rz |> CNOT |> Rz |> CNOT`) on (control, target).
+    #[test]
+    fn controlled_named_parametric_callee_decomposes() {
+        use crate::types::Ty;
+        // `trotter_step(theta)` body: `circuit { Rz(theta) @0 }`.
+        let step_body = (
+            Expr::CircuitBlock(vec![(
+                Stmt::Expr(rotation_gate_app("Rz", &var("theta"), &lit_int(0), no_span())),
+                no_span(),
+            )]),
+            no_span(),
+        );
+        let parametric = Arc::new(HashMap::from([
+            (
+                "trotter_step".to_string(),
+                ParametricDef {
+                    params: vec!["theta".to_string()],
+                    body: step_body,
+                    ret_ty: Ty::Circuit {
+                        n: DepthExpr::Nat(1),
+                        m: DepthExpr::Nat(1),
+                        d: DepthExpr::Nat(1),
+                        c: crate::ast::CliffordClass::Universal,
+                    },
+                },
+            ),
+            // `trotter_evolve(n_steps, theta) = repeat(n_steps, trotter_step(theta))`
+            (
+                "trotter_evolve".to_string(),
+                ParametricDef {
+                    params: vec!["n_steps".to_string(), "theta".to_string()],
+                    body: (
+                        Expr::App(
+                            Box::new((
+                                Expr::App(
+                                    Box::new((Expr::Var("repeat".to_string()), no_span())),
+                                    Box::new((Expr::Var("n_steps".to_string()), no_span())),
+                                ),
+                                no_span(),
+                            )),
+                            Box::new((
+                                Expr::App(
+                                    Box::new((Expr::Var("trotter_step".to_string()), no_span())),
+                                    Box::new((Expr::Var("theta".to_string()), no_span())),
+                                ),
+                                no_span(),
+                            )),
+                        ),
+                        no_span(),
+                    ),
+                    ret_ty: Ty::Circuit {
+                        n: DepthExpr::Nat(1),
+                        m: DepthExpr::Nat(1),
+                        d: DepthExpr::Nat(2),
+                        c: crate::ast::CliffordClass::Universal,
+                    },
+                },
+            ),
+        ]));
+        let bodies = Arc::new(HashMap::new());
+        let ctx = ElabCtx {
+            parametric,
+            bodies,
+            expanding: std::cell::RefCell::new(HashSet::new()),
+        };
+        let mut fuel = 10_000u32;
+        // `controlled(trotter_evolve(2, π/4)) @ (0, 1)`.
+        let decomposed = decompose_controlled(
+            &(
+                Expr::App(
+                    Box::new((
+                        Expr::App(
+                            Box::new((Expr::Var("trotter_evolve".to_string()), no_span())),
+                            Box::new((Expr::Int(2), no_span())),
+                        ),
+                        no_span(),
+                    )),
+                    Box::new((Expr::Float(std::f64::consts::FRAC_PI_4), no_span())),
+                ),
+                no_span(),
+            ),
+            &lit_int(0),
+            &lit_int(1),
+            &HashMap::new(),
+            &ctx,
+            &mut fuel,
+            no_span(),
+        )
+        .expect("controlled parametric callee decomposes");
+        let gates = collect_gate_placements(&decomposed).expect("gate placements");
+        // Two unrolled steps → two controlled-Rz gadgets, each a
+        // `Rz |> CNOT |> Rz |> CNOT` decomposition contributing two CNOTs: the
+        // control wire is present in every step.
+        let cnots = gates
+            .iter()
+            .filter(|(g, _)| matches!(&g.0, Expr::Var(n) if n == "CNOT"))
+            .count();
+        assert_eq!(cnots, 4, "expected four CNOTs (two per controlled step): {decomposed:?}");
+        // Every gate targets either the control (qubit 0) or target (qubit 1)
+        // — the controlled realization never touches another wire.
+        for (_, qubits) in &gates {
+            let targets: Vec<i64> = match &qubits.0 {
+                Expr::Int(n) => vec![*n],
+                Expr::Tuple(items) => items
+                    .iter()
+                    .filter_map(|q| match q.0 { Expr::Int(n) => Some(n), _ => None })
+                    .collect(),
+                _ => vec![],
+            };
+            assert!(
+                targets.iter().all(|&n| n == 0 || n == 1),
+                "gate targets a wire other than control/target: {qubits:?}"
+            );
         }
     }
 }
