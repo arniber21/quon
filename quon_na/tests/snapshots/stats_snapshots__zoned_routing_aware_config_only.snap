@@ -11,6 +11,7 @@ expression: redact_timings(&json)
       "legality_checked": false,
       "requested": true
     },
+    "objective": "time",
     "placer_mode": "routing_aware"
   },
   "kind": "na_compiler_stats",

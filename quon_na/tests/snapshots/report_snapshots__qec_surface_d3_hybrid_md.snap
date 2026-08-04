@@ -17,19 +17,20 @@ expression: md
 ## Schedule metrics
 | Metric | Value |
 | --- | ---: |
-| Estimated cycles | 165 |
+| Estimated cycles | 162 |
 | Bottleneck | rearrangement |
 | Rydberg stages | 16 |
-| Rearrangement steps | 46 |
-| Rearrangement time (µs) | 6345 |
-| Trap transfers | 162 |
-| Transfer time (µs) | 2430 |
+| Rearrangement steps | 45 |
+| Rearrangement time (µs) | 5753 |
+| Trap transfers | 178 |
+| Transfer time (µs) | 2670 |
 | Entangle2 count | 48 |
 | EntangleN count | 0 |
 | Measurement rounds | 3 |
 | Reset rounds | 2 |
 | Wait time (µs) | 2 |
-| Total time (µs) | 7752 |
+| Total time (µs) | 7130 |
+| Routing-agnostic placement mechanism | greedy_fallback |
 
 ## Atom pressure & reuse
 | Metric | Value |
@@ -46,15 +47,15 @@ expression: md
 | Rydberg | 0.032 |
 | Measurement | 0.009 |
 | Reset | 0.008 |
-| Movement | 0.023 |
-| Transfer | 0.1134 |
+| Movement | 0.0225 |
+| Transfer | 0.1246 |
 | Idle | 4e-9 |
 
 ## Fidelity estimate (Enola Eq. (1))
 | Metric | Value |
 | --- | ---: |
-| Gate fidelity product | 0.665322241696 |
-| Estimated fidelity (with idle decay) | 0.614999077741 |
+| Gate fidelity product | 0.654756553126 |
+| Estimated fidelity (with idle decay) | 0.609812027129 |
 
 ## Notes
 - Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).

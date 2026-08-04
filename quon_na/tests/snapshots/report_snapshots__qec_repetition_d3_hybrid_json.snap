@@ -28,6 +28,7 @@ expression: json
   "magic_state_demand": 0,
   "estimated_cycles": 37,
   "bottleneck": "rearrangement",
+  "agnostic_placer_mechanism": "greedy_fallback",
   "error_budget": {
     "rydberg": 0.012,
     "measurement": 0.009,

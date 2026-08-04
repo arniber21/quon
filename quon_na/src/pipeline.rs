@@ -326,8 +326,7 @@ pub fn run_from_module<'c>(
 ) -> Result<NaScheduleArtifacts, NaPipelineError> {
     validate_speed_model(na).map_err(NaPipelineError::InvalidTarget)?;
     let extract_started = Instant::now();
-    let (graph, local_gates, measured_qubits) =
-        extract_interaction_graph_and_local_gates(module)?;
+    let (graph, local_gates, measured_qubits) = extract_interaction_graph_and_local_gates(module)?;
     let extract_us = elapsed_us(extract_started);
     let logical_qubits = graph.vertices.len() as u64;
     if opts.dump_ir {
@@ -642,6 +641,7 @@ fn push_global_ry_with_refocus(
 /// Shared tail of the pipeline: placement/movement, optional compaction, and
 /// the resource report. `req.layers` must already be fully populated
 /// (entangling actions, plus any interleaved local-gate actions).
+#[allow(clippy::too_many_arguments)] // shared pipeline tail — 8 inputs are genuinely independent (request, measurement set, target, options, qubit count, and three distinct timing origins); grouping would manufacture artificial coupling
 fn finish_pipeline(
     mut req: GraphScheduleRequest,
     measured_qubits: Vec<LogicalQubitId>,
