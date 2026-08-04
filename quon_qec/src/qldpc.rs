@@ -322,6 +322,19 @@ pub fn toy_5qubit_graph() -> ParityCheckGraph {
 
 /// A simple toy repetition code for testing.
 pub fn toy_repetition_graph(distance: u32) -> ParityCheckGraph {
+    // A repetition code needs `distance >= 1` so `distance - 1` (the check
+    // count) cannot underflow. The degenerate `distance == 0` case is an
+    // empty code; handling it here keeps the subtraction total *and* lets
+    // Flux prove the arithmetic is safe (it sees `distance >= 1` past this
+    // guard).
+    if distance == 0 {
+        return ParityCheckGraph {
+            n_data: 0,
+            n_checks: 0,
+            distance: 0,
+            checks: Vec::new(),
+        };
+    }
     let n_data = distance;
     let n_checks = distance - 1;
     let mut checks = Vec::new();
