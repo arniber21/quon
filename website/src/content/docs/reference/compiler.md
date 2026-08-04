@@ -3,11 +3,43 @@ title: Compiler pipeline
 description: High-level reference for the pipeline run by quonc.
 ---
 
+## Use this when
+
+This is the **Reference** section — the *contract layer* of Quon's docs. Use
+it when you want to look up what a pipeline stage or a `quonc` flag
+*guarantees*, without reading compiler source. The contracts here are frozen
+against the implementation; they change only when the pipeline's observable
+behavior changes, not when internal pass ordering shifts.
+
+Quon's docs come in three depths. This page sits in the middle and links to
+the other two, each labelled so you know what you are stepping into:
+
+- **Language guide** *(concept)* — what a `.qn` program means and why the
+  language is shaped the way it is, from first principles. Step back here when
+  a contract references a concept you have not yet met. →
+  [Introduction](/language/introduction/).
+- **Architecture** *(rationale)* — where each stage lives in the compiler
+  source, what invariant it owns, and why the ADRs made it that way. Step
+  forward here when you will read or extend compiler code. →
+  [Compiler internals](/architecture/compiler-internals/),
+  [Neutral-atom model](/architecture/na-model/).
+
+Cross-links out of this page are marked `(concept — Language guide)` or
+`(rationale — Architecture)`.
+
 `quonc` runs a shared frontend and MLIR-backed lowering path before selecting a
 target-specific artifact: OpenQASM 3 for fixed gate-model targets, or
 schedule/resource outputs for reconfigurable neutral-atom targets.
 
 ## Pipeline overview
+
+> **Scope: contract view.** This is the stable per-stage contract — what each
+> stage guarantees, frozen against the implementation. For the concept-level
+> map of features onto stages, see the language guide's
+> [From source to artifact](/language/introduction/#from-source-to-artifact)
+> `(concept — Language guide)`; for where each stage lives in source and why,
+> see [compiler internals](/architecture/compiler-internals/)
+> `(rationale — Architecture)`.
 
 1. **Parse and desugar.** The frontend parses `.qn` source and desugars surface
    syntax into the core AST.
@@ -150,3 +182,17 @@ cargo run -p quonc -- \
 
 See the [quonc CLI reference](../quonc/) for command examples and the
 [maturation path](/guides/roadmap/) for the production-hardening direction.
+
+## Where to go next
+
+- **[quonc CLI](../quonc/)** — the companion reference page: every flag and
+  option the compiler accepts.
+- **[Language guide: Introduction](/language/introduction/)** `(concept —
+  Language guide)` — step back when a contract references a source-language
+  concept you have not yet met.
+- **[Compiler internals](/architecture/compiler-internals/)** `(rationale —
+  Architecture)` — step forward to where each stage lives in the compiler
+  source and why the ADRs shaped it that way.
+- **[Neutral-atom model](/architecture/na-model/)** `(rationale —
+  Architecture)` — the hardware model and target schema behind the
+  neutral-atom stages above.

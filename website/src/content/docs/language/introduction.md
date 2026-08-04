@@ -29,6 +29,31 @@ feature you will meet in this guide — linear types, symbolic depth, Clifford
 classification, the strict split between unitary and dynamic code — exists in
 service of that goal.
 
+## Use this when
+
+This *Language guide* is the **concept layer** of Quon's documentation. Read
+it to understand *what a `.qn` program means and why the language is shaped
+the way it is* — circuits as typed values, linear qubit ownership, symbolic
+depth, Clifford classification, and the unitary/monad split. Each page
+explains one concept from first principles and ends with a link to the next.
+
+Quon's docs are organized in three depths, and this guide is the first. The
+other two are labelled so you know what you are stepping into before you
+follow a link:
+
+- **Reference** *(contract)* — stable lookup of what each pipeline stage and
+  `quonc` flag guarantees, frozen against the implementation. Use it when you
+  want "what does this stage do?" without reading source. →
+  [Compiler pipeline](/reference/compiler/), [quonc CLI](/reference/quonc/).
+- **Architecture** *(rationale)* — where each stage lives in the compiler
+  source, what invariant it owns, and why the ADRs made it that way. Use it
+  when you will read or extend compiler code. →
+  [Compiler internals](/architecture/compiler-internals/),
+  [Neutral-atom model](/architecture/na-model/).
+
+Cross-links out of this guide are marked `(contract — Reference)` or
+`(rationale — Architecture)` so you can tell the depth at a glance.
+
 ## A circuit is a value, not a side-effect
 
 In most quantum frameworks you build a circuit by calling imperative functions
@@ -181,6 +206,12 @@ dynamic side's job.
 A Quon program does not run directly on hardware. The compiler walks it through
 a fixed pipeline, and every feature in this guide maps onto a stage of it:
 
+> **Scope: concept view.** This five-stage sketch exists to map each language
+> feature onto a pipeline stage — it is intentionally not a contract or a code
+> map. For the frozen per-stage contract see the [compiler pipeline reference](/reference/compiler/)
+> `(contract — Reference)`; for where each stage lives in source and why, see
+> [compiler internals](/architecture/compiler-internals/) `(rationale — Architecture)`.
+
 1. **Parse and desugar** — Tree-sitter plus a Rust parser turn `.qn` source into
    the surface AST, then desugar infix combinators and sugar into the core AST.
    Syntax errors stop here.
@@ -229,13 +260,13 @@ the backend relies on:
   then reduce it again, all within the proven bound. The circuit/monad split
   tells it which regions are safe to rewrite algebraically and which must
   preserve measurement ordering.
-
 The consequence is that optimization in Quon is *never* a guess. Every rewrite
 the optimizer applies is enabled by a fact the typechecker already proved. If
 the typechecker cannot prove a fact, the program is rejected — it does not reach
 the optimizer in an ambiguous state. The full pipeline is documented in the
-[compiler reference](/reference/compiler/) and explored stage-by-stage in the
-[compiler internals](/architecture/compiler-internals/) page.
+[compiler reference](/reference/compiler/) `(contract — Reference)` and
+explored stage-by-stage in the [compiler internals](/architecture/compiler-internals/)
+page `(rationale — Architecture)`.
 
 ## How to read this guide
 

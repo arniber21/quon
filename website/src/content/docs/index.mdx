@@ -75,6 +75,13 @@ Route yourself by what you want to do. Each path states its prerequisite,
 expected outcome, and next page on the
 [orientation page](/getting-started/choose-your-path/).
 
+The docs are organized in three depths, each linking to the next in both
+directions: **Language guide** *(concepts)* explains what a `.qn` program
+means and why; **Reference** *(contract)* is stable lookup of what each
+pipeline stage and `quonc` flag guarantees; **Architecture** *(rationale)*
+explains where each stage lives in the compiler source and why the ADRs
+shaped it that way.
+
 <CardGrid>
 	<Card title="First-time learner" icon="book-open">
 		Learn typed quantum programming from first principles — no prerequisite.
@@ -104,9 +111,9 @@ expected outcome, and next page on the
 		[Read it ->](/getting-started/second-program/)
 	</Card>
 	<Card title="Learn the language" icon="book-open">
-		Linear qubit types, the `Circuit<n, m, d, C>` contract, the Quantum
-		Monad, classical control, and parametric circuits — explained from first
-		principles.
+		*(concepts)* Linear qubit types, the `Circuit<n, m, d, C>` contract,
+		the Quantum Monad, classical control, and parametric circuits —
+		explained from first principles.
 		[Start the guide ->](/language/introduction/)
 	</Card>
 	<Card title="Read the architecture" icon="setting">
