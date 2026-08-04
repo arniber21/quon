@@ -114,7 +114,7 @@ pub struct CriticalPathReport {
 
 /// Result of exclusive-cycle ASAP and optional greedy compaction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, bound(deserialize = "V: crate::graph::VertexId"))]
 pub struct CompactionResult<V = LogicalQubitId> {
     pub request: GraphScheduleRequest<V>,
     pub asap_makespan_cycles: u32,

@@ -389,7 +389,7 @@ impl AgnosticPlacerMechanism {
 
 /// Result of [`schedule_zoned`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, bound(deserialize = "V: crate::graph::VertexId"))]
 pub struct ZonedScheduleResult<V = LogicalQubitId> {
     pub request: GraphScheduleRequest<V>,
     pub mode: PlacerMode,

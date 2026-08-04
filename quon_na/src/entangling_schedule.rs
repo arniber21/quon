@@ -46,7 +46,7 @@ pub struct LayerUtilization {
 
 /// Result of [`schedule_entangling_layers`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, bound(deserialize = "V: crate::graph::VertexId"))]
 pub struct EntanglingScheduleResult<V = LogicalQubitId> {
     pub request: GraphScheduleRequest<V>,
     pub utilizations: Vec<LayerUtilization>,
