@@ -23,11 +23,11 @@ default = []
 solver = ["quon_na/solver"]
 
 [dependencies]
-frontend    = { path = "../frontend" }
+frontend    = { path = "../frontend", default-features = false, features = ["full"] }
 mlir_bridge = { path = "../mlir_bridge" }
 backend     = { path = "../backend" }
 quon_core   = { path = "../quon_core" }
-quon_na     = { path = "../quon_na" }
+quon_na     = { path = "../quon_na", default-features = false, features = ["mlir"] }
 quon_qec    = { path = "../quon_qec" }
 melior      = { workspace = true }
 clap        = { workspace = true }

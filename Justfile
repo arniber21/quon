@@ -148,6 +148,10 @@ ci-rust: setup-python
     cargo clippy --workspace {{WORKSPACE_EXCLUDE}} --all-targets -- -D warnings
     cargo build --release --workspace {{WORKSPACE_EXCLUDE}}
     cargo build --examples --workspace {{WORKSPACE_EXCLUDE}}
+    # MLIR-free module-seam feature combinations (issue #407). Runs after
+    # the release workspace build so `cargo build --release -p quonc` is a
+    # cache hit and the dev-profile MLIR-free builds reuse clippy's deps.
+    just ci-feature-seams
     export PATH="$PWD/.venv/bin:$PATH"
     export QUON_REQUIRE_LIT=1
     cargo nextest run --workspace {{WORKSPACE_EXCLUDE}}
@@ -208,6 +212,24 @@ na-rap-sweep:
     QUONC="$quonc" python3 python/na_rap_table_i_sweep.py \
       --csv /tmp/quon_na_rap_sweep/rap_table_i_sweep.csv
     echo "wrote /tmp/quon_na_rap_sweep/rap_table_i_sweep.csv"
+
+# Feature-combination module-seam checks (issue #407). Verifies the
+# MLIR-free seams stay MLIR-free: parser-only, analysis-only, and the
+# MLIR-free neutral-atom library build without linking LLVM/MLIR, while the
+# full compiler combination (quonc with frontend `full` + quon_na `mlir`)
+# still builds. Run inside `ci-rust` so the `--release -p quonc` line reuses
+# the release workspace build above as a cache hit.
+ci-feature-seams:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> frontend parser-only (no MLIR)"
+    cargo build -p frontend --no-default-features
+    echo "==> frontend analysis-only (no MLIR)"
+    cargo build -p frontend --no-default-features --features analyze
+    echo "==> quon_na MLIR-free (no LLVM/MLIR)"
+    cargo build -p quon_na --no-default-features
+    echo "==> quonc full compiler (frontend full + quon_na mlir)"
+    cargo build --release -p quonc
 
 # quonfmt · quonlint · LSP smoke on CI corpus
 ci-tooling: _tooling-build
