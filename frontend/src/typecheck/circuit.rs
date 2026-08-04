@@ -359,7 +359,11 @@ impl super::TypeChecker {
         self.circuit_width.push(DepthExpr::Nat(0));
         self.circuit_width_cap.push(DepthExpr::Nat(u64::MAX / 4));
         let synth_result = self.synth(env, delta, body);
-        let grown = self.circuit_width.last().cloned().unwrap_or(DepthExpr::Nat(0));
+        let grown = self
+            .circuit_width
+            .last()
+            .cloned()
+            .unwrap_or(DepthExpr::Nat(0));
         self.circuit_width.pop();
         self.circuit_width_cap.pop();
         let bt = synth_result?;
@@ -401,14 +405,23 @@ impl super::TypeChecker {
                 c: CliffordClass::Clifford,
             });
         }
-        let mut acc: (DepthExpr, DepthExpr, DepthExpr, CliffordClass) = (DepthExpr::Nat(0), DepthExpr::Nat(0), DepthExpr::Nat(0), CliffordClass::Clifford);
+        let mut acc: (DepthExpr, DepthExpr, DepthExpr, CliffordClass) = (
+            DepthExpr::Nat(0),
+            DepthExpr::Nat(0),
+            DepthExpr::Nat(0),
+            CliffordClass::Clifford,
+        );
         for elem in elems {
             self.circuit_width.push(DepthExpr::Nat(0));
             self.circuit_width_cap.push(DepthExpr::Nat(u64::MAX / 4));
             // Synth under the arm's own 0-width ambient; on error, pop before
             // propagating so the width/cap stacks stay balanced on all paths.
             let synth_result = self.synth(env, delta, elem);
-            let grown = self.circuit_width.last().cloned().unwrap_or(DepthExpr::Nat(0));
+            let grown = self
+                .circuit_width
+                .last()
+                .cloned()
+                .unwrap_or(DepthExpr::Nat(0));
             self.circuit_width.pop();
             self.circuit_width_cap.pop();
             let t = synth_result?;

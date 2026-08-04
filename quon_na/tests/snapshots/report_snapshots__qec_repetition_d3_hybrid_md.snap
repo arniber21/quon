@@ -30,6 +30,7 @@ expression: md
 | Reset rounds | 2 |
 | Wait time (µs) | 2 |
 | Total time (µs) | 1313 |
+| Routing-agnostic placement mechanism | greedy_fallback |
 
 ## Atom pressure & reuse
 | Metric | Value |

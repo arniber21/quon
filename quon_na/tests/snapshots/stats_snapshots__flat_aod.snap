@@ -11,6 +11,7 @@ expression: redact_timings(&json)
       "legality_checked": false,
       "requested": true
     },
+    "objective": "time",
     "placement_strategy": "row_major"
   },
   "kind": "na_compiler_stats",

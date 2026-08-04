@@ -156,7 +156,12 @@ pub fn print_expr(e: &Sp<Expr>, ctx: &mut Context<'_>, min_prec: Prec) -> Doc {
         ])),
         Expr::ParN(elems) => Doc::group(Doc::concat([
             Doc::text("par { "),
-            comma_sep(elems.iter().map(|e| expr_in_circuit_context(e, ctx)).collect()),
+            comma_sep(
+                elems
+                    .iter()
+                    .map(|e| expr_in_circuit_context(e, ctx))
+                    .collect(),
+            ),
             Doc::text(" }"),
         ])),
 
@@ -373,7 +378,6 @@ fn print_app(e: &Sp<Expr>, ctx: &mut Context<'_>) -> Doc {
     ])
 }
 
-
 fn comma_sep(items: Vec<Doc>) -> Doc {
     let n = items.len();
     if n == 0 {
@@ -420,7 +424,8 @@ fn expr_prec(e: &Expr) -> Prec {
             op: BinOp::Mul | BinOp::Div,
             ..
         }
-        | Expr::Par(_, _) | Expr::ParN(_) => Prec::Mul,
+        | Expr::Par(_, _)
+        | Expr::ParN(_) => Prec::Mul,
         Expr::BinOp {
             op: BinOp::Add | BinOp::Sub,
             ..
