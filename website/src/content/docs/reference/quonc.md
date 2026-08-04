@@ -373,3 +373,8 @@ exit codes, read the
 - **[Compiler internals](/architecture/compiler-internals/)** `(rationale —
   Architecture)` — step forward to where each flag's stage lives in the
   compiler source and why the ADRs shaped it that way.
+## Diagnostic catalog
+
+For error-specific guidance — minimal reproducers, explanations, and supported
+repairs for every compiler diagnostic — see the
+[diagnostic catalog](../diagnostics/).

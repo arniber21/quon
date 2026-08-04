@@ -172,3 +172,10 @@ just tooling-full
 You can also configure the stdio language server command above and wire
 `quonfmt --check` or `quonfmt -w` and `quonlint` into editor tasks or save hooks without
 an extension.
+
+## Diagnostic catalog
+
+When the language server reports an error, the
+[diagnostic catalog](/reference/diagnostics/) lists every diagnostic by family,
+with a minimal reproducer and the smallest supported repair. Quick fixes marked
+**[auto-fix]** in the catalog are offered as LSP code actions by `quon_lsp`.

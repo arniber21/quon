@@ -254,6 +254,7 @@ classification-specific kernel finds the deeper non-adjacent ones. The
 fixpoint iterates until no pass makes a change, so reductions that *enable*
 further peephole cancellations are caught in later rounds.
 
+When a Clifford annotation is rejected, the [diagnostic catalog](/reference/diagnostics/#refinement-clifford-and-depth) explains the mismatch and offers a repair.
 ## Next
 
 Now we leave the pure unitary world. The Quantum Monad allows allocation,

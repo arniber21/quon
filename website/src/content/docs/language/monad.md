@@ -244,6 +244,7 @@ makes the linear discipline enforceable — each step of the computation has a
 well-defined "before" and "after" state of the linear context, and the
 typechecker checks the transition at every `<-`.
 
+When a `<-` bind or `run` block is rejected, the [diagnostic catalog](/reference/diagnostics/#monad-and-borrow) explains the error and offers a repair.
 ## Next
 
 The most important effectful operation is measurement — and what you can do

@@ -282,6 +282,8 @@ A final page ties every concept together in one complete program. Read the
 pages in order the first time; afterward each page stands on its own as a
 reference, and every page ends with a link to the next.
 
+When the compiler rejects your program, the [diagnostic catalog](/reference/diagnostics/) lists every error by family, with a minimal reproducer and the smallest supported repair.
+
 ## Next
 
 You have seen that a circuit is a typed value. The next page unpacks the

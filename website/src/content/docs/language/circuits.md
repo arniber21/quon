@@ -322,6 +322,7 @@ regions — with mathematical certainty that the observable behavior is unchange
 The dynamic, effectful side (which you will meet soon) gets none of those
 optimizations, which is exactly why Quon keeps the two worlds separate.
 
+When a circuit composition fails, the [diagnostic catalog](/reference/diagnostics/) lists the exact error, a minimal reproducer, and the smallest repair.
 ## Next
 
 Circuits act on qubits, but so far we have only referred to qubits by position.
