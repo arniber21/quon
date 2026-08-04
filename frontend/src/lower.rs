@@ -466,7 +466,7 @@ impl<'c> LoweringCtx<'c> {
     /// Lower a quantum-monad (`Q<τ>`) function straight into `quantum.dynamic`
     /// top-level IR. The desugared body is a `Bind`/`Let`/`Return` chain
     /// (issue #8); we walk it, emitting `quantum.dynamic` ops
-    /// (`test.qubit` allocations, `measure`/`reset`, `unitary_region`/`if`
+    /// (`alloc` allocations, `measure`/`reset`, `unitary_region`/`if`
     /// with inlined circuit callees, QEC ops) directly into the module's
     /// top-level block. There is no staging dialect: the former
     /// `monadic_staging` ops and `monadic_lowering` pass were collapsed in
@@ -632,16 +632,14 @@ impl<'c> LoweringCtx<'c> {
                 }
                 if let Expr::Var(fname) = &head.0 {
                     match fname.as_str() {
-                        // `qreg(n)` — allocate `n` fresh qubits as `test.qubit`
-                        // ops (the dynamic-IR allocation point).
+                        // `qreg(n)` — allocate `n` fresh qubits as a single
+                        // verified `quantum.dynamic.alloc` op (the dynamic-IR
+                        // allocation point, issue #401).
                         "qreg" if args.len() == 1 => {
                             if let Expr::Int(count) = &args[0].0 {
-                                let mut qubits = Vec::with_capacity(*count as usize);
-                                for _ in 0..*count {
-                                    let op = self.foreign_qubit()?;
-                                    qubits.extend(self.append_dynamic_op(op, 1)?);
-                                }
-                                return Ok(qubits);
+                                let count = *count as usize;
+                                let op = qd::alloc(self.context, count, self.location)?;
+                                return self.append_dynamic_op(op, count);
                             }
                         }
                         // `qubit()` — allocate a single fresh qubit (the nullary
@@ -649,7 +647,7 @@ impl<'c> LoweringCtx<'c> {
                         // returning one qubit rather than a `QReg<1>`. Leaves |0⟩.
                         "qubit" if args.len() == 1 => {
                             if let Expr::Unit = &args[0].0 {
-                                let op = self.foreign_qubit()?;
+                                let op = self.alloc_qubit()?;
                                 return self.append_dynamic_op(op, 1);
                             }
                         }
@@ -658,7 +656,7 @@ impl<'c> LoweringCtx<'c> {
                         // but post-selects the computational-basis |1⟩ state.
                         "init_one" if args.len() == 1 => {
                             if let Expr::Unit = &args[0].0 {
-                                let alloc_op = self.foreign_qubit()?;
+                                let alloc_op = self.alloc_qubit()?;
                                 let wires = self.append_dynamic_op(alloc_op, 1)?;
                                 let x_op = qc::gate(
                                     self.context,
@@ -676,7 +674,7 @@ impl<'c> LoweringCtx<'c> {
                         // but post-selects the Hadamard-basis |+⟩ state.
                         "init_plus" if args.len() == 1 => {
                             if let Expr::Unit = &args[0].0 {
-                                let alloc_op = self.foreign_qubit()?;
+                                let alloc_op = self.alloc_qubit()?;
                                 let wires = self.append_dynamic_op(alloc_op, 1)?;
                                 let h_op = qc::gate(
                                     self.context,
@@ -893,12 +891,12 @@ impl<'c> LoweringCtx<'c> {
         Ok(results)
     }
 
-    /// Builds a `test.qubit` op — the dynamic-IR qubit allocation point (one
-    /// fresh `!quantum.qubit`). Unregistered, so no dialect verifier runs.
-    fn foreign_qubit(&self) -> Result<Operation<'c>, qc::BuildError> {
-        Ok(OperationBuilder::new("test.qubit", self.location)
-            .add_results(&[qc::qubit_type(self.context)])
-            .build()?)
+    /// Builds a `quantum.dynamic.alloc` op — the verified dynamic-IR qubit
+    /// allocation point (one fresh `!quantum.qubit`). The dialect verifier runs
+    /// inside the builder, so a malformed allocation cannot escape lowering
+    /// (issue #401, replacing the unregistered `test.qubit` op).
+    fn alloc_qubit(&self) -> Result<Operation<'c>, qd::BuildError> {
+        qd::alloc(self.context, 1, self.location)
     }
 
     fn lower_qec_construct(

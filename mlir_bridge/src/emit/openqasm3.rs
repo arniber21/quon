@@ -97,16 +97,13 @@ fn qubit_operands<'c, 'a>(operation: OperationRef<'c, 'a>) -> Vec<Value<'c, 'a>>
         .collect()
 }
 
-/// True iff `operation` allocates fresh qubits: no operands, ≥1 result, all
-/// results qubit-typed (the shape lowering's `test.qubit` / a future
-/// `qreg` op produces).
+/// True iff `operation` is the dynamic-IR qubit allocation op
+/// (`quantum.dynamic.alloc`). Allocation is recognized by typed operation
+/// semantics — the registered allocation interface — not by the generic
+/// "no operands, qubit results" shape, so a stray shape-compatible op can no
+/// longer be misread as an allocation (issue #401).
 fn is_allocation<'c, 'a>(operation: OperationRef<'c, 'a>) -> bool {
-    let results: Vec<_> = operation.results().collect();
-    operation.operand_count() == 0
-        && !results.is_empty()
-        && results
-            .iter()
-            .all(|r| quantum_circ::is_qubit_type(r.r#type()))
+    op_name(&operation) == quantum_dynamic::op::ALLOC
 }
 
 fn is_rotation(name: &str) -> bool {

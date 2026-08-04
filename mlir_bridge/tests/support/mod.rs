@@ -73,24 +73,17 @@ pub fn scratch_block<'c>(types: &[Type<'c>], location: Location<'c>) -> Block<'c
     Block::new(&args)
 }
 
-/// Appends a foreign op to `body` that produces one `!quantum.qubit`.
+/// Appends a verified `quantum.dynamic.alloc` op producing one fresh
+/// `!quantum.qubit` (issue #401 — replaces the unregistered `test.qubit`).
 pub fn append_foreign_qubit<'c: 'a, 'a, B: BlockLike<'c, 'a>>(
     context: &'c Context,
     body: &B,
     location: Location<'c>,
 ) -> Value<'c, 'a> {
     Value::from(
-        body.append_operation(generic_op(
-            context,
-            "test.qubit",
-            &[],
-            &[qc::qubit_type(context)],
-            &[],
-            vec![],
-            location,
-        ))
-        .result(0)
-        .expect("foreign qubit result"),
+        body.append_operation(qd::alloc(context, 1, location).expect("alloc op"))
+            .result(0)
+            .expect("alloc qubit result"),
     )
 }
 

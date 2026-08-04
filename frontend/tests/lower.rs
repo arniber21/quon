@@ -271,7 +271,7 @@ fn main(): Q<(Bit, Bit)> = run {
     // Dynamic IR is produced directly.
     assert!(text.contains("quantum.dynamic.unitary_region"), "{text}");
     assert_eq!(text.matches("quantum.dynamic.measure").count(), 2, "{text}");
-    assert!(text.contains("test.qubit"), "{text}");
+    assert!(text.contains("quantum.dynamic.alloc"), "{text}");
     // No staging ops survive lowering.
     for staging in [
         "quantum.circ.run",
@@ -307,7 +307,7 @@ fn main(): Q<Bit> = run {
     assert!(!text.contains("quantum.circ.cond_apply"), "{text}");
     assert!(!text.contains("quantum.circ.run"), "{text}");
 }
-/// `init_plus()` lowers to a fresh `test.qubit` allocation followed by an H
+/// `init_plus()` lowers to a fresh `quantum.dynamic.alloc` allocation followed by an H
 /// gate on that wire (issue #368). The prep gate threads the allocated qubit,
 /// producing a new SSA value returned from the run block.
 #[test]
@@ -319,7 +319,7 @@ fn main(): Q<Qubit> = run {
 }
 "#;
     let text = lower_text(src);
-    assert!(text.contains("test.qubit"), "missing allocation: {text}");
+    assert!(text.contains("quantum.dynamic.alloc"), "missing allocation: {text}");
     assert!(
         text.contains(r#"gate_name = "H""#),
         "missing H prep gate: {text}"
@@ -330,7 +330,7 @@ fn main(): Q<Qubit> = run {
     );
 }
 
-/// `init_one()` lowers to a fresh `test.qubit` allocation followed by an X
+/// `init_one()` lowers to a fresh `quantum.dynamic.alloc` allocation followed by an X
 /// gate on that wire (issue #368).
 #[test]
 fn init_one_lowers_to_allocation_then_x() {
@@ -341,7 +341,7 @@ fn main(): Q<Qubit> = run {
 }
 "#;
     let text = lower_text(src);
-    assert!(text.contains("test.qubit"), "missing allocation: {text}");
+    assert!(text.contains("quantum.dynamic.alloc"), "missing allocation: {text}");
     assert!(
         text.contains(r#"gate_name = "X""#),
         "missing X prep gate: {text}"
@@ -369,7 +369,7 @@ fn main(): Q<(Bit, Bit)> = run {
     let text = lower_text(src);
     // Two allocations, exactly one H gate (on q2's wire).
     assert_eq!(
-        text.matches("test.qubit").count(),
+        text.matches("quantum.dynamic.alloc").count(),
         2,
         "expected two allocations: {text}"
     );
@@ -395,7 +395,7 @@ fn main(): Q<Qubit> = run {
 }
 "#;
     let text = lower_text(src);
-    assert!(text.contains("test.qubit"), "missing allocation: {text}");
+    assert!(text.contains("quantum.dynamic.alloc"), "missing allocation: {text}");
     assert!(
         !text.contains(r#"gate_name = "H""#),
         "qubit() must not emit H: {text}"

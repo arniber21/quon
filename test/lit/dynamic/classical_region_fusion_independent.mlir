@@ -35,10 +35,10 @@ module {
   // CHECK: gate_name = "Z"
   // CHECK-NOT: "quantum.dynamic.if"
 
-  %m0 = "test.qubit"() : () -> !quantum.qubit
-  %m1 = "test.qubit"() : () -> !quantum.qubit
-  %q0 = "test.qubit"() : () -> !quantum.qubit
-  %q1 = "test.qubit"() : () -> !quantum.qubit
+  %m0 = "quantum.dynamic.alloc"() : () -> !quantum.qubit
+  %m1 = "quantum.dynamic.alloc"() : () -> !quantum.qubit
+  %q0 = "quantum.dynamic.alloc"() : () -> !quantum.qubit
+  %q1 = "quantum.dynamic.alloc"() : () -> !quantum.qubit
 
   %b1 = "quantum.dynamic.measure"(%m0) : (!quantum.qubit) -> !quantum.bit
   %b2 = "quantum.dynamic.measure"(%m1) : (!quantum.qubit) -> !quantum.bit

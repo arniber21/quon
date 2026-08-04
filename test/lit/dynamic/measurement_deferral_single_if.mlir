@@ -23,8 +23,8 @@ module {
     "quantum.circ.return"(%arg0) : (!quantum.qubit) -> ()
   }) {clifford = true, depth = "0", in_qubits = 1 : i64, out_qubits = 1 : i64, sym_name = "identity_1"} : () -> ()
 
-  %meas = "test.qubit"() : () -> !quantum.qubit
-  %tgt = "test.qubit"() : () -> !quantum.qubit
+  %meas = "quantum.dynamic.alloc"() : () -> !quantum.qubit
+  %tgt = "quantum.dynamic.alloc"() : () -> !quantum.qubit
 
   %b = "quantum.dynamic.measure"(%meas) : (!quantum.qubit) -> !quantum.bit
   %out = "quantum.dynamic.if"(%b, %tgt) ({
