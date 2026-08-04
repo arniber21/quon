@@ -17,6 +17,7 @@ use melior::{Context, ContextRef};
 use mlir_sys::{mlirOperationSetAttributeByName, mlirOperationSetOperand};
 use thiserror::Error;
 
+use crate::diagnostics::Diagnostics;
 use crate::dialect::{quantum_circ, quantum_dynamic};
 use crate::passes::qubit_wiring::{self, WireTracker};
 
@@ -512,6 +513,7 @@ fn route_block<'c, 'a>(
     cost: SabreCost,
     block: melior::ir::BlockRef<'c, 'a>,
     state: &mut RouteState<'c, 'a>,
+    diagnostics: &mut Diagnostics<'c>,
 ) {
     let mut op = block.first_operation();
     while let Some(current) = op {
@@ -537,12 +539,12 @@ fn route_block<'c, 'a>(
             break;
         }
         if name == quantum_dynamic::op::UNITARY_REGION {
-            recurse_region(context, target, cost, current, 0, state);
+            recurse_region(context, target, cost, current, 0, state, diagnostics);
             continue;
         }
         if name == quantum_dynamic::op::IF {
-            recurse_region(context, target, cost, current, 0, state);
-            recurse_region(context, target, cost, current, 1, state);
+            recurse_region(context, target, cost, current, 0, state, diagnostics);
+            recurse_region(context, target, cost, current, 1, state, diagnostics);
             continue;
         }
         if name != quantum_circ::op::GATE {
@@ -574,7 +576,7 @@ fn route_block<'c, 'a>(
         for (logical, _) in &qubits {
             if !state.layout.mapping.contains_key(logical) {
                 if let Err(error) = state.layout.assign(*logical, state.next_phys) {
-                    eprintln!("sabre-routing: {error}");
+                    diagnostics.error(current.location(), error.to_string());
                     return;
                 }
                 state.next_phys += 1;
@@ -599,7 +601,7 @@ fn route_block<'c, 'a>(
                 &mut state.wires,
                 &mut state.tracker,
             ) {
-                eprintln!("sabre-routing: {error}");
+                diagnostics.error(current.location(), error.to_string());
             }
         }
 
@@ -636,12 +638,13 @@ fn recurse_region<'c, 'a>(
     op: OperationRef<'c, 'a>,
     region_index: usize,
     state: &mut RouteState<'c, 'a>,
+    diagnostics: &mut Diagnostics<'c>,
 ) {
     let operand_roots = state.tracker.roots_for_operands(op);
     for root in &operand_roots {
         if !state.layout.mapping.contains_key(root) {
             if let Err(error) = state.layout.assign(*root, state.next_phys) {
-                eprintln!("sabre-routing: {error}");
+                diagnostics.error(op.location(), error.to_string());
                 return;
             }
             state.next_phys += 1;
@@ -660,7 +663,7 @@ fn recurse_region<'c, 'a>(
             state.wires.insert(*root, value);
         }
     }
-    route_block(context, target, cost, inner_block, state);
+    route_block(context, target, cost, inner_block, state, diagnostics);
     for (result, root) in qubit_wiring::qubit_results(op)
         .into_iter()
         .zip(operand_roots.iter())
@@ -675,6 +678,7 @@ fn route_module<'c, 'a>(
     target: &FixedTarget,
     cost: SabreCost,
     module: OperationRef<'c, 'a>,
+    diagnostics: &mut Diagnostics<'c>,
 ) {
     let Some(body) = module
         .region(0)
@@ -690,7 +694,7 @@ fn route_module<'c, 'a>(
     // just each named `quantum.circ.func`).
     let mut top_level_state = RouteState::new(target.num_qubits);
     top_level_state.tracker.seed_block_args(&body);
-    route_block(context, target, cost, body, &mut top_level_state);
+    route_block(context, target, cost, body, &mut top_level_state, diagnostics);
 
     // Each named `quantum.circ.func` is an independent circuit (its own qubit
     // register), so it gets a fresh `RouteState`. Post-inlining these are dead
@@ -710,21 +714,23 @@ fn route_module<'c, 'a>(
         };
         let mut state = RouteState::new(target.num_qubits);
         state.tracker.seed_block_args(&block);
-        route_block(context, target, cost, block, &mut state);
+        route_block(context, target, cost, block, &mut state, diagnostics);
     }
 }
 
-/// Runs SABRE routing on `module`.
+/// Runs SABRE routing on `module`, returning any error diagnostics.
 pub fn run_on_module<'c>(
     context: &'c Context,
     target: &BackendTarget,
     cost: SabreCost,
     module: &melior::ir::Module<'c>,
-) {
-    let Some(target) = target.fixed_target() else {
-        return;
-    };
-    route_module(context, target, cost, module.as_operation());
+) -> Diagnostics<'c> {
+    let mut diagnostics = Diagnostics::new();
+    if let Some(target) = target.fixed_target() {
+        route_module(context, target, cost, module.as_operation(), &mut diagnostics);
+    }
+    diagnostics.emit();
+    diagnostics
 }
 
 #[repr(align(8))]
@@ -759,11 +765,14 @@ impl<'c> RunExternalPass<'c> for SabreRouting {
             pass.signal_failure();
             return;
         }
-        let Some(target) = self.target.fixed_target() else {
-            return;
-        };
         let context = unsafe { &*(self.context as *const Context) };
-        route_module(context, target, self.cost, operation);
+        let mut diagnostics = Diagnostics::new();
+        if let Some(target) = self.target.fixed_target() {
+            route_module(context, target, self.cost, operation, &mut diagnostics);
+        }
+        if !diagnostics.emit() {
+            pass.signal_failure();
+        }
     }
 }
 

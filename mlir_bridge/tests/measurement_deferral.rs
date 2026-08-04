@@ -398,3 +398,61 @@ fn teleport_defers_both_measurements() {
     assert!(text.contains("CNOT"), "{text}");
     assert!(text.contains("CZ"), "{text}");
 }
+
+#[test]
+fn fails_closed_on_measure_missing_qubit() {
+    // Issue #391: a `quantum.dynamic.measure` built *without* its qubit operand
+    // (via the no-verifier `generic_op` helper) but still producing a classical
+    // bit, whose bit feeds a single `if`, is exactly the pattern `defer_module`
+    // routes into `defer_one`. `defer_one` then fails at `measure_op.operand(0)`
+    // — the pass must route that error through `Diagnostics` and fail closed
+    // instead of printing to stderr and continuing.
+    let context = dynamic_context();
+    let location = Location::unknown(&context);
+    let mut module = Module::new(location);
+    let body = module.body();
+
+    let q = append_foreign_qubit(&context, &body, location);
+    // Malformed measure: no qubit operand, yet it still yields a classical bit.
+    let measure = body.append_operation(support::generic_op(
+        &context,
+        qd::op::MEASURE,
+        &[],
+        &[qd::bit_type(&context)],
+        &[],
+        vec![],
+        location,
+    ));
+    let bit = Value::from(measure.result(0).unwrap());
+    // A well-formed `if` branching on that bit and threading `q`: this is the
+    // single-use pattern `defer_module` looks for, so it drives the malformed
+    // measure into `defer_one`.
+    body.append_operation(
+        qd::r#if(
+            &context,
+            bit,
+            &[q],
+            branch_with_gate(&context, location, "X"),
+            branch_body(&context, &[], location),
+            location,
+        )
+        .unwrap(),
+    );
+
+    let (result, messages) = support::run_pass_capturing_diagnostics(
+        &context,
+        &mut module,
+        measurement_deferral::create_pass(),
+        // Malformed measure: disable MLIR verification so the recorded failure
+        // is the pass's own logic, not the verifier rejecting the input.
+        false,
+    );
+    assert!(
+        result.is_err(),
+        "pass should fail closed on a measure missing its qubit"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("missing measured qubit")),
+        "expected the error routed through Diagnostics, got: {messages:?}"
+    );
+}

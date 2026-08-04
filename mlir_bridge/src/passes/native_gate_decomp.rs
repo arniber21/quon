@@ -18,6 +18,7 @@ use melior::{Context, ContextRef, IrRewriter};
 use mlir_sys::mlirOperationSetAttributeByName;
 use thiserror::Error;
 
+use crate::diagnostics::Diagnostics;
 use crate::dialect::quantum_circ::{self, attr};
 use crate::dialect::quantum_dynamic;
 
@@ -256,6 +257,7 @@ fn decompose_block<'c, 'a>(
     context: &'c Context,
     target: &FixedTarget,
     block: melior::ir::BlockRef<'c, 'a>,
+    diagnostics: &mut Diagnostics<'c>,
 ) {
     let mut op = block.first_operation();
     while let Some(current) = op {
@@ -263,20 +265,20 @@ fn decompose_block<'c, 'a>(
         let name = op_name(&current);
         if name == quantum_circ::op::GATE {
             if let Err(error) = decompose_gate(context, target, block, current) {
-                eprintln!("native-gate-decomp: {error}");
+                diagnostics.error(current.location(), error.to_string());
             }
         } else if name == quantum_dynamic::op::UNITARY_REGION {
             if let Ok(region) = current.region(0)
                 && let Some(inner_block) = region.first_block()
             {
-                decompose_block(context, target, inner_block);
+                decompose_block(context, target, inner_block, diagnostics);
             }
         } else if name == quantum_dynamic::op::IF {
             for region_index in 0..2 {
                 if let Ok(region) = current.region(region_index)
                     && let Some(inner_block) = region.first_block()
                 {
-                    decompose_block(context, target, inner_block);
+                    decompose_block(context, target, inner_block, diagnostics);
                 }
             }
         }
@@ -287,6 +289,7 @@ fn decompose_module<'c, 'a>(
     context: &'c Context,
     target: &FixedTarget,
     module: OperationRef<'c, 'a>,
+    diagnostics: &mut Diagnostics<'c>,
 ) {
     let Some(body) = module
         .region(0)
@@ -296,7 +299,7 @@ fn decompose_module<'c, 'a>(
         return;
     };
 
-    decompose_block(context, target, body);
+    decompose_block(context, target, body, diagnostics);
 
     let mut op = body.first_operation();
     while let Some(current) = op {
@@ -310,20 +313,23 @@ fn decompose_module<'c, 'a>(
         let Some(block) = region.first_block() else {
             continue;
         };
-        decompose_block(context, target, block);
+        decompose_block(context, target, block, diagnostics);
     }
 }
 
-/// Runs native gate decomposition on `module` using `target`.
+/// Runs native gate decomposition on `module` using `target`, returning any
+/// error diagnostics.
 pub fn run_on_module<'c>(
     context: &'c Context,
     target: &BackendTarget,
     module: &melior::ir::Module<'c>,
-) {
-    let Some(target) = target.fixed_target() else {
-        return;
-    };
-    decompose_module(context, target, module.as_operation());
+) -> Diagnostics<'c> {
+    let mut diagnostics = Diagnostics::new();
+    if let Some(target) = target.fixed_target() {
+        decompose_module(context, target, module.as_operation(), &mut diagnostics);
+    }
+    diagnostics.emit();
+    diagnostics
 }
 
 #[repr(align(8))]
@@ -356,11 +362,14 @@ impl<'c> RunExternalPass<'c> for NativeGateDecomp {
             pass.signal_failure();
             return;
         }
-        let Some(target) = self.target.fixed_target() else {
-            return;
-        };
         let context = unsafe { &*(self.context as *const Context) };
-        decompose_module(context, target, operation);
+        let mut diagnostics = Diagnostics::new();
+        if let Some(target) = self.target.fixed_target() {
+            decompose_module(context, target, operation, &mut diagnostics);
+        }
+        if !diagnostics.emit() {
+            pass.signal_failure();
+        }
     }
 }
 

@@ -403,3 +403,45 @@ fn zero_lookahead_disables_beta_effect() {
     );
     assert_eq!(first_cnot_phys_qubit(&full), 0);
 }
+
+#[test]
+fn fails_closed_when_circuit_exceeds_device_size() {
+    // Issue #391: routing a 2-qubit CNOT onto a 1-qubit device overflows the
+    // physical layout (`Layout::assign` rejects physical index 1, which is out
+    // of range for `num_qubits: 1`). The pass must route the error through
+    // `Diagnostics` (captured here) and fail closed instead of printing to
+    // stderr and continuing with a corrupt layout.
+    let context = context();
+    let target = backend::BackendTarget::fixed(
+        "one_qubit",
+        backend::FixedTarget {
+            num_qubits: 1,
+            topology: backend::ConnectivityGraph::all_to_all(1),
+            native_gates: vec![
+                backend::NativeGate::passthrough("cx", 2),
+                backend::NativeGate::passthrough("swap", 2),
+            ],
+            noise: backend::NoiseModel::default(),
+            meas_latency_us: 0.0,
+            supports_mid_circuit_meas: true,
+            supports_feed_forward: true,
+        },
+    );
+    let mut module = bell_module(&context);
+    let (result, messages) = support::run_pass_capturing_diagnostics(
+        &context,
+        &mut module,
+        sabre_routing::create_pass(target, SabreCost::default()),
+        true,
+    );
+    assert!(
+        result.is_err(),
+        "pass should fail closed when the circuit exceeds the device size"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("exceeds physical device size")),
+        "expected the error routed through Diagnostics, got: {messages:?}"
+    );
+}
