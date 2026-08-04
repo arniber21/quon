@@ -1,0 +1,184 @@
+---
+title: Choose your path
+description: Route yourself through Quon's documentation by what you want to do — learn the language, author language extensions, run algorithms, target a backend, or contribute.
+---
+
+import { Card, CardGrid, LinkButton } from '@astrojs/starlight/components';
+
+Quon's documentation is organized by *intent*, not by a single linear
+reading order. Pick the path that matches what you want to do today. Each path
+states who it is for, the prerequisite knowledge it assumes, the outcome you
+should reach, and the first readable or runnable page to open.
+
+The five paths map to five distinct kinds of work:
+
+| Path | Kind of work | Where it lives |
+| --- | --- | --- |
+| [First-time learner](#first-time-learner) | Conceptual language learning | Learning track |
+| [Algorithm researcher](#algorithm-researcher) | Task-oriented recipes | Cookbook |
+| [Backend / neutral-atom user](#backend--neutral-atom-user) | Backend operations | Guides |
+| [Language author](#language-author) | Reference lookup | Architecture + reference |
+| [Contributor](#contributor) | Contribution | Getting started + CONTRIBUTING |
+
+Conceptual learning teaches the ideas. Recipes are complete, runnable programs.
+Backend operations compile to a target and verify the result. Reference lookup
+is the contract for extending the compiler. Contribution is improving the
+codebase or docs. If you are unsure, start with the
+[First-time learner](#first-time-learner) path — every other path assumes some
+of what it teaches.
+
+<CardGrid>
+	<Card title="First-time learner" icon="book-open">
+		Learn typed quantum programming from first principles.
+		**Prerequisite:** none.
+		**Outcome:** read a circuit as a typed value `Circuit<n, m, d, C>` and a
+		qubit as a linear value, then compile the six-lesson track.
+		[Start the learning track ->](/learn/)
+	</Card>
+	<Card title="Algorithm researcher" icon="puzzle">
+		Run complete algorithms with verified resource bounds.
+		**Prerequisite:** quantum circuit basics; familiarity with Quon's type
+		system.
+		**Outcome:** reproduce Aer-verified results for Bell, QFT, QAOA, and
+		Shor programs.
+		[Open the cookbook ->](/cookbook/)
+	</Card>
+	<Card title="Backend / neutral-atom user" icon="setting">
+		Compile to a fixed gate-model or reconfigurable neutral-atom target.
+		**Prerequisite:** Quon basics; domain knowledge of your target hardware.
+		**Outcome:** emit OpenQASM 3 or a neutral-atom schedule and resource
+		report, and verify on Aer.
+		[Target a backend ->](/guides/backends/)
+	</Card>
+	<Card title="Language author" icon="wrench">
+		Extend the language or build compiler tooling.
+		**Prerequisite:** Rust proficiency; basic compiler and MLIR knowledge.
+		**Outcome:** locate each pipeline stage and its invariant, and build the
+		LSP, formatter, and linter.
+		[Read the architecture ->](/architecture/compiler-internals/)
+	</Card>
+	<Card title="Contributor" icon="github">
+		Improve the codebase or documentation.
+		**Prerequisite:** familiarity with Rust and the project guidelines.
+		**Outcome:** set up the Devbox environment and run the pre-PR gate
+		`just test-ci`.
+		[Set up a checkout ->](/getting-started/install/)
+	</Card>
+</CardGrid>
+
+## First-time learner
+
+You are new to quantum computing or to Quon and want to understand typed
+quantum programming from first principles. This is the conceptual learning
+path: it teaches the two load-bearing ideas — a circuit is a typed value and a
+qubit is a linear value — before any algorithm.
+
+- **Who it is for:** readers who want to *understand* rather than *run* first.
+- **Prerequisite:** none.
+- **Expected outcome:** you can read a `Circuit<n, m, d, C>` type signature,
+  explain why a qubit is consumed exactly once, and compile a small `.qn`
+  program to OpenQASM 3.
+- **Next page:** [Learning track](/learn/), then
+  [Lesson 1: Hello, Quon](/learn/01-hello-quon/).
+
+The track is deliberately ordered and self-contained; each lesson links to the
+next. When you finish, hand off to the [Language guide](/language/introduction/)
+for the same material at reference depth, and to the [cookbook](/cookbook/) for
+complete runnable programs.
+
+## Algorithm researcher
+
+You want to implement algorithms and verify their resource bounds. This is the
+recipes path: every page is a complete, CI-verified `.qn` program with its type
+contract, optimized MLIR, and a seeded Aer assertion.
+
+- **Who it is for:** readers who learn by running real programs.
+- **Prerequisite:** quantum circuit basics, plus familiarity with Quon's type
+  system from the [Language guide](/language/introduction/) or the learning
+  track above.
+- **Expected outcome:** you can reproduce a recipe's Aer-checked result and
+  adapt its `Circuit<n, m, d, C>` contract to your own algorithm.
+- **Next page:** [Cookbook](/cookbook/), starting with the
+  [Bell state](/cookbook/bell/) — the smallest circuit that exercises the full
+  pipeline.
+
+Recipes progress from a two-gate Bell pair through teleportation, phase
+kickback, Grover, QFT, Ising, QAOA, and Shor's quantum kernel, ending with the
+neutral-atom QAOA schedule. Each page states what the typechecker proves before
+a single gate is emitted.
+
+## Backend / neutral-atom user
+
+You want to compile a program for a specific hardware target. This is the
+backend operations path: fixed gate-model targets emit OpenQASM 3; neutral-atom
+targets emit a movement schedule and a resource report.
+
+- **Who it is for:** readers targeting real or simulated hardware.
+- **Prerequisite:** Quon basics, plus domain knowledge of your target's
+  connectivity, gate set, or neutral-atom geometry.
+- **Expected outcome:** you can pass a `--target` descriptor, emit the right
+  artifact, and run the OpenQASM path on Qiskit Aer.
+- **Next page:** [Backends and verification](/guides/backends/), then the
+  [Neutral-atom model](/architecture/na-model/) for the target schema.
+
+### Setup and Aer flows
+
+The first-run setup and Aer verification workflows are tracked separately
+rather than restated here, so the orientation cannot drift from the
+implementation:
+
+- First-run validation and `devbox run --` recovery live in
+  [#373](https://github.com/arniber21/quon/issues/373) — make the first
+  validation command recoverable outside a Devbox shell.
+- Aer bridge compiler discovery and the missing-dependency diagnostic live in
+  [#375](https://github.com/arniber21/quon/issues/375) — make Aer verification
+  discover local Quon builds and environments.
+
+For the current, stable commands, see [Install Quon](/getting-started/install/)
+and [Quickstart](/getting-started/quickstart/). The neutral-atom fault-tolerant
+demo in [NA FT demo](/guides/na-ft-demo/) walks the full NA path end to end.
+
+## Language author
+
+You will extend the language or build compiler tooling — a new pass, a dialect
+op, an editor integration. This is the reference lookup path: it points at the
+stage that owns each invariant and the ADR that records *why*.
+
+- **Who it is for:** compiler and tooling developers.
+- **Prerequisite:** Rust proficiency; basic compiler and MLIR knowledge.
+- **Expected outcome:** you can locate the module responsible for a pipeline
+  stage, read its ADR, and build the LSP, formatter, and linter from source.
+- **Next page:** [Compiler internals](/architecture/compiler-internals/) for the
+  pipeline, then [Developer tooling](/guides/tooling/) for the editor stack.
+
+For the authoritative stage list and CLI flags, see the
+[compiler pipeline reference](/reference/compiler/) and the
+[`quonc` CLI reference](/reference/quonc/). The [design philosophy](/why-quon/philosophy/)
+page records the load-bearing ideas the architecture preserves.
+
+## Contributor
+
+You want to improve the codebase or the documentation. This is the contribution
+path: it gets you to a working checkout and the pre-PR gate.
+
+- **Who it is for:** anyone improving Quon.
+- **Prerequisite:** familiarity with Rust and the project guidelines in
+  [CONTRIBUTING.md](https://github.com/arniber21/quon/blob/main/CONTRIBUTING.md).
+- **Expected outcome:** you can run `just test-ci` green against a Devbox
+  checkout and open a stacked PR with Graphite.
+- **Next page:** [Install Quon](/getting-started/install/) for the Devbox setup,
+  then
+  [CONTRIBUTING.md](https://github.com/arniber21/quon/blob/main/CONTRIBUTING.md)
+  for the daily workflow and branch policy.
+
+The contributor first-run recovery path — making `just` discoverable outside a
+Devbox shell — is tracked in
+[#373](https://github.com/arniber21/quon/issues/373). Agent-facing validation
+and code-quality rules live in the
+[validation guide](https://github.com/arniber21/quon/blob/main/docs/agents/validation.md)
+and
+[code-quality guide](https://github.com/arniber21/quon/blob/main/docs/agents/code-quality.md).
+
+<LinkButton href="/getting-started/quickstart/" variant="primary">
+  Skip ahead to the quickstart
+</LinkButton>

@@ -6,10 +6,14 @@ hero:
   title: Quon
   tagline: A Rust quantum compiler toolkit for typed quantum programs, backend-aware lowering, OpenQASM 3 emission, and neutral-atom schedule/resource artifacts.
   actions:
+    - text: Choose your path
+      link: /getting-started/choose-your-path/
+      icon: right-arrow
+      variant: primary
     - text: Run the quickstart
       link: /getting-started/quickstart/
       icon: right-arrow
-      variant: primary
+      variant: minimal
     - text: Read the language guide
       link: /language/introduction/
       icon: right-arrow
@@ -49,28 +53,32 @@ The return type `Circuit<2, 2, 2, Clifford>` is a contract: two qubits in, two
 out, depth exactly two, Clifford class. The compiler checks that `H` followed by
 `CNOT` satisfies all four parameters before it emits a single line of OpenQASM 3.
 
+## Choose your path
+
+Route yourself by what you want to do. Each path states its prerequisite,
+expected outcome, and next page on the
+[orientation page](/getting-started/choose-your-path/).
+
 <CardGrid>
-	<Card title="Learn the language" icon="book-open">
-		Linear qubit types, the `Circuit<n, m, d, C>` contract, the Quantum
-		Monad, classical control, and parametric circuits — explained from first
-		principles.
-		[Start the guide ->](/language/introduction/)
+	<Card title="First-time learner" icon="book-open">
+		Learn typed quantum programming from first principles — no prerequisite.
+		[Start the learning track ->](/getting-started/choose-your-path/#first-time-learner)
 	</Card>
-	<Card title="Try the quickstart" icon="rocket">
-		Compile a Bell pair to OpenQASM 3, sample it through Qiskit Aer, and emit
-		a neutral-atom schedule — in four commands.
-		[Run it ->](/getting-started/quickstart/)
+	<Card title="Algorithm researcher" icon="puzzle">
+		Run complete, Aer-verified algorithms with checked resource bounds.
+		[Open the cookbook ->](/getting-started/choose-your-path/#algorithm-researcher)
 	</Card>
-	<Card title="Read the architecture" icon="setting">
-		The compiler pipeline from source text to backend artifact: parsing,
-		typechecking, MLIR lowering, optimization passes, and target-specific
-		emission.
-		[See the pipeline ->](/architecture/compiler-internals/)
+	<Card title="Backend / neutral-atom user" icon="setting">
+		Compile to OpenQASM 3 or a neutral-atom schedule and resource report.
+		[Target a backend ->](/getting-started/choose-your-path/#backend--neutral-atom-user)
 	</Card>
-	<Card title="Explore the cookbook" icon="puzzle">
-		Working `.qn` programs for Bell pairs, teleportation, phase estimation,
-		QEC blocks, and neutral-atom scheduling — each with compiler output.
-		[Browse recipes ->](/cookbook/)
+	<Card title="Language author" icon="wrench">
+		Extend the compiler or build the LSP, formatter, and linter.
+		[Read the architecture ->](/getting-started/choose-your-path/#language-author)
+	</Card>
+	<Card title="Contributor" icon="github">
+		Improve the codebase or docs against the pre-PR gate.
+		[Set up a checkout ->](/getting-started/choose-your-path/#contributor)
 	</Card>
 </CardGrid>
 
