@@ -12,6 +12,8 @@ hero:
       variant: primary
     - text: Run the quickstart
       link: /getting-started/quickstart/
+    - text: Install Quon
+      link: /getting-started/install/
       icon: right-arrow
       variant: minimal
     - text: Read the language guide
@@ -85,6 +87,33 @@ expected outcome, and next page on the
 	<Card title="Backend / neutral-atom user" icon="setting">
 		Compile to OpenQASM 3 or a neutral-atom schedule and resource report.
 		[Target a backend ->](/getting-started/choose-your-path/#backend--neutral-atom-user)
+	<Card title="Install Quon" icon="setting">
+		Set up the Rust toolchain, LLVM/MLIR 22, and Z3 with Devbox or system
+		packages, then build the `quonc` compiler.
+		[Install ->](/getting-started/install/)
+	</Card>
+	<Card title="Run the quickstart" icon="rocket">
+		Compile a checked-in Bell pair to OpenQASM 3. Aer sampling and
+		neutral-atom emission are optional follow-ons with their own
+		prerequisites.
+		[Run it ->](/getting-started/quickstart/)
+	</Card>
+	<Card title="Your second program" icon="right-arrow">
+		Teleportation with `QReg` destructuring, the Quantum Monad,
+		measurement, and classical feed-forward control.
+		[Read it ->](/getting-started/second-program/)
+	</Card>
+	<Card title="Learn the language" icon="book-open">
+		Linear qubit types, the `Circuit<n, m, d, C>` contract, the Quantum
+		Monad, classical control, and parametric circuits — explained from first
+		principles.
+		[Start the guide ->](/language/introduction/)
+	</Card>
+	<Card title="Read the architecture" icon="setting">
+		The compiler pipeline from source text to backend artifact: parsing,
+		typechecking, MLIR lowering, optimization passes, and target-specific
+		emission.
+		[See the pipeline ->](/architecture/compiler-internals/)
 	</Card>
 	<Card title="Language author" icon="wrench">
 		Extend the compiler or build the LSP, formatter, and linter.
