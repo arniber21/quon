@@ -5,7 +5,7 @@
 
 use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
-use mlir_bridge::dialect::depth::DepthExpr;
+use quon_core::DepthExpr;
 
 /// A lowercase identifier — never numeric, never an operator token, so it always
 /// parses back as a `Var`.
@@ -32,12 +32,12 @@ fn generate(u: &mut Unstructured, depth: u32) -> arbitrary::Result<DepthExpr> {
     Ok(match u.int_in_range::<u8>(0..=4)? {
         0 => DepthExpr::Nat(u64::arbitrary(u)?),
         1 => DepthExpr::Var(ident(u)?),
-        2 => generate(u, depth - 1)?.plus(generate(u, depth - 1)?),
+        2 => generate(u, depth - 1)?.seq(generate(u, depth - 1)?),
         3 => DepthExpr::Mul(
             Box::new(generate(u, depth - 1)?),
             Box::new(generate(u, depth - 1)?),
         ),
-        _ => generate(u, depth - 1)?.max_with(generate(u, depth - 1)?),
+        _ => generate(u, depth - 1)?.par(generate(u, depth - 1)?),
     })
 }
 

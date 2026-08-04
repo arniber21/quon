@@ -102,3 +102,28 @@ jobs:
 
       - name: CI tooling gates (Justfile)
         run: devbox run -- just ci-tooling
+
+  fuzz:
+    name: fuzz build (mlir_bridge)
+    runs-on: ubuntu-latest
+    # Allow cold Devbox/Nix LLVM cache fill; warm runs stay well under this.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Devbox toolchain
+        uses: jetify-com/devbox-install-action@v0.12.0
+        with:
+          enable-cache: true
+
+      # Fuzz targets need nightly (libfuzzer-sys); the stable workspace build
+      # does not. Detached manifest at mlir_bridge/fuzz/Cargo.toml (#410).
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fuzz
+          prefix-key: nix-${{ hashFiles('devbox.lock') }}
+
+      - name: CI fuzz build (Justfile)
+        run: devbox run -- just ci-fuzz
