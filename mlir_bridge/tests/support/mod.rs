@@ -21,6 +21,7 @@ use mlir_bridge::dialect::quantum_dynamic as qd;
 use quon_core::DepthExpr;
 
 /// A context with the `quantum.circ` dialect registered.
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn context() -> Context {
     let context = Context::new();
     qc::register_dialect(&context);
@@ -28,6 +29,7 @@ pub fn context() -> Context {
 }
 
 /// A context with both `quantum.circ` and `quantum.dynamic` registered.
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn dynamic_context() -> Context {
     let context = Context::new();
     qc::register_dialect(&context);
@@ -35,39 +37,47 @@ pub fn dynamic_context() -> Context {
     context
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn i64_attr(context: &Context, value: i64) -> Attribute<'_> {
     IntegerAttribute::new(IntegerType::new(context, 64).into(), value).into()
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn str_attr<'c>(context: &'c Context, value: &str) -> Attribute<'c> {
     StringAttribute::new(context, value).into()
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn bool_attr(context: &Context, value: bool) -> Attribute<'_> {
     BoolAttribute::new(context, value).into()
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn i32_attr(context: &Context, value: i32) -> Attribute<'_> {
     IntegerAttribute::new(IntegerType::new(context, 32).into(), i64::from(value)).into()
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn f64_attr(context: &Context, value: f64) -> Attribute<'_> {
     let float_type = Type::parse(context, "f64").unwrap_or_else(|| Type::none(context));
     FloatAttribute::new(context, float_type, value).into()
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn f32_attr(context: &Context, value: f64) -> Attribute<'_> {
     let float_type = Type::parse(context, "f32").unwrap_or_else(|| Type::none(context));
     FloatAttribute::new(context, float_type, value).into()
 }
 
 /// A serialized depth attribute (a string, per ADR-0002).
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn depth_attr<'c>(context: &'c Context, depth: &DepthExpr) -> Attribute<'c> {
     str_attr(context, &depth.to_sexpr())
 }
 
 /// A detached block whose arguments source SSA values of the requested types.
 /// Keep the returned block alive for as long as the values are used.
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn scratch_block<'c>(types: &[Type<'c>], location: Location<'c>) -> Block<'c> {
     let args: Vec<(Type, Location)> = types.iter().map(|t| (*t, location)).collect();
     Block::new(&args)
@@ -75,6 +85,8 @@ pub fn scratch_block<'c>(types: &[Type<'c>], location: Location<'c>) -> Block<'c
 
 /// Appends a verified `quantum.dynamic.alloc` op producing one fresh
 /// `!quantum.qubit` (issue #401 — replaces the unregistered `test.qubit`).
+/// Appends a foreign op to `body` that produces one `!quantum.qubit`.
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn append_foreign_qubit<'c: 'a, 'a, B: BlockLike<'c, 'a>>(
     context: &'c Context,
     body: &B,
@@ -88,12 +100,14 @@ pub fn append_foreign_qubit<'c: 'a, 'a, B: BlockLike<'c, 'a>>(
 }
 
 /// The module's top-level region — the linearity scope for dynamic tests.
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn module_region<'c>(module: &'c Module<'c>) -> melior::ir::RegionRef<'c, 'c> {
     module.as_operation().region(0).expect("module region")
 }
 
 /// Builds an op in MLIR's generic form **without** running the dialect verifier.
 /// Used to construct deliberately-malformed ops for verifier tests.
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn generic_op<'c>(
     context: &'c Context,
     name: &str,
@@ -117,6 +131,7 @@ pub fn generic_op<'c>(
 }
 
 /// A region containing a single empty block — a minimal well-formed body.
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn empty_body() -> Region<'static> {
     let region = Region::new();
     region.append_block(Block::new(&[]));
@@ -124,6 +139,7 @@ pub fn empty_body() -> Region<'static> {
 }
 
 /// Builds `func @main(%q: !qubit) -> !qubit { %r = gate "H" %q; return %r }`.
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn bell_like_module(context: &Context) -> Module<'_> {
     let location = Location::unknown(context);
     let qubit = qc::qubit_type(context);

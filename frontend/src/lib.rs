@@ -1,9 +1,6 @@
 //! Quon frontend — lexer, parser, type checker, and AST→IR lowering.
-//!
-//! Stub implementations in this crate are expanded in issues #5–#16.
 
 #![allow(
-    dead_code,
     clippy::new_without_default,
     clippy::large_enum_variant,
     // `TypeError` carries resolved `Ty`s (with symbolic `Circuit`/`QReg` dimensions) for

@@ -117,8 +117,6 @@ fn is_rotation(name: &str) -> bool {
 struct Reifier<'t> {
     qubits: HashMap<usize, QubitId>,
     bits: HashMap<usize, BitId>,
-    num_qubits: usize,
-    num_bits: usize,
     next_qubit: usize,
     next_bit: usize,
     native: HashSet<String>,
@@ -337,8 +335,6 @@ pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitErr
     let mut reifier = Reifier {
         qubits: HashMap::new(),
         bits: HashMap::new(),
-        num_qubits,
-        num_bits,
         next_qubit: 0,
         next_bit: 0,
         native: target

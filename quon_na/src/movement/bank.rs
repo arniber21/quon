@@ -7,10 +7,9 @@
 //! - [`ensure_interaction_pairs`] is idempotent: if a bank already exists with
 //!   enough pairs, it returns them without appending.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::layout::{AtomSite, NeutralAtomLayout, Position, SiteId, TrapBinding};
-use crate::movement::geometry::POS_EPS_UM;
 use crate::movement::types::{
     BANK_ISOLATION_EPS_UM, InteractionPair, MovementParams, MovementPlanError,
 };
@@ -231,14 +230,3 @@ pub(crate) fn free_interaction_pairs(
         .collect()
 }
 
-// Unused but kept for parity with original code's internal helpers.
-#[allow(dead_code)]
-pub(crate) fn _pos_eps() -> f64 {
-    POS_EPS_UM
-}
-
-// Re-export BTreeSet for callers that need the OrderedF64 type.
-#[allow(dead_code)]
-pub(crate) fn _ordered_f64_set() -> BTreeSet<OrderedF64> {
-    BTreeSet::new()
-}

@@ -10,14 +10,17 @@ use quon_lsp::intel::{
     semantic_tokens_full, signature_help_at,
 };
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 fn fixture_url() -> Url {
     Url::parse("file:///test.qn").expect("url")
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 fn analyze_fixture(src: &str) -> frontend::AnalysisResult {
     analyze(src)
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn position_after_marker(src: &str) -> Position {
     let offset = cursor_at(src, "/*cursor*/");
     let before = src[..offset].replace("/*cursor*/", "");
@@ -32,10 +35,12 @@ pub fn position_after_marker(src: &str) -> Position {
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn src_without_marker(src: &str) -> String {
     src.replace("/*cursor*/", "")
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn hover_markdown(src: &str) -> Option<String> {
     let clean = src_without_marker(src);
     let pos = position_after_marker(src);
@@ -47,6 +52,7 @@ pub fn hover_markdown(src: &str) -> Option<String> {
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn definition_at_marker(src: &str) -> Option<tower_lsp::lsp_types::Range> {
     let clean = src_without_marker(src);
     let pos = position_after_marker(src);
@@ -59,6 +65,7 @@ pub fn definition_at_marker(src: &str) -> Option<tower_lsp::lsp_types::Range> {
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn references_at_marker(
     src: &str,
     include_declaration: bool,
@@ -70,6 +77,7 @@ pub fn references_at_marker(
     references_at(&result.intelligence, &uri, pos, include_declaration)
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn highlights_at_marker(src: &str) -> Option<Vec<tower_lsp::lsp_types::DocumentHighlight>> {
     let clean = src_without_marker(src);
     let pos = position_after_marker(src);
@@ -77,6 +85,7 @@ pub fn highlights_at_marker(src: &str) -> Option<Vec<tower_lsp::lsp_types::Docum
     document_highlight_at(&result.intelligence, pos)
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn prepare_rename_at_marker(
     src: &str,
 ) -> tower_lsp::jsonrpc::Result<Option<tower_lsp::lsp_types::PrepareRenameResponse>> {
@@ -86,6 +95,7 @@ pub fn prepare_rename_at_marker(
     prepare_rename_at(&result.intelligence, pos)
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn rename_at_marker(
     src: &str,
     new_name: &str,
@@ -97,6 +107,7 @@ pub fn rename_at_marker(
     rename_at(&result.intelligence, &uri, pos, new_name)
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn completion_items(src: &str) -> Vec<CompletionItem> {
     let clean = src_without_marker(src);
     let pos = position_after_marker(src);
@@ -108,10 +119,12 @@ pub fn completion_items(src: &str) -> Vec<CompletionItem> {
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn completion_labels(src: &str) -> Vec<String> {
     completion_items(src).into_iter().map(|i| i.label).collect()
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn signature_help_at_marker(src: &str) -> Option<SignatureHelp> {
     let clean = src_without_marker(src);
     let pos = position_after_marker(src);
@@ -119,6 +132,7 @@ pub fn signature_help_at_marker(src: &str) -> Option<SignatureHelp> {
     signature_help_at(&result.intelligence, pos)
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn semantic_token_count(src: &str) -> usize {
     let result = analyze_fixture(src);
     let tokens = semantic_tokens_full(
@@ -135,6 +149,7 @@ pub fn semantic_token_count(src: &str) -> usize {
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn document_symbol_names(src: &str) -> Vec<String> {
     let result = analyze_fixture(src);
     let resp = document_symbols(&result.intelligence).expect("document symbols");
@@ -148,6 +163,7 @@ pub fn document_symbol_names(src: &str) -> Vec<String> {
     names
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 fn collect_symbol_names(syms: &[tower_lsp::lsp_types::DocumentSymbol], out: &mut Vec<String>) {
     for s in syms {
         out.push(s.name.clone());
@@ -157,6 +173,7 @@ fn collect_symbol_names(syms: &[tower_lsp::lsp_types::DocumentSymbol], out: &mut
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn folding_range_count(src: &str) -> usize {
     let result = analyze_fixture(src);
     folding_ranges(&result.intelligence)
@@ -164,6 +181,7 @@ pub fn folding_range_count(src: &str) -> usize {
         .unwrap_or(0)
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn inlay_hint_labels(src: &str) -> Vec<String> {
     let result = analyze_fixture(src);
     let range = full_document_range(&result.intelligence.src);
@@ -179,7 +197,7 @@ pub fn inlay_hint_labels(src: &str) -> Vec<String> {
         .collect()
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // shared test helper — used by integration tests that need a full document range
 pub fn full_range(src: &str) -> Range {
     full_document_range(src)
 }

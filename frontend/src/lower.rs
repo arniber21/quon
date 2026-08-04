@@ -99,8 +99,6 @@ pub struct LoweringCtx<'c> {
 struct FuncMeta {
     depth: DepthExpr,
     clifford: bool,
-    in_qubits: i64,
-    out_qubits: i64,
 }
 
 struct GateSpec {
@@ -149,7 +147,7 @@ impl<'c> LoweringCtx<'c> {
                 && let Ok(ret_ty @ Ty::Circuit { .. }) = self.checker.resolve_type(ret)
             {
                 if params.is_empty() {
-                    let Ty::Circuit { n, m, d, c } = ret_ty else {
+                    let Ty::Circuit { n: _, m: _, d, c } = ret_ty else {
                         unreachable!("matched above");
                     };
                     self.func_meta.insert(
@@ -157,8 +155,6 @@ impl<'c> LoweringCtx<'c> {
                         FuncMeta {
                             depth: d,
                             clifford: matches!(c, CliffordClass::Clifford),
-                            in_qubits: const_width(&n, "in_qubits")?,
-                            out_qubits: const_width(&m, "out_qubits")?,
                         },
                     );
                     Arc::make_mut(&mut self.bodies).insert(name.0.clone(), body.clone());
@@ -287,8 +283,6 @@ impl<'c> LoweringCtx<'c> {
             FuncMeta {
                 depth: depth.clone(),
                 clifford,
-                in_qubits,
-                out_qubits,
             },
         );
         Arc::make_mut(&mut self.bodies).insert(name.to_string(), body.clone());

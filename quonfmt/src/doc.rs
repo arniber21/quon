@@ -1,7 +1,5 @@
 //! Wadler-style pretty-printing algebra with width-aware layout.
 
-#![allow(dead_code)]
-
 #[derive(Debug, Clone)]
 pub enum Doc {
     Nil,
@@ -12,6 +10,10 @@ pub enum Doc {
     Group(Box<Doc>),
 }
 
+// `Hard` and `Flat` are part of the Wadler break algebra; the layout engine
+// handles them, but the current printer only emits `Soft` breaks. Kept so the
+// algebra stays complete for future formatter rules.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BreakKind {
     /// Emit a space when flat, newline when broken.
@@ -53,15 +55,21 @@ impl Doc {
     pub fn soft_break() -> Self {
         Self::Break(BreakKind::Soft)
     }
-
+    /// Part of the Wadler break algebra; unused by the current printer but kept
+    /// for completeness. See [`BreakKind`] for rationale.
+    #[allow(dead_code)]
     pub fn hard_break() -> Self {
         Self::Break(BreakKind::Hard)
     }
-
+    /// Part of the Wadler break algebra; unused by the current printer but kept
+    /// for completeness. See [`BreakKind`] for rationale.
+    #[allow(dead_code)]
     pub fn flat_break() -> Self {
         Self::Break(BreakKind::Flat)
     }
-
+    /// Part of the Wadler break algebra; unused by the current printer but kept
+    /// for completeness. See [`BreakKind`] for rationale.
+    #[allow(dead_code)]
     pub fn space() -> Self {
         Self::flat_break()
     }

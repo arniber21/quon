@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
 use chumsky::span::SimpleSpan;
 use quon_core::DepthExpr;
 use thiserror::Error;
@@ -390,6 +391,7 @@ fn literal_usize(expr: &Expr) -> Option<usize> {
     }
 }
 
+#[cfg(test)]
 fn no_span() -> SimpleSpan {
     SimpleSpan::from(0..0)
 }
