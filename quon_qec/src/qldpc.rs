@@ -17,6 +17,8 @@
 //!
 //! Unsupported features fail clearly with actionable diagnostics.
 
+#[cfg(feature = "flux")]
+use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -321,36 +323,46 @@ pub fn toy_5qubit_graph() -> ParityCheckGraph {
 }
 
 /// A simple toy repetition code for testing.
-pub fn toy_repetition_graph(distance: u32) -> ParityCheckGraph {
-    // A repetition code needs `distance >= 1` so `distance - 1` (the check
-    // count) cannot underflow. The degenerate `distance == 0` case is an
-    // empty code; handling it here keeps the subtraction total *and* lets
-    // Flux prove the arithmetic is safe (it sees `distance >= 1` past this
-    // guard).
+///
+/// A repetition code of distance `d` carries `d` data qubits and `d − 1`
+/// parity checks. The `d − 1` check count underflows for `d == 0`, so this
+/// constructor requires a valid nonzero distance and returns
+/// [`QldpcError::InvalidDistance`] for `d == 0` rather than building a
+/// degenerate empty graph. Overflow checking is enabled so Flux proves the
+/// `d − 1` subtraction (and the per-check `i + 1` index) never underflows or
+/// overflows on the `Ok` path — there is no `trusted` body and no empty
+/// `Result<_, _>` spec; the contract is discharged by the body-level
+/// arithmetic checks under the `distance >= 1` guard.
+#[cfg_attr(feature = "flux", opts(check_overflow = "strict"))]
+pub fn toy_repetition_graph(distance: u32) -> Result<ParityCheckGraph, QldpcError> {
+    // `distance - 1` (the check count) underflows for `distance == 0`. Reject
+    // the invalid distance so Flux sees `distance >= 1` on the `Ok` path and
+    // the subtraction is total.
     if distance == 0 {
-        return ParityCheckGraph {
-            n_data: 0,
-            n_checks: 0,
-            distance: 0,
-            checks: Vec::new(),
-        };
+        return Err(QldpcError::InvalidDistance { distance: 0 });
     }
     let n_data = distance;
     let n_checks = distance - 1;
     let mut checks = Vec::new();
-    for i in 0..n_checks {
+    // A `while` loop (rather than `for i in 0..n_checks`) exposes the
+    // `i < n_checks` bound to Flux so strict overflow checking can prove the
+    // per-check `i + 1` data-qubit index never overflows (`n_checks = d - 1`,
+    // so `i + 1 <= d - 1 < u32::MAX`).
+    let mut i = 0u32;
+    while i < n_checks {
         checks.push(ParityCheck {
             check_id: i,
             basis: CheckBasis::Z,
             data_qubits: vec![i, i + 1],
         });
+        i += 1;
     }
-    ParityCheckGraph {
+    Ok(ParityCheckGraph {
         n_data,
         n_checks,
         distance,
         checks,
-    }
+    })
 }
 
 /// Unsupported features that fail clearly.
@@ -379,11 +391,22 @@ mod tests {
 
     #[test]
     fn toy_repetition_graph_validates() {
-        let graph = toy_repetition_graph(5);
+        let graph = toy_repetition_graph(5).expect("valid distance");
         graph.validate().expect("valid");
         assert_eq!(graph.n_data, 5);
         assert_eq!(graph.n_checks, 4);
         assert_eq!(graph.max_check_weight(), 2);
+    }
+
+    #[test]
+    fn toy_repetition_graph_rejects_zero_distance() {
+        // distance == 0 would underflow the `distance - 1` check count; the
+        // constructor must reject it with InvalidDistance rather than build a
+        // degenerate graph (issue #412).
+        assert_eq!(
+            toy_repetition_graph(0),
+            Err(QldpcError::InvalidDistance { distance: 0 })
+        );
     }
 
     #[test]
@@ -455,7 +478,7 @@ mod tests {
 
     #[test]
     fn resource_estimate_repetition() {
-        let graph = toy_repetition_graph(5);
+        let graph = toy_repetition_graph(5).expect("valid distance");
         let est = QldpcResourceEstimate::estimate(&graph, 2, 5).expect("estimate");
         assert_eq!(est.max_check_weight, 2);
         assert_eq!(est.edge_count, 8); // 4 checks × 2 data
@@ -479,7 +502,7 @@ mod tests {
 
     #[test]
     fn syndrome_rounds_generate_correct_cnots() {
-        let graph = toy_repetition_graph(5);
+        let graph = toy_repetition_graph(5).expect("valid distance");
         let rounds = generate_syndrome_rounds(&graph, 2).expect("rounds");
         assert_eq!(rounds.len(), 2);
         // Each round has 4 checks × 2 data = 8 CNOTs
