@@ -14,6 +14,7 @@ use melior::{Context, ContextRef, IrRewriter};
 use quon_core::DepthExpr;
 use thiserror::Error;
 
+use crate::diagnostics::Diagnostics;
 use crate::dialect::{quantum_circ, quantum_dynamic};
 use crate::passes::qubit_wiring::{self, WireTracker};
 
@@ -365,7 +366,11 @@ fn defer_one<'c, 'a>(
     Ok(())
 }
 
-fn defer_module<'c, 'a>(context: &'c Context, module: OperationRef<'c, 'a>) {
+fn defer_module<'c, 'a>(
+    context: &'c Context,
+    module: OperationRef<'c, 'a>,
+    diagnostics: &mut Diagnostics<'c>,
+) {
     let Some(body) = module
         .region(0)
         .ok()
@@ -396,14 +401,20 @@ fn defer_module<'c, 'a>(context: &'c Context, module: OperationRef<'c, 'a>) {
             continue;
         };
         if let Err(error) = defer_one(context, body, measure_op, if_op) {
-            eprintln!("measurement-deferral: {error}");
+            diagnostics.error(measure_op.location(), error.to_string());
         }
     }
 }
 
-/// Runs measurement deferral on `module`.
-pub fn run_on_module<'c>(context: &'c Context, module: &melior::ir::Module<'c>) {
-    defer_module(context, module.as_operation());
+/// Runs measurement deferral on `module`, returning any error diagnostics.
+pub fn run_on_module<'c>(
+    context: &'c Context,
+    module: &melior::ir::Module<'c>,
+) -> Diagnostics<'c> {
+    let mut diagnostics = Diagnostics::new();
+    defer_module(context, module.as_operation(), &mut diagnostics);
+    diagnostics.emit();
+    diagnostics
 }
 
 #[repr(align(8))]
@@ -433,7 +444,11 @@ impl<'c> RunExternalPass<'c> for MeasurementDeferral {
             return;
         }
         let context = unsafe { &*(self.context as *const Context) };
-        defer_module(context, operation);
+        let mut diagnostics = Diagnostics::new();
+        defer_module(context, operation, &mut diagnostics);
+        if !diagnostics.emit() {
+            pass.signal_failure();
+        }
     }
 }
 

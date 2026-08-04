@@ -2,6 +2,10 @@
 
 #![allow(dead_code)]
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use melior::pass::{Pass, PassManager};
 use melior::Context;
 use melior::ir::attribute::{BoolAttribute, FloatAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationBuilder;
@@ -158,4 +162,31 @@ pub fn bell_like_module(context: &Context) -> Module<'_> {
     let module = Module::new(location);
     module.body().append_operation(func);
     module
+}
+
+/// Runs `pass` on `module` through a fresh pass manager, capturing any
+/// diagnostics emitted via `mlirEmitError` (i.e. via `Diagnostics::emit`)
+/// into the returned vec.
+///
+/// `verify` toggles the pass manager's built-in verifier. Disable it for
+/// passes run on deliberately-malformed IR so the recorded failure is the
+/// pass's own logic, not MLIR verification rejecting the input up front.
+pub fn run_pass_capturing_diagnostics(
+    context: &Context,
+    module: &mut Module<'_>,
+    pass: Pass,
+    verify: bool,
+) -> (Result<(), melior::Error>, Vec<String>) {
+    let captured: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let captured_handle = captured.clone();
+    let id = context.attach_diagnostic_handler(move |diagnostic| {
+        captured_handle.borrow_mut().push(diagnostic.to_string());
+        true
+    });
+    let pass_manager = PassManager::new(context);
+    pass_manager.enable_verifier(verify);
+    pass_manager.add_pass(pass);
+    let result = pass_manager.run(module);
+    context.detach_diagnostic_handler(id);
+    (result, captured.borrow().clone())
 }

@@ -272,3 +272,56 @@ fn fuses_adjacent_ifs_on_disjoint_qubits_with_independent_conditions() {
     assert!(text.contains("gate_name = \"X\""), "{text}");
     assert!(text.contains("gate_name = \"Z\""), "{text}");
 }
+
+#[test]
+fn fails_closed_on_if_pair_missing_condition() {
+    // Issue #391: two adjacent `quantum.dynamic.if` ops built *without* their
+    // condition operand (via the no-verifier `generic_op` helper) make
+    // `fuse_pair_independent` fail at `first.operand(0)`. The pass must route
+    // that build error through `Diagnostics` and fail closed instead of
+    // printing to stderr and continuing with partially-fused IR.
+    let context = support::dynamic_context();
+    let location = Location::unknown(&context);
+    let mut module = Module::new(location);
+    let body = module.body();
+
+    // `can_fuse` admits the pair (disjoint qubits vacuously — no operands — and
+    // no cross-condition dependency); `fuse_pair_independent` then fails
+    // extracting the missing condition from `first`.
+    let branch_regions = || vec![support::empty_body(), support::empty_body()];
+    body.append_operation(support::generic_op(
+        &context,
+        qd::op::IF,
+        &[],
+        &[],
+        &[],
+        branch_regions(),
+        location,
+    ));
+    body.append_operation(support::generic_op(
+        &context,
+        qd::op::IF,
+        &[],
+        &[],
+        &[],
+        branch_regions(),
+        location,
+    ));
+
+    let (result, messages) = support::run_pass_capturing_diagnostics(
+        &context,
+        &mut module,
+        classical_region_fusion::create_pass(),
+        // Malformed input: disable MLIR's verifier so the recorded failure is
+        // the pass's own logic, not verification rejecting the input up front.
+        false,
+    );
+    assert!(
+        result.is_err(),
+        "pass should fail closed on an if pair missing its condition"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("missing condition")),
+        "expected the error routed through Diagnostics, got: {messages:?}"
+    );
+}

@@ -131,3 +131,68 @@ fn cnot_stays_native_on_device_5q() {
     let text = module.as_operation().to_string();
     assert!(text.contains("gate_name = \"cx\""));
 }
+
+#[test]
+fn fails_closed_on_undecomposable_gate() {
+    // Issue #391: a gate whose name is neither native nor in the decomposition
+    // library makes `decompose_named_single` return `None`. The pass must route
+    // that error through `Diagnostics` (captured via the diagnostic handler) and
+    // fail closed rather than printing to stderr and continuing.
+    let context = context();
+    let target = backend::BackendTarget::fixed(
+        "test",
+        backend::FixedTarget {
+            num_qubits: 2,
+            topology: backend::ConnectivityGraph::all_to_all(2),
+            native_gates: vec![
+                backend::NativeGate::passthrough("rz", 1),
+                backend::NativeGate::passthrough("sx", 1),
+            ],
+            noise: backend::NoiseModel::default(),
+            meas_latency_us: 0.0,
+            supports_mid_circuit_meas: true,
+            supports_feed_forward: true,
+        },
+    );
+    let location = Location::unknown(&context);
+    let qubit = qc::qubit_type(&context);
+    let block = Block::new(&[(qubit, location)]);
+    let q = Value::from(block.argument(0).unwrap());
+    let gate = block.append_operation(
+        qc::gate(&context, "NOPENOPE", 1, true, &[q], location).unwrap(),
+    );
+    let r = Value::from(gate.result(0).unwrap());
+    block.append_operation(qc::r#return(&[r], location).unwrap());
+    let region = Region::new();
+    region.append_block(block);
+    let func = qc::func(
+        &context,
+        "main",
+        1,
+        1,
+        &quon_core::DepthExpr::Nat(1),
+        true,
+        region,
+        location,
+    )
+    .unwrap();
+    let mut module = Module::new(location);
+    module.body().append_operation(func);
+
+    let (result, messages) = support::run_pass_capturing_diagnostics(
+        &context,
+        &mut module,
+        native_gate_decomp::create_pass(target),
+        true,
+    );
+    assert!(
+        result.is_err(),
+        "pass should fail closed on an undecomposable gate"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("no decomposition") && m.contains("NOPENOPE")),
+        "expected the error routed through Diagnostics, got: {messages:?}"
+    );
+}
