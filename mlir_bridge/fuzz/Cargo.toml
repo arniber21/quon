@@ -10,7 +10,8 @@ cargo-fuzz = true
 # Detached from the main workspace: fuzzing needs nightly + libfuzzer, which the
 # stable workspace build must not pull in. Building still requires LLVM 22 / MLIR
 # because the targets link `mlir_bridge` (set MLIR_SYS_220_PREFIX); the fuzzed
-# code path itself — DepthExpr S-expression parsing — is pure Rust.
+# code path itself — DepthExpr S-expression parsing — is pure Rust, pulling
+# `DepthExpr` directly from `quon_core` (#410).
 [workspace]
 members = ["."]
 
@@ -20,6 +21,9 @@ arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.mlir_bridge]
 path = ".."
+
+[dependencies.quon_core]
+path = "../../quon_core"
 
 [[bin]]
 name = "fuzz_depth_parse"

@@ -267,6 +267,15 @@ ci-website:
     pnpm install --frozen-lockfile
     pnpm build
 
+# Compile every detached fuzz manifest so type moves (e.g. #410's
+# DepthExpr relocation to quon_core) cannot silently stale the fuzz targets.
+# Requires nightly (libfuzzer-sys) + MLIR_SYS_220_PREFIX (the targets link
+# mlir_bridge). Run locally: `devbox run -- just ci-fuzz`.
+ci-fuzz:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +nightly build --manifest-path mlir_bridge/fuzz/Cargo.toml
+
 # ---------------------------------------------------------------------------
 # QEC benchmarks (#254 / ADR-0023) — local convenience recipes
 # CI smoke + axis coverage live in `python/test_quon_qec_benchmarks.py`
