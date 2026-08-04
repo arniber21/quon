@@ -29,6 +29,12 @@ use crate::pipeline::{
     NaPipelineError, NaScheduleArtifacts, NaScheduleOptions, validate_speed_model,
 };
 use crate::plan::{QecStageAccumulator, plan_backend};
+#[cfg(feature = "solver")]
+use crate::exact::state_prep::{
+    CzGate, ExactStatePrepParams, schedule_exact,
+};
+#[cfg(feature = "solver")]
+use crate::report::ScheduleOptimality;
 use crate::qec::code_blocks_from_expanded;
 use crate::report::{attach_qec_error_budget, build_resource_report};
 use crate::schedule::{LocalGateKind, MeasurementBasis, NeutralAtomAction, ScheduleLayer};
@@ -70,31 +76,22 @@ fn schedule_expanded(
     let pipeline_started = Instant::now();
     let mut stage_acc = QecStageAccumulator::default();
 
-    // Issue #302 Deliverable A: `--na-state-prep exact` requests SMT-optimal
-    // CZ-pair scheduling. The standalone solver
-    // (`crate::exact::state_prep::schedule_exact`) is implemented and
-    // unit-tested (Steane 7q/9CZ -> 3 stages), but it is NOT yet wired into
-    // the QEC pipeline per-CNOT-phase scheduling -- `plan_backend` does
-    // not consume `opts.state_prep`, so the heuristic zoned/flat scheduler
-    // runs unchanged. Log the fallback so the request is never silently
-    // honoured (issue #302: "no silent heuristic-only fallback without
-    // logging").
-    #[cfg(feature = "solver")]
-    if opts.state_prep == crate::pipeline::StatePrepMode::Exact {
-        eprintln!(
-            "[quon_na] --na-state-prep exact requested for QEC workload \
-             (blocks={}, memory_rounds={}), but exact state-prep scheduling \
-             is not yet wired into the pipeline; using heuristic",
-            expanded.blocks.len(),
-            expanded.memory_round_count()
-        );
-    }
+    // Issue #302 / #397: `--na-state-prep exact` requests SMT-optimal
+    // CZ-pair scheduling. The exact solver
+    // (`crate::exact::state_prep::schedule_exact`) is wired into the
+    // per-CNOT-phase scheduler (`schedule_cnot_phase`): when `solver` is
+    // enabled and `Exact` is requested, each CNOT phase is coloured by z3
+    // into the minimum number of movement-compatible stages; on solver
+    // timeout it falls back to the heuristic Misra–Gries scheduler and the
+    // report labels the schedule `Heuristic` (issue #397).
+    //
+    // Fail-closed without the `solver` feature: z3 is not linked, so an
+    // `Exact` request is a typed actionable error — never a silent
+    // heuristic fallback (mirrors `MissingErrorModelForObjective`,
+    // ADR-0017).
     #[cfg(not(feature = "solver"))]
     if opts.state_prep == crate::pipeline::StatePrepMode::Exact {
-        eprintln!(
-            "[quon_na] exact state-prep scheduling requires the `solver` feature, \
-             using heuristic"
-        );
+        return Err(NaPipelineError::ExactStatePrepRequiresSolver);
     }
 
     let mut all_layers: Vec<ScheduleLayer> = Vec::new();
@@ -140,6 +137,20 @@ fn schedule_expanded(
 
     for (i, layer) in all_layers.iter_mut().enumerate() {
         layer.cycle = i as u32;
+    }
+
+    // Issue #397: when exact state-prep was requested, the per-phase solver
+    // outcome (aggregated in `stage_acc.state_prep_outcome`) determines the
+    // schedule-optimality label. `Proven` only if every CNOT phase was
+    // solver-proven; `Timeout` (or no phases ran) ⇒ `Heuristic` — the
+    // fallback is never silent. This overrides any placement-derived
+    // optimality because the user explicitly requested exact state-prep.
+    #[cfg(feature = "solver")]
+    if opts.state_prep == crate::pipeline::StatePrepMode::Exact {
+        stage_acc.schedule_optimality = Some(match stage_acc.state_prep_outcome {
+            Some(crate::exact::SolverOutcome::Proven) => ScheduleOptimality::Exact,
+            _ => ScheduleOptimality::Heuristic,
+        });
     }
 
     let vertices: Vec<AtomVertexId> = all_atoms.iter().copied().map(AtomVertexId::from).collect();
@@ -390,12 +401,52 @@ fn schedule_cnot_phase(
 
     let max_pairs = na.interaction.max_parallel_entangling_pairs;
     let stage_started = Instant::now();
-    let scheduled = schedule_entangling_layers(req, max_pairs)?;
+
+    // Entangling-layer scheduling. Default: Misra–Gries edge colouring
+    // (`schedule_entangling_layers`). When `opts.state_prep == Exact` (and
+    // the `solver` feature is enabled), invoke the z3-backed exact
+    // state-prep scheduler for a proven-optimal stage colouring (issue
+    // #302 / #397): same `Entangle2` layer stream, but minimum stage count.
+    // On solver `Timeout`, fall back to the heuristic scheduler and label
+    // the schedule `Heuristic`. The non-solver build rejects `Exact`
+    // up-front in `schedule_expanded`.
+    #[cfg(feature = "solver")]
+    let (phase_graph, phase_layers, state_prep_outcome) = if opts.state_prep
+        == crate::pipeline::StatePrepMode::Exact
+    {
+        let gates = cnots_to_cz_gates(cnots);
+        let result = schedule_exact(&gates, ExactStatePrepParams::default())
+            .map_err(NaPipelineError::ExactStatePrepFailed)?;
+        (req.graph, result.layers, Some(result.outcome))
+    } else {
+        let scheduled = schedule_entangling_layers(req, max_pairs)?;
+        (
+            scheduled.request.graph,
+            scheduled.request.layers,
+            None,
+        )
+    };
+    #[cfg(not(feature = "solver"))]
+    let (phase_graph, phase_layers) = {
+        let scheduled = schedule_entangling_layers(req, max_pairs)?;
+        (scheduled.request.graph, scheduled.request.layers)
+    };
     let entangling_layers_us = elapsed_us(stage_started);
 
+    // Aggregate the per-phase solver outcome: `Timeout` is sticky across
+    // phases — one timeout ⇒ the whole schedule is `Heuristic`.
+    #[cfg(feature = "solver")]
+    if let Some(outcome) = state_prep_outcome {
+        stage_acc.state_prep_outcome = Some(match stage_acc.state_prep_outcome {
+            None => outcome,
+            Some(crate::exact::SolverOutcome::Timeout) => crate::exact::SolverOutcome::Timeout,
+            Some(crate::exact::SolverOutcome::Proven) => outcome,
+        });
+    }
+
     let round_req = GraphScheduleRequest {
-        graph: scheduled.request.graph,
-        layers: scheduled.request.layers,
+        graph: phase_graph,
+        layers: phase_layers,
         layout: shared_layout.clone(),
     };
 
@@ -530,6 +581,24 @@ fn cnots_to_interactions(
         ids.push(id);
     }
     Ok((interactions, ids))
+}
+
+/// Build the CZ-gate list for the exact state-prep solver from one CNOT
+/// phase (issue #397).
+///
+/// Each physical CNOT becomes one [`CzGate`] over its control/target atoms.
+/// The conflict graph — "two gates sharing an atom cannot share a stage" —
+/// is identical for CX and CZ, so the minimum-stage colouring is the same
+/// movement-compatible schedule the entangling-layer path produces.
+#[cfg(feature = "solver")]
+fn cnots_to_cz_gates(cnots: &[PhysicalCnot]) -> Vec<CzGate> {
+    cnots
+        .iter()
+        .map(|c| CzGate {
+            a: AtomId(c.control.0),
+            b: AtomId(c.target.0),
+        })
+        .collect()
 }
 
 /// Project the atom-indexed hybrid request to the canonical emit representation
@@ -1408,5 +1477,189 @@ mod tests {
         );
         // Compaction was requested and applied.
         assert!(stats.config.compaction.applied, "compaction was applied");
+    }
+    // --- Issue #397: exact state-preparation pipeline wiring ---
+
+    /// Steane [[7,1,3]] logical-zero prep: 7 atoms, 9 CZ pairs → 3 stages
+    /// (the standalone solver fixture from `exact::state_prep::tests`), now
+    /// driven end-to-end through the QEC per-CNOT-phase scheduler.
+    #[cfg(feature = "solver")]
+    #[test]
+    fn exact_state_prep_steane_phase_is_proven_optimal() {
+        use crate::exact::SolverOutcome;
+        use crate::pipeline::StatePrepMode;
+
+        let cnots: Vec<PhysicalCnot> = vec![
+            PhysicalCnot { control: PhysicalAtomId(0), target: PhysicalAtomId(1) },
+            PhysicalCnot { control: PhysicalAtomId(0), target: PhysicalAtomId(2) },
+            PhysicalCnot { control: PhysicalAtomId(0), target: PhysicalAtomId(3) },
+            PhysicalCnot { control: PhysicalAtomId(1), target: PhysicalAtomId(4) },
+            PhysicalCnot { control: PhysicalAtomId(1), target: PhysicalAtomId(5) },
+            PhysicalCnot { control: PhysicalAtomId(2), target: PhysicalAtomId(4) },
+            PhysicalCnot { control: PhysicalAtomId(2), target: PhysicalAtomId(6) },
+            PhysicalCnot { control: PhysicalAtomId(3), target: PhysicalAtomId(5) },
+            PhysicalCnot { control: PhysicalAtomId(3), target: PhysicalAtomId(6) },
+        ];
+        let all_atoms: Vec<PhysicalAtomId> = (0..7).map(PhysicalAtomId).collect();
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            state_prep: StatePrepMode::Exact,
+            compact: false,
+            dump_ir: false,
+            ..Default::default()
+        };
+        let mut next_interaction_id = 0u32;
+        let mut shared_layout: Option<NeutralAtomLayout> = None;
+        let mut stage_acc = QecStageAccumulator::default();
+        let (layers, _interactions, _ids) = schedule_cnot_phase(
+            &cnots,
+            &all_atoms,
+            &na,
+            opts,
+            &mut next_interaction_id,
+            &mut shared_layout,
+            &mut stage_acc,
+        )
+        .expect("exact Steane phase schedules");
+
+        // The exact solver proved the 3-stage optimum (chromatic number of
+        // the Steane conflict graph). A timeout would fall back to heuristic
+        // and label Heuristic — this fixture is small enough that z3 always
+        // proves it (issue #397 acceptance: proven ⇒ Exact).
+        assert_eq!(
+            stage_acc.state_prep_outcome,
+            Some(SolverOutcome::Proven),
+            "Steane 9-CZ phase must be solver-proven, not timed out",
+        );
+
+        // All 9 entangling pairs survived into the planned (post-movement)
+        // layers — the exact colouring is a regrouping, not a gate drop.
+        let entangle2: usize = layers
+            .iter()
+            .map(|l| {
+                l.actions
+                    .iter()
+                    .filter(|a| matches!(a, NeutralAtomAction::Entangle2 { .. }))
+                    .count()
+            })
+            .sum();
+        assert_eq!(entangle2, 9, "all 9 Steane CZ pairs must appear as Entangle2");
+
+        // Schedule verification: no atom in two gates of the same entangle
+        // layer — the exact colouring guarantee (movement-compatible).
+        for layer in &layers {
+            let mut atoms = std::collections::BTreeSet::new();
+            for a in &layer.actions {
+                if let NeutralAtomAction::Entangle2 { atoms: [x, y], .. } = a {
+                    assert!(atoms.insert(*x), "atom {x:?} in two Entangle2 same layer");
+                    assert!(atoms.insert(*y), "atom {y:?} in two Entangle2 same layer");
+                }
+            }
+        }
+    }
+
+    /// Surface-distance-3 QEC workload end-to-end with `--na-state-prep
+    /// exact`: the report labels the schedule `Exact`, gate count is
+    /// preserved, and the entangling layers stay atom-disjoint (issue #397
+    /// acceptance: "surface-distance-3 QEC workload exercises the
+    /// end-to-end exact path and passes schedule verification").
+    #[cfg(feature = "solver")]
+    #[test]
+    fn surface_d3_exact_state_prep_labels_report_exact() {
+        use crate::pipeline::StatePrepMode;
+        use crate::report::ScheduleOptimality;
+
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            state_prep: StatePrepMode::Exact,
+            compact: true,
+            dump_ir: false,
+            ..Default::default()
+        };
+        let artifacts =
+            run_from_qec_workload(&surface_d3_workload(), &na, opts).expect("exact schedule");
+        let report = &artifacts.resource_report;
+
+        // Proven ⇒ labelled Exact (never a silent heuristic fallback).
+        assert_eq!(
+            report.schedule_optimality,
+            Some(ScheduleOptimality::Exact),
+            "solver-proven exact state-prep must label the report Exact",
+        );
+
+        // Gate count preserved: 2 memory rounds × 24 CX = 48 Entangle2.
+        assert_eq!(report.entangle2_count, 48);
+
+        // Schedule verification: every layer's Entangle2 actions are
+        // atom-disjoint (the exact colouring guarantee survives compaction
+        // + zoned placement; round-barrier Wait cuts keep cross-round
+        // entangles separate).
+        for layer in &artifacts.layers {
+            let mut atoms = std::collections::BTreeSet::new();
+            for a in &layer.actions {
+                if let NeutralAtomAction::Entangle2 { atoms: [x, y], .. } = a {
+                    assert!(atoms.insert(*x), "atom {x:?} in two Entangle2 same layer");
+                    assert!(atoms.insert(*y), "atom {y:?} in two Entangle2 same layer");
+                }
+            }
+        }
+
+        // Round structure preserved: one durable Wait per memory round.
+        let waits = artifacts
+            .layers
+            .iter()
+            .filter(|l| {
+                l.actions
+                    .iter()
+                    .any(|a| matches!(a, NeutralAtomAction::Wait { .. }))
+            })
+            .count();
+        assert_eq!(waits, 2, "one durable Wait per memory round");
+    }
+
+    /// Without the `solver` feature, an `Exact` state-prep request is a
+    /// typed actionable error — never a silent heuristic fallback (issue
+    /// #397 acceptance: "solver-free builds reject exact state-prep requests
+    /// with a typed actionable error").
+    #[cfg(not(feature = "solver"))]
+    #[test]
+    fn exact_state_prep_rejected_without_solver_feature() {
+        use crate::pipeline::StatePrepMode;
+
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            state_prep: StatePrepMode::Exact,
+            ..Default::default()
+        };
+        let err = run_from_qec_workload(&d3_workload(), &na, opts).expect_err("must reject");
+        assert!(
+            matches!(err, NaPipelineError::ExactStatePrepRequiresSolver),
+            "expected ExactStatePrepRequiresSolver, got {err:?}",
+        );
+    }
+
+    /// Default `Heuristic` state-prep must not invoke the exact solver or
+    /// force a schedule-optimality label (issue #397: the label reflects the
+    /// state-prep request only when `Exact` is asked for; the heuristic path
+    /// is unchanged).
+    #[cfg(feature = "solver")]
+    #[test]
+    fn heuristic_state_prep_leaves_solver_outcome_unset() {
+        use crate::pipeline::StatePrepMode;
+
+        let na = load_na();
+        let opts = NaScheduleOptions {
+            state_prep: StatePrepMode::Heuristic,
+            compact: true,
+            ..Default::default()
+        };
+        let artifacts = run_from_qec_workload(&d3_workload(), &na, opts).expect("schedule");
+        // Zoned RoutingAgnostic placement reports no optimality, and
+        // heuristic state-prep never touches the solver, so the report
+        // carries no forced Exact/Heuristic label.
+        assert_eq!(
+            artifacts.resource_report.schedule_optimality, None,
+            "heuristic state-prep must not force a schedule-optimality label",
+        );
     }
 }

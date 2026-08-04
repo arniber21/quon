@@ -252,6 +252,13 @@ pub struct QecStageAccumulator {
     pub aware_search_status: Option<(u64, u64)>,
     pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
     pub schedule_optimality: Option<crate::report::ScheduleOptimality>,
+    /// Per-phase exact state-prep solver outcome, aggregated across CNOT
+    /// phases (issue #397). `None` when the heuristic scheduler ran (default
+    /// `state_prep` mode, or a per-phase empty CNOT list). `Timeout` is
+    /// sticky: once any phase times out, the aggregate stays `Timeout` so the
+    /// report labels the whole schedule `Heuristic`.
+    #[cfg(feature = "solver")]
+    pub state_prep_outcome: Option<crate::exact::SolverOutcome>,
 }
 
 impl QecStageAccumulator {
