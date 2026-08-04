@@ -259,13 +259,13 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
             // bare-qubit NA programs keep the interaction-graph extract path.
             let workload =
                 collect_qec_workload(&module).map_err(|e| format!("QEC workload collect: {e}"))?;
-            let qec_backed = !workload.blocks.is_empty();
+            let qec_backed = !workload.blocks().is_empty();
             let artifacts = if qec_backed {
                 if request.dump_ir {
                     eprintln!(
                         "--- QEC workload ---\nblocks={} ops={} memory_rounds={}",
-                        workload.blocks.len(),
-                        workload.ops.len(),
+                        workload.blocks().len(),
+                        workload.ops().len(),
                         workload.memory_round_count()
                     );
                 }

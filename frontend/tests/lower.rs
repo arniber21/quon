@@ -177,15 +177,15 @@ fn main(): Q<Bit> = run {
     let context = Context::new();
     let module = lower_program(&context, src).expect("lower");
     let workload = collect_qec_workload(&module).expect("collect");
-    assert_eq!(workload.blocks.len(), 1);
-    assert_eq!(workload.blocks[0].family, SourceFamily::Repetition);
+    assert_eq!(workload.blocks().len(), 1);
+    assert_eq!(workload.blocks()[0].family, SourceFamily::Repetition);
     assert_eq!(
-        workload.blocks[0].code_family,
+        workload.blocks()[0].code_family,
         CodeFamily::RepetitionCodeToy { distance: 3 }
     );
     assert_eq!(workload.memory_round_count(), 2);
     assert_eq!(
-        workload.ops.last(),
+        workload.ops().last(),
         Some(&WorkloadOp::MeasureLogical {
             logical_id: LogicalQubitId(0),
             basis: LogicalBasis::Z,
@@ -211,19 +211,19 @@ fn main(): Q<(Bit, Bit)> = run {
     let context = Context::new();
     let module = lower_program(&context, src).expect("lower");
     let workload = collect_qec_workload(&module).expect("collect");
-    assert_eq!(workload.blocks.len(), 2);
-    let a = &workload.blocks[0];
+    assert_eq!(workload.blocks().len(), 2);
+    let a = &workload.blocks()[0];
     assert_eq!(a.family, SourceFamily::Surface);
     assert_eq!(a.distance, 3);
     assert_eq!(a.init_basis, LogicalBasis::Z);
     assert_eq!(a.code_family, CodeFamily::SurfaceCodeLike { distance: 3 });
-    let b = &workload.blocks[1];
+    let b = &workload.blocks()[1];
     assert_eq!(b.family, SourceFamily::Surface);
     assert_eq!(b.distance, 3);
     assert_eq!(b.init_basis, LogicalBasis::X);
     assert_eq!(b.code_family, CodeFamily::SurfaceCodeLike { distance: 3 });
     assert_eq!(
-        workload.ops,
+        workload.ops(),
         vec![
             WorkloadOp::Construct {
                 family: SourceFamily::Surface,

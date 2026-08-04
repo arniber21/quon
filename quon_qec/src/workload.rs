@@ -147,11 +147,17 @@ impl<'de> Deserialize<'de> for WorkloadBlock {
 }
 
 /// Ordered QEC workload collected from a `run { }` / `quantum.dynamic` program.
+///
+/// Constructed only through [`WorkloadBuilder::finish`] or validated
+/// deserialization: the fields are private and deserialization replays every
+/// op through [`WorkloadBuilder`] so the state-machine rules (construct,
+/// liveness, measurement, family, distance) cannot be bypassed at the wire
+/// boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "QecWorkloadRaw")]
 pub struct QecWorkload {
-    pub blocks: Vec<WorkloadBlock>,
-    pub ops: Vec<WorkloadOp>,
+    blocks: Vec<WorkloadBlock>,
+    ops: Vec<WorkloadOp>,
 }
 
 impl QecWorkload {
@@ -174,6 +180,70 @@ impl QecWorkload {
     /// Look up block metadata by logical id.
     pub fn block(&self, id: LogicalQubitId) -> Option<&WorkloadBlock> {
         self.blocks.iter().find(|b| b.logical_id == id)
+    }
+
+    /// Per-block metadata recovered from `construct` ops (construct order).
+    pub fn blocks(&self) -> &[WorkloadBlock] {
+        &self.blocks
+    }
+
+    /// QEC builtins in program order.
+    pub fn ops(&self) -> &[WorkloadOp] {
+        &self.ops
+    }
+}
+
+/// Wire format for [`QecWorkload`]: raw `blocks` + `ops` before the builder's
+/// state machine has been replayed. Used only by `#[serde(try_from)]`; the
+/// conversion to [`QecWorkload`] validates every transition.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QecWorkloadRaw {
+    blocks: Vec<WorkloadBlock>,
+    ops: Vec<WorkloadOp>,
+}
+
+impl TryFrom<QecWorkloadRaw> for QecWorkload {
+    type Error = WorkloadError;
+
+    /// Replay `ops` through [`WorkloadBuilder`] so every state-machine rule
+    /// (construct, liveness, measurement, family, distance) is enforced at
+    /// the wire boundary, then confirm the supplied `blocks` match the
+    /// metadata recovered from the `construct` ops.
+    ///
+    /// The builder reproduces `ops` verbatim (each op is pushed unchanged),
+    /// so only `blocks` — an independent wire source of truth — needs a
+    /// consistency check.
+    fn try_from(raw: QecWorkloadRaw) -> Result<Self, Self::Error> {
+        let mut builder = WorkloadBuilder::new();
+        for op in &raw.ops {
+            match op {
+                WorkloadOp::Construct {
+                    family,
+                    distance,
+                    basis,
+                    logical_id,
+                } => builder.construct(*family, *distance, *basis, *logical_id)?,
+                WorkloadOp::MemoryRound { logical_id } => {
+                    builder.memory_round(*logical_id)?
+                }
+                WorkloadOp::MeasureLogical { logical_id, basis } => {
+                    builder.measure_logical(*logical_id, *basis)?
+                }
+                WorkloadOp::LogicalCx { control, target } => {
+                    builder.logical_cx(*control, *target)?
+                }
+                WorkloadOp::LogicalT { logical_id } => builder.logical_t(*logical_id)?,
+                WorkloadOp::LogicalTdag { logical_id } => builder.logical_tdag(*logical_id)?,
+                WorkloadOp::LogicalCcz { a, b, c } => builder.logical_ccz(*a, *b, *c)?,
+            }
+        }
+        let workload = builder.finish();
+        if workload.blocks != raw.blocks {
+            return Err(WorkloadError::InconsistentBlockMetadata);
+        }
+        // `workload.ops` equals `raw.ops` by construction (replayed in order).
+        Ok(workload)
     }
 }
 
@@ -217,6 +287,8 @@ pub enum WorkloadError {
     LogicalCczNotDistinct,
     #[error("logical_ccz requires equal distances on all three blocks")]
     LogicalCczDistanceMismatch,
+    #[error("block metadata inconsistent with construct ops")]
+    InconsistentBlockMetadata,
     #[error("invalid code-family distance: {0}")]
     InvalidFamily(#[from] crate::family::QecError),
 }
@@ -743,5 +815,237 @@ mod tests {
                 family: "repetition"
             })
         );
+    }
+
+    // --- Deserialization replays the builder state machine (#396) ---
+
+    /// Build a valid repetition workload JSON (construct + 2 rounds + measure).
+    fn valid_repetition_json() -> serde_json::Value {
+        serde_json::json!({
+            "blocks": [{
+                "logical_id": 0,
+                "family": "repetition",
+                "distance": 3,
+                "init_basis": "z",
+                "code_family": { "family": "repetition_code_toy", "distance": 3 }
+            }],
+            "ops": [
+                { "op": "construct", "family": "repetition", "distance": 3, "basis": "z", "logical_id": 0 },
+                { "op": "memory_round", "logical_id": 0 },
+                { "op": "memory_round", "logical_id": 0 },
+                { "op": "measure_logical", "logical_id": 0, "basis": "z" }
+            ]
+        })
+    }
+
+    /// Build a valid two-block surface CX workload JSON.
+    fn valid_surface_cx_json() -> serde_json::Value {
+        serde_json::json!({
+            "blocks": [
+                { "logical_id": 0, "family": "surface", "distance": 3, "init_basis": "z",
+                  "code_family": { "family": "surface_code_like", "distance": 3 } },
+                { "logical_id": 1, "family": "surface", "distance": 3, "init_basis": "x",
+                  "code_family": { "family": "surface_code_like", "distance": 3 } }
+            ],
+            "ops": [
+                { "op": "construct", "family": "surface", "distance": 3, "basis": "z", "logical_id": 0 },
+                { "op": "construct", "family": "surface", "distance": 3, "basis": "x", "logical_id": 1 },
+                { "op": "logical_cx", "control": 0, "target": 1 },
+                { "op": "measure_logical", "logical_id": 0, "basis": "z" },
+                { "op": "measure_logical", "logical_id": 1, "basis": "x" }
+            ]
+        })
+    }
+
+    #[test]
+    fn deserialization_accepts_valid_repetition_workload() {
+        let w: QecWorkload =
+            serde_json::from_value(valid_repetition_json()).expect("valid repetition");
+        assert_eq!(w.blocks().len(), 1);
+        assert_eq!(w.ops().len(), 4);
+        assert_eq!(w.memory_round_count(), 2);
+    }
+
+    #[test]
+    fn deserialization_accepts_valid_surface_cx_workload() {
+        let w: QecWorkload =
+            serde_json::from_value(valid_surface_cx_json()).expect("valid surface cx");
+        assert_eq!(w.blocks().len(), 2);
+        assert_eq!(w.ops().len(), 5);
+    }
+
+    #[test]
+    fn deserialization_round_trips_builder_workload() {
+        let mut b = WorkloadBuilder::new();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+            .unwrap();
+        b.construct(SourceFamily::Surface, 3, LogicalBasis::X, LogicalQubitId(1))
+            .unwrap();
+        b.logical_cx(LogicalQubitId(0), LogicalQubitId(1)).unwrap();
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z).unwrap();
+        b.measure_logical(LogicalQubitId(1), LogicalBasis::X).unwrap();
+        let original = b.finish();
+
+        let json = serde_json::to_string(&original).expect("serialize");
+        let round_tripped: QecWorkload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(original, round_tripped);
+    }
+
+    #[test]
+    fn deserialization_rejects_use_after_measure() {
+        let mut value = valid_repetition_json();
+        // Insert a memory_round after the measure op.
+        value["ops"].as_array_mut().unwrap().push(serde_json::json!({
+            "op": "memory_round", "logical_id": 0
+        }));
+        let err = serde_json::from_value::<QecWorkload>(value).expect_err("use-after-measure");
+        assert!(
+            err.to_string().contains("use of logical qubit 0 after it was measured"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn deserialization_rejects_double_measure() {
+        let mut value = valid_repetition_json();
+        value["ops"].as_array_mut().unwrap().push(serde_json::json!({
+            "op": "measure_logical", "logical_id": 0, "basis": "z"
+        }));
+        let err = serde_json::from_value::<QecWorkload>(value).expect_err("double measure");
+        assert!(
+            err.to_string().contains("logical qubit 0 was already measured"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn deserialization_rejects_use_before_construct() {
+        // memory_round references a logical id that was never constructed.
+        let value = serde_json::json!({
+            "blocks": [],
+            "ops": [{ "op": "memory_round", "logical_id": 0 }]
+        });
+        let err = serde_json::from_value::<QecWorkload>(value).expect_err("use-before-construct");
+        assert!(err.to_string().contains("unknown logical qubit id 0"), "{err}");
+    }
+
+    #[test]
+    fn deserialization_rejects_duplicate_construct() {
+        let mut value = valid_repetition_json();
+        value["ops"].as_array_mut().unwrap().push(serde_json::json!({
+            "op": "construct", "family": "repetition", "distance": 3, "basis": "z", "logical_id": 0
+        }));
+        let err = serde_json::from_value::<QecWorkload>(value).expect_err("duplicate construct");
+        assert!(
+            err.to_string().contains("duplicate construct for logical qubit 0"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn deserialization_rejects_invalid_family_logical_t_on_repetition() {
+        let value = serde_json::json!({
+            "blocks": [{
+                "logical_id": 0, "family": "repetition", "distance": 3, "init_basis": "z",
+                "code_family": { "family": "repetition_code_toy", "distance": 3 }
+            }],
+            "ops": [
+                { "op": "construct", "family": "repetition", "distance": 3, "basis": "z", "logical_id": 0 },
+                { "op": "logical_t", "logical_id": 0 }
+            ]
+        });
+        let err = serde_json::from_value::<QecWorkload>(value).expect_err("logical_t on repetition");
+        assert!(
+            err.to_string().contains("`logical_t` requires surface-code blocks"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn deserialization_rejects_invalid_family_logical_cx_on_repetition() {
+        let value = serde_json::json!({
+            "blocks": [
+                { "logical_id": 0, "family": "repetition", "distance": 3, "init_basis": "z",
+                  "code_family": { "family": "repetition_code_toy", "distance": 3 } },
+                { "logical_id": 1, "family": "surface", "distance": 3, "init_basis": "z",
+                  "code_family": { "family": "surface_code_like", "distance": 3 } }
+            ],
+            "ops": [
+                { "op": "construct", "family": "repetition", "distance": 3, "basis": "z", "logical_id": 0 },
+                { "op": "construct", "family": "surface", "distance": 3, "basis": "z", "logical_id": 1 },
+                { "op": "logical_cx", "control": 0, "target": 1 }
+            ]
+        });
+        let err = serde_json::from_value::<QecWorkload>(value).expect_err("logical_cx on repetition");
+        assert!(
+            err.to_string().contains("logical_cx requires surface-code blocks"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn deserialization_rejects_inconsistent_block_metadata() {
+        // blocks claim id 1 but the only construct is for id 0.
+        let value = serde_json::json!({
+            "blocks": [{
+                "logical_id": 1, "family": "repetition", "distance": 3, "init_basis": "z",
+                "code_family": { "family": "repetition_code_toy", "distance": 3 }
+            }],
+            "ops": [
+                { "op": "construct", "family": "repetition", "distance": 3, "basis": "z", "logical_id": 0 }
+            ]
+        });
+        let err = serde_json::from_value::<QecWorkload>(value).expect_err("inconsistent blocks");
+        assert!(
+            err.to_string().contains("block metadata inconsistent with construct ops"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn deserialization_rejects_blocks_without_construct_ops() {
+        // Blocks present but no ops at all: derived blocks would be empty.
+        let value = serde_json::json!({
+            "blocks": [{
+                "logical_id": 0, "family": "repetition", "distance": 3, "init_basis": "z",
+                "code_family": { "family": "repetition_code_toy", "distance": 3 }
+            }],
+            "ops": []
+        });
+        assert!(serde_json::from_value::<QecWorkload>(value).is_err());
+    }
+
+    /// Defense-in-depth: `expand_workload` independently rejects a repetition
+    /// block prepared in the X basis, even though the workload IR boundary
+    /// (`WorkloadBuilder` + validated deserialization) already forbids it.
+    /// The state is reachable only inside the crate via private construction.
+    #[test]
+    fn expand_rejects_repetition_non_z_init_basis_defense_in_depth() {
+        use crate::expand::{ExpandError, expand_workload};
+        use crate::family::CodeFamily;
+
+        let workload = QecWorkload {
+            blocks: vec![WorkloadBlock {
+                logical_id: LogicalQubitId(0),
+                family: SourceFamily::Repetition,
+                distance: 3,
+                init_basis: LogicalBasis::X,
+                code_family: CodeFamily::RepetitionCodeToy { distance: 3 },
+            }],
+            ops: vec![WorkloadOp::Construct {
+                family: SourceFamily::Repetition,
+                distance: 3,
+                basis: LogicalBasis::X,
+                logical_id: LogicalQubitId(0),
+            }],
+        };
+        let err = expand_workload(&workload).expect_err("non-z");
+        assert!(matches!(
+            err,
+            ExpandError::NonZInitBasis {
+                logical_id: 0,
+                basis: "x"
+            }
+        ));
     }
 }
