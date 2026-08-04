@@ -21,13 +21,67 @@ cargo build -p quonc
 `devbox.json` sets `MLIR_SYS_220_PREFIX` from `llvm-config --prefix` via the
 local `nix/llvm-mlir` flake, so Melior sees a single LLVM/MLIR prefix.
 
-The main local workflows are:
+### Two ways to run `just` recipes
+
+Quon orchestrates every build, test, and lint through `just` recipes (see the
+root `Justfile`, ADR-0012). The recipes are the source of truth; CI invokes
+them through `devbox run --`. You can invoke them two equivalent ways:
+
+- **Inside `devbox shell`** — the locked LLVM/MLIR 22 + Z3 + `just`
+  environment is already on `PATH`, so run recipes directly:
+
+  ```bash
+  devbox shell
+  just doctor
+  just test-ci
+  ```
+
+- **One-shot from the host shell** — without entering Devbox, prefix each
+  recipe with `devbox run --`. Devbox spins up the locked environment for that
+  single command and tears it down afterwards:
+
+  ```bash
+  devbox run -- just doctor
+  devbox run -- just test-ci
+  ```
+
+### First-run toolchain readiness
+
+Before the first build, run the readiness matrix. It checks the required rows
+(`MLIR_SYS_220_PREFIX`, `z3`) and the optional rows (`.venv` + Qiskit, `lit`,
+`FileCheck`, `quonc`) and prints `OK` / `MISSING` for each:
+
+| Inside `devbox shell` | One-shot from host shell |
+| --------------------- | ------------------------ |
+| `just doctor` | `devbox run -- just doctor` |
+
+`just doctor` exits non-zero only when a **required** row is `MISSING`; pass
+`--strict` to also fail on optional `MISSING` rows. Every `MISSING` row names
+its recovery action in its detail column (for example `set via devbox shell
+or export`, or `just setup-python`).
+
+#### `just` is unavailable on the host
+
+A bare `just ci-samples` (or any `just ...`) on the host shell fails with
+`command not found: just` because `just` lives inside Devbox, not on the host.
+That is expected — recover with either of the two paths above:
 
 ```bash
-just doctor      # check required tools
-just test-fast   # fast Rust-focused path
-just test-ci     # local CI-parity path
+devbox shell              # stay in the locked environment, then run: just <recipe>
+devbox run -- just doctor # one-shot: Devbox runs the recipe and exits
 ```
+
+Do not install `just` on the host to silence the error — the Devbox-pinned
+`just` is the supported version. If `devbox` itself is missing, install it
+first: `curl -fsSL https://get.jetify.com/devbox | bash`.
+
+### Main local workflows
+
+| Inside `devbox shell` | One-shot from host shell | Purpose |
+| --------------------- | ------------------------ | ------- |
+| `just doctor` | `devbox run -- just doctor` | Check required tools |
+| `just test-fast` | `devbox run -- just test-fast` | Fast Rust-focused path |
+| `just test-ci` | `devbox run -- just test-ci` | Local CI-parity path |
 
 ## Optional: Qiskit Aer verification
 
@@ -35,7 +89,8 @@ The compiler CLIs do not require Python at runtime. The Aer verification seam
 does:
 
 ```bash
-just setup-python
+just setup-python                 # inside devbox shell
+devbox run -- just setup-python   # one-shot from the host shell
 source .venv/bin/activate
 python -c "from qiskit_aer import AerSimulator; print(AerSimulator())"
 ```
@@ -106,6 +161,21 @@ flow is designed around prebuilt `quonc`, `quonfmt`, `quon_lsp`, and
 build.
 
 ## Troubleshooting
+
+### `command not found: just`
+
+`just` is not installed on the host by design — it lives inside the Devbox
+environment. Enter the environment and run recipes directly, or prefix a
+one-shot command with `devbox run --`:
+
+```bash
+devbox shell              # then: just <recipe>
+devbox run -- just doctor # one-shot from the host shell
+```
+
+See [First-run toolchain readiness](#first-run-toolchain-readiness) for the
+readiness matrix, and run `just doctor` (or `devbox run -- just doctor`) to
+diagnose any other missing tool.
 
 ### Cargo cannot find `llvm-config`
 
