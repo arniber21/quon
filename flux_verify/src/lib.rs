@@ -5,6 +5,11 @@
 //!
 //! Dialect and pass invariants for `quantum.dynamic` are modeled in
 //! [`quon_core::linearity`] and verified with `cargo flux -p quon_core --features flux`.
+//!
+//! The negative compile fixtures for the scalar Flux predicates (bounds, arity,
+//! linearity, ordering) live in [`quon_core`] under its `flux` feature, where
+//! the gated `cargo flux -p quon_core --features flux` CI step verifies that
+//! Flux rejects each violation (see `quon_core::neg_flux_fixtures`).
 
 use flux_rs::attrs::*;
 
@@ -80,8 +85,13 @@ mod smoke {
     }
 
     /// The optimization-pass invariants (#18–#21) carry Flux postconditions
-    /// verified by `cargo flux -p quon_core --features flux`; these calls pin the
-    /// same kernels the `mlir_bridge` passes use so the proofs stay load-bearing.
+    /// verified by `cargo flux -p quon_core --features flux`. These kernels are
+    /// load-bearing (#414): `depth_after_removal` and `seq_depth` feed the
+    /// gate-cancellation / rotation-merging passes' depth folding, and
+    /// `arity_preserved` / `single_qubit_pair` guard the rotation-merge rewrite.
+    /// (`par_depth` is the one optimization kernel with no production caller, so
+    /// it intentionally carries no Flux spec.) These calls pin the same kernels
+    /// the `mlir_bridge` passes consume.
     #[test]
     fn quon_core_optimization_kernels_are_safe() {
         use quon_core::optimization::{
@@ -119,7 +129,11 @@ mod smoke {
     /// The `quantum.na` schedule scalar invariants (#115) — cycle monotonicity
     /// and Wait barrier ordering — carry Flux refinement specs verified by
     /// `cargo flux -p quon_na --no-default-features --features flux`. These
-    /// calls pin the same kernels the dialect verifier uses.
+    /// kernels are load-bearing (#414): `verify_schedule_ordering` in
+    /// `quon_na::dialect` routes its cycle-monotonicity and wait-barrier
+    /// checks through `cycle_is_monotonic` / `wait_barrier_ok` rather than
+    /// re-implementing the comparisons inline. These calls pin the same
+    /// kernels the dialect verifier now consumes.
     #[test]
     fn quon_na_schedule_scalar_invariants_hold() {
         use quon_na::{cycle_is_monotonic, wait_barrier_ok};

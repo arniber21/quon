@@ -71,10 +71,13 @@ fn seq_depth_exact_sum_is_load_bearing(a: u64, b: u64) -> u64 {
 
 /// Parallel composition depth (`a ∥ b`): the maximum. An upper bound on both
 /// operands that is itself equal to one of them.
-#[cfg_attr(
-    feature = "flux",
-    spec(fn(a: u64, b: u64) -> u64{v: a <= v && b <= v && (v == a || v == b)})
-)]
+///
+/// No Flux spec: no production caller consumes the `max` postcondition (the
+/// passes compose depth sequentially via [`seq_depth`] and fold it out via
+/// [`depth_after_removal`]; parallel composition is symbolic, through
+/// `DepthExpr::par`). Keeping a refinement here would be a decorative spec
+/// with no proof-consuming caller, so the function stays a plain tested
+/// helper rather than carrying an unused postcondition.
 pub fn par_depth(a: u64, b: u64) -> u64 {
     if a >= b { a } else { b }
 }

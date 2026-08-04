@@ -25,6 +25,9 @@ use std::fmt;
 
 use thiserror::Error;
 
+#[cfg(feature = "flux")]
+use flux_rs::attrs::*;
+
 /// A symbolic depth-bound expression.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DepthExpr {
@@ -405,6 +408,14 @@ fn leading_decimal_byte(n: u64) -> u8 {
 /// access. This helper carries no flux spec, so trusting it skips no
 /// verification. Remove once flux-infer can infer loop invariants here.
 #[cfg_attr(feature = "flux", flux_rs::trusted)]
+/// `#[trusted]` under Flux: the decrement-then-index digit-extraction loop
+/// needs a loop invariant Flux cannot synthesize (`i >= 1` follows from `m > 0`
+/// implying at most 20 digits, but Flux has no refined spec for the division-
+/// driven iteration count). The body is panic-free by construction (a `u64` has
+/// <= 20 decimal digits, so `i` never underflows and `buf[i]` stays in `0..20`)
+/// and carries no Flux spec, so trusting it skips no verification. See ADR-0027
+/// for the `#[trusted]` convention.
+#[cfg_attr(feature = "flux", trusted)]
 fn write_decimal(n: u64, buf: &mut [u8; 20]) -> usize {
     if n == 0 {
         buf[19] = b'0';

@@ -1158,7 +1158,7 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
     let mut previous_cycle: Option<u32> = None;
     for layer in layers {
         if let Some(prev) = previous_cycle
-            && layer.cycle < prev
+            && !crate::schedule_invariants::cycle_is_monotonic(prev, layer.cycle)
         {
             return Err(VerifyError::NonMonotonicCycles {
                 previous_cycle: prev,
@@ -1175,7 +1175,7 @@ fn verify_schedule_ordering(layers: &[LayerFacts]) -> Result<(), VerifyError> {
             continue;
         }
         for later in layers.iter().skip(i + 1) {
-            if later.cycle <= layer.cycle {
+            if !crate::schedule_invariants::wait_barrier_ok(layer.cycle, later.cycle) {
                 return Err(VerifyError::RoundBarrierCycleOrder {
                     wait_cycle: layer.cycle,
                     after_cycle: later.cycle,

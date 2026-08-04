@@ -130,7 +130,14 @@ fn cancel_pair<'c, 'a>(
     }
     base.erase_op(current.operation);
     base.erase_op(previous.operation);
-    previous.depth_contribution + current.depth_contribution
+    // Flux-verified sequential depth composition (quon_core::optimization):
+    // the removed depth is the sum of the two cancelled gates' non-negative
+    // `depth_contribution` attributes (the circ verifier rejects negatives),
+    // so the func depth attribute never underflows.
+    quon_core::optimization::seq_depth(
+        previous.depth_contribution as u64,
+        current.depth_contribution as u64,
+    ) as i64
 }
 
 fn set_func_depth<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>, depth: &DepthExpr) {
