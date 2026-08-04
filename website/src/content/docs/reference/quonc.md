@@ -39,6 +39,28 @@ gate-model output path.
 quonc program.qn --emit-qasm > program.qasm
 ```
 
+### `--emit-na-mlir [PATH]`
+
+Emit `quantum.na` MLIR — **the canonical neutral-atom schedule IR**
+(ADR-0011). The planner's in-memory `ScheduleLayer`s lower through a single
+converter into a `quantum.na` textual program (`alloc_atom`, `place`, `move`,
+`entangle`, `measure`, `layer`). This is the primary artifact to archive and
+reason about; `--emit-na-schedule` is a derived visualization view, not a
+second source of truth. With no path, or with `-`, the MLIR is written to
+standard output (it takes stdout precedence over `--emit-na-schedule -`).
+
+```bash
+quonc program.qn \
+  --target targets/neutral_atom/generic_rna_v0.json \
+  --emit-na-mlir schedule.mlir --verify-na
+```
+
+`--verify-na` verifies the emitted MLIR; for QEC-backed programs verification
+runs automatically (ADR-0021). A verified schedule proves movement legality and
+layer scheduling — not optimality, and not a fidelity or threshold number. See
+[Backend targets and artifacts](/reference/backend-targets/) for the full
+artifact contract.
+
 ### `--emit-na-schedule [PATH]`
 
 Emit the neutral-atom schedule **visualization envelope** (JSON). This is a
@@ -116,8 +138,10 @@ identifiers. With no path, or with `-`, stats are written to standard output.
 This is a **separate artifact** from `--emit-resource-report` (issue #307) —
 compiler-internals telemetry about *how* the compile ran, not schedule/QEC
 evidence about the program. It requires the neutral-atom backend (the same
-target/backend constraints as `--emit-na-schedule`) and does not yet
-instrument the QEC hybrid per-round pipeline.
+target/backend constraints as `--emit-na-schedule`) and is supported for both
+bare-qubit and QEC-backed programs (#317). See
+[Backend targets and artifacts](/reference/backend-targets/) for the full
+artifact contract.
 
 ```bash
 quonc program.qn \
