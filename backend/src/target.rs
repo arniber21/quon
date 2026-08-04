@@ -7,7 +7,7 @@
 #[cfg(feature = "flux")]
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// Distance sentinel for an unreachable pair in [`ConnectivityGraph::dist`].
 ///
@@ -86,9 +86,9 @@ pub struct NoiseModel {
 /// matrix (Floyd-Warshall) for routing (SPEC.md §8.1).
 #[derive(Debug, Clone)]
 pub struct ConnectivityGraph {
-    pub num_qubits: usize,
-    pub edges: Vec<(usize, usize)>,
-    pub dist: Vec<Vec<usize>>,
+    num_qubits: usize,
+    edges: Vec<(usize, usize)>,
+    dist: Vec<Vec<usize>>,
 }
 
 impl ConnectivityGraph {
@@ -107,19 +107,26 @@ impl ConnectivityGraph {
     }
 
     /// Build a graph from an explicit (undirected, unit-weight) edge list,
-    /// validating every endpoint is in `0..num_qubits` and rejecting
-    /// self-loops *before* allocating the distance matrix.
+    /// validating every endpoint is in `0..num_qubits`, rejecting self-loops
+    /// and duplicate (including mirrored) edges *before* allocating the
+    /// distance matrix.
     pub fn try_from_edges(
         num_qubits: usize,
         edges: Vec<(usize, usize)>,
     ) -> Result<Self, crate::error::BackendError> {
         use crate::error::BackendError;
+        let mut seen: BTreeSet<(usize, usize)> = BTreeSet::new();
         for &(a, b) in &edges {
             if a == b {
                 return Err(BackendError::SelfLoop(a));
             }
             if !qubit_in_range(a, num_qubits) || !qubit_in_range(b, num_qubits) {
                 return Err(BackendError::EdgeOutOfRange { a, b, num_qubits });
+            }
+            // Canonicalize the undirected edge so `(a, b)` and `(b, a)` collapse.
+            let key = if a < b { (a, b) } else { (b, a) };
+            if !seen.insert(key) {
+                return Err(BackendError::DuplicateEdge { a, b });
             }
         }
         let dist = Self::floyd_warshall(num_qubits, &edges);
@@ -128,6 +135,16 @@ impl ConnectivityGraph {
             edges,
             dist,
         })
+    }
+
+    /// Number of physical qubits in the topology.
+    pub fn num_qubits(&self) -> usize {
+        self.num_qubits
+    }
+
+    /// The undirected edge list (each pair as supplied at construction).
+    pub fn edges(&self) -> &[(usize, usize)] {
+        &self.edges
     }
 
     /// All-pairs shortest paths over an undirected, unit-weight graph.
@@ -159,8 +176,18 @@ impl ConnectivityGraph {
     }
 
     /// Shortest-path distance between two qubits. Returns [`UNREACHABLE`] if
-    /// they lie in different connected components.
+    /// they lie in different connected components or if either index is out
+    /// of range — never panics on caller-provided indices.
+    ///
+    /// `#[trusted]` under Flux: the bounds check followed by indexing cannot
+    /// be discharged without a matrix refinement, so the body is taken on
+    /// faith (the guard makes a panic impossible).
+    #[cfg_attr(feature = "flux", trusted)]
     pub fn dist(&self, a: usize, b: usize) -> usize {
+        let n = self.num_qubits;
+        if a >= n || b >= n {
+            return UNREACHABLE;
+        }
         self.dist[a][b]
     }
 }
@@ -256,6 +283,64 @@ impl BackendTarget {
 }
 
 impl FixedTarget {
+    /// Construct a fixed target, deriving `num_qubits` from the topology.
+    ///
+    /// Infallible: the qubit count is an invariant of the topology, so the
+    /// two cannot disagree. Use this for trusted in-code construction (e.g.
+    /// [`crate::generic_openqasm`]). For descriptor loading where an
+    /// independent qubit count arrives from JSON, use [`Self::try_new`] to
+    /// validate agreement.
+    pub fn new(
+        topology: ConnectivityGraph,
+        native_gates: Vec<NativeGate>,
+        noise: NoiseModel,
+        meas_latency_us: f64,
+        supports_mid_circuit_meas: bool,
+        supports_feed_forward: bool,
+    ) -> Self {
+        let num_qubits = topology.num_qubits();
+        Self {
+            num_qubits,
+            topology,
+            native_gates,
+            noise,
+            meas_latency_us,
+            supports_mid_circuit_meas,
+            supports_feed_forward,
+        }
+    }
+
+    /// Construct a fixed target from an externally-provided qubit count,
+    /// validating that it agrees with the topology's qubit count.
+    ///
+    /// Use this for descriptor loading where `num_qubits` arrives from JSON
+    /// independent of the topology built from the same document. Returns
+    /// [`BackendError::InvalidTargetConfig`] on mismatch.
+    pub fn try_new(
+        num_qubits: usize,
+        topology: ConnectivityGraph,
+        native_gates: Vec<NativeGate>,
+        noise: NoiseModel,
+        meas_latency_us: f64,
+        supports_mid_circuit_meas: bool,
+        supports_feed_forward: bool,
+    ) -> Result<Self, crate::error::BackendError> {
+        if num_qubits != topology.num_qubits() {
+            return Err(crate::error::BackendError::InvalidTargetConfig(format!(
+                "num_qubits ({num_qubits}) does not match topology qubit count ({})",
+                topology.num_qubits()
+            )));
+        }
+        Ok(Self {
+            num_qubits,
+            topology,
+            native_gates,
+            noise,
+            meas_latency_us,
+            supports_mid_circuit_meas,
+            supports_feed_forward,
+        })
+    }
     /// True if a gate with this name is in the fixed target's native set.
     pub fn is_native(&self, gate: &str) -> bool {
         self.native_gates.iter().any(|g| g.name == gate)

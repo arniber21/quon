@@ -146,6 +146,118 @@ fn self_loop_is_rejected() {
     assert!(matches!(err, BackendError::SelfLoop(1)), "got {err:?}");
 }
 
+#[test]
+fn duplicate_edge_is_rejected() {
+    let err = ConnectivityGraph::try_from_edges(3, vec![(0, 1), (0, 1)]).unwrap_err();
+    assert!(
+        matches!(err, BackendError::DuplicateEdge { a: 0, b: 1 }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn mirrored_duplicate_edge_is_rejected() {
+    // (0, 1) and (1, 0) describe the same undirected edge.
+    let err = ConnectivityGraph::try_from_edges(3, vec![(0, 1), (1, 0)]).unwrap_err();
+    assert!(
+        matches!(err, BackendError::DuplicateEdge { a: 1, b: 0 }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn dist_out_of_range_returns_unreachable_not_panic() {
+    // A 2-qubit graph; indices 2 and 5 are out of range and must not panic.
+    let graph = ConnectivityGraph::try_from_edges(2, vec![(0, 1)]).expect("valid graph");
+    assert_eq!(graph.dist(2, 0), UNREACHABLE);
+    assert_eq!(graph.dist(0, 5), UNREACHABLE);
+    assert_eq!(graph.dist(9, 9), UNREACHABLE);
+    // In-range lookups still work.
+    assert_eq!(graph.dist(0, 1), 1);
+    assert_eq!(graph.dist(1, 1), 0);
+}
+
+#[test]
+fn valid_disconnected_graph_preserves_component_distances() {
+    // Three components on a 6-qubit device: {0,1}, {2,3,4}, {5}.
+    let edges = vec![(0, 1), (2, 3), (3, 4)];
+    let graph = ConnectivityGraph::try_from_edges(6, edges).expect("valid graph");
+    assert_eq!(graph.num_qubits(), 6);
+    assert_eq!(graph.dist(0, 1), 1);
+    assert_eq!(graph.dist(3, 4), 1);
+    assert_eq!(graph.dist(2, 4), 2);
+    assert_eq!(graph.dist(5, 5), 0);
+    // Cross-component pairs are unreachable.
+    assert_eq!(graph.dist(0, 2), UNREACHABLE);
+    assert_eq!(graph.dist(1, 5), UNREACHABLE);
+    assert_eq!(graph.dist(4, 5), UNREACHABLE);
+}
+
+// --- FixedTarget construction validation -----------------------------------
+
+use backend::target::{NativeGate, NoiseModel};
+
+fn trivial_native_gates() -> Vec<NativeGate> {
+    vec![
+        NativeGate::passthrough("x", 1),
+        NativeGate::passthrough("cx", 2),
+    ]
+}
+
+#[test]
+fn fixed_target_new_derives_num_qubits_from_topology() {
+    let topology = ConnectivityGraph::try_from_edges(4, vec![(0, 1), (1, 2), (2, 3)])
+        .expect("valid topology");
+    let target = FixedTarget::new(
+        topology,
+        trivial_native_gates(),
+        NoiseModel::default(),
+        10.0,
+        true,
+        false,
+    );
+    assert_eq!(target.num_qubits, 4);
+    assert_eq!(target.topology.num_qubits(), 4);
+}
+
+#[test]
+fn fixed_target_try_new_rejects_inconsistent_dimensions() {
+    // Topology has 4 qubits but the declared count is 3.
+    let topology = ConnectivityGraph::try_from_edges(4, vec![(0, 1), (1, 2), (2, 3)])
+        .expect("valid topology");
+    let err = FixedTarget::try_new(
+        3,
+        topology,
+        trivial_native_gates(),
+        NoiseModel::default(),
+        10.0,
+        true,
+        false,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, BackendError::InvalidTargetConfig(_)),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn fixed_target_try_new_accepts_agreeing_dimensions() {
+    let topology = ConnectivityGraph::try_from_edges(3, vec![(0, 1), (1, 2)])
+        .expect("valid topology");
+    let target = FixedTarget::try_new(
+        3,
+        topology,
+        trivial_native_gates(),
+        NoiseModel::default(),
+        7.0,
+        false,
+        false,
+    )
+    .expect("dimensions agree");
+    assert_eq!(target.num_qubits, 3);
+}
+
 // --- JSON loading ----------------------------------------------------------
 
 #[test]
@@ -156,8 +268,8 @@ fn spec_5q_device_loads_correctly() {
     assert_eq!(target.id, "my_device");
     assert_eq!(fixed.num_qubits, 5);
     assert_eq!(
-        fixed.topology.edges,
-        vec![(0, 1), (1, 2), (2, 3), (3, 4), (0, 2)]
+        fixed.topology.edges(),
+        &[(0, 1), (1, 2), (2, 3), (3, 4), (0, 2)]
     );
 
     for g in ["cx", "rz", "sx", "x"] {
@@ -259,7 +371,7 @@ fn json_round_trips_through_descriptor() {
 
     assert_eq!(reloaded.id, target.id);
     assert_eq!(reloaded_fixed.num_qubits, target_fixed.num_qubits);
-    assert_eq!(reloaded_fixed.topology.edges, target_fixed.topology.edges);
+    assert_eq!(reloaded_fixed.topology.edges(), target_fixed.topology.edges());
     assert_eq!(
         reloaded_fixed.noise.single_qubit_fidelity,
         target_fixed.noise.single_qubit_fidelity
@@ -374,8 +486,8 @@ fn out_of_range_two_qubit_noise_is_rejected() {
 #[test]
 fn zero_and_one_qubit_graphs_are_well_formed() {
     let empty = ConnectivityGraph::all_to_all(0);
-    assert_eq!(empty.num_qubits, 0);
-    assert!(empty.dist.is_empty());
+    assert_eq!(empty.num_qubits(), 0);
+    assert!(empty.edges().is_empty());
 
     let single = ConnectivityGraph::all_to_all(1);
     assert_eq!(single.dist(0, 0), 0);
@@ -599,7 +711,7 @@ fn fake_manila_v2_snapshot_loads_with_noise() {
 
     assert_eq!(target.id, "fake_manila_v2");
     assert_eq!(fixed.num_qubits, 5);
-    assert_eq!(fixed.topology.edges.len(), 4);
+    assert_eq!(fixed.topology.edges().len(), 4);
     assert!(target.is_native("cx"));
     assert!(target.is_native("sx"));
     assert!(

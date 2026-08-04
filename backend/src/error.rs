@@ -22,6 +22,10 @@ pub enum BackendError {
     #[error("self-loop edge on qubit {0} is not allowed")]
     SelfLoop(usize),
 
+    /// A connectivity edge duplicates an undirected pair already present.
+    #[error("duplicate connectivity edge ({a}, {b})")]
+    DuplicateEdge { a: usize, b: usize },
+
     /// A native gate name has no registered decomposition.
     #[error("unknown native gate `{0}` (no decomposition registered)")]
     UnknownGate(String),

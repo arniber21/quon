@@ -299,15 +299,15 @@ fn fixed_target_from_descriptor(d: FixedTargetDescriptor) -> Result<BackendTarge
     let noise = d.noise.into_model(d.num_qubits)?;
     Ok(BackendTarget::fixed(
         d.id,
-        FixedTarget {
-            num_qubits: d.num_qubits,
+        FixedTarget::try_new(
+            d.num_qubits,
             topology,
             native_gates,
             noise,
-            meas_latency_us: d.meas_latency_us,
-            supports_mid_circuit_meas: d.supports_mid_circuit_meas,
-            supports_feed_forward: d.supports_feed_forward,
-        },
+            d.meas_latency_us,
+            d.supports_mid_circuit_meas,
+            d.supports_feed_forward,
+        )?,
     ))
 }
 
@@ -351,7 +351,7 @@ fn fixed_target_to_descriptor(id: &str, target: &FixedTarget) -> FixedTargetDesc
         id: id.to_owned(),
         num_qubits: target.num_qubits,
         topology: TopologyDescriptor {
-            edges: target.topology.edges.clone(),
+            edges: target.topology.edges().to_vec(),
         },
         native_gates: target.native_gates.iter().map(|g| g.name.clone()).collect(),
         noise,

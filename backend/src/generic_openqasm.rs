@@ -10,18 +10,16 @@ use crate::target::{BackendTarget, ConnectivityGraph, FixedTarget, NativeGate, N
 pub fn target(num_qubits: usize) -> BackendTarget {
     BackendTarget::fixed(
         "generic_openqasm",
-        FixedTarget {
-            num_qubits,
-            // All-to-all is valid by construction, so no fallible path here.
-            topology: ConnectivityGraph::all_to_all(num_qubits),
-            native_gates: std_gates()
+        FixedTarget::new(
+            ConnectivityGraph::all_to_all(num_qubits),
+            std_gates()
                 .iter()
                 .map(|(name, arity)| NativeGate::passthrough(*name, *arity))
                 .collect(),
-            noise: NoiseModel::default(),
-            meas_latency_us: 0.0,
-            supports_mid_circuit_meas: true,
-            supports_feed_forward: true,
-        },
+            NoiseModel::default(),
+            0.0,
+            true,
+            true,
+        ),
     )
 }

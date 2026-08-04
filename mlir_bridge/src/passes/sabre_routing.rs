@@ -268,7 +268,7 @@ fn best_swap(
     let mut best: Option<((usize, usize), usize, f64)> = None;
     let current_dist = target.topology.dist(p_a, p_b);
     let baseline_window_cost = window_swap_depth(target, layout, window);
-    for &(u, v) in &target.topology.edges {
+    for &(u, v) in target.topology.edges() {
         // Only SWAPs that move at least one front-layer endpoint can reduce
         // `current_dist`; unrelated edges preserve distance and would spin.
         if u != p_a && u != p_b && v != p_a && v != p_b {
