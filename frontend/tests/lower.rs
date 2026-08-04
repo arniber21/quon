@@ -307,3 +307,101 @@ fn main(): Q<Bit> = run {
     assert!(!text.contains("quantum.circ.cond_apply"), "{text}");
     assert!(!text.contains("quantum.circ.run"), "{text}");
 }
+/// `init_plus()` lowers to a fresh `test.qubit` allocation followed by an H
+/// gate on that wire (issue #368). The prep gate threads the allocated qubit,
+/// producing a new SSA value returned from the run block.
+#[test]
+fn init_plus_lowers_to_allocation_then_h() {
+    let src = r#"
+fn main(): Q<Qubit> = run {
+    q <- init_plus()
+    return q
+}
+"#;
+    let text = lower_text(src);
+    assert!(text.contains("test.qubit"), "missing allocation: {text}");
+    assert!(
+        text.contains(r#"gate_name = "H""#),
+        "missing H prep gate: {text}"
+    );
+    assert!(
+        !text.contains(r#"gate_name = "X""#),
+        "init_plus must not emit X: {text}"
+    );
+}
+
+/// `init_one()` lowers to a fresh `test.qubit` allocation followed by an X
+/// gate on that wire (issue #368).
+#[test]
+fn init_one_lowers_to_allocation_then_x() {
+    let src = r#"
+fn main(): Q<Qubit> = run {
+    q <- init_one()
+    return q
+}
+"#;
+    let text = lower_text(src);
+    assert!(text.contains("test.qubit"), "missing allocation: {text}");
+    assert!(
+        text.contains(r#"gate_name = "X""#),
+        "missing X prep gate: {text}"
+    );
+    assert!(
+        !text.contains(r#"gate_name = "H""#),
+        "init_one must not emit H: {text}"
+    );
+}
+
+/// When allocating multiple qubits, the prep gate from `init_plus()` applies
+/// only to its own freshly-allocated wire, not to a sibling `qubit()` wire
+/// (issue #368 acceptance criterion).
+#[test]
+fn init_plus_prep_gate_targets_only_allocated_wire() {
+    let src = r#"
+fn main(): Q<(Bit, Bit)> = run {
+    q1 <- qubit()
+    q2 <- init_plus()
+    b1 <- measure(q1)
+    b2 <- measure(q2)
+    return (b1, b2)
+}
+"#;
+    let text = lower_text(src);
+    // Two allocations, exactly one H gate (on q2's wire).
+    assert_eq!(
+        text.matches("test.qubit").count(),
+        2,
+        "expected two allocations: {text}"
+    );
+    assert_eq!(
+        text.matches(r#"gate_name = "H""#).count(),
+        1,
+        "expected exactly one H gate: {text}"
+    );
+    assert!(
+        !text.contains(r#"gate_name = "X""#),
+        "no X expected: {text}"
+    );
+}
+
+/// Bare `qubit()` allocation remains unchanged — no prep gate emitted
+/// (issue #368: existing behavior must not regress).
+#[test]
+fn bare_qubit_allocation_emits_no_prep_gate() {
+    let src = r#"
+fn main(): Q<Qubit> = run {
+    q <- qubit()
+    return q
+}
+"#;
+    let text = lower_text(src);
+    assert!(text.contains("test.qubit"), "missing allocation: {text}");
+    assert!(
+        !text.contains(r#"gate_name = "H""#),
+        "qubit() must not emit H: {text}"
+    );
+    assert!(
+        !text.contains(r#"gate_name = "X""#),
+        "qubit() must not emit X: {text}"
+    );
+}
