@@ -17,6 +17,7 @@ impl DiagnosticCode {
     // Lexer
     pub const LEX_INVALID_CHAR: Self = Self("quon.lex.invalid-char");
     pub const LEX_UNTERMINATED_COMMENT: Self = Self("quon.lex.unterminated-comment");
+    pub const LEX_UNSUPPORTED_COMMENT: Self = Self("quon.lex.unsupported-comment");
 
     // Parser (v1: default bucket only)
     pub const PARSE_UNEXPECTED_TOKEN: Self = Self("quon.parse.unexpected-token");
@@ -217,9 +218,10 @@ pub(crate) fn from_stage(errors: Vec<Sp<String>>) -> Vec<Diagnostic> {
     errors.into_iter().map(Diagnostic::from).collect()
 }
 
-/// Classify a lexer error message into a stable code.
 pub(crate) fn classify_lex_error(src: &str, message: &str, span: SimpleSpan) -> RichDiagnostic {
-    let code = if (message.contains("comment") && message.contains("unclosed"))
+    let code = if message.contains("C-style line comments") {
+        DiagnosticCode::LEX_UNSUPPORTED_COMMENT
+    } else if (message.contains("comment") && message.contains("unclosed"))
         || unterminated_block_comment_at(src, span)
     {
         DiagnosticCode::LEX_UNTERMINATED_COMMENT

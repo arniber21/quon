@@ -268,6 +268,57 @@ the optimizer in an ambiguous state. The full pipeline is documented in the
 explored stage-by-stage in the [compiler internals](/architecture/compiler-internals/)
 page `(rationale — Architecture)`.
 
+## Comments
+
+Quon source uses two comment spellings, both drawn from the language's
+own punctuation rather than from C:
+
+- **Line comments** start with `--` and run to the end of the line. Use them for
+  per-gate notes, citations, or short rationale.
+
+  ```kotlin
+  fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+      H @0 |> CNOT @(0, 1) -- prepare a Bell pair
+  }
+  ```
+
+- **Block comments** use `{- ... -}` and may span multiple lines or nest. Use
+  them for longer explanations, including over a circuit body.
+
+  ```kotlin
+  {- This circuit prepares the maximally entangled Bell state |Φ+⟩.
+     See Nielsen & Chuang, §1.3. -}
+  fn bell_state(): Circuit<2, 2, 2, Clifford> = circuit {
+      H @0 |> CNOT @(0, 1)
+  }
+  ```
+
+Block comments nest, so a `{- -}` region can safely enclose another `{- -}`
+region when commenting out a block of code that itself contains comments.
+
+### C-style `//` is not a comment
+
+A common first instinct is to reach for `//`, the line-comment spelling used by
+C, Java, and Rust. Quon does **not** support `//` — `--` is the line-comment
+spelling. Writing `//` is a lex error, not a silent no-op, and the diagnostic
+names the unsupported spelling and recommends the supported one:
+
+```kotlin
+fn f(): Int = 1 // oops
+```
+
+```
+error: C-style line comments (`//`) are not supported; use `--` for line comments or `{- ... -}` for block comments
+  --> source.qn:1:16
+   |
+1 | fn f(): Int = 1 // oops
+   |                ^^
+```
+
+`/`, on its own, remains the division operator on classical integers and floats;
+only the two-slash sequence is rejected.
+
+
 ## How to read this guide
 
 This guide introduces Quon one concept at a time, in an order chosen so that

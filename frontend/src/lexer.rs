@@ -140,6 +140,9 @@ impl std::fmt::Display for Token {
 /// On success returns the tokens (no `Eof` is appended; the parser uses `end()`).
 /// On failure returns one `(message, span)` per lexical error — never panics.
 pub fn lex(src: &str) -> Result<Vec<Sp<Token>>, Vec<Sp<String>>> {
+    if let Some(start) = c_style_comment_outside_comments(src) {
+        return Err(vec![(C_STYLE_COMMENT_MSG.to_owned(), (start..start + 2).into())]);
+    }
     lexer().parse(src).into_result().map_err(|errs| {
         errs.into_iter()
             .map(|e| (e.to_string(), *e.span()))
@@ -149,6 +152,13 @@ pub fn lex(src: &str) -> Result<Vec<Sp<Token>>, Vec<Sp<String>>> {
 
 /// Tokenize `src`, returning structured diagnostics on failure.
 pub fn lex_rich(src: &str) -> Result<Vec<Sp<Token>>, Vec<crate::diagnostics::RichDiagnostic>> {
+    if let Some(start) = c_style_comment_outside_comments(src) {
+        return Err(vec![crate::diagnostics::classify_lex_error(
+            src,
+            C_STYLE_COMMENT_MSG,
+            (start..start + 2).into(),
+        )]);
+    }
     if let Some(start) = unterminated_block_comment_outside_line_comments(src) {
         return Err(vec![crate::diagnostics::RichDiagnostic::new(
             crate::diagnostics::DiagnosticCode::LEX_UNTERMINATED_COMMENT,
@@ -201,6 +211,61 @@ fn unterminated_block_comment_outside_line_comments(src: &str) -> Option<usize> 
                 return Some(open);
             }
             continue;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Diagnostic text for the `//` (C-style line comment) mistake.
+///
+/// `//` is not a Quon operator and the lexer has no C-style comment syntax, so a
+/// first-time author reaching for `//` only gets a generic parse error. This
+/// message names the unsupported spelling and recommends the supported `--`
+/// (line) and `{- ... -}` (block) forms.
+const C_STYLE_COMMENT_MSG: &str = "C-style line comments (`//`) are not supported; use `--` for line comments or `{- ... -}` for block comments";
+
+/// Detect a `//` sequence in real source — outside `--` line comments and
+/// `{- -}` block comments — and return the byte offset of its first slash.
+///
+/// The chumsky lexer has no `//` token, so without this guard `//` lexes as two
+/// `Slash` tokens and the user sees an opaque "unexpected token" parser error.
+/// Surfacing the mistake at the lex boundary lets us emit a diagnostic that
+/// recommends the supported comment spellings.
+fn c_style_comment_outside_comments(src: &str) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // `--` line comment: skip to end of line (any `//` inside is comment text).
+        if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Nested `{- -}` block comment: skip the whole block (any `//` inside is
+        // comment text). An unterminated block is reported separately by
+        // [`unterminated_block_comment_outside_line_comments`].
+        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'-' {
+            let mut depth = 1u32;
+            i += 2;
+            while i + 1 < bytes.len() && depth > 0 {
+                if bytes[i] == b'{' && bytes[i + 1] == b'-' {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i] == b'-' && bytes[i + 1] == b'}' {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        // `//` in real source: the C-style line-comment mistake.
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            return Some(i);
         }
         i += 1;
     }

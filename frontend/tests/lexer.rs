@@ -190,3 +190,47 @@ fn unknown_char_is_span_accurate_error_not_panic() {
     // The offending `#` is at byte offset 2.
     assert_eq!(span.start, 2);
 }
+
+
+#[test]
+fn c_style_comment_is_lex_error_recommending_dash() {
+    // `//` is not a Quon operator; the common C-style comment mistake must
+    // surface as a lexer error that names the spelling and recommends `--`.
+    let err = lex("a // comment").expect_err("expected `//` to be a lex error");
+    assert!(!err.is_empty(), "no errors emitted for `//`");
+    let (msg, span) = &err[0];
+    assert!(
+        msg.contains("//"),
+        "message should name the unsupported spelling: {msg:?}"
+    );
+    assert!(
+        msg.contains("--"),
+        "message should recommend `--`: {msg:?}"
+    );
+    // The span covers both slashes, starting at the first one (byte offset 2).
+    assert_eq!(span.start, 2);
+    assert_eq!(span.end - span.start, 2);
+}
+
+#[test]
+fn single_slash_still_lexes() {
+    // `/` is the division operator and must still tokenize after the `//` guard.
+    use Token::*;
+    assert_eq!(toks("a / b"), vec![Ident("a".into()), Slash, Ident("b".into())]);
+}
+
+#[test]
+fn c_style_comment_not_flagged_inside_real_comments() {
+    // `//` appearing inside a `--` line comment or `{- -}` block comment is
+    // part of the comment text, not source — it must not be flagged.
+    use Token::*;
+    assert_eq!(toks("a -- https://example.com\nb"), vec![
+        Ident("a".into()),
+        Newline,
+        Ident("b".into()),
+    ]);
+    assert_eq!(toks("a {- // ignored -} b"), vec![
+        Ident("a".into()),
+        Ident("b".into()),
+    ]);
+}

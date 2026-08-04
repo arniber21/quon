@@ -327,3 +327,29 @@ fn nat_only_alias_params_still_parse() {
         other => panic!("expected type alias, got {other:?}"),
     }
 }
+
+
+#[test]
+fn valid_comments_parse() {
+    // Line and block comments are part of the lex grammar; a program using both
+    // must parse exactly like the stripped form.
+    let with_comments = "\
+-- a line comment before the declaration
+fn f(): Int = {- block comment -} 1 + 2 -- trailing line comment";
+    let stripped = "fn f(): Int = 1 + 2";
+    assert_eq!(
+        parse_stripped(with_comments),
+        parse_stripped(stripped),
+        "comments must not alter the parsed AST"
+    );
+}
+
+#[test]
+fn c_style_comment_fails_at_lex_with_recommendation() {
+    // `//` is rejected by the lexer, so the program never reaches the parser;
+    // the lex error must name the spelling and recommend `--`.
+    let src = "fn f(): Int = 1 // oops";
+    let err = lex(src).expect_err("expected `//` to be a lex error");
+    let (msg, _) = &err[0];
+    assert!(msg.contains("//") && msg.contains("--"), "lex message: {msg:?}");
+}
