@@ -19,6 +19,7 @@
 //! Composition rules: sequential composition (`|>`) adds depths, parallel
 //! composition (`par`) takes their `max`, and `controlled` adds one.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -136,6 +137,129 @@ impl DepthExpr {
         out.push(')');
     }
 
+    /// Compare in the same order as lexicographic comparison of the canonical
+    /// S-expression string ([`to_sexpr`]), but without allocating.
+    ///
+    /// This is the basis of the [`Ord`] implementation so that canonical
+    /// operand sorting in [`norm_ac`] needs no temporary `String` per
+    /// comparison. The S-expression form is `(op lhs rhs)` for binary nodes,
+    /// `nat` for literals, `varname` for variables, and `_` for [`Hole`];
+    /// ASCII ordering of those leading bytes is `(` < digit < uppercase letter
+    /// < `_` < lowercase letter, which the case split below mirrors exactly.
+    ///
+    /// [`Hole`]: DepthExpr::Hole
+    fn cmp_sexpr(&self, other: &Self) -> Ordering {
+        // Binary nodes serialise as `(op …)` and so sort before any atom,
+        // whose first byte (digit, letter, or `_`) is always greater than `(`.
+        match (self.is_binary(), other.is_binary()) {
+            (true, true) => self.cmp_binary(other),
+            (false, false) => self.cmp_atom(other),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+        }
+    }
+
+    /// Whether this is one of the six binary operator nodes.
+    fn is_binary(&self) -> bool {
+        matches!(
+            self,
+            DepthExpr::Add(..)
+                | DepthExpr::Mul(..)
+                | DepthExpr::Max(..)
+                | DepthExpr::Sub(..)
+                | DepthExpr::Div(..)
+                | DepthExpr::Exp(..)
+        )
+    }
+
+    /// The first byte following `(` in the S-expression of a binary node: the
+    /// operator glyph. All six are distinct, so this orders different
+    /// operators exactly as `(op …)` string comparison would:
+    /// `*` < `+` < `-` < `/` < `^` < `max`.
+    fn op_first_byte(&self) -> u8 {
+        match self {
+            DepthExpr::Mul(..) => b'*',
+            DepthExpr::Add(..) => b'+',
+            DepthExpr::Sub(..) => b'-',
+            DepthExpr::Div(..) => b'/',
+            DepthExpr::Exp(..) => b'^',
+            DepthExpr::Max(..) => b'm',
+            _ => unreachable!("op_first_byte on a non-binary DepthExpr"),
+        }
+    }
+
+    fn children(&self) -> (&DepthExpr, &DepthExpr) {
+        match self {
+            DepthExpr::Add(l, r)
+            | DepthExpr::Mul(l, r)
+            | DepthExpr::Max(l, r)
+            | DepthExpr::Sub(l, r)
+            | DepthExpr::Div(l, r)
+            | DepthExpr::Exp(l, r) => (l, r),
+            _ => unreachable!("children on a non-binary DepthExpr"),
+        }
+    }
+
+    /// Compare two binary nodes: by operator glyph, then left subtree, then
+    /// right subtree — exactly mirroring `(op lhs rhs)` string comparison.
+    fn cmp_binary(&self, other: &Self) -> Ordering {
+        match self.op_first_byte().cmp(&other.op_first_byte()) {
+            Ordering::Equal => {
+                let (la, ra) = self.children();
+                let (lb, rb) = other.children();
+                match la.cmp_sexpr(lb) {
+                    Ordering::Equal => ra.cmp_sexpr(rb),
+                    ord => ord,
+                }
+            }
+            ord => ord,
+        }
+    }
+
+    /// The first byte of the S-expression of an atom. Byte `0` stands in for
+    /// the empty string (an impossible-by-construction variable name) so it
+    /// sorts first, matching `"".cmp(…)`.
+    fn atom_first_byte(&self) -> u8 {
+        match self {
+            DepthExpr::Nat(n) => leading_decimal_byte(*n),
+            DepthExpr::Var(name) => name.as_bytes().first().copied().unwrap_or(0),
+            DepthExpr::Hole => b'_',
+            _ => unreachable!("atom_first_byte on a non-atom DepthExpr"),
+        }
+    }
+
+    /// Compare two atoms. First bytes decide unless they match, in which case
+    /// the full atom strings are compared — the same two-phase walk a byte-wise
+    /// string comparison performs.
+    fn cmp_atom(&self, other: &Self) -> Ordering {
+        match self.atom_first_byte().cmp(&other.atom_first_byte()) {
+            Ordering::Equal => self.cmp_atom_full(other),
+            ord => ord,
+        }
+    }
+
+    /// Full comparison of two atoms known to share their first S-expr byte.
+    /// `Nat` is formatted into a stack buffer (no allocation); `Var` borrows
+    /// its name; `Hole` is the literal `_`.
+    fn cmp_atom_full(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (DepthExpr::Nat(a), DepthExpr::Nat(b)) => {
+                let mut ba = [0u8; 20];
+                let mut bb = [0u8; 20];
+                let la = write_decimal(*a, &mut ba);
+                let lb = write_decimal(*b, &mut bb);
+                ba[la..].cmp(&bb[lb..])
+            }
+            (DepthExpr::Var(a), DepthExpr::Var(b)) => a.as_bytes().cmp(b.as_bytes()),
+            (DepthExpr::Hole, DepthExpr::Hole) => Ordering::Equal,
+            // A `Var` whose name starts with `_` versus `Hole` (`_`): compare
+            // the full name against the single underscore.
+            (DepthExpr::Var(a), DepthExpr::Hole) => a.as_bytes().cmp(&b"_"[..]),
+            (DepthExpr::Hole, DepthExpr::Var(b)) => (&b"_"[..]).cmp(b.as_bytes()),
+            _ => unreachable!("cmp_atom_full on atoms with differing first bytes"),
+        }
+    }
+
     /// A canonical form for structural comparison of depth bounds.
     ///
     /// Folds literals and canonicalises the three associative–commutative operators
@@ -241,6 +365,48 @@ impl fmt::Display for DepthExpr {
     }
 }
 
+/// Total ordering of [`DepthExpr`] that mirrors lexicographic comparison of
+/// the canonical S-expression string, without allocating. Used by [`norm_ac`]
+/// to sort operands with `sort()` instead of `sort_by_key(to_sexpr)`.
+impl Ord for DepthExpr {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.cmp_sexpr(other)
+    }
+}
+
+impl PartialOrd for DepthExpr {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// The most-significant decimal digit of `n` as an ASCII byte.
+fn leading_decimal_byte(n: u64) -> u8 {
+    let mut d = n;
+    while d >= 10 {
+        d /= 10;
+    }
+    b'0' + d as u8
+}
+
+/// Write the decimal representation of `n` into `buf` (right-justified) and
+/// return the start index; the digits occupy `buf[start..20]`. No allocation.
+/// A `u64` has at most 20 decimal digits, so a 20-byte buffer always fits.
+fn write_decimal(n: u64, buf: &mut [u8; 20]) -> usize {
+    if n == 0 {
+        buf[19] = b'0';
+        return 19;
+    }
+    let mut i = 20;
+    let mut m = n;
+    while m > 0 {
+        i -= 1;
+        buf[i] = b'0' + (m % 10) as u8;
+        m /= 10;
+    }
+    i
+}
+
 /// One of the three associative–commutative depth operators, with the algebraic data
 /// [`norm_ac`] needs: how to fold two literals and what the operator's identity is.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -303,7 +469,7 @@ fn norm_ac(e: &DepthExpr, op: AcOp) -> DepthExpr {
 
     // `max` is idempotent: dedupe its non-constant operands.
     if op == AcOp::Max {
-        terms.sort_by_key(DepthExpr::to_sexpr);
+        terms.sort();
         terms.dedup();
     }
 
@@ -313,7 +479,7 @@ fn norm_ac(e: &DepthExpr, op: AcOp) -> DepthExpr {
     if konst != op.identity() || operands.is_empty() {
         operands.push(DepthExpr::Nat(konst));
     }
-    operands.sort_by_key(DepthExpr::to_sexpr);
+    operands.sort();
 
     // Rebuild left-associated in sorted order. An empty operand list cannot arise here (the
     // constant is pushed when nothing else remains), but the operator's identity is the
@@ -609,5 +775,96 @@ mod tests {
         assert!(!var("a").seq(var("b")).equiv(&var("a"))); // a + b ≠ a
         assert!(!var("x").seq(var("x")).equiv(&var("x"))); // x + x ≠ x (Add not idempotent)
         assert!(!nat(2).equiv(&nat(3)));
+    }
+
+    // ── Canonical ordering (issue #398) ───────────────────────────────────────
+
+    /// The `Ord` implementation must agree with lexicographic comparison of the
+    /// S-expression string for every pair, so swapping `sort_by_key(to_sexpr)`
+    /// for `sort()` leaves canonical output byte-for-byte stable.
+    #[test]
+    fn ord_matches_sexpr_string_ordering() {
+        let zero = || nat(0);
+        let samples = [
+            nat(0),
+            nat(1),
+            nat(2),
+            nat(9),
+            nat(10),
+            nat(42),
+            var("A"),
+            var("Z"),
+            var("_x"),
+            var("a"),
+            var("z"),
+            var("k"),
+            var("n_steps"),
+            DepthExpr::Hole,
+            var("a").seq(nat(1)),                 // (+ a 1)
+            DepthExpr::repeat(var("n"), nat(4)),  // (* n 4)
+            var("d").par(var("e")),               // (max d e)
+            var("a").minus(nat(1)),               // (- a 1)
+            var("n").quot(nat(2)),                // (/ n 2)
+            var("n").power(nat(2)),               // (^ n 2)
+            var("a").seq(var("b")).par(var("c")), // (max (+ a b) c)
+            zero().seq(var("x")),                 // (+ 0 x)
+        ];
+        for a in &samples {
+            for b in &samples {
+                let by_ord = a.cmp(b);
+                let by_sexpr = a.to_sexpr().cmp(&b.to_sexpr());
+                assert_eq!(
+                    by_ord, by_sexpr,
+                    "Ord disagrees with sexpr string cmp:\n  a = {}\n  b = {}\n  ord = {:?}\n  sexpr = {:?}",
+                    a.to_sexpr(),
+                    b.to_sexpr(),
+                    by_ord,
+                    by_sexpr,
+                );
+            }
+        }
+    }
+
+    /// A deeply nested AC expression with many operands normalises without
+    /// allocating per comparison and produces a deterministic, sorted canonical
+    /// form. Exercises `Add`, `Mul`, and `Max` together.
+    #[test]
+    fn normalises_large_nested_expression() {
+        // Build `((((1+a) + (2+b)) + (3+c)) + … )` interleaved with a `max`
+        // and a scaling `*`, plus a trailing constant, so the flattened
+        // operand list spans every atom kind and several binary ops.
+        let mut expr = nat(1).seq(var("a"));
+        for i in 1..=200u64 {
+            let term = nat(i + 1).seq(var(&format!("v{i}")));
+            expr = expr.seq(term);
+        }
+        // Wrap part of it in a `max` with another large sum, and scale.
+        let other = (0..100u64)
+            .map(|i| var(&format!("w{i}")))
+            .fold(nat(0), |acc, v| acc.seq(v));
+        let expr = DepthExpr::repeat(
+            DepthExpr::Max(Box::new(expr), Box::new(other)),
+            nat(3),
+        );
+
+        let once = expr.normalize();
+        // Idempotent: a second pass is a no-op (also exercises the sort path again).
+        let twice = once.normalize();
+        assert_eq!(once, twice, "normalisation not idempotent at scale");
+
+        // The canonical sexpr is stable and the variable operands are sorted:
+        // `max` operands are deduped and ordered, and within the outer `*` the
+        // (max …) node sorts before the literal `3` because `(` < digit.
+        let sexpr = once.to_sexpr();
+        assert!(
+            sexpr.starts_with("(* (max "),
+            "expected `(* (max …) 3)`, got: {sexpr}"
+        );
+        assert!(sexpr.ends_with(" 3)"), "expected scale by 3, got: {sexpr}");
+        // No operand was dropped: 200 `v*` vars + 100 `w*` vars appear under max.
+        let v_count = sexpr.matches("v").count();
+        let w_count = sexpr.matches("w").count();
+        assert_eq!(v_count, 200, "lost v* operands: {sexpr}");
+        assert_eq!(w_count, 100, "lost w* operands: {sexpr}");
     }
 }
