@@ -643,6 +643,42 @@ impl<'c> LoweringCtx<'c> {
                                 return self.append_dynamic_op(op, 1);
                             }
                         }
+                        // `init_one()` — allocate a fresh qubit and apply X
+                        // (prepare |1⟩). SPEC §5.9: same shape as `qubit()`
+                        // but post-selects the computational-basis |1⟩ state.
+                        "init_one" if args.len() == 1 => {
+                            if let Expr::Unit = &args[0].0 {
+                                let alloc_op = self.foreign_qubit()?;
+                                let wires = self.append_dynamic_op(alloc_op, 1)?;
+                                let x_op = qc::gate(
+                                    self.context,
+                                    "X",
+                                    1, // depth_contribution (Clifford)
+                                    true, // clifford
+                                    &wires,
+                                    self.location,
+                                )?;
+                                return Ok(self.append_dynamic_op(x_op, 1)?);
+                            }
+                        }
+                        // `init_plus()` — allocate a fresh qubit and apply H
+                        // (prepare |+⟩). SPEC §5.9: same shape as `qubit()`
+                        // but post-selects the Hadamard-basis |+⟩ state.
+                        "init_plus" if args.len() == 1 => {
+                            if let Expr::Unit = &args[0].0 {
+                                let alloc_op = self.foreign_qubit()?;
+                                let wires = self.append_dynamic_op(alloc_op, 1)?;
+                                let h_op = qc::gate(
+                                    self.context,
+                                    "H",
+                                    1, // depth_contribution (Clifford)
+                                    true, // clifford
+                                    &wires,
+                                    self.location,
+                                )?;
+                                return Ok(self.append_dynamic_op(h_op, 1)?);
+                            }
+                        }
                         // `measure(q)` — consume one qubit, produce one bit.
                         "measure" if args.len() == 1 => {
                             let qubit = single_value(self.eval(args[0], env)?)?;
