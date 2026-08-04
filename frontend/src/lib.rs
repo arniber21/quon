@@ -18,6 +18,7 @@ pub mod diagnostics;
 pub mod lexer;
 pub mod parser;
 pub mod pretty;
+pub mod visitor;
 
 // The Melior-free frontend pipeline (parse → desugar → typecheck → elaborate →
 // specialize) gates on `analyze`, which pulls in only `quon_core` / `z3` — no

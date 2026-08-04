@@ -114,25 +114,24 @@ pub fn is_entangling_gate(name: &str) -> bool {
     )
 }
 
+// The structural recursion (which children each node has, and in what order) is
+// owned by `frontend::visitor`'s canonical `walk_*` drivers (issue #399). The
+// lint-specific concern threaded on top is circuit/borrow nesting: the same
+// rule callback must observe `ctx.in_circuit()` / `ctx.borrow_depth()` that
+// reflect the enclosing `circuit` / `borrow` block. `LintWalker` implements
+// `frontend::visitor::Visitor`, pushing/popping that nesting in the
+// pre/post-expr hooks, so the canonical driver descends while the callback sees
+// the correct `LintContext` at every node — preserving the exact pre-order
+// callback sequence the rules relied on, including the historical quirk that a
+// `Bind`/`Let` statement's right-hand side is visited but not descended into.
 pub fn walk_stmts(
     ctx: &LintContext<'_>,
     stmts: &[Sp<frontend::ast::Stmt>],
     visit: &mut dyn FnMut(&LintContext<'_>, &Sp<frontend::ast::Expr>),
 ) {
+    let mut walker = LintWalker::new(ctx, visit);
     for stmt in stmts {
-        walk_stmt(ctx, stmt, visit);
-    }
-}
-
-pub fn walk_stmt(
-    ctx: &LintContext<'_>,
-    stmt: &Sp<frontend::ast::Stmt>,
-    visit: &mut dyn FnMut(&LintContext<'_>, &Sp<frontend::ast::Expr>),
-) {
-    use frontend::ast::Stmt;
-    match &stmt.0 {
-        Stmt::Bind { rhs, .. } | Stmt::Let { rhs, .. } => visit(ctx, rhs),
-        Stmt::Expr(e) => walk_expr(ctx, e, visit),
+        frontend::visitor::walk_stmt(&mut walker, stmt);
     }
 }
 
@@ -141,82 +140,102 @@ pub fn walk_expr(
     expr: &Sp<frontend::ast::Expr>,
     visit: &mut dyn FnMut(&LintContext<'_>, &Sp<frontend::ast::Expr>),
 ) {
-    use frontend::ast::Expr;
-    visit(ctx, expr);
-    match &expr.0 {
-        Expr::Lam { body, .. } => walk_expr(ctx, body, visit),
-        Expr::App(a, b) => {
-            walk_expr(ctx, a, visit);
-            walk_expr(ctx, b, visit);
-        }
-        Expr::BinOp { lhs, rhs, .. } => {
-            walk_expr(ctx, lhs, visit);
-            walk_expr(ctx, rhs, visit);
-        }
-        Expr::Neg(e) => walk_expr(ctx, e, visit),
-        Expr::Let { rhs, body, .. } => {
-            walk_expr(ctx, rhs, visit);
-            walk_expr(ctx, body, visit);
-        }
-        Expr::If { cond, then, else_ } => {
-            walk_expr(ctx, cond, visit);
-            walk_expr(ctx, then, visit);
-            walk_expr(ctx, else_, visit);
-        }
-        Expr::Match { scrutinee, arms } => {
-            walk_expr(ctx, scrutinee, visit);
-            for (_, body) in arms {
-                walk_expr(ctx, body, visit);
-            }
-        }
-        Expr::For { iter, body, .. } => {
-            walk_expr(ctx, iter, visit);
-            walk_expr(ctx, body, visit);
-        }
-        Expr::Tuple(es) | Expr::List(es) => {
-            for e in es {
-                walk_expr(ctx, e, visit);
-            }
-        }
-        Expr::CircuitBlock(stmts) => {
-            ctx.with_circuit(|nested| walk_stmts(nested, stmts, visit));
-        }
-        Expr::Compose(a, b) | Expr::Par(a, b) => {
-            walk_expr(ctx, a, visit);
-            walk_expr(ctx, b, visit);
-        }
-        Expr::ParN(elems) => {
-            for e in elems {
-                walk_expr(ctx, e, visit);
-            }
-        }
-        Expr::Adjoint(e) | Expr::Controlled(e) | Expr::Ascribe(e, _) => walk_expr(ctx, e, visit),
-        // Type-level args are `NatExpr`s, not expressions — only the callee is walkable.
-        Expr::TypeApp { callee, .. } => walk_expr(ctx, callee, visit),
-        Expr::GateApp { gate, qubits } => {
-            walk_expr(ctx, gate, visit);
-            walk_expr(ctx, qubits, visit);
-        }
-        Expr::RunBlock(stmts) => walk_stmts(ctx, stmts, visit),
-        Expr::Bind { rhs, body, .. } => {
-            walk_expr(ctx, rhs, visit);
-            walk_expr(ctx, body, visit);
-        }
-        Expr::Return(e) => walk_expr(ctx, e, visit),
-        Expr::Borrow { body, .. } => {
-            ctx.with_borrow(|nested| walk_stmts(nested, body, visit));
-        }
-        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(_) => {}
-    }
+    let mut walker = LintWalker::new(ctx, visit);
+    frontend::visitor::walk_expr(&mut walker, expr);
 }
 
 pub fn walk_fn_bodies(
     ctx: &LintContext<'_>,
     visit: &mut dyn FnMut(&LintContext<'_>, &Sp<frontend::ast::Expr>),
 ) {
+    let mut walker = LintWalker::new(ctx, visit);
     for decl in &ctx.typed.decls {
         if let Decl::Fn { body, .. } = &decl.0 {
-            walk_expr(ctx, body, visit);
+            frontend::visitor::walk_expr(&mut walker, body);
+        }
+    }
+}
+
+/// Adapter that drives the canonical AST traversal while threading lint
+/// circuit/borrow nesting into the rule callback.
+///
+/// - `visit_expr_pre`: invokes the rule callback with the *outer* nesting
+///   state, then pushes circuit/borrow state so descendants see the nested
+///   context. `visit_expr_post` pops it.
+/// - `visit_stmt_pre`: for `Bind`/`Let`, invokes the callback on the
+///   right-hand side and returns [`Traversal::Skip`] (the rhs is observed but
+///   not descended into — the historical lint semantics); for `Expr`,
+///   recurses normally.
+struct LintWalker<'a, 'v> {
+    base: &'a LintContext<'a>,
+    /// Circuit-block nesting as a stack so push/pop restores the outer value
+    /// (a `circuit` inside a `circuit` returns to `true`, not `false`).
+    in_circuit_stack: Vec<bool>,
+    borrow_depth: u32,
+    visit: &'v mut (dyn FnMut(&LintContext<'_>, &Sp<frontend::ast::Expr>) + 'a),
+}
+
+impl<'a, 'v> LintWalker<'a, 'v> {
+    fn new(
+        base: &'a LintContext<'a>,
+        visit: &'v mut (dyn FnMut(&LintContext<'_>, &Sp<frontend::ast::Expr>) + 'a),
+    ) -> Self {
+        Self {
+            base,
+            in_circuit_stack: vec![base.in_circuit()],
+            borrow_depth: base.borrow_depth(),
+            visit,
+        }
+    }
+
+    fn current_in_circuit(&self) -> bool {
+        self.in_circuit_stack.last().copied().unwrap_or(false)
+    }
+
+    /// A child `LintContext` reflecting the current nesting, handed to the
+    /// rule callback. `child` is private to this module; `LintWalker` lives in
+    /// the same module so it can reach it.
+    fn callback(&mut self, expr: &Sp<frontend::ast::Expr>) {
+        let ctx = self.base.child(self.current_in_circuit(), self.borrow_depth);
+        (self.visit)(&ctx, expr);
+    }
+}
+
+impl<'a, 'v> frontend::visitor::Visitor for LintWalker<'a, 'v> {
+    fn visit_expr_pre(&mut self, expr: &Sp<frontend::ast::Expr>) -> frontend::visitor::Traversal {
+        use frontend::ast::Expr;
+        // Pre-order: the callback sees the node with the *outer* nesting state.
+        self.callback(expr);
+        match &expr.0 {
+            Expr::CircuitBlock(_) => self.in_circuit_stack.push(true),
+            Expr::Borrow { .. } => self.borrow_depth += 1,
+            // `RunBlock` does NOT enter a circuit context (matches prior walker).
+            _ => {}
+        }
+        frontend::visitor::Traversal::Recurse
+    }
+
+    fn visit_expr_post(&mut self, expr: &Sp<frontend::ast::Expr>) {
+        use frontend::ast::Expr;
+        match &expr.0 {
+            Expr::CircuitBlock(_) => {
+                self.in_circuit_stack.pop();
+            }
+            Expr::Borrow { .. } => self.borrow_depth -= 1,
+            _ => {}
+        }
+    }
+
+    fn visit_stmt_pre(&mut self, stmt: &Sp<frontend::ast::Stmt>) -> frontend::visitor::Traversal {
+        use frontend::ast::Stmt;
+        match &stmt.0 {
+            // `Bind`/`Let`: observe the rhs, do not descend (preserves prior
+            // walker semantics where only `Stmt::Expr` is recursed into).
+            Stmt::Bind { rhs, .. } | Stmt::Let { rhs, .. } => {
+                self.callback(rhs);
+                frontend::visitor::Traversal::Skip
+            }
+            Stmt::Expr(_) => frontend::visitor::Traversal::Recurse,
         }
     }
 }
