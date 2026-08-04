@@ -48,9 +48,8 @@ struct QubitDef<'c> {
     kind: DefKind,
 }
 
-struct QubitUse<'c> {
+struct QubitUse {
     user_name: String,
-    location: Location<'c>,
     is_measure: bool,
 }
 
@@ -79,7 +78,7 @@ fn is_measure_op(name: &str) -> bool {
 pub fn check_dynamic_linearity<'c>(region: RegionRef<'c, '_>) -> Diagnostics<'c> {
     let mut diagnostics = Diagnostics::new();
     let mut defs = Vec::new();
-    let mut uses: HashMap<usize, Vec<QubitUse<'c>>> = HashMap::new();
+    let mut uses: HashMap<usize, Vec<QubitUse>> = HashMap::new();
     collect_dynamic_scope(region, &mut defs, &mut uses, &mut diagnostics);
     check_scope(&defs, &uses, &mut diagnostics);
     diagnostics
@@ -88,7 +87,7 @@ pub fn check_dynamic_linearity<'c>(region: RegionRef<'c, '_>) -> Diagnostics<'c>
 fn collect_dynamic_scope<'c>(
     region: RegionRef<'c, '_>,
     defs: &mut Vec<QubitDef<'c>>,
-    uses: &mut HashMap<usize, Vec<QubitUse<'c>>>,
+    uses: &mut HashMap<usize, Vec<QubitUse>>,
     diagnostics: &mut Diagnostics<'c>,
 ) {
     let mut block = region.first_block();
@@ -150,7 +149,7 @@ fn collect_dynamic_scope<'c>(
 
 fn check_scope<'c>(
     defs: &[QubitDef<'c>],
-    uses: &HashMap<usize, Vec<QubitUse<'c>>>,
+    uses: &HashMap<usize, Vec<QubitUse>>,
     diagnostics: &mut Diagnostics<'c>,
 ) {
     for def in defs {
@@ -185,14 +184,13 @@ fn check_scope<'c>(
 
 fn record_qubit_operands<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
-    uses: &mut HashMap<usize, Vec<QubitUse<'c>>>,
+    uses: &mut HashMap<usize, Vec<QubitUse>>,
 ) {
     let name = op_name(operation);
     for operand in operation.operands() {
         if is_qubit(&operand) {
             uses.entry(value_key(&operand)).or_default().push(QubitUse {
                 user_name: name.clone(),
-                location: operand.location(),
                 is_measure: is_measure_op(&name),
             });
         }

@@ -1,4 +1,11 @@
-// ZX-calculus rewrite rules — issue #20, SPEC.md §7.2
+// ZX-calculus rewrite rules — issue #20, SPEC.md §7.2.
+//
+// Implemented: spider fusion, identity removal (the two rules needed to
+// normalise a circuit-shaped ZX graph today). The remaining SPEC §7.2 rules
+// (π-copy, bialgebra, Euler decomposition, colour-change, state-copy) are
+// deliberately unsupported in v1: they are not wired into `simplify` and no
+// correctness path depends on them. Add a real implementation here, behind a
+// rule gate in `simplify`, when a downstream consumer needs it.
 
 use std::collections::VecDeque;
 use std::f64::consts::PI;
@@ -101,27 +108,6 @@ fn normalize_phase(phase: f64) -> f64 {
         value += 2.0 * PI;
     }
     value
-}
-
-#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
-fn pi_copy(_zx: &mut ZXGraph) -> bool {
-    false
-}
-#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
-fn bialgebra(_zx: &mut ZXGraph) -> bool {
-    false
-}
-#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
-fn euler_decomposition(_zx: &mut ZXGraph) -> bool {
-    false
-}
-#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
-fn color_change(_zx: &mut ZXGraph) -> bool {
-    false
-}
-#[allow(dead_code)] // remaining SPEC rules — wired in follow-up
-fn state_copy(_zx: &mut ZXGraph) -> bool {
-    false
 }
 
 #[cfg(test)]

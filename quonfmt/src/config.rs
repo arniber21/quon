@@ -18,9 +18,3 @@ impl Default for StyleConfig {
     }
 }
 
-#[allow(dead_code)]
-pub const INDENT: &str = "    ";
-#[allow(dead_code)]
-pub const MAX_WIDTH: usize = 100;
-#[allow(dead_code)]
-pub const DECL_SEP: &str = "\n\n";

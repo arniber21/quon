@@ -1,11 +1,10 @@
 // Shared test support: normalize every span in an AST to 0..0 so that structural
 // equality (derived PartialEq) compares trees while ignoring source positions.
 
-#![allow(dead_code)]
-
 use frontend::ast::*;
 use frontend::lexer::{SimpleSpan, Sp};
 
+#[allow(dead_code)] // shared test helper — not every test uses every strip helper
 fn z() -> SimpleSpan {
     (0..0).into()
 }
@@ -18,16 +17,19 @@ macro_rules! go {
     }};
 }
 
+#[allow(dead_code)] // shared test helper — not every test uses every strip helper
 pub fn strip_decls(decls: &mut [Sp<Decl>]) {
     for d in decls.iter_mut() {
         go!(d, strip_decl);
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every test uses every strip helper
 fn strip_sp_name(n: &mut Sp<Name>) {
     n.1 = z();
 }
 
+#[allow(dead_code)] // shared test helper — not every test uses every strip helper
 fn strip_decl(d: &mut Decl) {
     match d {
         Decl::Fn {
@@ -65,6 +67,7 @@ fn strip_decl(d: &mut Decl) {
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every test uses every strip helper
 fn strip_nat(n: &mut NatExpr) {
     match n {
         NatExpr::Lit(_) | NatExpr::Var(_) | NatExpr::Hole => {}
@@ -79,6 +82,7 @@ fn strip_nat(n: &mut NatExpr) {
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every test uses every strip helper
 fn strip_ty(t: &mut Type) {
     match t {
         Type::Qubit
@@ -122,6 +126,7 @@ fn strip_ty(t: &mut Type) {
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every test uses every strip helper
 fn strip_pat(p: &mut Pat) {
     match p {
         Pat::Wildcard | Pat::Var(_) | Pat::Lit(_) => {}
@@ -133,6 +138,7 @@ fn strip_pat(p: &mut Pat) {
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every test uses every strip helper
 fn strip_stmt(s: &mut Stmt) {
     match s {
         Stmt::Bind { pat, rhs } | Stmt::Let { pat, rhs } => {
@@ -143,6 +149,7 @@ fn strip_stmt(s: &mut Stmt) {
     }
 }
 
+#[allow(dead_code)] // shared test helper — not every test uses every strip helper
 fn strip_expr(e: &mut Expr) {
     match e {
         Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(_) => {}
@@ -239,6 +246,7 @@ fn strip_expr(e: &mut Expr) {
 }
 
 /// Parse source into a span-stripped AST, panicking with diagnostics on failure.
+#[allow(dead_code)] // shared test helper — not every test uses every strip helper
 pub fn parse_stripped(src: &str) -> Vec<Sp<Decl>> {
     let mut decls = frontend::parse_program(src).expect("parse failed");
     strip_decls(&mut decls);

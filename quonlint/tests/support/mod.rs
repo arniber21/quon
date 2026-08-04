@@ -6,7 +6,7 @@ pub fn lint_snippet(src: &str) -> Vec<quonlint::LintDiagnostic> {
     lint_source(Path::new("test.qn"), src, &LintConfig::default())
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // shared test helper — used by integration tests that pass custom configs
 pub fn lint_snippet_with_config(src: &str, config: &LintConfig) -> Vec<quonlint::LintDiagnostic> {
     lint_source(Path::new("test.qn"), src, config)
 }

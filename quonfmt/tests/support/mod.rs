@@ -1,16 +1,16 @@
-#![allow(dead_code)]
-
 #[path = "../../../frontend/tests/support/mod.rs"]
 mod strip_support;
 
 use strip_support::parse_stripped;
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn assert_ast_stable(before: &str, after: &str) {
     let a = parse_stripped(before);
     let b = parse_stripped(after);
     assert_eq!(a, b, "AST changed after format");
 }
 
+#[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn all_corpus() -> Vec<(&'static str, String)> {
     [
         ("decls.qn", include_str!("../corpus/input/decls.qn")),

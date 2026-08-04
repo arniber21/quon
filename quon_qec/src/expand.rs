@@ -778,7 +778,7 @@ pub(crate) fn surface_memory_round(layout: &ExpandedBlock) -> PhysicalRound {
 }
 
 // Kept as a regression reference path (issue #281 — now routed through patch_ops).
-#[allow(dead_code)]
+#[allow(dead_code)] // regression reference (issue #281); production path routes through patch_ops
 fn measure_logical_round(layout: &ExpandedBlock, basis: LogicalBasis) -> PhysicalRound {
     let terminal = layout
         .data_atoms

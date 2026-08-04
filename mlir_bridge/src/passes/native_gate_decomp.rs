@@ -64,10 +64,6 @@ fn read_f64_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str)
     FloatAttribute::try_from(value).ok().map(|f| f.value())
 }
 
-fn value_key<'a>(value: &impl ValueLike<'a>) -> usize {
-    value.to_raw().ptr as usize
-}
-
 fn native_gate_names(target: &FixedTarget) -> Vec<String> {
     target.native_gates.iter().map(|g| g.name.clone()).collect()
 }

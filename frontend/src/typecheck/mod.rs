@@ -1419,15 +1419,6 @@ impl TypeChecker {
         }
     }
 
-    /// Evaluate a `Nat` expression to a concrete `u64`, when it is closed and literal.
-    /// Symbolic naturals are rejected — the classical fragment has no value-dependent types.
-    fn eval_nat(&self, n: &Sp<NatExpr>) -> Result<u64, TypeError> {
-        eval_nat(&n.0).ok_or(TypeError::Unsupported {
-            construct: "symbolic Nat in type",
-            span: n.1,
-        })
-    }
-
     /// Convert a surface depth annotation to a [`DepthExpr`]. Best-effort for the classical
     /// fragment: literals/vars/`+`/`*` map directly; richer forms defer to issue #13.
     /// Rejects `CodeFamily` tags and `F: CodeFamily` params in Nat position.
@@ -2299,27 +2290,6 @@ fn eval_angle(e: &Sp<Expr>) -> Option<f64> {
         }
         _ => None,
     }
-}
-
-fn eval_nat(n: &NatExpr) -> Option<u64> {
-    Some(match n {
-        NatExpr::Lit(v) => *v,
-        NatExpr::Var(_) | NatExpr::Hole => return None,
-        NatExpr::Add(a, b) => eval_nat(&a.0)?.checked_add(eval_nat(&b.0)?)?,
-        NatExpr::Mul(a, b) => eval_nat(&a.0)?.checked_mul(eval_nat(&b.0)?)?,
-        NatExpr::Sub(a, b) => eval_nat(&a.0)?.saturating_sub(eval_nat(&b.0)?),
-        NatExpr::Div(a, b) => {
-            let d = eval_nat(&b.0)?;
-            if d == 0 {
-                return None;
-            }
-            eval_nat(&a.0)? / d
-        }
-        NatExpr::Exp(a, b) => {
-            let exp = u32::try_from(eval_nat(&b.0)?).ok()?;
-            eval_nat(&a.0)?.checked_pow(exp)?
-        }
-    })
 }
 
 fn nat_to_depth(n: &NatExpr) -> Option<DepthExpr> {
