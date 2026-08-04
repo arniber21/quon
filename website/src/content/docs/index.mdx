@@ -28,7 +28,7 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-<!--
+{/*
   BELL WALKTHROUGH OWNERSHIP (issue #384):
   This page is a TEASER ONLY. It shows the Bell circuit once, as a motivating
   example, and links out to the canonical owners:
@@ -38,7 +38,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   Do NOT paste the full run block, type annotations, MLIR excerpts, or Aer
   output here. The audit script (website/scripts/audit-bell-walkthrough.sh)
   enforces this.
--->
+*/}
 
 ## A typed quantum compiler
 
@@ -94,6 +94,7 @@ shaped it that way.
 	<Card title="Backend / neutral-atom user" icon="setting">
 		Compile to OpenQASM 3 or a neutral-atom schedule and resource report.
 		[Target a backend ->](/getting-started/choose-your-path/#backend--neutral-atom-user)
+	</Card>
 	<Card title="Install Quon" icon="setting">
 		Set up the Rust toolchain, LLVM/MLIR 22, and Z3 with Devbox or system
 		packages, then build the `quonc` compiler.
