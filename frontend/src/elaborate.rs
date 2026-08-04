@@ -51,6 +51,12 @@ pub enum ElabError {
     UnboundVar { name: String },
     #[error("elaboration exceeded its evaluation budget (possible non-terminating recursion)")]
     FuelExhausted,
+    #[error("integer overflow in {op}")]
+    Overflow { op: &'static str, span: SimpleSpan },
+    #[error("division by zero")]
+    DivByZero { span: SimpleSpan },
+    #[error("negative exponent {exp} is not valid for integer power")]
+    NegativeExponent { exp: i64, span: SimpleSpan },
 }
 
 impl ElabError {
@@ -62,6 +68,9 @@ impl ElabError {
     pub fn span(&self) -> SimpleSpan {
         match self {
             Self::Unsupported { span, .. } => *span,
+            Self::Overflow { span, .. } => *span,
+            Self::DivByZero { span } => *span,
+            Self::NegativeExponent { span, .. } => *span,
             _ => SimpleSpan::from(0..0),
         }
     }
@@ -173,7 +182,10 @@ pub fn eval_classical(
             }
         }
         Expr::Neg(inner) => match eval_classical(inner, env, fuel)? {
-            Value::Int(n) => Ok(Value::Int(-n)),
+            Value::Int(n) => Ok(Value::Int(
+                n.checked_neg()
+                    .ok_or(ElabError::Overflow { op: "negate", span: expr.1 })?,
+            )),
             Value::Float(f) => Ok(Value::Float(-f)),
             _ => Err(ElabError::NotClassical {
                 name: "negation of a non-numeric value",
@@ -182,7 +194,7 @@ pub fn eval_classical(
         Expr::BinOp { op, lhs, rhs } => {
             let a = eval_classical(lhs, env, fuel)?;
             let b = eval_classical(rhs, env, fuel)?;
-            eval_binop(*op, &a, &b)
+            eval_binop(*op, &a, &b, expr.1)
         }
         Expr::Tuple(items) => Ok(Value::Tuple(
             items
@@ -259,15 +271,29 @@ pub fn eval_classical(
     }
 }
 
-fn eval_binop(op: BinOp, a: &Value, b: &Value) -> Result<Value, ElabError> {
-    if let (Value::Int(x), Value::Int(y)) = (a, b) {
-        return Ok(match op {
-            BinOp::Add => Value::Int(x + y),
-            BinOp::Sub => Value::Int(x - y),
-            BinOp::Mul => Value::Int(x * y),
-            BinOp::Div => Value::Int(x / y),
-            BinOp::Pow => Value::Int(x.pow(u32::try_from(*y).unwrap_or(0))),
-        });
+fn eval_binop(op: BinOp, a: &Value, b: &Value, span: SimpleSpan) -> Result<Value, ElabError> {
+    if let (&Value::Int(x), &Value::Int(y)) = (a, b) {
+        let result = match op {
+            BinOp::Add => x.checked_add(y).ok_or(ElabError::Overflow { op: "add", span })?,
+            BinOp::Sub => x.checked_sub(y).ok_or(ElabError::Overflow { op: "subtract", span })?,
+            BinOp::Mul => x.checked_mul(y).ok_or(ElabError::Overflow { op: "multiply", span })?,
+            BinOp::Div => {
+                if y == 0 {
+                    return Err(ElabError::DivByZero { span });
+                }
+                x.checked_div(y).ok_or(ElabError::Overflow { op: "divide", span })?
+            }
+            BinOp::Pow => {
+                if y < 0 {
+                    return Err(ElabError::NegativeExponent { exp: y, span });
+                }
+                let exp = u32::try_from(y)
+                    .map_err(|_| ElabError::Overflow { op: "power", span })?;
+                x.checked_pow(exp)
+                    .ok_or(ElabError::Overflow { op: "power", span })?
+            }
+        };
+        return Ok(Value::Int(result));
     }
     let (x, y) = (
         a.as_f64().ok_or(ElabError::NotClassical {
@@ -1691,6 +1717,176 @@ mod controlled_tests {
                 assert_eq!((span.start, span.end), (10, 20));
             }
             other => panic!("unexpected {other}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod arithmetic_totality_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn int(n: i64) -> Sp<Expr> {
+        (Expr::Int(n), no_span())
+    }
+
+    fn binop(op: BinOp, lhs: i64, rhs: i64, span: SimpleSpan) -> Sp<Expr> {
+        (
+            Expr::BinOp {
+                op,
+                lhs: Box::new(int(lhs)),
+                rhs: Box::new(int(rhs)),
+            },
+            span,
+        )
+    }
+
+    fn eval(expr: &Sp<Expr>) -> Result<Value, ElabError> {
+        let mut fuel = fresh_fuel();
+        eval_classical(expr, &ClassicalEnv::new(), &mut fuel)
+    }
+
+    #[test]
+    fn add_overflow_at_max() {
+        let span = SimpleSpan::from(1..2);
+        let err = eval(&binop(BinOp::Add, i64::MAX, 1, span)).expect_err("overflow");
+        match err {
+            ElabError::Overflow { op, span: s } => {
+                assert_eq!(op, "add");
+                assert_eq!((s.start, s.end), (1, 2));
+            }
+            other => panic!("unexpected {other}"),
+        }
+    }
+
+    #[test]
+    fn sub_overflow_at_min() {
+        let err = eval(&binop(BinOp::Sub, i64::MIN, 1, no_span())).expect_err("underflow");
+        assert!(matches!(err, ElabError::Overflow { op: "subtract", .. }));
+    }
+
+    #[test]
+    fn mul_overflow() {
+        let err = eval(&binop(BinOp::Mul, i64::MAX, 2, no_span())).expect_err("overflow");
+        assert!(matches!(err, ElabError::Overflow { op: "multiply", .. }));
+        let err = eval(&binop(BinOp::Mul, i64::MIN, 2, no_span())).expect_err("overflow");
+        assert!(matches!(err, ElabError::Overflow { op: "multiply", .. }));
+    }
+
+    #[test]
+    fn div_by_zero_returns_error_not_panic() {
+        let span = SimpleSpan::from(7..9);
+        let err = eval(&binop(BinOp::Div, 5, 0, span)).expect_err("div by zero");
+        match err {
+            ElabError::DivByZero { span: s } => assert_eq!((s.start, s.end), (7, 9)),
+            other => panic!("unexpected {other}"),
+        }
+    }
+
+    #[test]
+    fn div_min_by_minus_one_overflows() {
+        // i64::MIN / -1 overflows in two's complement; must be a clean error.
+        let err = eval(&binop(BinOp::Div, i64::MIN, -1, no_span())).expect_err("overflow");
+        assert!(matches!(err, ElabError::Overflow { op: "divide", .. }));
+    }
+
+    #[test]
+    fn negative_exponent_returns_error() {
+        let span = SimpleSpan::from(3..4);
+        let err = eval(&binop(BinOp::Pow, 2, -1, span)).expect_err("negative exp");
+        match err {
+            ElabError::NegativeExponent { exp, span: s } => {
+                assert_eq!(exp, -1);
+                assert_eq!((s.start, s.end), (3, 4));
+            }
+            other => panic!("unexpected {other}"),
+        }
+    }
+
+    #[test]
+    fn power_overflow() {
+        // 2^63 overflows i64.
+        let err = eval(&binop(BinOp::Pow, 2, 63, no_span())).expect_err("pow overflow");
+        assert!(matches!(err, ElabError::Overflow { op: "power", .. }));
+    }
+
+    #[test]
+    fn min_negation_overflows() {
+        // -(-9223372036854775808) = 9223372036854775808 > i64::MAX.
+        let expr = (Expr::Neg(Box::new(int(i64::MIN))), SimpleSpan::from(11..12));
+        let err = eval(&expr).expect_err("negate overflow");
+        match err {
+            ElabError::Overflow { op, span: s } => {
+                assert_eq!(op, "negate");
+                assert_eq!((s.start, s.end), (11, 12));
+            }
+            other => panic!("unexpected {other}"),
+        }
+    }
+
+    #[test]
+    fn valid_boundary_values_evaluate() {
+        for n in [i64::MAX, i64::MIN, 0, 1, -1] {
+            assert_eq!(eval(&int(n)).unwrap(), Value::Int(n), "literal {n}");
+        }
+        // Sanity: ordinary in-range arithmetic still works.
+        assert_eq!(eval(&binop(BinOp::Add, 1, 2, no_span())).unwrap(), Value::Int(3));
+        assert_eq!(eval(&binop(BinOp::Sub, 10, 4, no_span())).unwrap(), Value::Int(6));
+        assert_eq!(eval(&binop(BinOp::Mul, 6, 7, no_span())).unwrap(), Value::Int(42));
+        assert_eq!(eval(&binop(BinOp::Div, 20, 5, no_span())).unwrap(), Value::Int(4));
+        assert_eq!(eval(&binop(BinOp::Pow, 2, 10, no_span())).unwrap(), Value::Int(1024));
+        // 0^0 is defined as 1 by checked_pow (matches i64::pow).
+        assert_eq!(eval(&binop(BinOp::Pow, 0, 0, no_span())).unwrap(), Value::Int(1));
+        // 1^(large u32 exponent) stays 1, no overflow.
+        assert_eq!(
+            eval(&binop(BinOp::Pow, 1, u32::MAX as i64, no_span())).unwrap(),
+            Value::Int(1)
+        );
+        // An exponent outside u32 range is rejected (per the checked-arithmetic
+        // contract) even for a base of 1 — the exponent must be a valid power count.
+        assert!(matches!(
+            eval(&binop(BinOp::Pow, 1, i64::MAX, no_span())),
+ Err(ElabError::Overflow { op: "power", .. })
+        ));
+    }
+
+    #[test]
+    fn float_arithmetic_stays_total() {
+        let f = |x: f64| (Expr::Float(x), no_span());
+        let expr = (
+            Expr::BinOp {
+                op: BinOp::Div,
+                lhs: Box::new(f(1.0)),
+                rhs: Box::new(f(0.0)),
+            },
+            no_span(),
+        );
+        // Float division by zero yields infinity, not an error.
+        match eval(&expr).unwrap() {
+            Value::Float(x) => assert!(x.is_infinite()),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1024))]
+        /// Arbitrary (op, i64, i64) pairs must never panic the elaborator:
+        /// every combination returns either Ok or a span-aware ElabError.
+        #[test]
+        fn prop_arith_never_panics(op in 0u8..5, x in any::<i64>(), y in any::<i64>()) {
+            let kind = match op {
+                0 => BinOp::Add,
+                1 => BinOp::Sub,
+                2 => BinOp::Mul,
+                3 => BinOp::Div,
+                _ => BinOp::Pow,
+            };
+            let expr = binop(kind, x, y, SimpleSpan::from(0..0));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eval(&expr)));
+            match result {
+                Ok(Ok(_)) | Ok(Err(_)) => (),
+                Err(_) => panic!("arithmetic panicked for ({:?}, {}, {})", kind, x, y),
+            }
         }
     }
 }
