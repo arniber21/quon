@@ -80,6 +80,16 @@ jobs:
       - name: Website build (Justfile)
         run: just ci-website
 
+      - name: Route-parity check (#387)
+        # The deployed site reflects main, not a PR — only run the parity
+        # check (built manifest vs deployed sitemap + 404 probe) on pushes
+        # to main. A PR that adds new routes would false-positive since they
+        # aren't deployed yet.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          QUON_SITE_URL: https://quon.arnabg.me
+        run: just ci-website-routes
+
   tooling:
     name: quonfmt · quonlint · LSP smoke
     runs-on: ubuntu-latest

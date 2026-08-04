@@ -310,6 +310,15 @@ ci-fuzz:
     set -euo pipefail
     cargo +nightly build --manifest-path mlir_bridge/fuzz/Cargo.toml
 
+# Release-time route-parity check (#387): compares the built sitemap against
+# the deployed public route set and fails on missing, unexpected, or 404
+# routes. Run after `ci-website` (needs website/dist/). The deployed site
+# reflects main, so CI only runs this on pushes to main — a PR that adds new
+# routes would false-positive (they aren't deployed yet). Override the
+# deployed origin with QUON_SITE_URL.
+ci-website-routes:
+    node scripts/check-doc-routes.mjs
+
 # ---------------------------------------------------------------------------
 # QEC benchmarks (#254 / ADR-0023) — local convenience recipes
 # CI smoke + axis coverage live in `python/test_quon_qec_benchmarks.py`
