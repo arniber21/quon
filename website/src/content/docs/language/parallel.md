@@ -246,6 +246,8 @@ then emits `quantum.circ` ops directly from this tree — one MLIR gate op per
 input is the elaborator's output, and neither needs to know about the symbolic
 world the typechecker reasoned over.
 
+For the normative form of parallel and parametric composition — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#circuits).
+
 ## Next
 
 The depth bounds in these types are symbolic expressions with their own

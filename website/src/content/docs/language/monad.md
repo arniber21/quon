@@ -245,6 +245,8 @@ well-defined "before" and "after" state of the linear context, and the
 typechecker checks the transition at every `<-`.
 
 When a `<-` bind or `run` block is rejected, the [diagnostic catalog](/reference/diagnostics/#monad-and-borrow) explains the error and offers a repair.
+For the normative form of the Quantum Monad — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#quantum-effects).
+
 ## Next
 
 The most important effectful operation is measurement — and what you can do

@@ -326,6 +326,8 @@ rules would all be checking properties of a program that might not even be
 physically realizable.
 
 For the exact diagnostic message and repair for each linearity error, see the [diagnostic catalog](/reference/diagnostics/#linearity).
+For the normative form of the linear type discipline — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#linearity).
+
 ## Next
 
 Now that you understand how resources are tracked, the next page shows how

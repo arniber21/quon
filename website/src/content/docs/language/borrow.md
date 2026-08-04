@@ -257,6 +257,8 @@ enforces that the qubit is consumed (no leak, no escape), but the *form* of
 consumption is now a programmer choice, not a language mandate.
 
 When a borrow block is rejected, the [diagnostic catalog](/reference/diagnostics/#monad-and-borrow) explains the escape or unconsumed-ancilla error and the supported repair.
+For the normative form of borrow blocks and ancilla cleanup — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#quantum-effects).
+
 ## Next
 
 For fault-tolerant computing, Quon introduces encoded logical qubits with

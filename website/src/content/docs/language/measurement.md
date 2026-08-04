@@ -250,6 +250,8 @@ dynamic circuits. The pass preserves the observable result (the deferred
 CNOT is equivalent to the feed-forward correction) while changing the
 execution model.
 
+For the normative form of measurement and classical control — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#quantum-effects).
+
 ## Next
 
 Not all qubits need to be allocated up front. Borrow blocks let you

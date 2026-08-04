@@ -254,6 +254,8 @@ measurement — as a breakdown, which is essential for tuning the code distance
 against the hardware's coherence time.
 
 When a QEC type is rejected, the [diagnostic catalog](/reference/diagnostics/#qec-and-target-capability) explains the distance, family, or logical-operation error and the supported repair.
+For the normative form of QEC builtins — syntax, typing contract, constraints, and a minimal valid example — see the [Language reference](/reference/language/#built-ins).
+
 ## Next
 
 Now you've seen every concept in the language. The final page walks through
