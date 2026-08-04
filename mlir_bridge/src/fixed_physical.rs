@@ -29,15 +29,14 @@
 
 use backend::BackendTarget;
 use melior::Context;
-use melior::StringRef;
 use melior::ir::Module;
 use melior::ir::attribute::IntegerAttribute;
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::IntegerType;
-use melior::ir::{AttributeLike, BlockLike, OperationRef, RegionLike};
-use mlir_sys::mlirOperationSetAttributeByName;
+use melior::ir::{BlockLike, OperationRef, RegionLike};
 
 use crate::dialect::quantum_dynamic;
+use crate::ffi;
 use crate::metrics;
 use crate::passes::{
     depth_scheduling, native_gate_decomp, sabre_routing, sabre_routing::SabreCost,
@@ -85,8 +84,7 @@ pub fn run_fixed_physical(
 pub fn corrupt_phys_qubit_attrs(context: &Context, module: &Module<'_>, bogus: i32) {
     let attr: melior::ir::Attribute<'_> =
         IntegerAttribute::new(IntegerType::new(context, 32).into(), i64::from(bogus)).into();
-    let raw = attr.to_raw();
-    let name = StringRef::new(quantum_dynamic::attr::PHYS_QUBIT).to_raw();
+    let name = quantum_dynamic::attr::PHYS_QUBIT;
     let Some(body) = module
         .as_operation()
         .region(0)
@@ -95,13 +93,13 @@ pub fn corrupt_phys_qubit_attrs(context: &Context, module: &Module<'_>, bogus: i
     else {
         return;
     };
-    corrupt_block(body, name, raw);
+    corrupt_block(body, name, &attr);
 }
 
 fn corrupt_block<'c, 'a>(
     block: melior::ir::BlockRef<'c, 'a>,
-    name: mlir_sys::MlirStringRef,
-    attr: mlir_sys::MlirAttribute,
+    name: &str,
+    attr: &melior::ir::Attribute<'c>,
 ) {
     let mut op = block.first_operation();
     while let Some(current) = op {
@@ -112,15 +110,13 @@ fn corrupt_block<'c, 'a>(
 
 fn corrupt_op<'c, 'a>(
     op: OperationRef<'c, 'a>,
-    name: mlir_sys::MlirStringRef,
-    attr: mlir_sys::MlirAttribute,
+    name: &str,
+    attr: &melior::ir::Attribute<'c>,
 ) {
     // Only ops that already have a phys_qubit attr are touched — overwriting
     // a non-existent attr would *add* one, which is not the test's intent.
     if op.attribute(quantum_dynamic::attr::PHYS_QUBIT).is_ok() {
-        unsafe {
-            mlirOperationSetAttributeByName(op.to_raw(), name, attr);
-        }
+        ffi::set_operation_attribute(op, name, attr);
     }
     let count = op.region_count();
     for index in 0..count {

@@ -11,6 +11,7 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef};
 use zx::{GateRef, circuit_to_zx, simplify, zx_to_circuit};
 
+use crate::ffi::PassContext;
 use crate::circ_extract;
 use crate::dialect::{quantum_circ, quantum_dynamic};
 
@@ -141,26 +142,27 @@ static ZX_SIMPLIFICATION_PASS_ID: PassId = PassId;
 
 #[derive(Clone)]
 struct ZxSimplification {
-    context: usize,
+    context: PassContext,
 }
 
 impl ZxSimplification {
     fn new() -> Self {
-        Self { context: 0 }
+        Self { context: PassContext::new() }
     }
 }
 
 impl<'c> RunExternalPass<'c> for ZxSimplification {
     fn initialize(&mut self, context: ContextRef<'c>) {
-        self.context = unsafe { context.to_ref() as *const Context as usize };
+        self.context.capture(context);
     }
 
     fn run(&mut self, operation: OperationRef<'c, '_>, _pass: ExternalPass<'_>) {
-        if self.context == 0 {
+        let Some(raw) = self.context.raw() else {
             return;
-        }
-        let context = unsafe { &*(self.context as *const Context) };
-        simplify_module(context, operation);
+        };
+        crate::ffi::with_context(raw, |context| {
+            simplify_module(context, operation);
+        });
     }
 }
 

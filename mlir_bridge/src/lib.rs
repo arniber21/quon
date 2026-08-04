@@ -2,6 +2,7 @@
 
 pub mod circ_extract;
 pub mod diagnostics;
+pub mod ffi;
 pub mod dialect;
 pub mod dynamic_walk;
 pub mod emit;

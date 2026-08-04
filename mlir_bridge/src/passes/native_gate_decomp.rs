@@ -8,17 +8,16 @@ use std::sync::Arc;
 
 use backend::decompose::{decompose_named_single, decompose_named_two};
 use backend::target::{BackendTarget, FixedTarget};
-use melior::StringRef;
 use melior::ir::attribute::{BoolAttribute, FloatAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
-use melior::ir::{AttributeLike, BlockLike, Location, OperationRef, RegionLike, Value, ValueLike};
+use melior::ir::{BlockLike, Location, OperationRef, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
-use mlir_sys::mlirOperationSetAttributeByName;
 use thiserror::Error;
 
 use crate::diagnostics::Diagnostics;
+use crate::ffi::{self, PassContext};
 use crate::dialect::quantum_circ::{self, attr};
 use crate::dialect::quantum_dynamic;
 
@@ -70,13 +69,7 @@ fn native_gate_names(target: &FixedTarget) -> Vec<String> {
 
 fn set_native_gate<'c>(context: &'c Context, op: OperationRef<'c, '_>, native: bool) {
     let attribute: melior::ir::Attribute<'_> = BoolAttribute::new(context, native).into();
-    unsafe {
-        mlirOperationSetAttributeByName(
-            op.to_raw(),
-            StringRef::new("native_gate").to_raw(),
-            attribute.to_raw(),
-        );
-    }
+    ffi::set_operation_attribute(op, "native_gate", &attribute);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -335,14 +328,14 @@ static NATIVE_GATE_DECOMP_PASS_ID: PassId = PassId;
 
 #[derive(Clone)]
 struct NativeGateDecomp {
-    context: usize,
+    context: PassContext,
     target: Arc<BackendTarget>,
 }
 
 impl NativeGateDecomp {
     fn new(target: BackendTarget) -> Self {
         Self {
-            context: 0,
+            context: PassContext::new(),
             target: Arc::new(target),
         }
     }
@@ -350,20 +343,23 @@ impl NativeGateDecomp {
 
 impl<'c> RunExternalPass<'c> for NativeGateDecomp {
     fn initialize(&mut self, context: ContextRef<'c>) {
-        self.context = unsafe { context.to_ref() as *const Context as usize };
+        self.context.capture(context);
     }
 
     fn run(&mut self, operation: OperationRef<'c, '_>, pass: ExternalPass<'_>) {
-        if self.context == 0 {
+        let Some(raw) = self.context.raw() else {
             pass.signal_failure();
             return;
-        }
-        let context = unsafe { &*(self.context as *const Context) };
-        let mut diagnostics = Diagnostics::new();
-        if let Some(target) = self.target.fixed_target() {
-            decompose_module(context, target, operation, &mut diagnostics);
-        }
-        if !diagnostics.emit() {
+        };
+        let target = self.target.clone();
+        let success = crate::ffi::with_context(raw, |context| {
+            let mut diagnostics = Diagnostics::new();
+            if let Some(t) = target.fixed_target() {
+                decompose_module(context, t, operation, &mut diagnostics);
+            }
+            diagnostics.emit()
+        });
+        if !success {
             pass.signal_failure();
         }
     }

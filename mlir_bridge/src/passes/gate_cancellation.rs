@@ -5,16 +5,15 @@
 
 use std::collections::HashMap;
 
-use melior::StringRef;
 use melior::ir::attribute::{IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
-use melior::ir::{Attribute, AttributeLike, BlockLike, OperationRef, RegionLike, Value, ValueLike};
+use melior::ir::{Attribute, BlockLike, OperationRef, RegionLike, Value, ValueLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
-use mlir_sys::mlirOperationSetAttributeByName;
 use quon_core::DepthExpr;
 
+use crate::ffi::{self, PassContext};
 use crate::dialect::{
     quantum_circ::{self, attr},
     quantum_dynamic,
@@ -135,13 +134,7 @@ fn cancel_pair<'c, 'a>(
 
 fn set_func_depth<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>, depth: &DepthExpr) {
     let attribute: Attribute<'c> = StringAttribute::new(context, &depth.to_sexpr()).into();
-    unsafe {
-        mlirOperationSetAttributeByName(
-            func.to_raw(),
-            StringRef::new(attr::DEPTH).to_raw(),
-            attribute.to_raw(),
-        );
-    }
+    ffi::set_operation_attribute(func, attr::DEPTH, &attribute);
 }
 
 fn cancel_in_block<'c, 'a>(context: &'c Context, block: melior::ir::BlockRef<'c, 'a>) -> i64 {
@@ -273,27 +266,28 @@ static GATE_CANCELLATION_PASS_ID: PassId = PassId;
 
 #[derive(Clone)]
 struct GateCancellation {
-    context: usize,
+    context: PassContext,
 }
 
 impl GateCancellation {
     fn new() -> Self {
-        Self { context: 0 }
+        Self { context: PassContext::new() }
     }
 }
 
 impl<'c> RunExternalPass<'c> for GateCancellation {
     fn initialize(&mut self, context: ContextRef<'c>) {
-        self.context = unsafe { context.to_ref() as *const Context as usize };
+        self.context.capture(context);
     }
 
     fn run(&mut self, operation: OperationRef<'c, '_>, pass: ExternalPass<'_>) {
-        if self.context == 0 {
+        let Some(raw) = self.context.raw() else {
             pass.signal_failure();
             return;
-        }
-        let context = unsafe { &*(self.context as *const Context) };
-        cancel_module(context, operation);
+        };
+        crate::ffi::with_context(raw, |context| {
+            cancel_module(context, operation);
+        });
     }
 }
 

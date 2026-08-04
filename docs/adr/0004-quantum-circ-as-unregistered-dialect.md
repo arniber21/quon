@@ -36,7 +36,10 @@ IRDL, and it would still not give us Rust verifier callbacks.
   every op builder, so a malformed op cannot be constructed through the public API, and by
   exposing `verify` for callers that build ops by hand.
 - Diagnostic *emission* is not wrapped by Melior, so all error reporting flows through the
-  `diagnostics` module, which isolates the single `unsafe` `mlirEmitError` boundary behind a
-  `Result`/Writer-style abstraction.
+  `diagnostics` module, which delegates to the `ffi` module's safe `emit_error` wrapper. The
+  `ffi` module is the sole audited unsafe boundary in `mlir_bridge`: it owns
+  `mlirEmitError`, `mlirOperationSetAttributeByName`, `mlirOperationSetOperand`, and
+  external-pass context lifetime erasure. The workspace denies `unsafe_code` everywhere
+  else.
 - Custom types are opaque strings (`!quantum.qubit`, `!quantum.circ`); type checks compare the
   printed form rather than a registered `TypeID`.

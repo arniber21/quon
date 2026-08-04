@@ -9,19 +9,19 @@
 //!     accumulator (a Writer-style "diagnostic monad") and return it, or fold a
 //!     typed [`Result`] into it with [`Diagnostics::report`]. None of that code
 //!     touches the FFI boundary.
-//!   * [`Diagnostics::emit`] is the *single* place in the crate that crosses
-//!     into the unsafe MLIR C API. It is `safe` to call: the one `unsafe` block
-//!     it contains is self-contained and sound (a valid location plus a
-//!     NUL-free C string).
+//!   * [`Diagnostics::emit`] flushes the accumulator to MLIR via the safe
+//!     [`crate::ffi::emit_error`] wrapper. The `unsafe` `mlirEmitError` call
+//!     lives solely in [`crate::ffi`], alongside all other unsafe MLIR FFI in
+//!     the crate.
 //!
-//! This keeps the unsafe surface to one auditable function while the rest of
-//! the bridge composes diagnostics with ordinary `Result`/iterator combinators.
+//! This keeps the unsafe surface to one audited module ([`crate::ffi`]) while
+//! the rest of the bridge composes diagnostics with ordinary
+//! `Result`/iterator combinators.
 
 use std::ffi::CString;
 use std::fmt;
 
 use melior::ir::Location;
-use mlir_sys::mlirEmitError;
 
 /// A single error diagnostic anchored at an IR [`Location`].
 #[derive(Clone)]
@@ -51,9 +51,9 @@ impl<'c> Diagnostic<'c> {
 
     /// Emits this diagnostic into MLIR's diagnostic engine.
     ///
-    /// This is the only function in the crate that calls into the MLIR C
-    /// diagnostic API. The message is sanitized of interior NUL bytes so the
-    /// `CString` conversion is infallible.
+    /// The message is sanitized of interior NUL bytes so the `CString`
+    /// conversion is infallible. The actual FFI call is delegated to the safe
+    /// [`crate::ffi::emit_error`] wrapper — this module contains no `unsafe` code.
     fn emit(&self) {
         let sanitized: String = self
             .message
@@ -61,11 +61,7 @@ impl<'c> Diagnostic<'c> {
             .map(|c| if c == '\0' { '?' } else { c })
             .collect();
         let message = CString::new(sanitized).unwrap_or_default();
-        // SAFETY: `self.location` is a live MLIR location owned by the context,
-        // and `message` is a valid NUL-terminated C string that outlives the
-        // call. `mlirEmitError` copies the message and does not retain the
-        // pointer.
-        unsafe { mlirEmitError(self.location.to_raw(), message.as_ptr()) };
+        crate::ffi::emit_error(&self.location, &message);
     }
 }
 
