@@ -23,11 +23,11 @@ pub mod pretty;
 // specialize) gates on `analyze`, which pulls in only `quon_core` / `z3` — no
 // `mlir_bridge` / `melior`. `specialized_circuit` (issue #206) is the typed
 // boundary between `elaborate` and `lower`. `lower` — the `quantum.circ` MLIR
-// adapter — is the only module that needs `full` (Melior). Cargo unifies
-// features across the workspace, so `quonfmt`'s `default-features = false`
-// (parser only) never strips these from `quon_lsp` / `quonc` (`full`), and
-// specialization is buildable/testable under `--features analyze` without
-// linking LLVM/MLIR.
+// adapter — is the only module that needs `full` (Melior). Only `quonc` opts
+// into `full`; `quonfmt` (parser only), `quonlint`, and `quon_lsp` (analysis
+// only) all use `default-features = false` so a tooling build never links
+// LLVM/MLIR, and specialization is buildable/testable under `--features
+// analyze` without linking LLVM/MLIR (ADR-0038, issue #407).
 #[cfg(feature = "analyze")]
 pub mod analysis;
 #[cfg(feature = "analyze")]

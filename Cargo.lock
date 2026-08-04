@@ -1558,12 +1558,9 @@ name = "quonlint"
 version = "0.2.0"
 dependencies = [
  "ariadne",
- "backend",
  "frontend",
  "glob",
  "insta",
- "melior",
- "mlir_bridge",
  "quon_core",
  "rayon",
  "serde",

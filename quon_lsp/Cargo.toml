@@ -11,7 +11,7 @@ name = "quon_lsp"
 path = "src/main.rs"
 
 [dependencies]
-frontend           = { path = "../frontend" }
+frontend           = { path = "../frontend", default-features = false, features = ["analyze"] }
 quonfmt            = { path = "../quonfmt" }
 quonlint           = { path = "../quonlint" }
 tower-lsp          = { workspace = true }

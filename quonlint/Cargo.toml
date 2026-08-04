@@ -8,14 +8,14 @@ repository.workspace = true
 
 [features]
 default = []
-ir-analysis = ["dep:mlir_bridge", "dep:melior", "dep:backend"]
+# quonlint only needs the Melior-free analysis pipeline (parse → desugar →
+# typecheck → elaborate). IR/lowering rules are out of scope here; the
+# `frontend` `analyze` feature pulls in `quon_core` / `z3` only — no
+# `mlir_bridge` / `melior` (ADR-0038, issue #407).
 
 [dependencies]
-frontend    = { path = "../frontend" }
+frontend    = { path = "../frontend", default-features = false, features = ["analyze"] }
 quon_core   = { path = "../quon_core" }
-backend     = { path = "../backend", optional = true }
-mlir_bridge = { path = "../mlir_bridge", optional = true }
-melior      = { workspace = true, optional = true }
 thiserror   = { workspace = true }
 serde       = { workspace = true, features = ["derive"] }
 serde_json  = { workspace = true }

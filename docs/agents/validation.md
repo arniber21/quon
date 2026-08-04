@@ -14,7 +14,7 @@ Static analysis and refinement-type checks for the Quon workspace.
 | `just test-fast` | `cargo test --workspace --exclude flux_verify` (lit soft-skips if tools missing; no Aer) |
 | `just test-ci` | Local CI parity: `ci-rust` + `ci-tooling` + `ci-docs-assert` (not the website build) |
 | `just ci-rust` | What the `ci.yml` `rust` job runs (sets `QUON_REQUIRE_LIT`); its `cargo test --workspace` step already includes the sample corpus catalog lint (`quonc/tests/samples_catalog.rs`, ADR-0025 / #185) as an ordinary workspace test crate |
-| `just ci-samples` | Local-only convenience: re-run just the sample corpus catalog lint (schema, paths, category coverage, README sections, `ci: smoke` typecheck) in isolation. **Not** part of `test-ci` or `ci.yml` — it would double-pay for what `ci-rust` already covers |
+| `just ci-feature-seams` | Invoked inside `just ci-rust` (#407): builds frontend parser-only, frontend analysis-only, `quon_na` MLIR-free (no LLVM/MLIR link), and the full-compiler `quonc` combination to keep the MLIR-free module seams intact |
 | `just ci-tooling` | What the `ci.yml` `tooling` job runs |
 | `just tooling-full` | Broader local fmt/lint corpus (not CI) |
 | `just qec-benchmarks-smoke` | #254 local convenience: one-cell ablation + nested Sinter (`--mode smoke`). CI smoke is the unittest in `just ci-rust`. |
