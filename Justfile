@@ -289,6 +289,7 @@ ci-website:
     pnpm install --frozen-lockfile
     node test/check-cookbook-navigation.mjs
     pnpm build
+    node scripts/check-links.mjs
 
 # Compile every detached fuzz manifest so type moves (e.g. #410's
 # DepthExpr relocation to quon_core) cannot silently stale the fuzz targets.
