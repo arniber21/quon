@@ -28,6 +28,7 @@
 //! [`ElabError::Unsupported`] (span-accurate), not silently miscompiled.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use chumsky::span::SimpleSpan;
 use quon_core::DepthExpr;
@@ -128,18 +129,26 @@ pub struct ParametricDef {
 /// function's definition, keyed by name, so a call site can look up and
 /// recursively specialize its callee.
 pub struct ElabCtx {
-    pub parametric: HashMap<String, ParametricDef>,
+    /// Parametric-circuit definitions, shared by reference (`Arc`) across
+    /// every specialization call so constructing an `ElabCtx` is O(1) — no
+    /// per-call deep clone of the whole definition table. Read-only after the
+    /// lowerer's collection pass, so cheap `Arc` sharing is sound.
+    pub parametric: Arc<HashMap<String, ParametricDef>>,
     /// Zero-argument circuit-function bodies (`fn f(): Circuit<…> = body`),
     /// keyed by name. Populated by the lowerer from its own `bodies` table so
     /// the elaborator can inline a bare call `f()` (resolving its width) when
     /// unrolling `par { f() } * n` / `par { …, f(), … }`. Parametric callees
-    /// live in `parametric`; this is only for the zero-arg case.
-    pub bodies: HashMap<String, Sp<Expr>>,
+    /// live in `parametric`; this is only for the zero-arg case. Shared via
+    /// `Arc` for the same O(1) construction reason as `parametric`.
+    pub bodies: Arc<HashMap<String, Sp<Expr>>>,
     /// The set of zero-arg callee names currently being inlined on the
     /// elaboration stack — a cycle guard so a self-referential
     /// `fn loop() = par { loop() }` rejects cleanly instead of overflowing
     /// the stack. Interior-mutable so it threads through `&ElabCtx` without
-    /// changing every `elaborate_circuit_body` signature.
+    /// changing every `elaborate_circuit_body` signature. Unlike the shared
+    /// definition tables, this is owned per `ElabCtx` (cloned on the rare
+    /// occasion a context is duplicated) so cycle tracking stays isolated to
+    /// the active elaboration, not leaked across sibling specializations.
     pub expanding: std::cell::RefCell<HashSet<String>>,
 }
 
@@ -1890,5 +1899,90 @@ mod arithmetic_totality_tests {
                 Err(_) => panic!("arithmetic panicked for ({:?}, {}, {})", kind, x, y),
             }
         }
+}
+}
+
+#[cfg(test)]
+mod elab_ctx_sharing_tests {
+    use super::*;
+    use crate::types::Ty;
+
+    /// Two contexts built from the same lowerer snapshot must *share* the
+    /// definition tables by reference (`Arc::ptr_eq`), not deep-clone them —
+    /// the core contract of issue #400. Constructing a context for a new
+    /// specialization is O(1) regardless of how many definitions exist.
+    #[test]
+    fn definition_tables_are_shared_not_cloned() {
+        let parametric = Arc::new(HashMap::from([(
+            "hadamard_all".to_string(),
+            ParametricDef {
+                params: vec!["n".to_string()],
+                body: (Expr::Int(0), no_span()),
+                ret_ty: Ty::Circuit {
+                    n: DepthExpr::Nat(1),
+                    m: DepthExpr::Nat(1),
+                    d: DepthExpr::Nat(0),
+                    c: crate::ast::CliffordClass::Clifford,
+                },
+            },
+        )]));
+        let bodies = Arc::new(HashMap::from([(
+            "bell".to_string(),
+            (Expr::Int(0), no_span()),
+        )]));
+
+        // Simulate two `LoweringCtx::elab_ctx()` calls sharing the lowerer's
+        // tables: each clones the `Arc` (refcount bump), never the map.
+        let ctx_a = ElabCtx {
+            parametric: Arc::clone(&parametric),
+            bodies: Arc::clone(&bodies),
+            expanding: std::cell::RefCell::new(HashSet::new()),
+        };
+        let ctx_b = ElabCtx {
+            parametric: Arc::clone(&parametric),
+            bodies: Arc::clone(&bodies),
+            expanding: std::cell::RefCell::new(HashSet::new()),
+        };
+
+        assert!(
+            Arc::ptr_eq(&ctx_a.parametric, &ctx_b.parametric),
+            "parametric table must be shared by reference, not deep-cloned"
+        );
+        assert!(
+            Arc::ptr_eq(&ctx_a.bodies, &ctx_b.bodies),
+            "bodies table must be shared by reference, not deep-cloned"
+        );
+    }
+
+    /// The cycle-detection `expanding` set is owned per context, not shared —
+    /// so an in-flight expansion tracked in one specialization never leaks into
+    /// a sibling. This guards recursive-elaboration cycle detection (#400).
+    #[test]
+    fn expanding_cycle_guard_is_isolated_per_context() {
+        let parametric = Arc::new(HashMap::new());
+        let bodies = Arc::new(HashMap::new());
+        let ctx_a = ElabCtx {
+            parametric: Arc::clone(&parametric),
+            bodies: Arc::clone(&bodies),
+            expanding: std::cell::RefCell::new(HashSet::from(["loop".to_string()])),
+        };
+        let ctx_b = ElabCtx {
+            parametric: Arc::clone(&parametric),
+            bodies: Arc::clone(&bodies),
+            expanding: std::cell::RefCell::new(HashSet::new()),
+        };
+
+        // `ctx_a` is mid-expansion of `loop`; that state must not be visible to
+        // the independently-constructed `ctx_b`.
+        assert!(ctx_a.expanding.borrow().contains("loop"));
+        assert!(
+            ctx_b.expanding.borrow().is_empty(),
+            "expanding set must not leak across contexts"
+        );
+
+        // Marking `loop` in `ctx_b` does not perturb `ctx_a`'s view.
+        ctx_b.expanding.borrow_mut().insert("loop".to_string());
+        assert_eq!(ctx_a.expanding.borrow().len(), 1);
+        assert_eq!(ctx_b.expanding.borrow().len(), 1);
     }
 }
