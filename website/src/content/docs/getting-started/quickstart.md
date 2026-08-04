@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Compile a Bell pair from Quon to OpenQASM 3, sample it with Qiskit Aer, and emit a neutral-atom schedule — in four commands.
+description: Compile a Bell pair from Quon to OpenQASM 3, then optionally sample it with Qiskit Aer and emit a neutral-atom schedule.
 ---
 <!--
   BELL WALKTHROUGH OWNERSHIP (issue #384):
@@ -10,9 +10,10 @@ description: Compile a Bell pair from Quon to OpenQASM 3, sample it with Qiskit 
   Audit: website/scripts/audit-bell-walkthrough.sh
 -->
 
-This walkthrough uses a checked-in Bell program, compiles it to OpenQASM 3, and
-samples the emitted program through Quon's Qiskit Aer verification seam. Run the
-commands from the repository root after completing the
+This walkthrough uses a checked-in Bell program and compiles it to OpenQASM 3.
+Two optional follow-ons — sampling with Qiskit Aer and emitting a neutral-atom
+schedule — exercise the verification and scheduling seams. Run the commands from
+the repository root after completing the
 [installation guide](/getting-started/install/).
 
 ## 1. Inspect the program
@@ -92,6 +93,12 @@ way that broke the depth contract, the compiler would catch it. This is what it
 means for types to be load-bearing: they constrain the backend, not just the
 frontend.
 
+The first two steps complete the core first-run path: typed Quon source lowered
+to verified OpenQASM 3. The next two steps are optional follow-ons with their
+own prerequisites — the Qiskit Aer Python environment for sampling, and a
+neutral-atom target descriptor for scheduling. Skip them on a first pass and
+return once the core path works.
+
 ## 3. Sample with Aer
 
 Set up the optional Python environment if you have not already:
@@ -132,8 +139,10 @@ outcomes.
 
 ## 4. Emit a neutral-atom artifact
 
-The same compiler driver also targets reconfigurable neutral-atom descriptors.
-This command emits a schedule JSON document and a resource report:
+This optional follow-on requires a neutral-atom target descriptor; the
+repository ships `targets/neutral_atom/generic_rna_v0.json`. The same compiler
+driver targets reconfigurable neutral-atom descriptors and emits a schedule JSON
+document plus a resource report:
 
 ```bash
 cargo run -p quonc -- test/na/bell.qn \
@@ -171,8 +180,9 @@ resource contracts before lowering it to a target-native artifact. The pipeline
 did not just translate syntax — it checked that the circuit's depth, qubit
 count, and Clifford class matched the type signature, then optimized within
 those bounds, then emitted code a real backend could execute. The same source
-file produced OpenQASM 3 for a gate-model simulator and a movement schedule for
-a neutral-atom target, with no source changes between the two.
+file produces OpenQASM 3 for a gate-model simulator and, through the optional
+follow-ons, a movement schedule for a neutral-atom target — with no source
+changes between the two.
 
 Next: read [Your second program](/getting-started/second-program/) to see
 measurement and classical control.
