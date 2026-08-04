@@ -142,10 +142,12 @@ pub struct TypeChecker {
     current_fn: Option<(Name, Vec<Name>)>,
     /// Self-recursive call sites captured while checking the current body (issue #60).
     rec_calls: Vec<RecCall>,
-    /// Optional LSP annotation sink (issue #45).
-    annotations: Option<*mut TypeAnnotations>,
-    /// Optional LSP resolution sink (issue #45).
-    resolutions: Option<*mut ResolutionMap>,
+    /// Optional LSP annotation sink (issue #45). Owned by the checker while analysis is
+    /// enabled; extracted via [`take_sinks`] after `check_decls` completes.
+    annotations: Option<TypeAnnotations>,
+    /// Optional LSP resolution sink (issue #45). Owned by the checker while analysis is
+    /// enabled; extracted via [`take_sinks`] after `check_decls` completes.
+    resolutions: Option<ResolutionMap>,
     /// Symbol index for resolution recording.
     symbol_index: Option<SymbolIndex>,
 }
@@ -178,29 +180,29 @@ impl TypeChecker {
         self.symbol_index = Some(symbols.clone());
     }
 
-    pub fn set_sinks(
-        &mut self,
-        annotations: &mut TypeAnnotations,
-        resolutions: &mut ResolutionMap,
-    ) {
-        self.annotations = Some(annotations as *mut TypeAnnotations);
-        self.resolutions = Some(resolutions as *mut ResolutionMap);
+    /// Initialize the LSP annotation/resolution sinks (issue #45). When enabled, the
+    /// checker owns the sinks for the duration of `check_decls` and records into them
+    /// during synthesis; call [`take_sinks`] to extract the accumulated results.
+    pub fn enable_sinks(&mut self) {
+        self.annotations = Some(TypeAnnotations::default());
+        self.resolutions = Some(ResolutionMap::default());
+    }
+
+    /// Extract the accumulated annotation/resolution sinks, leaving the checker without
+    /// sinks (no further recording). Returns `None` for a sink that was never enabled.
+    pub fn take_sinks(&mut self) -> (Option<TypeAnnotations>, Option<ResolutionMap>) {
+        (self.annotations.take(), self.resolutions.take())
     }
 
     fn record_annotation(&mut self, span: SimpleSpan, ty: &Ty) {
-        if let Some(ptr) = self.annotations {
-            // SAFETY: `analyze_program` owns the annotations for the checker lifetime.
-            unsafe {
-                (*ptr).record(span, ty.clone());
-            }
+        if let Some(ann) = &mut self.annotations {
+            ann.record(span, ty.clone());
         }
     }
 
     fn record_resolution(&mut self, span: SimpleSpan, target: ResolvedTarget) {
-        if let Some(ptr) = self.resolutions {
-            unsafe {
-                (*ptr).record(span, target);
-            }
+        if let Some(res) = &mut self.resolutions {
+            res.record(span, target);
         }
     }
 

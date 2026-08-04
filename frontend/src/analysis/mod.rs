@@ -102,9 +102,7 @@ pub fn analyze_with_rich(src: &str) -> crate::diagnostics::AnalysisResult {
 
     let mut checker = TypeChecker::new();
     checker.enable_analysis(&intelligence.symbols);
-    let mut annotations = TypeAnnotations::default();
-    let mut resolutions = ResolutionMap::default();
-    checker.set_sinks(&mut annotations, &mut resolutions);
+    checker.enable_sinks();
 
     if let Err(errs) = checker.check_decls(&decls) {
         rich_diagnostics = errs.iter().map(|e| e.to_rich_diagnostic(src)).collect();
@@ -112,9 +110,10 @@ pub fn analyze_with_rich(src: &str) -> crate::diagnostics::AnalysisResult {
     }
 
     attach_types(&mut intelligence.symbols, &checker, &decls);
+    let (annotations, resolutions) = checker.take_sinks();
     intelligence.decls = decls;
-    intelligence.annotations = annotations;
-    intelligence.resolutions = resolutions;
+    intelligence.annotations = annotations.unwrap_or_default();
+    intelligence.resolutions = resolutions.unwrap_or_default();
 
     crate::diagnostics::AnalysisResult {
         diagnostics: rich_diagnostics,
