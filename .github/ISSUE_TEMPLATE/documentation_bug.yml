@@ -1,0 +1,78 @@
+name: "Documentation bug"
+description: Report wrong, stale, or misleading Quon documentation.
+title: "[docs]: <short description>"
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a documentation bug. A good report
+        names the **command**, the **target**, a **source snippet**, the
+        **observed artifact or diagnostic**, the **expected behavior**, and the
+        **environment**, so a maintainer can reproduce the problem in one pass.
+        See the [documentation contribution guide](https://quon.arnabg.me/contribute/) for context.
+
+  - type: input
+    id: page
+    attributes:
+      label: Page or file
+      description: The URL of the docs page, or the repository path of the file.
+      placeholder: https://quon.arnabg.me/reference/quonc/  or  website/src/content/docs/reference/quonc.md
+    validations:
+      required: true
+
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The exact command you ran (or "n/a" if the bug is in prose).
+      placeholder: "cargo run -p quonc -- test/verify/bell.qn --emit-qasm"
+    validations:
+      required: true
+
+  - type: input
+    id: target
+    attributes:
+      label: Target
+      description: The `--target` JSON path, the named target, or "n/a".
+      placeholder: "generic_openqasm  or  targets/neutral_atom/generic_rna_v0.json  or  n/a"
+    validations:
+      required: true
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Source snippet
+      description: The minimal `.qn` source (or docs sentence) that triggers the problem. Paste as a fenced block.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed artifact / diagnostic
+      description: The emitted output, the compiler diagnostic, or the docs sentence that is wrong.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What the docs should say, or what the command should produce.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Toolchain and OS details so the report is reproducible.
+      placeholder: |
+        - `quonc --version`:
+        - OS / toolchain (or "inside `devbox shell`"):
+        - Browser (if the bug is in rendered site behavior):
+    validations:
+      required: true
