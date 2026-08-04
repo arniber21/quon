@@ -5,7 +5,7 @@
 //! another op is reported as reuse-after-measure when applicable.
 //!
 //! `unitary_region` inner blocks reuse the circ linearity rules via
-//! [`super::linearity_verifier::check_region_linearity`]; inner ops are not
+//! `check_region_linearity`; inner ops are not
 //! folded into the outer dynamic scope.
 //!
 //! Note: this pass does not forbid stray `quantum.circ` ops appearing directly

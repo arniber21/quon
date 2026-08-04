@@ -219,7 +219,7 @@ impl TwoQubitGate {
 /// intentionally unrefined (Flux's f64 support is weak).
 ///
 /// Prefer [`from_gate_info`] for compiler emission: it builds the registry-backed
-/// [`QasmGate::Std1`] / [`Std2`] / [`Std3`](QasmGate::Std3) forms so a new OpenQASM
+/// [`QasmGate::Std1`] / [`Std2`](QasmGate::Std2) / [`Std3`](QasmGate::Std3) forms so a new OpenQASM
 /// spelling in [`crate::gates::REGISTRY`] emits without a second keyword match.
 /// The typed [`One`](QasmGate::One) / [`Two`](QasmGate::Two) / [`Rotation`](QasmGate::Rotation)
 /// variants remain for hand-built test programs.

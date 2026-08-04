@@ -7,9 +7,9 @@
 //! the hybrid QEC schedule feeds atom identities without a
 //! `LogicalQubitId(atom.0)` numeric cast. Edges are undirected pairwise
 //! interactions weighted with Atomique's layer-decayed gate-frequency formula
-//! `Σ γ^l` ([Atomique] Sec. III-A; default [`DEFAULT_GAMMA`] = 0.8). Segments
+//! `Σ γ^l` (\[Atomique\] Sec. III-A; default [`DEFAULT_GAMMA`] = 0.8). Segments
 //! preserve Enola's distinction between commutation groups and ordered
-//! dependency DAGs ([Enola] Sec. 3) so later Misra–Gries edge-coloring (#105)
+//! dependency DAGs (\[Enola\] Sec. 3) so later Misra–Gries edge-coloring (#105)
 //! can apply the right bound.
 //!
 //! See `docs/neutral_atom/architecture_model.md` §4 and
@@ -235,7 +235,7 @@ impl<'de, V: VertexId> Deserialize<'de> for InteractionGraph<V> {
     }
 }
 
-/// Default Atomique layer-decay base ([Atomique] Sec. III-A).
+/// Default Atomique layer-decay base (\[Atomique\] Sec. III-A).
 pub const DEFAULT_GAMMA: f64 = 0.8;
 
 /// Structural problems with an [`InteractionGraph`].

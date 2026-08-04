@@ -71,7 +71,7 @@ pub struct BackendStageInfo {
 ///
 /// **Shared entry point** for the bare-qubit pipeline
 /// ([`crate::pipeline::run_from_graph`] → `finish_pipeline`) and the hybrid
-/// QEC per-round planner ([`crate::qec_schedule::schedule_cnot_phase`])
+/// QEC per-round planner (`crate::qec_schedule::schedule_cnot_phase`)
 /// — issue #317. Both paths call this function for the place/AOD/zoned step;
 /// the hybrid round-loop orchestration (per-round expansion, Wait barriers,
 /// serial Z-then-X, shared layout) stays in `qec_schedule` (ADR-0016).

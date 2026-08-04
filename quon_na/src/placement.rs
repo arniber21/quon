@@ -6,7 +6,7 @@
 //! [`crate::layout::AtomSite`]s and fill
 //! [`crate::schedule_entry::GraphScheduleRequest::layout`].
 //!
-//! Strategies are **inspired by** [Atomique] Sec. III-B (load-balance / spiral
+//! Strategies are **inspired by** \[Atomique\] Sec. III-B (load-balance / spiral
 //! fill; MAX-k-Cut array mapper Alg. 1), adapted to a single flat grid — not
 //! reproductions. Enola's simulated-annealing placer is out of scope.
 //!
@@ -39,7 +39,7 @@ pub enum PlacementStrategy {
     /// (Atomique MAX-k-Cut–inspired, adapted to spatial proximity).
     InteractionClustering,
     /// SMT-optimal placement via z3 (issue #302, Deliverable B). Requires the
-    /// `solver` feature; the exact encoding lives in [`crate::exact::placement`].
+    /// `solver` feature; the exact encoding lives in `crate::exact::placement`.
     /// Falls back to [`PlacementStrategy::InteractionClustering`] with a logged
     /// optimality gap when the `solver` feature is off or z3 times out.
     Exact,

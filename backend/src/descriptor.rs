@@ -129,7 +129,7 @@ pub struct NeutralAtomTargetDescriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_model: Option<NeutralAtomErrorModelDescriptor>,
     /// Optional movement-induced heating / atom-loss parameters (issue #310,
-    /// [Atomique] Eqs. (1)–(2)). Sibling to `error_model`; omitted targets
+    /// \[Atomique\] Eqs. (1)–(2)). Sibling to `error_model`; omitted targets
     /// still load and the report simply skips the `atom_loss_budget` section.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub atom_loss_model: Option<NeutralAtomLossModelDescriptor>,
@@ -245,10 +245,10 @@ pub struct NeutralAtomErrorModelDescriptor {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NeutralAtomLossModelDescriptor {
-    /// Heating per µm of atom travel ([Atomique] Eq. (1)).
+    /// Heating per µm of atom travel (\[Atomique\] Eq. (1)).
     pub heating_rate_per_um: f64,
     /// Dimensionless loss coefficient → `1 − exp(−loss_coeff × H)`
-    /// ([Atomique] Eq. (2)).
+    /// (\[Atomique\] Eq. (2)).
     pub loss_coeff: f64,
 }
 

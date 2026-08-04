@@ -9,6 +9,7 @@ repository.workspace = true
 [[bin]]
 name = "quonlint"
 path = "src/main.rs"
+doc  = false
 
 [dependencies]
 quonlint  = { path = "../quonlint" }

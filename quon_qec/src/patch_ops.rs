@@ -19,7 +19,8 @@
 //! - [`PatchOperation`] — merge, split, measure-patch, measure-ancilla,
 //!   prepare-ancilla, frame-update (all explicit, ordered)
 //! - [`PatchPlan`] — ordered sequence of operations + patch registry
-//! - [`PatchPlanner`] — builds a plan from a logical operation
+//! - [`plan_logical_cx`] / [`plan_measure_logical`] / [`plan_rough_merge_split`] —
+//!   build a plan from a logical operation
 //!
 //! The plan is then lowered to [`PhysicalRound`]s by [`lower_patch_plan`].
 

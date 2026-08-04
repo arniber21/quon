@@ -8,13 +8,13 @@
 //! # Repetition ([`SourceFamily::Repetition`])
 //!
 //! Alternating `D C D C … D` chain of length `N = 2d − 1` (architecture_model
-//! §10.2 / [Kelly15]). Each check extracts ZZ parity of its two neighboring
+//! §10.2 / \[Kelly15]). Each check extracts ZZ parity of its two neighboring
 //! data qubits via CNOT(data→check), then Z-measure + reset.
 //!
 //! # Surface ([`SourceFamily::Surface`])
 //!
 //! Rotated surface code with `N = 2d² − 1` (architecture_model §10.1 /
-//! [Bravyi24] §1; [BMD07]). Data on a `d×d` grid; X/Z check ancillas on
+//! \[Bravyi24] §1; \[BMD07]). Data on a `d×d` grid; X/Z check ancillas on
 //! plaquettes (smooth top/bottom X boundaries, rough left/right Z). Memory
 //! rounds use a **serial Z-then-X** phase split (Z CXs → mid H → X CXs →
 //! after H → measure/reset) for hybrid NA scheduling. That is *not* Stim's

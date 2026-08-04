@@ -366,7 +366,7 @@ impl fmt::Display for DepthExpr {
 }
 
 /// Total ordering of [`DepthExpr`] that mirrors lexicographic comparison of
-/// the canonical S-expression string, without allocating. Used by [`norm_ac`]
+/// the canonical S-expression string, without allocating. Used by `norm_ac`
 /// to sort operands with `sort()` instead of `sort_by_key(to_sexpr)`.
 impl Ord for DepthExpr {
     fn cmp(&self, other: &Self) -> Ordering {

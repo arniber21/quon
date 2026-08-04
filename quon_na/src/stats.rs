@@ -132,15 +132,15 @@ pub struct SearchDiagnostics {
     /// fraction of budget without hardcoding the constant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_node_budget: Option<u64>,
-    /// δ used ([`crate::zoned::AwareSearchParams::deepening_factor`], [RAP]
+    /// δ used ([`crate::zoned::AwareSearchParams::deepening_factor`], \[RAP\]
     /// Eq. (4)) — issue #297.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_deepening_factor: Option<f64>,
-    /// β used ([`crate::zoned::AwareSearchParams::deepening_value`], [RAP]
+    /// β used ([`crate::zoned::AwareSearchParams::deepening_value`], \[RAP\]
     /// Eq. (4)) — issue #297.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_deepening_value: Option<f64>,
-    /// [RAP] Sec. V-D pruning window used
+    /// \[RAP\] Sec. V-D pruning window used
     /// ([`crate::zoned::AwareSearchParams::pruning_window`]) — issue #297.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_pruning_window: Option<u64>,

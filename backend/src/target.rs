@@ -322,7 +322,7 @@ impl FixedTarget {
     ///
     /// Use this for descriptor loading where `num_qubits` arrives from JSON
     /// independent of the topology built from the same document. Returns
-    /// [`BackendError::InvalidTargetConfig`] on mismatch.
+    /// [`crate::error::BackendError::InvalidTargetConfig`] on mismatch.
     pub fn try_new(
         num_qubits: usize,
         topology: ConnectivityGraph,
@@ -368,7 +368,7 @@ pub struct NeutralAtomTarget {
     /// derived from [`Self::fidelity`] (ADR-0017).
     pub error_model: Option<NeutralAtomErrorModel>,
     /// Optional movement-induced heating / atom-loss parameters (issue #310,
-    /// [Atomique] Wang et al. ISCA 2024, arXiv:2311.15123, Eqs. (1)–(2)).
+    /// \[Atomique\] Wang et al. ISCA 2024, arXiv:2311.15123, Eqs. (1)–(2)).
     ///
     /// Sibling to `error_model`; not derived from fidelity. When present, the
     /// NA resource report attaches an analytic `atom_loss_budget` section
@@ -378,13 +378,13 @@ pub struct NeutralAtomTarget {
     ///
     /// **Provenance / placeholder status (architecture_model.md §2 / §8.6):**
     /// the heating→loss coefficients are *placeholder analytic knobs*, not
-    /// measured device calibrations. [Atomique] Sec. IV gives the model shape;
+    /// measured device calibrations. \[Atomique\] Sec. IV gives the model shape;
     /// its numeric fidelity table is deliberately ×10-optimistic relative to
     /// the 2022 experiments it scales from (see
-    /// `docs/neutral_atom/literature_notes.md` [Atomique]) — do not quote its
+    /// `docs/neutral_atom/literature_notes.md` \[Atomique\]) — do not quote its
     /// numbers as measured values. The model accumulates heating against the
     /// *actual per-atom travel distance* through Quon's √-law movement
-    /// schedule and does **not** import [Atomique]'s fixed 300 µs-per-stage
+    /// schedule and does **not** import \[Atomique\]'s fixed 300 µs-per-stage
     /// movement timing (the documented §5 divergence).
     pub atom_loss_model: Option<NeutralAtomLossModel>,
     pub cost_model: NeutralAtomCostModel,
@@ -395,7 +395,7 @@ impl NeutralAtomTarget {
         self.native_gates.iter().any(|g| g == gate)
     }
 
-    /// Return the physical error model, or [`BackendError::MissingErrorModel`].
+    /// Return the physical error model, or [`crate::error::BackendError::MissingErrorModel`].
     ///
     /// Call this when QEC error-budget reporting or `--emit-qec-experiment` is
     /// requested. Do not convert from `fidelity`.
@@ -496,7 +496,7 @@ pub struct AodSpeedModel {
     /// Jerk limit `J` (m/s³) for the [`AodSpeedModelKind::JerkLimited`] timing
     /// model. Unused (and serializes as `0.0`) under `Sqrt`. Provenance:
     /// placeholder pending access to the QMAP eval scripts' calibration (see
-    /// `docs/neutral_atom/literature_notes.md`'s [RAP] caveats — the QMAP repo's
+    /// `docs/neutral_atom/literature_notes.md`'s \[RAP\] caveats — the QMAP repo's
     /// newer eval scripts use a jerk-limited model that differs from the
     /// paper's √-law except at d = 110 µm); the value is target-specific, not a
     /// universal constant (architecture_model.md §8.6).
@@ -509,7 +509,7 @@ pub struct AodSpeedModel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AodSpeedModelKind {
-    /// √-law `t = √(d/a)` (the reproduced [RAP] Table I timing model; default).
+    /// √-law `t = √(d/a)` (the reproduced \[RAP\] Table I timing model; default).
     Sqrt,
     /// Jerk-limited symmetric S-curve: acceleration ramps at jerk `J` up to
     /// `acceleration_m_s2`, optionally cruises at `max_velocity_m_s`, then
@@ -613,7 +613,7 @@ impl TryFrom<NeutralAtomErrorModelSnapshot> for NeutralAtomErrorModel {
     }
 }
 /// Optional movement-induced heating / atom-loss parameters (issue #310;
-/// [Atomique] Wang et al. ISCA 2024, arXiv:2311.15123, Eqs. (1)–(2)).
+/// \[Atomique\] Wang et al. ISCA 2024, arXiv:2311.15123, Eqs. (1)–(2)).
 ///
 /// Sibling to [`NeutralAtomErrorModel`] and [`NeutralAtomFidelity`]; not
 /// derived from either. Wire JSON lives in
@@ -623,9 +623,9 @@ impl TryFrom<NeutralAtomErrorModelSnapshot> for NeutralAtomErrorModel {
 /// # Model
 ///
 /// Per-atom heating accumulates with travel:
-/// `H_a = heating_rate_per_um × cumulative_distance_um_a` ([Atomique] Eq. (1),
+/// `H_a = heating_rate_per_um × cumulative_distance_um_a` (\[Atomique\] Eq. (1),
 /// distance-only term). Per-atom loss probability follows:
-/// `p_a = 1 − exp(−loss_coeff × H_a)` ([Atomique] Eq. (2)). The report's
+/// `p_a = 1 − exp(−loss_coeff × H_a)` (\[Atomique\] Eq. (2)). The report's
 /// `expected_atoms_lost = Σ_a p_a`.
 ///
 /// `heating_rate_per_um = 0` zeros every `H_a` (heating still reported as 0);
@@ -638,14 +638,14 @@ impl TryFrom<NeutralAtomErrorModelSnapshot> for NeutralAtomErrorModel {
 /// Placeholder analytic knobs (architecture_model.md §2 / §8.6), not measured
 /// calibrations. The model accumulates heating against actual per-atom travel
 /// distance through Quon's √-law movement schedule — it does **not** import
-/// [Atomique]'s fixed 300 µs-per-stage movement timing (§5 divergence).
+/// \[Atomique\]'s fixed 300 µs-per-stage movement timing (§5 divergence).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NeutralAtomLossModel {
     /// Heating gained per µm of atom travel
-    /// (`H = heating_rate_per_um × cumulative_distance_um`; [Atomique] Eq. (1)).
+    /// (`H = heating_rate_per_um × cumulative_distance_um`; \[Atomique\] Eq. (1)).
     pub heating_rate_per_um: f64,
     /// Dimensionless loss coefficient mapping accumulated heating `H` to a
-    /// per-atom loss probability `1 − exp(−loss_coeff × H)` ([Atomique]
+    /// per-atom loss probability `1 − exp(−loss_coeff × H)` (\[Atomique\]
     /// Eq. (2)). Non-negative; `0` reports heating with zero loss probability.
     pub loss_coeff: f64,
 }

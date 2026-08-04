@@ -404,7 +404,7 @@ pub struct ResourceReport {
     pub gate_fidelity_product: Option<f64>,
     /// `gate_fidelity_product` times per-atom idle decay:
     /// `∏_atoms max(0, 1 - t_idle(atom) / fidelity.coherence_time_us)` —
-    /// architecture_model.md §9/§11's **linear** approximation of [Enola]
+    /// architecture_model.md §9/§11's **linear** approximation of \[Enola\]
     /// Eq. (1)'s decoherence factor (not `exp(-t_idle/T)`). `t_idle(atom)`
     /// is `total_time_us` minus the sum of layer max-durations
     /// (`simultaneous_layer_time`) over layers in which the atom appears in
@@ -427,9 +427,9 @@ pub struct ResourceReport {
     // `build_resource_report` without that overlay leave it `None`.
     //
     // **Analytic, not Monte Carlo** (ADR-0020): a per-atom `heating → loss`
-    // closed form ([Atomique] Eqs. (1)–(2)), kept visibly separate from the
+    // closed form (\[Atomique\] Eqs. (1)–(2)), kept visibly separate from the
     // `error_budget` rate×count sum and the `estimated_fidelity` product.
-    /// Analytic per-atom movement-heating / atom-loss budget ([Atomique]
+    /// Analytic per-atom movement-heating / atom-loss budget (\[Atomique\]
     /// Eqs. (1)–(2)). `None` when the target carries no loss model or the
     /// overlay was not applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -533,31 +533,31 @@ impl ErrorBudgetContributions {
 }
 
 /// Analytic per-atom movement-heating / atom-loss budget (issue #310,
-/// [Atomique] Wang et al. ISCA 2024 Eqs. (1)–(2)). Evidence-kind: analytic
+/// \[Atomique\] Wang et al. ISCA 2024 Eqs. (1)–(2)). Evidence-kind: analytic
 /// (ADR-0020) — not Monte Carlo loss simulation and not a threshold claim.
 ///
 /// # Model
 ///
 /// Per-atom heating accumulates over every `Move` action across all layers:
-/// `H_a = heating_rate_per_um × cumulative_movement_um_a` ([Atomique] Eq. (1),
+/// `H_a = heating_rate_per_um × cumulative_movement_um_a` (\[Atomique\] Eq. (1),
 /// distance-only term). Per-atom loss probability follows:
-/// `p_a = 1 − exp(−loss_coeff × H_a)` ([Atomique] Eq. (2)). Aggregate
+/// `p_a = 1 − exp(−loss_coeff × H_a)` (\[Atomique\] Eq. (2)). Aggregate
 /// [`expected_atoms_lost`](Self::expected_atoms_lost) `= Σ_a p_a` (a
 /// fractional expected count, not a survival probability).
 ///
 /// `cumulative_movement_um_a` is the Euclidean distance between each move's
 /// `from`/`to` site positions in the schedule's [`NeutralAtomLayout`],
 /// summed across layers — the actual travel Quon's √-law movement planner
-/// emits, **not** [Atomique]'s fixed 300 µs-per-stage timing (see below).
+/// emits, **not** \[Atomique\]'s fixed 300 µs-per-stage timing (see below).
 ///
-/// # Documented divergence from [Atomique] (architecture_model.md §5)
+/// # Documented divergence from \[Atomique\] (architecture_model.md §5)
 ///
-/// [Atomique] charges a *fixed* 300 µs per movement stage regardless of
+/// \[Atomique\] charges a *fixed* 300 µs per movement stage regardless of
 /// distance (its Table I) and lets distance enter only its heating model.
 /// This budget does **not** import that fixed stage timing: movement here is
 /// the real per-atom travel distance through Quon's `√(d/a)` movement
 /// schedule (`rearrangement_time_us` in the parent report), never 300 µs.
-/// Heating scales with distance (µm), not with [Atomique]'s stage count.
+/// Heating scales with distance (µm), not with \[Atomique\]'s stage count.
 ///
 /// # Omission
 ///
@@ -1021,12 +1021,12 @@ impl ResourceReport {
     }
 
     /// Overlay the analytic per-atom movement-heating / atom-loss budget
-    /// (issue #310, [Atomique] Eqs. (1)–(2)).
+    /// (issue #310, \[Atomique\] Eqs. (1)–(2)).
     ///
     /// `layers` must be the same compiled schedule this report's counts came
     /// from (`from_layers`); per-atom cumulative travel is re-scanned from the
     /// `Move` actions and measured against `layout`'s site positions (the
-    /// actual √-law travel, never [Atomique]'s fixed 300 µs stage timing — see
+    /// actual √-law travel, never \[Atomique\]'s fixed 300 µs stage timing — see
     /// [`AtomLossBudget`]'s divergence note). `layout: None` (non-zoned /
     /// hand-built schedules with no site map) yields an empty budget: all
     /// per-atom distances are zero / unmeasurable, so `expected_atoms_lost`

@@ -41,7 +41,7 @@ pub fn movement_duration_us(d_max_um: f64, acceleration_m_s2: f64) -> u64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeedModelKind {
-    /// √-law `t = √(d/a)` (default; the [RAP] Table I timing model).
+    /// √-law `t = √(d/a)` (default; the \[RAP\] Table I timing model).
     #[default]
     Sqrt,
     /// Jerk-limited symmetric S-curve (issue #308); see [`movement_duration_us_jerk`].
@@ -117,7 +117,7 @@ impl From<&BackendSpeedModel> for SpeedModel {
 /// **Provenance:** standard symmetric S-curve derivation. The jerk and
 /// cruise-velocity values are target-specific placeholders — calibrating to
 /// the QMAP eval scripts' jerk-limited model (which coincides with the √-law
-/// only at d = 110 µm; see `docs/neutral_atom/literature_notes.md`'s [RAP]
+/// only at d = 110 µm; see `docs/neutral_atom/literature_notes.md`'s \[RAP\]
 /// caveats) is out of scope for #308; the default model stays [`SpeedModelKind::Sqrt`].
 pub fn movement_duration_us_jerk(
     d_max_um: f64,
@@ -189,7 +189,7 @@ pub fn movement_duration_for_model(d_max_um: f64, model: &SpeedModel) -> u64 {
     }
 }
 
-/// `√(d_max / a)` duration contribution for one movement group ([RAP] Eq. (1)).
+/// `√(d_max / a)` duration contribution for one movement group (\[RAP\] Eq. (1)).
 ///
 /// `d_max_um` is micrometres; `acceleration_m_s2` is m/s². Returns seconds×1e6
 /// scaled consistently as a dimensionless `√(µm)` proxy when `a` is fixed — we
@@ -204,7 +204,7 @@ pub fn sqrt_d_max(d_max_um: f64) -> f64 {
     }
 }
 
-/// Sum of `√(d_max)` over groups — [RAP] Eq. (1) (up to `1/√a`).
+/// Sum of `√(d_max)` over groups — \[RAP\] Eq. (1) (up to `1/√a`).
 pub fn routing_cost_eq1(group_d_max_um: &[f64]) -> f64 {
     group_d_max_um.iter().map(|&d| sqrt_d_max(d)).sum()
 }

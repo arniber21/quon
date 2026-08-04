@@ -93,7 +93,7 @@ pub mod attr {
     pub const IN_QUBITS: &str = "in_qubits";
     /// Number of output qubits (`I64Attr`).
     pub const OUT_QUBITS: &str = "out_qubits";
-    /// Symbolic depth bound, a [`DepthExpr`] S-expression (`DepthExprAttr`).
+    /// Symbolic depth bound, a [`quon_core::DepthExpr`] S-expression (`DepthExprAttr`).
     pub const DEPTH: &str = "depth";
     /// Clifford classification (`BoolAttr`).
     pub const CLIFFORD: &str = "clifford";

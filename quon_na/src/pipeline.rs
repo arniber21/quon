@@ -418,7 +418,7 @@ pub fn run_from_graph(
 /// and splices the results into the entangling-scheduled layers at the
 /// gate's extraction-time anchor, before zoned/flat-AOD placement (neither
 /// backend's movement planning needs `LocalGate`/`GlobalRy` site info — see
-/// [`interleave_local_gates`]).
+/// `interleave_local_gates`).
 #[cfg(feature = "mlir")]
 pub fn run_from_graph_with_local_gates(
     graph: InteractionGraph,
@@ -775,7 +775,7 @@ fn finish_pipeline(
     // production report from this pipeline.
     let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
     // Analytic per-atom movement-heating / atom-loss budget (issue #310,
-    // [Atomique] Eqs. (1)–(2)). Optional like `error_model`: attached only
+    // \[Atomique\] Eqs. (1)–(2)). Optional like `error_model`: attached only
     // when the target carries `atom_loss_model`, else the section is omitted.
     // Distance is measured against the zoned schedule's layout (the real
     // √-law travel); `req.layout` is `None` only for non-zoned hand-built

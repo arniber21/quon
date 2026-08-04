@@ -1,14 +1,14 @@
 //! Zoned routing-aware placement (issue #107, heuristic search #297).
 //!
 //! Reproduces the **placement cost = routing cost** formulation of
-//! [RAP] (Stade, Lin, Cong, Wille, ICCAD 2025, arXiv:2505.22715):
+//! \[RAP\] (Stade, Lin, Cong, Wille, ICCAD 2025, arXiv:2505.22715):
 //!
 //! - Sec. III-B — routing-aware definition (layer-by-layer; cost is routing)
 //! - Sec. III-A — reuse analysis (“don’t move atoms already in place”)
 //! - Sec. IV-A — cost Eq. (1): `cost(p) = Σ_G √(d_max(G))` over greedily
 //!   grouped compatible movements ([`routing_cost_eq1`])
 //! - Sec. IV-B — search extends by assigning one gate’s atoms to entanglement
-//!   pairs (A*-style / best-first): [`assign_aware_legal`]
+//!   pairs (A*-style / best-first): `assign_aware_legal`
 //! - Sec. IV-C / V-C, Eqs. (3)-(5) — the guiding heuristic
 //!   ([`AwareSearchParams`], `heuristic_estimate`): an admissible-lower-bound
 //!   term (Eq. 3: worst-case nearest-available distance among unplaced gates
@@ -40,9 +40,9 @@
 //!   hook to look ahead to) — documented scope reduction, not an oversight.
 //! - Sec. V-A — binary-search-tree movement-group compatibility check: this
 //!   module uses the same per-axis order/coupling test
-//!   ([`positions_aod_compatible`]) both post-search (`partition_aod_compatible`)
+//!   (`positions_aod_compatible`) both post-search (`partition_aod_compatible`)
 //!   and, as of #297, *during* the search itself (search-time `groups` on
-//!   [`AwareNode`]) so a node's cost matches what routing will actually emit.
+//!   `AwareNode`) so a node's cost matches what routing will actually emit.
 //!   Linear-scan compatibility checking (not a literal BST) — legal at this
 //!   crate's layer sizes (≤ tens of gates), a documented simplification of
 //!   the paper's data structure, not of its legality semantics.
@@ -72,12 +72,12 @@
 //!   from the paper's (unspecified) search-loop mechanics, not from its
 //!   legality semantics.
 //!
-//! Readout-zone measurement constraints come from [AbstractModel]
-//! (arXiv:2405.08068) Sec. III-A, **not** from [RAP] (which models only
+//! Readout-zone measurement constraints come from \[AbstractModel\]
+//! (arXiv:2405.08068) Sec. III-A, **not** from \[RAP\] (which models only
 //! storage + entanglement). Flat AOD movement (#106) is a distinct Enola /
 //! OLSQ-DPQA line — do not cite this module as that planner.
 //!
-//! Dual modes ([RAP] Sec. VI-B comparison methodology):
+//! Dual modes (\[RAP\] Sec. VI-B comparison methodology):
 //! - [`PlacerMode::RoutingAgnostic`] — ZAC-style distance-minimizing placement
 //! - [`PlacerMode::RoutingAware`] — heuristic-guided search minimizing Eq. (1)
 //!   routing cost. With the Eq. (3)-(5) heuristic (#297), this is true A*
@@ -108,7 +108,7 @@ use backend::NeutralAtomErrorModel;
 #[cfg(feature = "flux")]
 use flux_rs::attrs::*;
 
-/// Zone capability taxonomy ([AbstractModel] Sec. III-A; [RAP] Sec. II-A).
+/// Zone capability taxonomy (\[AbstractModel\] Sec. III-A; \[RAP\] Sec. II-A).
 ///
 /// Owned by `backend` (issue #212): one `ZoneKind` for the workspace,
 /// re-exported here so the zoned placer's public API is unchanged.
@@ -275,7 +275,7 @@ impl PlacementCostModel {
     }
 
     /// Cost of one AOD-compatible movement group — the unit the routing
-    /// cost sums over ([RAP] Eq. (1) for `Time`; error-budget per group for
+    /// cost sums over (\[RAP\] Eq. (1) for `Time`; error-budget per group for
     /// `ErrorBudget`). Used by the aware search's `groups_cost`.
     fn group_cost(&self, group: &SearchGroup) -> f64 {
         match self {
@@ -307,7 +307,7 @@ impl PlacementCostModel {
 /// (upper bound — AOD-compatible moves share a group), 2 transfers per
 /// non-reuse move (SLM→AOD + AOD→SLM), idle exposure for the move duration
 /// (`movement_duration_for_model`), one rydberg stage per gate's
-/// entanglement. The [`pick_agnostic_assignment`] dispatch compares full
+/// entanglement. The pick_agnostic_assignment dispatch compares full
 /// assignments on the actual group-level cost (not this per-gate
 /// approximation) to correct the step overcount.
 fn error_budget_gate_cost(
@@ -330,7 +330,7 @@ fn error_budget_gate_cost(
         + model.rydberg
 }
 
-/// Placer mode ([RAP] Sec. VI-B agnostic-vs-aware pairs).
+/// Placer mode (\[RAP\] Sec. VI-B agnostic-vs-aware pairs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlacerMode {
@@ -339,9 +339,9 @@ pub enum PlacerMode {
     /// RAP: minimize Eq. (1) routing cost of the transition.
     RoutingAware,
     /// SMT-optimal placement (issue #302, Deliverable B). On the **flat
-    /// AOD** path this dispatches to [`PlacementStrategy::Exact`], which
+    /// AOD** path this dispatches to [`crate::placement::PlacementStrategy::Exact`], which
     /// solves the atom→site assignment with z3 (or brute-force for n ≤ 8)
-    /// and falls back to [`PlacementStrategy::InteractionClustering`] with
+    /// and falls back to [`crate::placement::PlacementStrategy::InteractionClustering`] with
     /// a logged optimality gap on timeout or when the `solver` feature is
     /// off. On the **zoned** path exact initial storage placement is not
     /// yet implemented, so this runs the routing-agnostic per-layer
@@ -353,22 +353,22 @@ pub enum PlacerMode {
 /// Which routing-agnostic placement mechanism ran for a layer (issue #300).
 ///
 /// The agnostic path now has two mechanisms: the new min-weight bipartite
-/// matching placer ([`assign_matching_legal`], the Lin et al. 2025
+/// matching placer (assign_matching_legal, the Lin et al. 2025
 /// `VertexMatchingPlacer` parity target) and the original greedy nearest-legal
-/// placer ([`assign_greedy_legal`]), kept as a fast fallback for very large
+/// placer (assign_greedy_legal), kept as a fast fallback for very large
 /// layers and for when matching's conflict-repair cannot find a spacing-legal
 /// assignment. This enum records which one produced a given schedule so a
 /// `routing-agnostic` compile is never silently one or the other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgnosticPlacerMechanism {
-    /// [`assign_matching_legal`] produced the layer's assignment (min-weight
+    /// assign_matching_legal produced the layer's assignment (min-weight
     /// bipartite matching, the #300 default for normal-size layers).
     Matching,
-    /// [`assign_greedy_legal`] produced the layer's assignment — either because
+    /// assign_greedy_legal produced the layer's assignment — either because
     /// the layer exceeded the [`MATCHING_FALLBACK_GATE_PAIR_PRODUCT`] threshold
     /// (very large, where the O(n²·m) matching is skipped for speed) or because
-    /// the dispatch's group-count comparison ([`pick_agnostic_assignment`])
+    /// the dispatch's group-count comparison (pick_agnostic_assignment)
     /// kept greedy: matching's min-travel optimum can pack gates into *more*
     /// AOD movement stages than the spread-out greedy choice, so greedy is kept
     /// whenever it yields ≤ matching's rearrangement-step count. In both cases
@@ -393,44 +393,44 @@ impl AgnosticPlacerMechanism {
 pub struct ZonedScheduleResult<V = LogicalQubitId> {
     pub request: GraphScheduleRequest<V>,
     pub mode: PlacerMode,
-    /// Σ_G √(d_max(G)) over emitted movement groups ([RAP] Eq. (1)).
+    /// Σ_G √(d_max(G)) over emitted movement groups (\[RAP\] Eq. (1)).
     pub routing_cost: f64,
     pub rearrangement_steps: u64,
     pub trap_transfers: u64,
-    /// Number of per-layer gate-assignment calls where [`assign_aware_legal`]
+    /// Number of per-layer gate-assignment calls where assign_aware_legal
     /// found a full legal assignment within budget. As of #297 this is a
     /// heuristic-guided A* with an intentionally inadmissible accelerating
     /// term (Eqs. (3)-(4)), so `Completed` means "the search's best find",
-    /// not a proven joint optimum for the layer (matching [RAP]'s own
+    /// not a proven joint optimum for the layer (matching \[RAP\]'s own
     /// framing — see the module doc). Always `0` under
     /// [`PlacerMode::RoutingAgnostic`] (the concept doesn't apply).
     pub aware_search_completed_layers: u64,
     /// Per-layer calls where the aware search exhausted the expansion budget
     /// before finding a full assignment and fell back to
-    /// [`assign_greedy_legal`] (issue #111 review finding: this makes a
+    /// assign_greedy_legal (issue #111 review finding: this makes a
     /// budget-exhaustion fallback — which can silently reproduce the greedy
     /// schedule byte-for-byte — visible instead of indistinguishable from "no
     /// routing contention"). Always `0` under [`PlacerMode::RoutingAgnostic`].
     pub aware_search_budget_exceeded_layers: u64,
     /// Per-layer calls where the aware search exhausted its entire search
     /// space (no legal full assignment exists, e.g. spacing/occupancy
-    /// conflicts) and fell back to [`assign_greedy_legal`]. Always `0` under
+    /// conflicts) and fell back to assign_greedy_legal. Always `0` under
     /// [`PlacerMode::RoutingAgnostic`].
     pub aware_search_no_legal_assignment_layers: u64,
     /// Sum of best-first search node expansions across every
-    /// [`assign_aware_legal`] call this schedule made (issue #307: exposes
+    /// assign_aware_legal call this schedule made (issue #307: exposes
     /// search cost, not just its pass/fail outcome). Always `0` under
     /// [`PlacerMode::RoutingAgnostic`].
     pub aware_search_node_expansions: u64,
-    /// Per-layer routing-agnostic calls where [`assign_matching_legal`] (the
+    /// Per-layer routing-agnostic calls where assign_matching_legal (the
     /// #300 min-weight bipartite matching placer) produced the layer's
     /// assignment. Always `0` under [`PlacerMode::RoutingAware`].
     pub agnostic_matching_layers: u64,
     /// Per-layer routing-agnostic calls where the agnostic path instead used
-    /// [`assign_greedy_legal`] — either because the layer exceeded the
+    /// assign_greedy_legal — either because the layer exceeded the
     /// [`MATCHING_FALLBACK_GATE_PAIR_PRODUCT`] threshold (very large layer,
     /// where the O(n²·m) matching is skipped for speed) or because the
-    /// dispatch's group-count comparison ([`pick_agnostic_assignment`]) kept
+    /// dispatch's group-count comparison (pick_agnostic_assignment) kept
     /// greedy (matching's min-travel optimum grouped into ≥ as many AOD
     /// movement stages). Always `0` under [`PlacerMode::RoutingAware`]. See
     /// [`AgnosticPlacerMechanism`].
@@ -465,7 +465,7 @@ pub enum ZonedScheduleError {
     Conflict(String),
 }
 
-/// √(d_max / a) duration contribution for one movement group ([RAP] Eq. (1)).
+/// √(d_max / a) duration contribution for one movement group (\[RAP\] Eq. (1)).
 ///
 /// `d_max_um` is micrometres; `acceleration_m_s2` is m/s². Returns seconds×1e6
 /// scaled consistently as a dimensionless √(µm) proxy when a is fixed — we
@@ -495,7 +495,7 @@ pub fn movement_duration_us(d_max_um: f64, acceleration_m_s2: f64) -> u64 {
     crate::geometry::movement_duration_us(d_max_um, acceleration_m_s2)
 }
 
-/// Sum of √(d_max) over groups — [RAP] Eq. (1) (up to 1/√a).
+/// Sum of √(d_max) over groups — \[RAP\] Eq. (1) (up to 1/√a).
 pub fn routing_cost_eq1(group_d_max_um: &[f64]) -> f64 {
     group_d_max_um.iter().map(|&d| sqrt_d_max(d)).sum()
 }
@@ -644,7 +644,7 @@ fn zone_id_for_site(layout: &NeutralAtomLayout, arch: &ZonedArchitecture, site: 
 }
 
 /// Schedule a graph request onto a zoned architecture, using the default
-/// [`AwareSearchParams`] ([RAP] Sec. VI-A QASMBench set) for
+/// [`AwareSearchParams`] (\[RAP\] Sec. VI-A QASMBench set) for
 /// [`PlacerMode::RoutingAware`]. Use
 /// [`schedule_zoned_with_aware_params`] to override the A* search's
 /// tunables (node budget, deepening factor/value, pruning window).
@@ -844,7 +844,7 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
         // AOD row/column coupling makes some move sets unrealizable as one
         // grab (e.g. storage- and zone-sourced atoms converging on the same
         // row). Partition into compatible groups — the greedily grouped
-        // compatible movements [RAP] Eq. (1) sums over — and emit each as
+        // compatible movements \[RAP\] Eq. (1) sums over — and emit each as
         // its own load → move → store stage.
         for group in partition_aod_compatible(&planned_moves, arch.aod_min_separation_um) {
             let d_max = group.iter().fold(0.0_f64, |d, m| d.max(m.distance_um));
@@ -1064,11 +1064,11 @@ fn moves_aod_compatible(a: &PlannedMove, b: &PlannedMove, min_sep_um: f64) -> bo
     positions_aod_compatible((a.from, a.to), (b.from, b.to), min_sep_um)
 }
 
-/// [RAP] Sec. V-A's movement-group compatibility check (non-crossing +
+/// \[RAP\] Sec. V-A's movement-group compatibility check (non-crossing +
 /// preservation), on raw `(from, to)` position pairs rather than
 /// [`PlannedMove`] — shared by the post-search routing grouper
 /// ([`moves_aod_compatible`]) and the search-time grouping
-/// [`assign_aware_legal`] performs to keep its Eq. (1) cost consistent with
+/// assign_aware_legal performs to keep its Eq. (1) cost consistent with
 /// what routing will actually emit (#297). The paper implements this with a
 /// binary search tree per group for O(log n) lookups (Sec. V-A); this is a
 /// linear scan against existing group members instead — legal at this
@@ -1226,7 +1226,7 @@ struct AssignInputs<'a> {
     conflict_um: f64,
     /// Minimum AOD row/column separation ([`ZonedArchitecture::aod_min_separation_um`],
     /// here `aod_min_separation_um` field) used only by
-    /// [`assign_aware_legal`]'s search-time movement grouping (Eq. (1)); `0.0`
+    /// assign_aware_legal's search-time movement grouping (Eq. (1)); `0.0`
     /// disables the separation sub-check (see [`positions_aod_compatible`]).
     aod_min_sep_um: f64,
     /// Placement cost model (issue #309): `Time` uses the RAP Eq. (1)
@@ -1234,13 +1234,13 @@ struct AssignInputs<'a> {
     cost_model: PlacementCostModel,
 }
 
-/// Whether [`assign_aware_legal`]'s A* search found a full legal assignment
-/// for a layer, or gave up and fell back to [`assign_greedy_legal`] (issue
+/// Whether assign_aware_legal's A* search found a full legal assignment
+/// for a layer, or gave up and fell back to assign_greedy_legal (issue
 /// #111 review finding: a silent fallback here is indistinguishable from "no
 /// routing contention" unless it is surfaced).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AwareSearchOutcome {
-    /// [`assign_greedy_legal`] was called directly (routing-agnostic mode);
+    /// assign_greedy_legal was called directly (routing-agnostic mode);
     /// the aware-search-completion concept doesn't apply.
     NotApplicable,
     /// The search popped a full-assignment goal node within
@@ -1251,12 +1251,12 @@ pub enum AwareSearchOutcome {
     Completed,
     /// The search exhausted [`AwareSearchParams::node_budget`] expansions
     /// before popping a full-assignment goal node and fell back to
-    /// [`assign_greedy_legal`].
+    /// assign_greedy_legal.
     BudgetExceeded,
     /// The search exhausted its reachable space (heap emptied) within the
     /// current [`AwareSearchParams::pruning_window`]/[`AwareSearchParams::beam_width`]
     /// bounds without popping a full-assignment goal node, and fell back to
-    /// [`assign_greedy_legal`]. Pre-#297 (unwindowed, unbeamed uniform-cost
+    /// assign_greedy_legal. Pre-#297 (unwindowed, unbeamed uniform-cost
     /// search) this proved no full legal assignment existed at all (e.g.
     /// spacing/occupancy conflicts); as of #297 it does **not** prove that —
     /// `pruning_window` can exclude the only choice a full assignment
@@ -1271,14 +1271,14 @@ pub enum AwareSearchOutcome {
 struct GateAssignment {
     placed: Vec<(usize, (Position, Position))>,
     deferred: Vec<usize>,
-    /// See [`AwareSearchOutcome`]. [`assign_greedy_legal`] always reports
+    /// See [`AwareSearchOutcome`]. assign_greedy_legal always reports
     /// [`AwareSearchOutcome::NotApplicable`] unless it was called as a
-    /// fallback from [`assign_aware_legal`], in which case the caller
+    /// fallback from assign_aware_legal, in which case the caller
     /// overwrites this with the specific fallback reason.
     outcome: AwareSearchOutcome,
     /// Best-first search node expansions this call performed (issue #307).
-    /// `0` from [`assign_greedy_legal`] unless it is a fallback from
-    /// [`assign_aware_legal`], in which case the caller overwrites this with
+    /// `0` from assign_greedy_legal unless it is a fallback from
+    /// assign_aware_legal, in which case the caller overwrites this with
     /// the aware search's expansion count before falling back.
     node_expansions: usize,
 }
@@ -1381,7 +1381,7 @@ fn assign_greedy_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) ->
 
 /// For one gate, one occupancy-legal entanglement pair: `(pair_index, d_max
 /// cost, oriented destination positions)`. Built per gate by
-/// [`assign_matching_legal`] for the cost matrix and orientation lookup.
+/// assign_matching_legal for the cost matrix and orientation lookup.
 type LegalPairOption = (usize, f64, (Position, Position));
 
 /// Routing-agnostic placement via min-weight bipartite matching (issue #300):
@@ -1394,7 +1394,7 @@ type LegalPairOption = (usize, f64, (Position, Position));
 /// # Cost model
 ///
 /// The per-`(gate, pair)` cost is the √-law per-gate move distance the agnostic
-/// path charges ([RAP] Eq. (1)): `d_max = max(euclidean(pa, left),
+/// path charges (\[RAP\] Eq. (1)): `d_max = max(euclidean(pa, left),
 /// euclidean(pb, right))` for the cheaper of the two pair orientations
 /// (orientation does not affect [`pairs_conflict`], which is between *pair
 /// sites*, so the cheaper orientation is picked freely per matched pair).
@@ -1412,7 +1412,7 @@ type LegalPairOption = (usize, f64, (Position, Position));
 /// travel-optimal choices in increasing-cost order, skipping any whose pair is
 /// already taken or which [`pairs_conflict`]s with an already-accepted pair,
 /// then greedily re-finds a legal pair (via the same [`pair_legal`] oracle
-/// [`assign_greedy_legal`] uses, seeded with the accepted set) for every gate
+/// assign_greedy_legal uses, seeded with the accepted set) for every gate
 /// whose matching choice was rejected. Legality is therefore never violated:
 /// accepted pairs are conflict-free by construction and repaired pairs are
 /// checked against the accepted set.
@@ -1421,7 +1421,7 @@ type LegalPairOption = (usize, f64, (Position, Position));
 /// which on a densely-conflicting entanglement zone (e.g. ising_n42, where the
 /// 18.75 µm isolation spacing exceeds the 12 µm pair pitch) groups into *more*
 /// AOD movement stages than the spread-out greedy choice. The dispatch
-/// ([`pick_agnostic_assignment`]) therefore compares the two on the actual
+/// (pick_agnostic_assignment) therefore compares the two on the actual
 /// rearrangement-step metric and keeps the better — guaranteeing the agnostic
 /// path never regresses the step count while still using matching wherever it
 /// does group better.
@@ -1436,7 +1436,7 @@ type LegalPairOption = (usize, f64, (Position, Position));
 /// rather than greedily.
 ///
 /// Returns the [`GateAssignment`] and a flag: `true` if matching produced it,
-/// `false` if it fell back to [`assign_greedy_legal`]. (The current
+/// `false` if it fell back to assign_greedy_legal. (The current
 /// implementation always returns `true`; the flag is retained for the
 /// dispatch's group-count comparison and any future conflict-repair variant
 /// that does fall back.)
@@ -1463,7 +1463,7 @@ fn assign_matching_legal(
                 continue;
             }
             // Cost = the per-gate move cost the agnostic path charges
-            // ([RAP] Eq. (1) under `Time`: d_max = max of the two atoms'
+            // (\[RAP\] Eq. (1) under `Time`: d_max = max of the two atoms'
             // travels for the cheaper orientation; under `ErrorBudget`:
             // the analytic error-budget contribution — issue #309).
             // Orientation does not affect [`pairs_conflict`] (between pair
@@ -1569,7 +1569,7 @@ fn assign_matching_legal(
     // 4. Greedily reassign every active gate whose matching choice was rejected
     //    (taken or conflicting) to its nearest legal free pair that does not
     //    conflict with the accepted set — the same legality oracle
-    //    [`assign_greedy_legal`] uses ([`pair_legal`]), seeded with the
+    //    assign_greedy_legal uses ([`pair_legal`]), seeded with the
     //    matching's accepted pairs. Gates with no such pair are deferred
     //    (exactly as greedy would). This keeps matching's gain for the
     //    non-conflicting bulk of the layer and falls back to greedy only for
@@ -1634,9 +1634,9 @@ fn assign_matching_legal(
 }
 
 /// Number of AOD-coupled-motion-compatible movement groups an assignment would
-/// emit — the actual per-layer rearrangement-step contribution ([RAP] Eq.
+/// emit — the actual per-layer rearrangement-step contribution (\[RAP\] Eq.
 /// (1) sums `√(d_max)` over exactly these groups). Used by
-/// [`pick_agnostic_assignment`] to compare the matching and greedy placers on
+/// pick_agnostic_assignment to compare the matching and greedy placers on
 /// the metric that matters (steps), not just travel distance.
 fn assignment_group_count(
     assignment: &GateAssignment,
@@ -1672,7 +1672,7 @@ fn assignment_group_count(
 /// Computes the actual group-level cost: `movement × steps + transfer ×
 /// transfers + idle × exposed_wait + rydberg × stages` using the real
 /// AOD-compatible movement groups the assignment would emit. Used by
-/// [`pick_agnostic_assignment`] under [`PlacementCostModel::ErrorBudget`]
+/// pick_agnostic_assignment under [`PlacementCostModel::ErrorBudget`]
 /// to compare the matching and greedy placers on the error-budget metric
 /// (not just step count). `rate × count` only (ADR-0017/0020) — **not** a
 /// logical error rate or threshold claim.
@@ -1726,8 +1726,8 @@ fn assignment_error_budget_cost(
 }
 
 /// Choose the routing-agnostic layer assignment: compute both the
-/// min-weight matching placer ([`assign_matching_legal`]) and the greedy
-/// placer ([`assign_greedy_legal`]), keep whichever yields fewer AOD movement
+/// min-weight matching placer (assign_matching_legal) and the greedy
+/// placer (assign_greedy_legal), keep whichever yields fewer AOD movement
 /// groups (the rearrangement-step metric) — with greedy winning ties and any
 /// case where matching defers more gates. This guarantees the agnostic path
 /// never produces more rearrangement steps than the greedy baseline (issue
@@ -1790,7 +1790,7 @@ fn pick_agnostic_assignment(
     }
 }
 
-/// Tunable parameters for [`assign_aware_legal`]'s A* search ([RAP] Secs.
+/// Tunable parameters for assign_aware_legal's A* search (\[RAP\] Secs.
 /// IV-C / V-C / V-D, Eqs. (3)-(5)). Defaults are the paper's QASMBench
 /// parameter set (Sec. VI-A: α=0.2, β=0.2, γ=5, δ=0.6) restricted to the
 /// terms this port implements — see the module doc for why α (Eq. (2)'s
@@ -1815,9 +1815,9 @@ pub struct AwareSearchParams {
     /// small nonzero penalty proportional to how many gates remain. qmap:
     /// `deepeningValue`.
     pub deepening_value: f64,
-    /// Expansion budget before falling back to [`assign_greedy_legal`].
+    /// Expansion budget before falling back to assign_greedy_legal.
     pub node_budget: usize,
-    /// [RAP] Sec. V-D pruning: number of nearest *legal* entanglement pairs
+    /// \[RAP\] Sec. V-D pruning: number of nearest *legal* entanglement pairs
     /// considered per gate at each node expansion (bounds branching factor
     /// on layers with many simultaneous gates / candidate pairs).
     pub pruning_window: usize,
@@ -1948,7 +1948,7 @@ fn std_dev(values: &[f64]) -> f64 {
     variance.sqrt()
 }
 
-/// [RAP] Eq. (4)'s `Σ_G SD(G)`: per axis, per group, the standard deviation
+/// \[RAP\] Eq. (4)'s `Σ_G SD(G)`: per axis, per group, the standard deviation
 /// of `value − scale·key`, where `key`/`value` are each member's *discrete
 /// rank* among the group's distinct source/target coordinates on that axis
 /// (its Sec. V-A/V-C — "the source locations of the atoms are rearranged,
@@ -2069,7 +2069,7 @@ fn gate_candidates(gate: (AtomId, AtomId), inputs: &AssignInputs<'_>) -> Vec<Gat
     options
 }
 
-/// [RAP] Eqs. (3)-(4): the admissible lower-bound term plus the
+/// \[RAP\] Eqs. (3)-(4): the admissible lower-bound term plus the
 /// (inadmissible) accelerating term. See the module doc for the qmap
 /// cross-check that resolved Eq. (3)'s sign convention
 /// (`max(0, √unplaced − √placed)`, not a bare subtraction) and for why Eq.
@@ -2086,7 +2086,7 @@ fn heuristic_estimate(
     if n_unplaced == 0 {
         return 0.0;
     }
-    // Under `Time`: the admissible term is [RAP] Eq. (3):
+    // Under `Time`: the admissible term is \[RAP\] Eq. (3):
     // `max(0, √(d_max_unplaced) − √(d_max_placed))`. Under `ErrorBudget`
     // (issue #309): the cost is already in error-budget units (no √), so
     // the admissible term is `max(0, max_cost_unplaced − max_cost_placed)`.
@@ -2146,8 +2146,8 @@ fn heuristic_estimate(
 pub const AWARE_NODE_BUDGET: usize = 100_000;
 
 /// Above this `gates × pairs` product the routing-agnostic path skips the
-/// [`assign_matching_legal`] min-weight bipartite matching (O(n²·m)) and uses
-/// the O(n·m) [`assign_greedy_legal`] fallback instead (issue #300). The
+/// assign_matching_legal min-weight bipartite matching (O(n²·m)) and uses
+/// the O(n·m) assign_greedy_legal fallback instead (issue #300). The
 /// matching is cheap at fixture scale (a 21-gate / 340-pair ising_n42 layer is
 /// ~150 k operations) but its per-layer gain over the already-near-optimal
 /// greedy is marginal, so a half-million-product "very large" cutoff keeps
@@ -2155,7 +2155,7 @@ pub const AWARE_NODE_BUDGET: usize = 100_000;
 /// fast path. ising_n42's largest layer (21 × 340 = 7140) is well under this.
 pub const MATCHING_FALLBACK_GATE_PAIR_PRODUCT: usize = 500_000;
 
-/// Routing-aware A* search ([RAP] Sec. IV-B encoding; Sec. IV-C / V-C
+/// Routing-aware A* search (\[RAP\] Sec. IV-B encoding; Sec. IV-C / V-C
 /// heuristic — see the module doc for the full section/equation map): extend
 /// by one gate, charge Eq. (1) `√(d_max)` of the AOD-compatible movement
 /// groups implied so far, guided by the Eq. (3)-(4) heuristic. Extensions
@@ -2165,7 +2165,7 @@ pub const MATCHING_FALLBACK_GATE_PAIR_PRODUCT: usize = 500_000;
 /// an engineering addition beyond the paper's Eqs., needed to reach full
 /// assignments within budget at real fixture scale). When no legal full
 /// assignment exists (or the node budget is exhausted) it falls back to
-/// [`assign_greedy_legal`], which defers unplaceable gates.
+/// assign_greedy_legal, which defers unplaceable gates.
 fn assign_aware_legal(
     gates: &[(AtomId, AtomId)],
     inputs: &AssignInputs<'_>,
@@ -2557,7 +2557,7 @@ mod tests {
     }
 
     /// Total Eq. (1) cost `Σ_G √(d_max(G))` a [`GateAssignment`] would incur,
-    /// recomputed independently of [`assign_aware_legal`]'s own bookkeeping so
+    /// recomputed independently of assign_aware_legal's own bookkeeping so
     /// this doubles as a check that its `placed` orientations are the ones it
     /// claims.
     fn assignment_cost(
@@ -2578,7 +2578,7 @@ mod tests {
     }
 
     /// Issue #111 review finding: a routing-aware layer that silently falls
-    /// back to [`assign_greedy_legal`] (budget exhaustion or no legal full
+    /// back to assign_greedy_legal (budget exhaustion or no legal full
     /// assignment) is indistinguishable, by cost alone, from "no routing
     /// contention" — unless the outcome is instrumented. This is a small,
     /// genuinely contended two-gate/two-pair layout (no target/circuit

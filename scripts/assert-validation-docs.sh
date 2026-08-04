@@ -53,7 +53,7 @@ for needle in \
   'taskless.yml' \
   'flux.yml' \
   'release.yml' \
-  '#180'
+  'ci-rustdoc'
 do
   if ! grep -qF "$needle" "$VALIDATION"; then
     fail "validation.md missing required anchor: $needle"
