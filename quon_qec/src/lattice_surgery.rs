@@ -335,14 +335,12 @@ pub(crate) fn place_patch_at(block: &mut ExpandedBlock, dx: i32, dy: i32) {
     }
 }
 
-// `trusted` (flux refinement limitation): flux-infer cannot prove
-// `row.len() == d` for the `chunks(d)` sub-slices (so `row[d - 1]` stays
-// out-of-bounds in its model) — a closure-projection weakness akin to
-// ADR-0027. The `data_atoms.len() == d*d` guard above guarantees every chunk
-// is full at runtime; this function carries no flux specs, so marking it
-// `trusted` skips no verification. Remove once flux-infer can reason about
-// `chunks` sub-slice lengths.
-#[cfg_attr(feature = "flux", flux_rs::trusted)]
+// Flux verifies this without `#[trusted]`: the `d == 0` guard refines `d >= 1`
+// (so `d - 1` cannot underflow) and `len == d * d` lets flux-infer prove
+// `r * d + (d - 1) < d * d` for every `r in 0..d` — the same nonlinear
+// multiplication reasoning it already applies to `left_column_data`'s
+// `r * d` index. Direct indexing (no `chunks`) keeps the bound a single
+// `Vec::index` obligation flux-infer can discharge.
 pub(crate) fn right_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
     let d = block.distance as usize;
     if d == 0 || block.data_atoms.len() != d * d {
@@ -350,7 +348,9 @@ pub(crate) fn right_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAto
             distance: block.distance,
         });
     }
-    Ok(block.data_atoms.chunks(d).map(|row| row[d - 1]).collect())
+    Ok((0..d)
+        .map(|r| block.data_atoms[r * d + (d - 1)])
+        .collect())
 }
 
 pub(crate) fn left_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
@@ -373,14 +373,11 @@ pub(crate) fn top_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>,
     Ok(block.data_atoms[..d].to_vec())
 }
 
-// `trusted` (flux refinement limitation): flux-infer cannot discharge the
-// `len - d` subtraction because proving `d*d >= d` (from `len == d*d` with
-// `d >= 1`) is nonlinear arithmetic its solver does not handle. The `d == 0`
-// guard above guarantees `len >= d` at runtime; this function carries no flux
-// specs, so marking it `trusted` skips no verification. See ADR-0027 for the
-// `#[trusted]` workaround convention. Remove once flux-infer handles the
-// nonlinear bound.
-#[cfg_attr(feature = "flux", flux_rs::trusted)]
+// Flux verifies this without `#[trusted]`: the `d == 0` guard refines `d >= 1`.
+// The explicit `len < d` guard below lets flux-infer derive `d <= len` by a
+// direct branch comparison (no nonlinear arithmetic needed), so `len - d`
+// cannot underflow and the `len - d..` slice start is in bounds. This avoids
+// the `d*d >= d` nonlinear reasoning flux-infer cannot perform.
 pub(crate) fn bottom_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
     let d = block.distance as usize;
     if d == 0 || block.data_atoms.len() != d * d {
@@ -388,22 +385,23 @@ pub(crate) fn bottom_row_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomI
             distance: block.distance,
         });
     }
-    // `bottom_row_data` is the last `d` elements. Using `len - d` (rather than
-    // `(d - 1) * d`) avoids the `d - 1` underflow; the `d == 0` guard above
-    // guarantees `len >= d`.
     let len = block.data_atoms.len();
+    // Explicit guard so Flux derives `d <= len` by direct comparison (not the
+    // nonlinear `d*d >= d`): makes `len - d` and the slice start verifiable.
+    if len < d {
+        return Err(ExpandError::InvalidPatchData {
+            distance: block.distance,
+        });
+    }
+    // Last `d` elements.
     Ok(block.data_atoms[len - d..].to_vec())
 }
 
 /// Rough merge: measure ZZ on each facing L/R data pair via seam check.
-// `trusted` (flux refinement limitation): flux-infer cannot propagate the
-// `left_col.len() == n` / `right_col.len() == n` guards into the loop body's
-// slice indexing (`left_col[i]`, `right_col[i]` for `i < n`) — the same
-// closure-projection weakness documented in ADR-0027. The visible length
-// checks above make this safe at runtime; this function carries no flux
-// specs, so marking it `trusted` skips no verification. Remove once
-// flux-infer can project length refinements through loop bodies.
-#[cfg_attr(feature = "flux", flux_rs::trusted)]
+/// Flux verifies this without `#[trusted]`: the visible `left_col.len() == n`
+/// / `right_col.len() == n` guards (where `n = seam.atoms.len()`) let
+/// flux-infer prove `left_col[i]`, `right_col[i]`, and `seam.atoms[i]` are in
+/// bounds for every `i < n` in the loop body.
 pub(crate) fn rough_merge_round(
     left_col: &[PhysicalAtomId],
     right_col: &[PhysicalAtomId],
@@ -412,9 +410,7 @@ pub(crate) fn rough_merge_round(
     partner: LogicalQubitId,
 ) -> Result<PhysicalRound, ExpandError> {
     let n = seam.atoms.len();
-    // Visible length checks (replacing `debug_assert_eq!`) so flux can see
-    // that `left_col[i]`, `right_col[i]`, and `seam.atoms[i]` are all in bounds
-    // for `i < n`.
+    // Visible length checks so flux can see all three slices share length `n`.
     if left_col.len() != n || right_col.len() != n {
         return Err(ExpandError::SeamLengthMismatch {
             left: left_col.len(),
@@ -423,14 +419,22 @@ pub(crate) fn rough_merge_round(
         });
     }
     let mut entangling = Vec::with_capacity(2 * n);
-    for i in 0..n {
+    // Iterator-zip iteration so Flux proves bounds through the shared length
+    // (all three slices have length `n`) rather than projecting an index
+    // refinement through the loop body — the closure-projection weakness of
+    // ADR-0027 does not affect `Iterator::zip`.
+    for ((&l, &r), &s) in left_col
+        .iter()
+        .zip(right_col.iter())
+        .zip(&seam.atoms)
+    {
         entangling.push(PhysicalCnot {
-            control: left_col[i],
-            target: seam.atoms[i],
+            control: l,
+            target: s,
         });
         entangling.push(PhysicalCnot {
-            control: right_col[i],
-            target: seam.atoms[i],
+            control: r,
+            target: s,
         });
     }
     let z_cnot_count = entangling.len();
@@ -459,14 +463,11 @@ pub(crate) fn rough_merge_round(
 }
 
 /// Smooth merge: measure XX on each facing top/bottom data pair (H-sandwich).
-// `trusted` (flux refinement limitation): flux-infer cannot propagate the
-// `above_row.len() == n` / `below_row.len() == n` guards into the loop body's
-// slice indexing (`above_row[i]`, `below_row[i]` for `i < n`) — the same
-// closure-projection weakness documented in ADR-0027. The visible length
-// checks above make this safe at runtime; this function carries no flux
-// specs, so marking it `trusted` skips no verification. Remove once
-// flux-infer can project length refinements through loop bodies.
-#[cfg_attr(feature = "flux", flux_rs::trusted)]
+/// Flux verifies this without `#[trusted]`: the visible `above_row.len() == n`
+/// / `below_row.len() == n` guards (where `n = seam.atoms.len()`) plus
+/// iterator-zip iteration let flux-infer prove every accessed element is in
+/// bounds — the closure-projection weakness of ADR-0027 does not affect
+/// `Iterator::zip`.
 pub(crate) fn smooth_merge_round(
     above_row: &[PhysicalAtomId],
     below_row: &[PhysicalAtomId],
@@ -475,9 +476,7 @@ pub(crate) fn smooth_merge_round(
     partner: LogicalQubitId,
 ) -> Result<PhysicalRound, ExpandError> {
     let n = seam.atoms.len();
-    // Visible length checks (replacing `debug_assert_eq!`) so flux can see
-    // that `above_row[i]`, `below_row[i]`, and `seam.atoms[i]` are all in
-    // bounds for `i < n`.
+    // Visible length checks so flux can see all three slices share length `n`.
     if above_row.len() != n || below_row.len() != n {
         return Err(ExpandError::SeamLengthMismatch {
             left: above_row.len(),
@@ -487,17 +486,17 @@ pub(crate) fn smooth_merge_round(
     }
     let mut local_mid = Vec::with_capacity(n);
     let mut x_cnots = Vec::with_capacity(2 * n);
-    for i in 0..n {
-        local_mid.push(RoundLocalOp::H {
-            atom: seam.atoms[i],
+    // Iterator-zip iteration so Flux proves bounds through the shared length
+    // rather than projecting an index refinement through the loop body.
+    for (&s, (&a, &b)) in seam.atoms.iter().zip(above_row.iter().zip(below_row.iter())) {
+        local_mid.push(RoundLocalOp::H { atom: s });
+        x_cnots.push(PhysicalCnot {
+            control: s,
+            target: a,
         });
         x_cnots.push(PhysicalCnot {
-            control: seam.atoms[i],
-            target: above_row[i],
-        });
-        x_cnots.push(PhysicalCnot {
-            control: seam.atoms[i],
-            target: below_row[i],
+            control: s,
+            target: b,
         });
     }
     let mut terminal = Vec::with_capacity(2 * n);
@@ -547,4 +546,388 @@ pub(crate) fn split_seam_round(
     round.kind = RoundKind::Split(boundary);
     round.partner_logical_id = partner;
     Ok(round)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expand::ExpandError;
+
+    /// Build a surface-code `ExpandedBlock` with `d²` data atoms in row-major
+    /// order (atom id = `r * d + c`), matching `expand_surface_layout`.
+    fn surface_block(distance: u32) -> ExpandedBlock {
+        let d = distance as usize;
+        let data_atoms: Vec<PhysicalAtomId> =
+            (0..d * d).map(|i| PhysicalAtomId(i as u32)).collect();
+        ExpandedBlock {
+            logical_id: LogicalQubitId(0),
+            family: SourceFamily::Surface,
+            code_family: CodeFamily::SurfaceCodeLike { distance },
+            distance,
+            init_basis: LogicalBasis::Z,
+            atoms: data_atoms.clone(),
+            data_atoms,
+            check_atoms: Vec::new(),
+            coords: Vec::new(),
+            stabilizers: Vec::new(),
+        }
+    }
+
+    /// Build a block with a custom `data_atoms` length (for malformed-patch tests).
+    fn block_with_data(distance: u32, data_len: usize) -> ExpandedBlock {
+        let mut block = surface_block(distance);
+        block.data_atoms = (0..data_len).map(|i| PhysicalAtomId(i as u32)).collect();
+        block
+    }
+
+    fn seam_with_n(n: usize) -> SeamAtoms {
+        SeamAtoms {
+            atoms: (0..n as u32).map(PhysicalAtomId).collect(),
+            coords: vec![(0, 0); n],
+        }
+    }
+
+    // --- right_column_data ---
+
+    #[test]
+    fn right_column_distance_zero_rejected() {
+        let block = surface_block(0);
+        assert!(matches!(
+            right_column_data(&block),
+            Err(ExpandError::InvalidPatchData { distance: 0 })
+        ));
+    }
+
+    #[test]
+    fn right_column_malformed_patch_rejected() {
+        // distance 3 but only 8 data atoms (not 9)
+        let block = block_with_data(3, 8);
+        assert!(matches!(
+            right_column_data(&block),
+            Err(ExpandError::InvalidPatchData { distance: 3 })
+        ));
+    }
+
+    #[test]
+    fn right_column_valid_d3() {
+        let block = surface_block(3);
+        let col = right_column_data(&block).expect("d3");
+        // Row-major: right column = indices 2, 5, 8
+        assert_eq!(col, vec![PhysicalAtomId(2), PhysicalAtomId(5), PhysicalAtomId(8)]);
+    }
+
+    #[test]
+    fn right_column_valid_d5() {
+        let block = surface_block(5);
+        let col = right_column_data(&block).expect("d5");
+        // Right column = indices 4, 9, 14, 19, 24
+        assert_eq!(
+            col,
+            vec![
+                PhysicalAtomId(4),
+                PhysicalAtomId(9),
+                PhysicalAtomId(14),
+                PhysicalAtomId(19),
+                PhysicalAtomId(24),
+            ]
+        );
+    }
+
+    // --- bottom_row_data ---
+
+    #[test]
+    fn bottom_row_distance_zero_rejected() {
+        let block = surface_block(0);
+        assert!(matches!(
+            bottom_row_data(&block),
+            Err(ExpandError::InvalidPatchData { distance: 0 })
+        ));
+    }
+
+    #[test]
+    fn bottom_row_malformed_patch_rejected() {
+        // distance 3 but 10 data atoms (not 9)
+        let block = block_with_data(3, 10);
+        assert!(matches!(
+            bottom_row_data(&block),
+            Err(ExpandError::InvalidPatchData { distance: 3 })
+        ));
+    }
+
+    #[test]
+    fn bottom_row_valid_d3() {
+        let block = surface_block(3);
+        let row = bottom_row_data(&block).expect("d3");
+        // Last 3 of 9: indices 6, 7, 8
+        assert_eq!(row, vec![PhysicalAtomId(6), PhysicalAtomId(7), PhysicalAtomId(8)]);
+    }
+
+    #[test]
+    fn bottom_row_valid_d5() {
+        let block = surface_block(5);
+        let row = bottom_row_data(&block).expect("d5");
+        // Last 5 of 25: indices 20..24
+        assert_eq!(
+            row,
+            vec![
+                PhysicalAtomId(20),
+                PhysicalAtomId(21),
+                PhysicalAtomId(22),
+                PhysicalAtomId(23),
+                PhysicalAtomId(24),
+            ]
+        );
+    }
+
+    // --- rough_merge_round ---
+
+    #[test]
+    fn rough_merge_mismatched_seam_lengths_rejected() {
+        let left = vec![PhysicalAtomId(0), PhysicalAtomId(1), PhysicalAtomId(2)];
+        let right = vec![PhysicalAtomId(3), PhysicalAtomId(4)]; // only 2, not 3
+        let seam = seam_with_n(3);
+        let err = rough_merge_round(
+            &left,
+            &right,
+            &seam,
+            LogicalQubitId(0),
+            LogicalQubitId(1),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ExpandError::SeamLengthMismatch { left: 3, right: 2, seam: 3 }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rough_merge_mismatched_left_rejected() {
+        let left = vec![PhysicalAtomId(0)]; // only 1, not 3
+        let right = vec![PhysicalAtomId(3), PhysicalAtomId(4), PhysicalAtomId(5)];
+        let seam = seam_with_n(3);
+        assert!(matches!(
+            rough_merge_round(&left, &right, &seam, LogicalQubitId(0), LogicalQubitId(1)),
+            Err(ExpandError::SeamLengthMismatch { left: 1, right: 3, seam: 3 })
+        ));
+    }
+
+    #[test]
+    fn rough_merge_valid_d3() {
+        let left = vec![PhysicalAtomId(0), PhysicalAtomId(1), PhysicalAtomId(2)];
+        let right = vec![PhysicalAtomId(3), PhysicalAtomId(4), PhysicalAtomId(5)];
+        let seam = seam_with_n(3);
+        let round = rough_merge_round(
+            &left,
+            &right,
+            &seam,
+            LogicalQubitId(0),
+            LogicalQubitId(1),
+        )
+        .expect("d3 rough merge");
+
+        assert_eq!(round.kind, RoundKind::Merge(MergeBoundary::Rough));
+        // 3 pairs × 2 CNOTs each = 6
+        assert_eq!(round.entangling.len(), 6);
+        assert_eq!(round.z_cnot_count, 6);
+        // Each seam atom measured + reset = 2 * 3 = 6 terminals
+        assert_eq!(round.terminal.len(), 6);
+        assert_eq!(round.partner_logical_id, Some(LogicalQubitId(1)));
+
+        // Verify the pairing: left[i]→seam[i], right[i]→seam[i]
+        for i in 0..3 {
+            assert_eq!(round.entangling[2 * i].control, left[i]);
+            assert_eq!(round.entangling[2 * i].target, seam.atoms[i]);
+            assert_eq!(round.entangling[2 * i + 1].control, right[i]);
+            assert_eq!(round.entangling[2 * i + 1].target, seam.atoms[i]);
+        }
+    }
+
+    #[test]
+    fn rough_merge_valid_d5() {
+        let left: Vec<_> = (0..5).map(PhysicalAtomId).collect();
+        let right: Vec<_> = (10..15).map(PhysicalAtomId).collect();
+        let seam = seam_with_n(5);
+        let round = rough_merge_round(
+            &left,
+            &right,
+            &seam,
+            LogicalQubitId(0),
+            LogicalQubitId(1),
+        )
+        .expect("d5 rough merge");
+
+        assert_eq!(round.entangling.len(), 10); // 5 pairs × 2
+        assert_eq!(round.z_cnot_count, 10);
+        assert_eq!(round.terminal.len(), 10); // 5 measures + 5 resets
+    }
+
+    #[test]
+    fn rough_merge_empty_seam_ok() {
+        // n=0: no CNOTs, no terminals — degenerate but safe.
+        let round = rough_merge_round(
+            &[],
+            &[],
+            &seam_with_n(0),
+            LogicalQubitId(0),
+            LogicalQubitId(1),
+        )
+        .expect("empty rough merge");
+        assert!(round.entangling.is_empty());
+        assert!(round.terminal.is_empty());
+    }
+
+    // --- smooth_merge_round ---
+
+    #[test]
+    fn smooth_merge_mismatched_seam_lengths_rejected() {
+        let above = vec![PhysicalAtomId(0), PhysicalAtomId(1), PhysicalAtomId(2)];
+        let below = vec![PhysicalAtomId(3), PhysicalAtomId(4)]; // only 2
+        let seam = seam_with_n(3);
+        let err = smooth_merge_round(
+            &above,
+            &below,
+            &seam,
+            LogicalQubitId(0),
+            LogicalQubitId(1),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ExpandError::SeamLengthMismatch { left: 3, right: 2, seam: 3 }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn smooth_merge_mismatched_below_rejected() {
+        let above = vec![PhysicalAtomId(0), PhysicalAtomId(1)];
+        let below = vec![PhysicalAtomId(3), PhysicalAtomId(4), PhysicalAtomId(5)];
+        let seam = seam_with_n(3);
+        assert!(matches!(
+            smooth_merge_round(&above, &below, &seam, LogicalQubitId(0), LogicalQubitId(1)),
+            Err(ExpandError::SeamLengthMismatch { left: 2, right: 3, seam: 3 })
+        ));
+    }
+
+    #[test]
+    fn smooth_merge_valid_d3() {
+        let above = vec![PhysicalAtomId(0), PhysicalAtomId(1), PhysicalAtomId(2)];
+        let below = vec![PhysicalAtomId(3), PhysicalAtomId(4), PhysicalAtomId(5)];
+        let seam = seam_with_n(3);
+        let round = smooth_merge_round(
+            &above,
+            &below,
+            &seam,
+            LogicalQubitId(0),
+            LogicalQubitId(1),
+        )
+        .expect("d3 smooth merge");
+
+        assert_eq!(round.kind, RoundKind::Merge(MergeBoundary::Smooth));
+        assert_eq!(round.z_cnot_count, 0);
+        // 3 H-gates in local_mid (one per seam atom)
+        assert_eq!(round.local_mid.len(), 3);
+        // X-sandwich: seam→above and seam→below = 6 CNOTs
+        assert_eq!(round.entangling.len(), 6);
+        assert_eq!(round.terminal.len(), 6); // 3 measures + 3 resets
+        assert_eq!(round.partner_logical_id, Some(LogicalQubitId(1)));
+
+        // Verify pairing: seam[i]→above[i], seam[i]→below[i]
+        for i in 0..3 {
+            assert_eq!(round.entangling[2 * i].control, seam.atoms[i]);
+            assert_eq!(round.entangling[2 * i].target, above[i]);
+            assert_eq!(round.entangling[2 * i + 1].control, seam.atoms[i]);
+            assert_eq!(round.entangling[2 * i + 1].target, below[i]);
+        }
+        // local_mid is reused as local_after
+        assert_eq!(round.local_after, round.local_mid);
+    }
+
+    #[test]
+    fn smooth_merge_valid_d5() {
+        let above: Vec<_> = (0..5).map(PhysicalAtomId).collect();
+        let below: Vec<_> = (10..15).map(PhysicalAtomId).collect();
+        let seam = seam_with_n(5);
+        let round = smooth_merge_round(
+            &above,
+            &below,
+            &seam,
+            LogicalQubitId(0),
+            LogicalQubitId(1),
+        )
+        .expect("d5 smooth merge");
+
+        assert_eq!(round.entangling.len(), 10); // 5 pairs × 2
+        assert_eq!(round.local_mid.len(), 5);
+        assert_eq!(round.terminal.len(), 10); // 5 measures + 5 resets
+    }
+
+    #[test]
+    fn smooth_merge_empty_seam_ok() {
+        let round = smooth_merge_round(
+            &[],
+            &[],
+            &seam_with_n(0),
+            LogicalQubitId(0),
+            LogicalQubitId(1),
+        )
+        .expect("empty smooth merge");
+        assert!(round.entangling.is_empty());
+        assert!(round.local_mid.is_empty());
+        assert!(round.terminal.is_empty());
+    }
+
+    // --- split_seam_round delegates correctly ---
+
+    #[test]
+    fn split_seam_rough_delegates_to_rough_merge() {
+        let left = vec![PhysicalAtomId(0), PhysicalAtomId(1), PhysicalAtomId(2)];
+        let right = vec![PhysicalAtomId(3), PhysicalAtomId(4), PhysicalAtomId(5)];
+        let seam = seam_with_n(3);
+        let round = split_seam_round(
+            MergeBoundary::Rough,
+            &left,
+            &right,
+            &seam,
+            LogicalQubitId(0),
+            Some(LogicalQubitId(1)),
+        )
+        .expect("split rough");
+        assert_eq!(round.kind, RoundKind::Split(MergeBoundary::Rough));
+        assert_eq!(round.partner_logical_id, Some(LogicalQubitId(1)));
+    }
+
+    #[test]
+    fn split_seam_smooth_delegates_to_smooth_merge() {
+        let above = vec![PhysicalAtomId(0), PhysicalAtomId(1), PhysicalAtomId(2)];
+        let below = vec![PhysicalAtomId(3), PhysicalAtomId(4), PhysicalAtomId(5)];
+        let seam = seam_with_n(3);
+        let round = split_seam_round(
+            MergeBoundary::Smooth,
+            &above,
+            &below,
+            &seam,
+            LogicalQubitId(0),
+            Some(LogicalQubitId(1)),
+        )
+        .expect("split smooth");
+        assert_eq!(round.kind, RoundKind::Split(MergeBoundary::Smooth));
+    }
+
+    #[test]
+    fn split_seam_propagates_length_mismatch() {
+        let left = vec![PhysicalAtomId(0), PhysicalAtomId(1)];
+        let right = vec![PhysicalAtomId(3), PhysicalAtomId(4), PhysicalAtomId(5)];
+        let seam = seam_with_n(3);
+        assert!(matches!(
+            split_seam_round(
+                MergeBoundary::Rough,
+                &left,
+                &right,
+                &seam,
+                LogicalQubitId(0),
+                None,
+            ),
+            Err(ExpandError::SeamLengthMismatch { .. })
+        ));
+    }
 }
