@@ -389,6 +389,34 @@ fn zero_and_one_qubit_graphs_are_well_formed() {
     assert_eq!(g.dist(0, 0), 0);
 }
 
+// --- All-to-all construction performance ----------------------------------
+
+/// Regression guard for issue #408: `all_to_all` must not run the O(n³)
+/// Floyd-Warshall relaxation. With the analytic construction the 1000-qubit
+/// distance matrix (1M entries) builds in well under a second; a cubic
+/// implementation would take orders of magnitude longer and trip this bound.
+#[test]
+fn all_to_all_1000_qubits_constructs_quickly() {
+    let start = std::time::Instant::now();
+    let graph = ConnectivityGraph::all_to_all(1000);
+    let elapsed = start.elapsed();
+
+    assert_eq!(graph.num_qubits, 1000);
+    assert_eq!(graph.dist(0, 0), 0);
+    assert_eq!(graph.dist(0, 999), 1);
+    assert_eq!(graph.dist(999, 0), 1);
+    assert_eq!(graph.dist(500, 501), 1);
+    assert_eq!(graph.dist(501, 500), 1);
+    assert_eq!(graph.dist.len(), 1000);
+    assert_eq!(graph.dist[0].len(), 1000);
+
+    assert!(
+        elapsed.as_secs() < 1,
+        "1000-qubit all_to_all construction took {:?}; expected sub-second O(n²)",
+        elapsed
+    );
+}
+
 // --- Native-gate registry --------------------------------------------------
 
 #[test]

@@ -98,7 +98,14 @@ impl ConnectivityGraph {
         let edges: Vec<(usize, usize)> = (0..num_qubits)
             .flat_map(|i| (i + 1..num_qubits).map(move |j| (i, j)))
             .collect();
-        let dist = Self::floyd_warshall(num_qubits, &edges);
+        // All-to-all distances are known analytically: 0 on the diagonal and 1
+        // between any distinct pair. Constructing the matrix directly is O(n²)
+        // (unavoidable: the output has n² entries), which skips the O(n³)
+        // Floyd-Warshall relaxation that `try_from_edges` performs for sparse
+        // topologies.
+        let dist: Vec<Vec<usize>> = (0..num_qubits)
+            .map(|i| (0..num_qubits).map(|j| if i == j { 0 } else { 1 }).collect())
+            .collect();
         ConnectivityGraph {
             num_qubits,
             edges,
