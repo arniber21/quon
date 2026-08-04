@@ -26,6 +26,7 @@ Static analysis and refinement-type checks for the Quon workspace.
 | `just ci-rustdoc` | Workspace Rustdoc with warnings denied (`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude flux_verify --no-deps`); unresolved intra-doc links, private-item references, output collisions, and accidental citation links all fail (#406). Also run as a step in `just ci-rust`. |
 | `just ci-docs-assert` | `./scripts/assert-validation-docs.sh` — stale-claim anchors **plus** the documentation quality-gate corpus validator (`scripts/assert-docs-corpus.py`, #377). See [doc-quality.md](./doc-quality.md) for the contract and the `docs/doc-manifest.yaml` corpus. |
 | `just ci-website` | Starlight `pnpm build` under `website/` |
+| `just ci-website-routes` | Route-parity check (`scripts/check-doc-routes.mjs`, #387); run after `ci-website` |
 
 Inside Devbox: `devbox run -- just <recipe>` (or `just` after `devbox shell`).
 
@@ -37,6 +38,8 @@ This table is an adapter of the **Justfile** recipes invoked by `.github/workflo
 | -------- | ------- | --------- |
 | [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `just ci-rust`: fmt, clippy, workspace Rustdoc with warnings denied (`ci-rustdoc`, #406), release build (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` with `QUON_REQUIRE_LIT` so [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) hard-fails without lit/FileCheck/oracles, and [`quonc/tests/samples_catalog.rs`](../../quonc/tests/samples_catalog.rs) lints `samples/catalog.yaml` and typechecks every `ci: smoke` entry with the debug `quonc` this same `cargo test` builds (ADR-0025 / #185) — the RAP Table I preflight test (#111) runs here too, while the full `rap_table_i --include-ignored` metrics dump is **local-only** (`just rap-table-i`, not invoked by this or any other CI job): pre-#297 its routing-aware A* peaked ~17.5 GB RSS and OOM'd GitHub's 16 GB hosted runners; #297's heuristic search dropped that to ~64 MB, but the recipe has not been re-wired into CI since (documented follow-up, not done here or in #306) — see `docs/neutral_atom/rap_table_i_methodology.md`'s "Runtime / CI wiring" correction; then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`, then QEC Python smokes (`test_qec_stim_smoke`, `test_quon_qec_sinter`, `test_quon_qec_benchmarks` / #254). |
 | [ci.yml](../../.github/workflows/ci.yml) `docs` | every push and PR | `just ci-docs-assert` + `just ci-website` |
+| [ci.yml](../../.github/workflows/ci.yml) `rust` | every push and PR | `just ci-rust`: fmt, clippy, release build (+ examples for lit oracles), `cargo test --workspace --exclude flux_verify` with `QUON_REQUIRE_LIT` so [`quonc/tests/lit.rs`](../../quonc/tests/lit.rs) hard-fails without lit/FileCheck/oracles, and [`quonc/tests/samples_catalog.rs`](../../quonc/tests/samples_catalog.rs) lints `samples/catalog.yaml` and typechecks every `ci: smoke` entry with the debug `quonc` this same `cargo test` builds (ADR-0025 / #185) — the RAP Table I preflight test (#111) runs here too, while the full `rap_table_i --include-ignored` metrics dump is **local-only** (`just rap-table-i`, not invoked by this or any other CI job): pre-#297 its routing-aware A* peaked ~17.5 GB RSS and OOM'd GitHub's 16 GB hosted runners; #297's heuristic search dropped that to ~64 MB, but the recipe has not been re-wired into CI since (documented follow-up, not done here or in #306) — see `docs/neutral_atom/rap_table_i_methodology.md`'s "Runtime / CI wiring" correction; then Qiskit Aer: `test/verify/{bell,teleport,bernstein_vazirani,routing,grover,qft,ising,qaoa,shor}.py` with `QUONC=target/release/quonc`, then QEC Python smokes (`test_qec_stim_smoke`, `test_quon_qec_sinter`, `test_quon_qec_benchmarks` / #254). |
+| [ci.yml](../../.github/workflows/ci.yml) `docs` | every push and PR | `just ci-docs-assert` + `just ci-website` (build); on `main` pushes also `just ci-website-routes` (route-parity check, #387) |
 | [ci.yml](../../.github/workflows/ci.yml) `tooling` | every push and PR | `just ci-tooling`: `quonfmt --check`, `quonlint`, `quon_lsp` smoke on CI corpus |
 | [release.yml](../../.github/workflows/release.yml) | tags `v*` (+ manual dry-run) | `devbox run release` — static MLIR/LLVM + release-built static libz3; link audit; upload `quon-{version}-{arch}-{os}.tar.gz` to GitHub Releases |
 | [taskless.yml](../../.github/workflows/taskless.yml) | every PR (diff-scoped); push to `main` (full) | `@taskless/cli check` (Node 22+) |
@@ -196,3 +199,41 @@ links, and commands — is mechanically validated by
 corpus lives in `docs/doc-manifest.yaml`; the four-way policy (executable vs
 generated vs stale vs illustrative) and the contributor workflow for adding a
 checked example are in [doc-quality.md](./doc-quality.md).
+## Documentation route parity (#387)
+
+A documentation release must not silently publish a different route tree or navigation configuration from the reviewed build. The checked-in Starlight site declares a Learning track, but a stale deployment can omit it and the intended routes return 404. The `ci-website-routes` recipe (`just ci-website-routes`, run by the `ci.yml` `docs` job on `main` pushes) enforces parity as a release contract. The deployed site reflects `main`, so the parity check only runs on `main` pushes — a PR that adds new routes would false-positive since they aren't deployed yet. The `ci-website` recipe (build only) remains the PR gate.
+
+### What the check does
+
+`scripts/check-doc-routes.mjs` runs after `pnpm build` and:
+
+1. Reads the built route manifest from `website/dist/sitemap-0.xml`.
+2. Maps each route to its originating source file under `website/src/content/docs/`.
+3. Fetches the deployed public route set from the live sitemap (`sitemap-index.xml` → `sitemap-0.xml`).
+4. Fails on:
+   - **missing** routes — built but absent from the deployed sitemap
+   - **unexpected** routes — deployed but absent from the built manifest
+   - **404 routes** — built routes that return HTTP 404 on the live site
+5. Reports the originating source route (`website/src/content/docs/<slug>.md(x)`) for every mismatch.
+
+Override the deployed origin with `QUON_SITE_URL` (default: `https://quon.arnabg.me`).
+
+### Recovery procedure
+
+When `check-doc-routes.mjs` fails, the build/publish input to fix is always the checked-in source tree — never patch the deployment directly.
+
+1. **Confirm the build.** `cd website && pnpm build` must succeed and `website/dist/sitemap-0.xml` must list every intended route, including the Learning track (`/learn/`, `/learn/01-hello-quon/`, … `/learn/06-oracles-algorithms/`).
+2. **If routes are missing from the build**, fix the checked-in `website/src/content/docs/` files or the sidebar entries in `website/astro.config.mjs`. The sidebar config is the single source of truth for navigation groups.
+3. **If the build is correct but the deployed site omits routes**, the published artifact is stale or corrupt. Redeploy `website/dist/` from the same commit that passed this check:
+   ```bash
+   cd website && pnpm install --frozen-lockfile && pnpm build
+   # Publish website/dist/ to the hosting provider (GitHub Pages,
+   # Cloudflare Pages, etc.) from this commit.
+   ```
+4. **Re-run the check** until it passes:
+   ```bash
+   node scripts/check-doc-routes.mjs
+   # Or, if the Astro build is temporarily broken on main, audit the
+   # deployed site against a known-good manifest:
+   node scripts/check-doc-routes.mjs --expected path/to/good-sitemap.xml
+   ```
