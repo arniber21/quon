@@ -90,48 +90,90 @@ pub fn atoms_per_logical(family: &CodeFamily) -> Result<u32, QecError> {
 }
 
 /// `N(d) = 2d² − 1` for odd `d ≥ 3` (architecture_model.md §10.1).
+///
+/// The refined spec proves the successful (`Ok`) result equals the closed-form
+/// `2*d*d − 1`. The body rejects out-of-domain distances first, then rejects
+/// any `d > 46340` — the largest odd `d` with `2*d*d <= u32::MAX` (since
+/// `2·46341² > u32::MAX`) — before the unchecked multiplication, so the `Ok`
+/// path never wraps. Flux discharges the `Ok` postcondition from the
+/// primitive-arithmetic refinement (no `trusted` body, no empty `Result<_, _>`
+/// spec).
 #[cfg_attr(
     feature = "flux",
-    spec(fn(d: u32) -> Result<u32, QecError>)
+    spec(fn(d: u32) -> Result<u32{v: v == 2 * d * d - 1}, QecError>)
 )]
 pub fn surface_n(distance: u32) -> Result<u32, QecError> {
     if distance < 3 || distance.is_multiple_of(2) {
         return Err(QecError::InvalidSurfaceDistance { distance });
     }
-    let d2 = distance
-        .checked_mul(distance)
-        .ok_or(QecError::AtomCountOverflow)?;
-    let two_d2 = d2.checked_mul(2).ok_or(QecError::AtomCountOverflow)?;
-    two_d2.checked_sub(1).ok_or(QecError::AtomCountOverflow)
+    // `2*d*d` overflows `u32` once `d > 46340` (2·46341² > u32::MAX). Reject
+    // before the unchecked multiplication so the `Ok` path never wraps.
+    if distance > 46340 {
+        return Err(QecError::AtomCountOverflow);
+    }
+    Ok(2 * distance * distance - 1)
 }
 
 /// `N(d) = 2d − 1` for `d ≥ 2` (architecture_model.md §10.2).
+///
+/// The refined spec proves the successful (`Ok`) result equals the closed-form
+/// `2*d − 1`. With overflow checking enabled, the body rejects `d < 2` and
+/// `d > u32::MAX/2` (where `2*d` would overflow) before the unchecked
+/// arithmetic, so Flux proves both the `Ok` postcondition and the absence of
+/// overflow/underflow (no `trusted` body, no empty `Result<_, _>` spec).
+#[cfg_attr(feature = "flux", opts(check_overflow = "strict"))]
 #[cfg_attr(
     feature = "flux",
-    spec(fn(d: u32) -> Result<u32, QecError>)
+    spec(fn(d: u32) -> Result<u32{v: v == 2 * d - 1}, QecError>)
 )]
 pub fn repetition_n(distance: u32) -> Result<u32, QecError> {
     if distance < 2 {
         return Err(QecError::InvalidRepetitionDistance { distance });
     }
-    let two_d = distance.checked_mul(2).ok_or(QecError::AtomCountOverflow)?;
-    two_d.checked_sub(1).ok_or(QecError::AtomCountOverflow)
+    // `2*d` overflows `u32` once `d > u32::MAX / 2`. Reject before the
+    // unchecked multiplication so the `Ok` path never wraps.
+    if distance > u32::MAX / 2 {
+        return Err(QecError::AtomCountOverflow);
+    }
+    Ok(2 * distance - 1)
 }
 
-/// Ceiling division `(numerator + denominator - 1) / denominator`.
+/// Ceiling division `(numerator + denominator - 1) / denominator`
+/// (architecture_model.md §10.3–§10.4).
+///
+/// The refined spec proves the successful (`Ok`) result is the mathematical
+/// ceiling `⌈numerator / denominator⌉ = (numerator + denominator − 1) /
+/// denominator` for any nonzero denominator. With overflow checking enabled,
+/// the body rejects a zero denominator and any `numerator + denominator` that
+/// would overflow `u32` before the unchecked arithmetic, so Flux proves the
+/// `Ok` postcondition and the absence of overflow/underflow (no `trusted`
+/// body, no empty `Result<_, _>` spec).
+#[cfg_attr(feature = "flux", opts(check_overflow = "strict"))]
 #[cfg_attr(
     feature = "flux",
-    spec(fn(numerator: u32, denominator: u32{v: v > 0}) -> Result<u32, QecError>)
+    spec(
+        fn(numerator: u32, denominator: u32{denominator > 0}) -> Result<
+            u32{v: v == (numerator + denominator - 1) / denominator},
+            QecError
+        >
+    )
 )]
+// The `(numerator + denominator - 1) / denominator` form is deliberate: Flux
+// discharges the `Ok` postcondition from the primitive `/` refinement, but has
+// no refined spec for `u32::div_ceil`, so the clippy-suggested rewrite would
+// break refinement checking. Keep the form and silence the lint.
+#[allow(clippy::manual_div_ceil)]
 pub fn ceil_div(numerator: u32, denominator: u32) -> Result<u32, QecError> {
     if denominator == 0 {
         return Err(QecError::ZeroLogicalDimension);
     }
-    let sum = numerator
-        .checked_add(denominator)
-        .ok_or(QecError::AtomCountOverflow)?;
-    let adjusted = sum.checked_sub(1).ok_or(QecError::AtomCountOverflow)?;
-    Ok(adjusted / denominator)
+    // `numerator + denominator` overflows `u32` once `numerator > u32::MAX -
+    // denominator`. Reject before the unchecked addition so the `Ok` path
+    // never wraps.
+    if numerator > u32::MAX - denominator {
+        return Err(QecError::AtomCountOverflow);
+    }
+    Ok((numerator + denominator - 1) / denominator)
 }
 
 /// Negative compile fixture (issue #411): `ceil_div`'s Flux precondition
