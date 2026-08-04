@@ -32,7 +32,7 @@ use crate::schedule::ScheduleLayer;
 /// cycles (requires layout + interaction-pair bank). Optionally compact with
 /// [`crate::compaction::compact_schedule`] (#108) after #105/#106/#107.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, bound(deserialize = "V: crate::graph::VertexId"))]
 pub struct GraphScheduleRequest<V = LogicalQubitId> {
     pub graph: InteractionGraph<V>,
     /// Empty after [`schedule_from_graph`]; filled by

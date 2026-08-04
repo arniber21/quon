@@ -50,7 +50,7 @@ pub enum PlacementStrategy {
 /// Generic over the vertex label `V` (default [`LogicalQubitId`]); see
 /// [`InteractionGraph`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, bound(deserialize = "V: crate::graph::VertexId"))]
 pub struct PlacementResult<V = LogicalQubitId> {
     pub request: crate::schedule_entry::GraphScheduleRequest<V>,
     /// Lower is better: `Σ w · √d` over interaction edges.

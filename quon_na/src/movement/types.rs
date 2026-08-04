@@ -140,7 +140,7 @@ impl MovementParams {
 
 /// Result of [`super::plan_aod_movement`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, bound(deserialize = "V: crate::graph::VertexId"))]
 pub struct MovementPlanResult<V = LogicalQubitId> {
     pub request: GraphScheduleRequest<V>,
     pub rearrangement_steps: u64,

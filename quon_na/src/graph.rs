@@ -182,8 +182,12 @@ pub struct InteractionEdge<V = LogicalQubitId> {
 /// Quon-program path uses the default; the hybrid QEC path (#318) uses
 /// `InteractionGraph<AtomVertexId>` so placers/schedulers name physical atoms,
 /// not logical qubits. See ADR-0029.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Deserialization routes through [`InteractionGraph::validate`] via the manual
+/// [`Deserialize`] impl below — raw JSON cannot produce an invalid graph
+/// (issue #402). Programmatic callers must use [`InteractionGraph::from_interactions`]
+/// so the same invariants are enforced at every construction site.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct InteractionGraph<V = LogicalQubitId> {
     pub vertices: Vec<V>,
     pub interactions: Vec<Interaction<V>>,
@@ -191,6 +195,44 @@ pub struct InteractionGraph<V = LogicalQubitId> {
     pub segments: Vec<InteractionSegment>,
     /// Decay base used for weights; recorded for reproducibility.
     pub gamma: f64,
+}
+
+/// Serde-only raw form of [`InteractionGraph`]: identical fields, no invariants.
+///
+/// Used only by the custom [`Deserialize`] impl on [`InteractionGraph`] so that
+/// deserialization reuses the same [`InteractionGraph::validate`] path as
+/// [`InteractionGraph::from_interactions`] — there is no public way to
+/// deserialize an unvalidated graph. `#[serde(deny_unknown_fields)]` preserves
+/// the reject-on-unknown-key behavior of the original derived deserializer.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InteractionGraphRaw<V = LogicalQubitId> {
+    vertices: Vec<V>,
+    interactions: Vec<Interaction<V>>,
+    edges: Vec<InteractionEdge<V>>,
+    segments: Vec<InteractionSegment>,
+    gamma: f64,
+}
+
+impl<'de, V: VertexId> Deserialize<'de> for InteractionGraph<V> {
+    /// Deserialize the raw field shape, then enforce every invariant via
+    /// [`InteractionGraph::validate`]. A malformed graph fails at the wire
+    /// boundary rather than reaching a scheduler.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = InteractionGraphRaw::<V>::deserialize(deserializer)?;
+        let graph = InteractionGraph {
+            vertices: raw.vertices,
+            interactions: raw.interactions,
+            edges: raw.edges,
+            segments: raw.segments,
+            gamma: raw.gamma,
+        };
+        graph.validate().map_err(serde::de::Error::custom)?;
+        Ok(graph)
+    }
 }
 
 /// Default Atomique layer-decay base ([Atomique] Sec. III-A).
