@@ -483,6 +483,34 @@ entries:
     artifacts: []
     ci: smoke
 
+  - id: neutral-atom/bench-surface-d3-t
+    path: samples/neutral-atom/benchmarks/surface_d3_t.qn
+    tags: [neutral-atom, qec, benchmark, surface-code, magic-state, non-clifford, t, pack-284]
+    difficulty: advanced
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--emit-resource-report",
+        "-",
+      ]
+    artifacts: []
+    ci: smoke
+
+  - id: neutral-atom/bench-surface-d3-ccz
+    path: samples/neutral-atom/benchmarks/surface_d3_ccz.qn
+    tags: [neutral-atom, qec, benchmark, surface-code, magic-state, non-clifford, ccz, pack-284]
+    difficulty: advanced
+    quonc_args:
+      [
+        "--target",
+        "targets/neutral_atom/generic_rna_v0.json",
+        "--emit-resource-report",
+        "-",
+      ]
+    artifacts: []
+    ci: smoke
+
   # ── Creative / games pack (#200) ───────────────────────────────────────
   - id: creative/quantum-dice
     path: samples/creative/quantum_dice.qn

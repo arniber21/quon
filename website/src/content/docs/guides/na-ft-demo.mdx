@@ -318,18 +318,15 @@ This demo is deliberately scoped. What it does **not** do:
   neutral-atom descriptor
   [`generic_rna_v0.json`](https://github.com/arniber21/quon/blob/main/targets/neutral_atom/generic_rna_v0.json),
   not any vendor's calibrated device model.
-- **Non-Clifford logical operations are a resource-accounting model, not yet
-  compiler-reachable from source.** Magic-state-*consuming* logical `T`,
-  `T†`, and `CCZ` exist at the QEC-workload layer (issue #283): a
-  `WorkloadBuilder` API, expansion into magic-state rounds, resource-report
-  fields (`t_count`, `tdag_count`, `ccz_count`, `magic_state_demand`), and QEC
-  experiment / Stim-comment emission. This is strictly *consumption* — magic
-  states are assumed already available and are never produced. There is no
-  distillation factory, and T/CCZ are recorded as metadata rather than
-  expanded to physical gates. The frontend typechecker does not yet bind
-  `logical_t` / `logical_tdag` / `logical_ccz` as source identifiers, so
-  `quonc` cannot compile a `.qn` program that uses them end-to-end yet
-  (tracked in #311). The logical operation demonstrated on this page
+- **Non-Clifford logical operations are a resource-accounting model.**
+  Magic-state-*consuming* logical `T`, `T†`, and `CCZ` compile end-to-end
+  from `.qn` source through `quonc` (issue #311, landed via #354; see
+  `samples/neutral-atom/benchmarks/surface_d3_t.qn` and `surface_d3_ccz.qn`).
+  This is strictly *consumption* — magic states are assumed already available
+  and are never produced. There is no distillation factory, and T/CCZ are
+  recorded as metadata (`t_count` / `tdag_count` / `ccz_count` /
+  `magic_state_demand` in the resource report) rather than expanded to
+  physical gates. The logical operation demonstrated on this page
   (`logical_cx`) remains Clifford.
 
 ## Where this fits
