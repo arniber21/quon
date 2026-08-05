@@ -81,6 +81,10 @@ Examples:
   # Inspect a target without compiling
   quonc --target targets/neutral_atom/generic_rna_v0.json --print-target
 
+  # qLDPC resource model (#478): standalone, no source or target required
+  quonc --qldpc-graph examples/na_qec/qldpc_5qubit.json --emit-qldpc-report -
+  quonc --qldpc-net-rate 1/24 --qldpc-logical-qubits 12 --emit-qldpc-report -
+
 Notes:
   Fixed targets run SABRE routing and emit OpenQASM 3.0.
   Neutral-atom targets extract an interaction graph, schedule entangling
@@ -395,6 +399,48 @@ struct Cli {
     /// Path to `quon_qec_sinter.py` (default: search up from CWD for `python/`)
     #[arg(long, value_name = "PATH", help_heading = "QEC validation")]
     sinter_harness: Option<PathBuf>,
+
+    // ── qLDPC resource model (#478) ─────────────────────────────────────
+    /// qLDPC parity-check graph JSON (compiler resource-model estimate, not
+    /// a decoder or threshold claim). Skips the compile pipeline; use with
+    /// `--emit-qldpc-report`. No source file or backend target required.
+    #[arg(long, value_name = "PATH", help_heading = "qLDPC resource model")]
+    qldpc_graph: Option<PathBuf>,
+
+    /// qLDPC net rate `n/d` for sizing-only mode (e.g. `1/24` for a
+    /// [[144,12,12]]-style family). Computes `atoms_per_logical = ceil(d/n)`
+    /// without a parity-check graph; use with `--emit-qldpc-report`.
+    #[arg(long, value_name = "RATE", help_heading = "qLDPC resource model")]
+    qldpc_net_rate: Option<String>,
+
+    /// Emit qLDPC resource estimate (`-` = stdout; `.md` → Markdown, else
+    /// JSON). Analytic estimate — not sampled data, not a threshold claim
+    /// (ADR-0020).
+    #[arg(long, value_name = "PATH", help_heading = "qLDPC resource model")]
+    emit_qldpc_report: Option<String>,
+
+    /// Syndrome-extraction measurement rounds to model (graph mode)
+    #[arg(
+        long,
+        default_value_t = 1,
+        value_name = "N",
+        help_heading = "qLDPC resource model"
+    )]
+    qldpc_rounds: u32,
+
+    /// Atom grid width for movement-pressure estimation (graph mode; default:
+    /// ceil(sqrt(n_data)))
+    #[arg(long, value_name = "W", help_heading = "qLDPC resource model")]
+    qldpc_grid_width: Option<u32>,
+
+    /// Logical qubit count for net-rate sizing mode (default: 1)
+    #[arg(
+        long,
+        default_value_t = 1,
+        value_name = "N",
+        help_heading = "qLDPC resource model"
+    )]
+    qldpc_logical_qubits: u32,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -538,6 +584,12 @@ fn run() -> Result<ExitCode> {
     if cli.list_passes {
         print_pass_list();
         return Ok(ExitCode::SUCCESS);
+    }
+
+    // qLDPC resource-model path (#478): skips the compile pipeline entirely;
+    // no source file or backend target required.
+    if cli.qldpc_graph.is_some() || cli.qldpc_net_rate.is_some() {
+        return run_qldpc_resource_model(&cli);
     }
 
     let target = load_target(cli.target.as_ref())?;
@@ -1275,6 +1327,178 @@ fn write_output(path: &str, body: &str, prefer_stderr: bool) -> Result<()> {
         std::fs::write(&path, contents)?;
     }
     Ok(())
+}
+
+/// Run the qLDPC resource-model path (#478). Skips the compile pipeline;
+/// loads a parity-check graph (or a net-rate sizing spec) and emits an
+/// analytic resource estimate. Not a decoder, not a threshold claim (ADR-0020).
+fn run_qldpc_resource_model(cli: &Cli) -> Result<ExitCode> {
+    use quon_qec::qldpc::{ParityCheckGraph, QldpcResourceEstimate};
+    use quon_qec::{CodeFamily, NetRate, atoms_per_logical};
+
+    let out_path = cli.emit_qldpc_report.as_deref().ok_or_else(|| {
+        anyhow!(
+            "--qldpc-graph / --qldpc-net-rate requires --emit-qldpc-report <PATH> \
+             (`-` = stdout; `.md` → Markdown, else JSON)"
+        )
+    })?;
+    if cli.qldpc_graph.is_some() && cli.qldpc_net_rate.is_some() {
+        bail!("--qldpc-graph and --qldpc-net-rate are mutually exclusive");
+    }
+
+    let (json, md) = if let Some(graph_path) = &cli.qldpc_graph {
+        let raw = std::fs::read_to_string(graph_path)
+            .with_context(|| format!("read qLDPC graph {}", graph_path.display()))?;
+        let graph: ParityCheckGraph =
+            serde_json::from_str(&raw).context("parse qLDPC parity-check graph JSON")?;
+        graph.validate().map_err(|e| anyhow!("{e}"))?;
+        let grid_width = cli
+            .qldpc_grid_width
+            .unwrap_or_else(|| (graph.n_data as f64).sqrt().ceil().max(1.0) as u32);
+        let estimate = QldpcResourceEstimate::estimate(&graph, cli.qldpc_rounds, grid_width)
+            .map_err(|e| anyhow!("{e}"))?;
+        qldpc_graph_report(&estimate)?
+    } else if let Some(rate_str) = &cli.qldpc_net_rate {
+        let (num, den) = parse_qldpc_net_rate(rate_str)?;
+        let family = CodeFamily::HighRateQldpcLike {
+            net_rate: NetRate {
+                numerator: num,
+                denominator: den,
+            },
+        };
+        let atoms_per_logical = atoms_per_logical(&family).map_err(|e| anyhow!("{e}"))?;
+        let n_logical = cli.qldpc_logical_qubits;
+        let physical_atoms = atoms_per_logical
+            .checked_mul(n_logical)
+            .ok_or_else(|| anyhow!("physical atom count overflowed u32"))?;
+        qldpc_sizing_report(num, den, atoms_per_logical, n_logical, physical_atoms)?
+    } else {
+        bail!("internal error: qLDPC mode dispatch reached neither graph nor net-rate branch");
+    };
+
+    let text = match resolve_report_format(cli, out_path) {
+        ReportFormat::Json => &json,
+        ReportFormat::Markdown => &md,
+    };
+    write_output(out_path, text, false)?;
+    if !cli.quiet {
+        let dim = dim_style();
+        eprintln!("{dim}qLDPC resource estimate emitted (analytic; not a threshold claim){dim:#}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Parse a net-rate string `n/d` (e.g. `1/24`).
+fn parse_qldpc_net_rate(s: &str) -> Result<(u32, u32)> {
+    let (num_str, den_str) = s
+        .split_once('/')
+        .ok_or_else(|| anyhow!("--qldpc-net-rate must be `n/d` (e.g. `1/24`), got `{s}`"))?;
+    let num: u32 = num_str
+        .trim()
+        .parse()
+        .with_context(|| format!("net-rate numerator `{num_str}` is not a u32"))?;
+    let den: u32 = den_str
+        .trim()
+        .parse()
+        .with_context(|| format!("net-rate denominator `{den_str}` is not a u32"))?;
+    if num == 0 {
+        bail!("--qldpc-net-rate numerator must be > 0");
+    }
+    if den == 0 {
+        bail!("--qldpc-net-rate denominator must be > 0");
+    }
+    Ok((num, den))
+}
+
+/// Build the JSON + Markdown report for the graph-based qLDPC resource estimate.
+fn qldpc_graph_report(
+    estimate: &quon_qec::qldpc::QldpcResourceEstimate,
+) -> Result<(String, String)> {
+    let value = serde_json::json!({
+        "evidence_kind": "analytic",
+        "evidence_disclaimer": "Compiler analytic estimate — not sampled data and not a threshold claim (ADR-0020).",
+        "mode": "parity_check_graph",
+        "estimate": {
+            "n_data": estimate.n_data,
+            "n_checks": estimate.n_checks,
+            "distance": estimate.distance,
+            "max_check_weight": estimate.max_check_weight,
+            "avg_check_weight": estimate.avg_check_weight,
+            "edge_count": estimate.edge_count,
+            "measurement_rounds": estimate.measurement_rounds,
+            "movement_pressure": estimate.movement_pressure,
+            "peak_atoms": estimate.peak_atoms,
+            "estimated_cycles_per_round": estimate.estimated_cycles_per_round,
+        },
+    });
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|e| anyhow!("serialize qLDPC graph report: {e}"))?;
+    let md = format!(
+        "# qLDPC resource estimate (parity-check graph)\n\n\
+         > Compiler analytic estimate — not sampled data and not a threshold claim (ADR-0020).\n\n\
+         ## Code structure\n\
+         | Metric | Value |\n| --- | ---: |\n\
+         | Data qubits | {} |\n\
+         | Check ancillas | {} |\n\
+         | Code distance | {} |\n\
+         | Peak atoms | {} |\n\n\
+         ## Connectivity\n\
+         | Metric | Value |\n| --- | ---: |\n\
+         | Max check weight | {} |\n\
+         | Avg check weight | {} |\n\
+         | Total edges (CNOTs/round) | {} |\n\n\
+         ## Syndrome extraction\n\
+         | Metric | Value |\n| --- | ---: |\n\
+         | Measurement rounds | {} |\n\
+         | Est. cycles/round (Z-then-X) | {} |\n\
+         | Movement pressure (Manhattan sum/edge) | {} |\n",
+        estimate.n_data,
+        estimate.n_checks,
+        estimate.distance,
+        estimate.peak_atoms,
+        estimate.max_check_weight,
+        estimate.avg_check_weight,
+        estimate.edge_count,
+        estimate.measurement_rounds,
+        estimate.estimated_cycles_per_round,
+        estimate.movement_pressure,
+    );
+    Ok((json, md))
+}
+
+/// Build the JSON + Markdown report for the net-rate sizing-only mode.
+fn qldpc_sizing_report(
+    num: u32,
+    den: u32,
+    atoms_per_logical: u32,
+    n_logical: u32,
+    physical_atoms: u32,
+) -> Result<(String, String)> {
+    let value = serde_json::json!({
+        "evidence_kind": "analytic",
+        "evidence_disclaimer": "Compiler analytic estimate — not sampled data and not a threshold claim (ADR-0020).",
+        "mode": "net_rate_sizing",
+        "code_family": "high_rate_qldpc_like",
+        "net_rate": { "numerator": num, "denominator": den },
+        "atoms_per_logical": atoms_per_logical,
+        "logical_qubits": n_logical,
+        "physical_atoms": physical_atoms,
+    });
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|e| anyhow!("serialize qLDPC sizing report: {e}"))?;
+    let md = format!(
+        "# qLDPC resource estimate (net-rate sizing)\n\n\
+         > Compiler analytic estimate — not sampled data and not a threshold claim (ADR-0020).\n\n\
+         ## Sizing\n\
+         | Metric | Value |\n| --- | ---: |\n\
+         | Code family | high_rate_qldpc_like |\n\
+         | Net rate (k/n) | {}/{} |\n\
+         | Atoms per logical | {} |\n\
+         | Logical qubits | {} |\n\
+         | Physical atoms | {} |\n",
+        num, den, atoms_per_logical, n_logical, physical_atoms,
+    );
+    Ok((json, md))
 }
 
 fn print_pass_list() {

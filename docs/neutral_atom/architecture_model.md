@@ -473,6 +473,17 @@ atom arrays (e.g. 400 logical / 19 600 physical, a 6.9× saving over surface
 code at p = 10⁻³) — the reason this family is worth modeling on this backend
 at all.
 
+This family is reviewer-runnable from `quonc` (#478): the net-rate sizing mode
+computes `atoms_per_logical` without a source file or backend target:
+
+```bash
+quonc --qldpc-net-rate 1/24 --qldpc-logical-qubits 12 --emit-qldpc-report -
+# → atoms_per_logical: 24, logical_qubits: 12, physical_atoms: 288
+```
+
+The graph-based estimate (`--qldpc-graph <json>`) emits check weight,
+connectivity, movement pressure, and peak atoms from a parity-check graph.
+
 ### 10.4 `AbstractBlockCode`
 
 ```

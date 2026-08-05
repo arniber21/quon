@@ -1,0 +1,27 @@
+{
+  "n_data": 5,
+  "n_checks": 4,
+  "distance": 3,
+  "checks": [
+    {
+      "check_id": 0,
+      "basis": "z",
+      "data_qubits": [0, 1, 2, 3, 4]
+    },
+    {
+      "check_id": 1,
+      "basis": "z",
+      "data_qubits": [0, 1, 2, 3, 4]
+    },
+    {
+      "check_id": 2,
+      "basis": "x",
+      "data_qubits": [0, 1, 2, 3, 4]
+    },
+    {
+      "check_id": 3,
+      "basis": "x",
+      "data_qubits": [0, 1, 2, 3, 4]
+    }
+  ]
+}
