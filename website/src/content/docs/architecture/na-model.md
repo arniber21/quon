@@ -290,6 +290,13 @@ not $k/r$ — an easy bug, called out in the issue. Constant-rate qLDPC families
 exist asymptotically, with concrete low-overhead points on reconfigurable
 arrays, which is the reason this family is worth modeling on this backend at all.
 
+The high-rate qLDPC family is reviewer-runnable from `quonc` (#478) without a
+source file: `quonc --qldpc-net-rate 1/24 --qldpc-logical-qubits 12
+--emit-qldpc-report -` emits the sizing (24 atoms/logical, 288 physical), and
+`--qldpc-graph <json>` emits the full parity-check-graph estimate (check
+weight, connectivity, movement pressure). Both are analytic estimates, not
+threshold claims (ADR-0020).
+
 **The hybrid QEC path.** Code blocks are scheduling units: whole blocks move
 between zones and logical 2Q gates are physical-parallel transversal
 interleavings — the operational picture motivating this layer, demonstrated in

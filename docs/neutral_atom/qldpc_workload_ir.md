@@ -47,3 +47,26 @@ Unsupported features fail clearly with actionable diagnostics.
 
 - `toy_5qubit_graph()` — [[5,1,3]] code (4 checks, weight 5)
 - `toy_repetition_graph(d)` — repetition code (d-1 checks, weight 2)
+
+## Reviewer-runnable CLI (#478)
+
+The qLDPC resource model is reachable from `quonc` without a source file or
+backend target — it skips the compile pipeline entirely.
+
+Graph mode loads a parity-check graph JSON and emits the full estimate:
+
+```bash
+quonc --qldpc-graph examples/na_qec/qldpc_5qubit.json --emit-qldpc-report -
+```
+
+Net-rate sizing mode computes `atoms_per_logical = ceil(1/r)` for a
+`[[144,12,12]]`-style family (12 logical, rate 1/24 → 24 atoms/logical, 288
+physical):
+
+```bash
+quonc --qldpc-net-rate 1/24 --qldpc-logical-qubits 12 --emit-qldpc-report -
+```
+
+Both emit JSON by default; a `.md` path extension switches to Markdown. The
+emitted report is an analytic estimate — not sampled data and not a threshold
+claim (ADR-0020).

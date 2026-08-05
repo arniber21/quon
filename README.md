@@ -225,6 +225,10 @@ cargo run -p quonc -- examples/na_qec/repetition_d3_memory.qn \
 # Inspect the compiler pipeline or dump intermediate IR.
 cargo run -p quonc -- --list-passes
 cargo run -p quonc -- test/verify/bell.qn --dump-ir --emit-qasm
+
+# qLDPC resource model — standalone, no source or target required (#478).
+cargo run -p quonc -- --qldpc-graph examples/na_qec/qldpc_5qubit.json --emit-qldpc-report -
+cargo run -p quonc -- --qldpc-net-rate 1/24 --qldpc-logical-qubits 12 --emit-qldpc-report -
 ```
 
 See the [quonc CLI reference](https://quon.arnabg.me/reference/quonc/) for
