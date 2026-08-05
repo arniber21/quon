@@ -6,6 +6,75 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-04
+
+### Added
+
+- **Controlled composition of named parametric circuits** (#374): `controlled(f())`
+  now elaborates the callee's body into a concrete gate tree before distributing
+  control, enabling controlled recursive circuit functions.
+- **Exact state-preparation solver** (#397): `--na-state-prep exact` invokes a
+  z3-backed SMT-optimal CZ-pair scheduler; the resource report labels the
+  schedule `Exact` (proven) or `Heuristic` (solver timeout fallback). Non-solver
+  builds reject `Exact` with a typed error — never a silent fallback.
+- **Canonical frontend AST visitor** (#399): one traversal interface shared by
+  analysis, formatter, linter, and LSP, replacing duplicated exhaustive walkers.
+- **Load-bearing Flux refinement contracts** (#411–#414): arithmetic overflow,
+  capacity, QEC sizing/distance, and lattice-surgery bounds specifications on
+  the Rust implementation kernels.
+- **Taskless as a failing gate** (#390): Rust convention rules (unwrap/expect,
+  anyhow in libs, serde DTOs) now fail CI instead of warning silently.
+- **Workspace Rustdoc CI gate** (#406): `RUSTDOCFLAGS="-D warnings" cargo doc`
+  enforced in `ci-rust`; unresolved intra-doc links and private-item references
+  are denied.
+- **Documentation quality-gate contract** (#377): normative language reference,
+  diagnostic catalog, feature-support matrix, backend-target docs, and
+  contributor style system.
+
+### Changed
+
+- **Unsafe code denied workspace-wide** (#415): `[workspace.lints.rust]
+  unsafe_code = "deny"` with `undocumented_unsafe_blocks = "warn"`; all unsafe
+  MLIR FFI centralized in `mlir_bridge/src/ffi.rs` with `// SAFETY:` comments.
+- **MLIR-free crate seams** (#407): `quon_na` and `frontend` no longer pull
+  MLIR/Z3 by default; tooling consumers build without heavyweight compiler deps.
+- **Backend invariants sealed** (#394, #402): `ConnectivityGraph`,
+  `FixedTarget`, interaction graphs, and reports expose private fields with
+  public accessors, preventing construction of invalid states.
+- **All-to-all connectivity is O(N²)** (#408): analytic distance matrix
+  construction, no Floyd-Warshall for fully-connected targets.
+- **DepthExpr canonical ordering** (#398): sort by byte representation instead
+  of allocating S-expression strings as sort keys.
+- **Elaboration context shared by reference** (#400): `Arc<HashMap>` for
+  parametric definitions instead of cloning the whole context per call.
+
+### Fixed
+
+- **Classical arithmetic is total and fallible** (#409): `eval_classical` uses
+  checked arithmetic with `ElabError::{Overflow, DivByZero, NegativeExponent}`;
+  no more panics on division by zero or integer overflow.
+- **MLIR passes fail closed** (#391): transformation passes return typed errors
+  through `Diagnostics` accumulators instead of `eprintln!`-and-continue.
+- **Phase-polynomial optimization safe beyond 128 qubits** (#392): dynamic
+  `Parity` bitset (`Vec<u64>`) replaces fixed `u128`; no shift overflow.
+- **QEC workload deserialization validates state transitions** (#396):
+  `QecWorkload` deserializes via `try_from` that replays `WorkloadBuilder`
+  ordering validation; post-measure memory rounds are rejected.
+- **OpenQASM ingestion rejects unsupported semantics** (#405): `measure`,
+  `reset`, gate definitions, classical control flow, and multi-parameter gates
+  are rejected with line-tagged errors instead of silently dropped.
+- **Production `test.qubit` allocations replaced** (#401): verified
+  `quantum.dynamic.alloc` op with dialect verifier, replacing the unregistered
+  `test.qubit` placeholder.
+- **Raw analysis sink pointers removed from TypeChecker** (#393): no more `*mut`
+  sinks; analysis results are returned or borrowed safely.
+- **Stale scaffolds and dead-code allowances removed** (#395): orphaned
+  duplicate types, no-op ZX rewrite stubs, and crate-wide `#![allow(dead_code)]`.
+- **Flux CI restored** (#404): `quon_qec` and `backend` Flux jobs pass;
+  tautological specs replaced with load-bearing contracts.
+- **MLIR bridge fuzz targets restored** (#410): fuzz targets import `DepthExpr`
+  from `quon_core` directly; detached workspace builds with the stable toolchain.
+
 ## [0.2.0] - 2026-07-21
 
 ### Added
@@ -79,6 +148,7 @@ MLIR lowering pipeline, OpenQASM 3 emission, neutral-atom schedule/resource
 artifacts, Qiskit Aer verification seam, `quonfmt`/`quonlint`/`quon_lsp`
 tooling, Tree-sitter grammar, editor integrations, and Devbox bootstrap.
 
-[Unreleased]: https://github.com/arniber21/quon/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/arniber21/quon/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/arniber21/quon/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/arniber21/quon/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/arniber21/quon/releases/tag/v0.1.0
