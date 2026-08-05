@@ -348,9 +348,7 @@ pub(crate) fn right_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAto
             distance: block.distance,
         });
     }
-    Ok((0..d)
-        .map(|r| block.data_atoms[r * d + (d - 1)])
-        .collect())
+    Ok((0..d).map(|r| block.data_atoms[r * d + (d - 1)]).collect())
 }
 
 pub(crate) fn left_column_data(block: &ExpandedBlock) -> Result<Vec<PhysicalAtomId>, ExpandError> {
@@ -423,11 +421,7 @@ pub(crate) fn rough_merge_round(
     // (all three slices have length `n`) rather than projecting an index
     // refinement through the loop body — the closure-projection weakness of
     // ADR-0027 does not affect `Iterator::zip`.
-    for ((&l, &r), &s) in left_col
-        .iter()
-        .zip(right_col.iter())
-        .zip(&seam.atoms)
-    {
+    for ((&l, &r), &s) in left_col.iter().zip(right_col.iter()).zip(&seam.atoms) {
         entangling.push(PhysicalCnot {
             control: l,
             target: s,
@@ -488,7 +482,11 @@ pub(crate) fn smooth_merge_round(
     let mut x_cnots = Vec::with_capacity(2 * n);
     // Iterator-zip iteration so Flux proves bounds through the shared length
     // rather than projecting an index refinement through the loop body.
-    for (&s, (&a, &b)) in seam.atoms.iter().zip(above_row.iter().zip(below_row.iter())) {
+    for (&s, (&a, &b)) in seam
+        .atoms
+        .iter()
+        .zip(above_row.iter().zip(below_row.iter()))
+    {
         local_mid.push(RoundLocalOp::H { atom: s });
         x_cnots.push(PhysicalCnot {
             control: s,
@@ -613,7 +611,10 @@ mod tests {
         let block = surface_block(3);
         let col = right_column_data(&block).expect("d3");
         // Row-major: right column = indices 2, 5, 8
-        assert_eq!(col, vec![PhysicalAtomId(2), PhysicalAtomId(5), PhysicalAtomId(8)]);
+        assert_eq!(
+            col,
+            vec![PhysicalAtomId(2), PhysicalAtomId(5), PhysicalAtomId(8)]
+        );
     }
 
     #[test]
@@ -659,7 +660,10 @@ mod tests {
         let block = surface_block(3);
         let row = bottom_row_data(&block).expect("d3");
         // Last 3 of 9: indices 6, 7, 8
-        assert_eq!(row, vec![PhysicalAtomId(6), PhysicalAtomId(7), PhysicalAtomId(8)]);
+        assert_eq!(
+            row,
+            vec![PhysicalAtomId(6), PhysicalAtomId(7), PhysicalAtomId(8)]
+        );
     }
 
     #[test]
@@ -686,16 +690,17 @@ mod tests {
         let left = vec![PhysicalAtomId(0), PhysicalAtomId(1), PhysicalAtomId(2)];
         let right = vec![PhysicalAtomId(3), PhysicalAtomId(4)]; // only 2, not 3
         let seam = seam_with_n(3);
-        let err = rough_merge_round(
-            &left,
-            &right,
-            &seam,
-            LogicalQubitId(0),
-            LogicalQubitId(1),
-        )
-        .unwrap_err();
+        let err = rough_merge_round(&left, &right, &seam, LogicalQubitId(0), LogicalQubitId(1))
+            .unwrap_err();
         assert!(
-            matches!(err, ExpandError::SeamLengthMismatch { left: 3, right: 2, seam: 3 }),
+            matches!(
+                err,
+                ExpandError::SeamLengthMismatch {
+                    left: 3,
+                    right: 2,
+                    seam: 3
+                }
+            ),
             "got {err:?}"
         );
     }
@@ -707,7 +712,11 @@ mod tests {
         let seam = seam_with_n(3);
         assert!(matches!(
             rough_merge_round(&left, &right, &seam, LogicalQubitId(0), LogicalQubitId(1)),
-            Err(ExpandError::SeamLengthMismatch { left: 1, right: 3, seam: 3 })
+            Err(ExpandError::SeamLengthMismatch {
+                left: 1,
+                right: 3,
+                seam: 3
+            })
         ));
     }
 
@@ -716,14 +725,8 @@ mod tests {
         let left = vec![PhysicalAtomId(0), PhysicalAtomId(1), PhysicalAtomId(2)];
         let right = vec![PhysicalAtomId(3), PhysicalAtomId(4), PhysicalAtomId(5)];
         let seam = seam_with_n(3);
-        let round = rough_merge_round(
-            &left,
-            &right,
-            &seam,
-            LogicalQubitId(0),
-            LogicalQubitId(1),
-        )
-        .expect("d3 rough merge");
+        let round = rough_merge_round(&left, &right, &seam, LogicalQubitId(0), LogicalQubitId(1))
+            .expect("d3 rough merge");
 
         assert_eq!(round.kind, RoundKind::Merge(MergeBoundary::Rough));
         // 3 pairs × 2 CNOTs each = 6
@@ -747,14 +750,8 @@ mod tests {
         let left: Vec<_> = (0..5).map(PhysicalAtomId).collect();
         let right: Vec<_> = (10..15).map(PhysicalAtomId).collect();
         let seam = seam_with_n(5);
-        let round = rough_merge_round(
-            &left,
-            &right,
-            &seam,
-            LogicalQubitId(0),
-            LogicalQubitId(1),
-        )
-        .expect("d5 rough merge");
+        let round = rough_merge_round(&left, &right, &seam, LogicalQubitId(0), LogicalQubitId(1))
+            .expect("d5 rough merge");
 
         assert_eq!(round.entangling.len(), 10); // 5 pairs × 2
         assert_eq!(round.z_cnot_count, 10);
@@ -783,16 +780,17 @@ mod tests {
         let above = vec![PhysicalAtomId(0), PhysicalAtomId(1), PhysicalAtomId(2)];
         let below = vec![PhysicalAtomId(3), PhysicalAtomId(4)]; // only 2
         let seam = seam_with_n(3);
-        let err = smooth_merge_round(
-            &above,
-            &below,
-            &seam,
-            LogicalQubitId(0),
-            LogicalQubitId(1),
-        )
-        .unwrap_err();
+        let err = smooth_merge_round(&above, &below, &seam, LogicalQubitId(0), LogicalQubitId(1))
+            .unwrap_err();
         assert!(
-            matches!(err, ExpandError::SeamLengthMismatch { left: 3, right: 2, seam: 3 }),
+            matches!(
+                err,
+                ExpandError::SeamLengthMismatch {
+                    left: 3,
+                    right: 2,
+                    seam: 3
+                }
+            ),
             "got {err:?}"
         );
     }
@@ -804,7 +802,11 @@ mod tests {
         let seam = seam_with_n(3);
         assert!(matches!(
             smooth_merge_round(&above, &below, &seam, LogicalQubitId(0), LogicalQubitId(1)),
-            Err(ExpandError::SeamLengthMismatch { left: 2, right: 3, seam: 3 })
+            Err(ExpandError::SeamLengthMismatch {
+                left: 2,
+                right: 3,
+                seam: 3
+            })
         ));
     }
 
@@ -813,14 +815,8 @@ mod tests {
         let above = vec![PhysicalAtomId(0), PhysicalAtomId(1), PhysicalAtomId(2)];
         let below = vec![PhysicalAtomId(3), PhysicalAtomId(4), PhysicalAtomId(5)];
         let seam = seam_with_n(3);
-        let round = smooth_merge_round(
-            &above,
-            &below,
-            &seam,
-            LogicalQubitId(0),
-            LogicalQubitId(1),
-        )
-        .expect("d3 smooth merge");
+        let round = smooth_merge_round(&above, &below, &seam, LogicalQubitId(0), LogicalQubitId(1))
+            .expect("d3 smooth merge");
 
         assert_eq!(round.kind, RoundKind::Merge(MergeBoundary::Smooth));
         assert_eq!(round.z_cnot_count, 0);
@@ -847,14 +843,8 @@ mod tests {
         let above: Vec<_> = (0..5).map(PhysicalAtomId).collect();
         let below: Vec<_> = (10..15).map(PhysicalAtomId).collect();
         let seam = seam_with_n(5);
-        let round = smooth_merge_round(
-            &above,
-            &below,
-            &seam,
-            LogicalQubitId(0),
-            LogicalQubitId(1),
-        )
-        .expect("d5 smooth merge");
+        let round = smooth_merge_round(&above, &below, &seam, LogicalQubitId(0), LogicalQubitId(1))
+            .expect("d5 smooth merge");
 
         assert_eq!(round.entangling.len(), 10); // 5 pairs × 2
         assert_eq!(round.local_mid.len(), 5);

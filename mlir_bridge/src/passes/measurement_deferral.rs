@@ -409,10 +409,7 @@ fn defer_module<'c, 'a>(
 }
 
 /// Runs measurement deferral on `module`, returning any error diagnostics.
-pub fn run_on_module<'c>(
-    context: &'c Context,
-    module: &melior::ir::Module<'c>,
-) -> Diagnostics<'c> {
+pub fn run_on_module<'c>(context: &'c Context, module: &melior::ir::Module<'c>) -> Diagnostics<'c> {
     let mut diagnostics = Diagnostics::new();
     defer_module(context, module.as_operation(), &mut diagnostics);
     diagnostics.emit();
@@ -431,7 +428,9 @@ struct MeasurementDeferral {
 
 impl MeasurementDeferral {
     fn new() -> Self {
-        Self { context: PassContext::new() }
+        Self {
+            context: PassContext::new(),
+        }
     }
 }
 

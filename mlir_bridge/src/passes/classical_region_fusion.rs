@@ -30,9 +30,9 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use thiserror::Error;
 
-use crate::ffi::PassContext;
 use crate::diagnostics::Diagnostics;
 use crate::dialect::{quantum_circ, quantum_dynamic};
+use crate::ffi::PassContext;
 use crate::passes::qubit_wiring::{self, WireTracker};
 
 #[derive(Debug, Error)]
@@ -671,16 +671,12 @@ fn fuse_module<'c, 'a>(
 }
 
 /// Runs classical region fusion on `module`, returning any error diagnostics.
-pub fn run_on_module<'c>(
-    context: &'c Context,
-    module: &melior::ir::Module<'c>,
-) -> Diagnostics<'c> {
+pub fn run_on_module<'c>(context: &'c Context, module: &melior::ir::Module<'c>) -> Diagnostics<'c> {
     let mut diagnostics = Diagnostics::new();
     fuse_module(context, module.as_operation(), &mut diagnostics);
     diagnostics.emit();
     diagnostics
 }
-
 
 #[repr(align(8))]
 struct PassId;
@@ -694,7 +690,9 @@ struct ClassicalRegionFusion {
 
 impl ClassicalRegionFusion {
     fn new() -> Self {
-        Self { context: PassContext::new() }
+        Self {
+            context: PassContext::new(),
+        }
     }
 }
 

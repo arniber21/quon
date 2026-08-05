@@ -20,6 +20,8 @@ use crate::compaction::{
     compact_schedule, feed_forward_dependencies, infer_atom_dependencies,
 };
 use crate::entangling_schedule::schedule_entangling_layers;
+#[cfg(feature = "solver")]
+use crate::exact::state_prep::{CzGate, ExactStatePrepParams, schedule_exact};
 use crate::graph::{
     AtomVertexId, DEFAULT_GAMMA, Interaction, InteractionEdge, InteractionGraph, InteractionId,
     InteractionSegment, LogicalQubitId, SegmentKind,
@@ -29,13 +31,9 @@ use crate::pipeline::{
     NaPipelineError, NaScheduleArtifacts, NaScheduleOptions, validate_speed_model,
 };
 use crate::plan::{QecStageAccumulator, plan_backend};
-#[cfg(feature = "solver")]
-use crate::exact::state_prep::{
-    CzGate, ExactStatePrepParams, schedule_exact,
-};
+use crate::qec::code_blocks_from_expanded;
 #[cfg(feature = "solver")]
 use crate::report::ScheduleOptimality;
-use crate::qec::code_blocks_from_expanded;
 use crate::report::{attach_qec_error_budget, build_resource_report};
 use crate::schedule::{LocalGateKind, MeasurementBasis, NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
@@ -411,21 +409,16 @@ fn schedule_cnot_phase(
     // the schedule `Heuristic`. The non-solver build rejects `Exact`
     // up-front in `schedule_expanded`.
     #[cfg(feature = "solver")]
-    let (phase_graph, phase_layers, state_prep_outcome) = if opts.state_prep
-        == crate::pipeline::StatePrepMode::Exact
-    {
-        let gates = cnots_to_cz_gates(cnots);
-        let result = schedule_exact(&gates, ExactStatePrepParams::default())
-            .map_err(NaPipelineError::ExactStatePrepFailed)?;
-        (req.graph, result.layers, Some(result.outcome))
-    } else {
-        let scheduled = schedule_entangling_layers(req, max_pairs)?;
-        (
-            scheduled.request.graph,
-            scheduled.request.layers,
-            None,
-        )
-    };
+    let (phase_graph, phase_layers, state_prep_outcome) =
+        if opts.state_prep == crate::pipeline::StatePrepMode::Exact {
+            let gates = cnots_to_cz_gates(cnots);
+            let result = schedule_exact(&gates, ExactStatePrepParams::default())
+                .map_err(NaPipelineError::ExactStatePrepFailed)?;
+            (req.graph, result.layers, Some(result.outcome))
+        } else {
+            let scheduled = schedule_entangling_layers(req, max_pairs)?;
+            (scheduled.request.graph, scheduled.request.layers, None)
+        };
     #[cfg(not(feature = "solver"))]
     let (phase_graph, phase_layers) = {
         let scheduled = schedule_entangling_layers(req, max_pairs)?;
@@ -1490,15 +1483,42 @@ mod tests {
         use crate::pipeline::StatePrepMode;
 
         let cnots: Vec<PhysicalCnot> = vec![
-            PhysicalCnot { control: PhysicalAtomId(0), target: PhysicalAtomId(1) },
-            PhysicalCnot { control: PhysicalAtomId(0), target: PhysicalAtomId(2) },
-            PhysicalCnot { control: PhysicalAtomId(0), target: PhysicalAtomId(3) },
-            PhysicalCnot { control: PhysicalAtomId(1), target: PhysicalAtomId(4) },
-            PhysicalCnot { control: PhysicalAtomId(1), target: PhysicalAtomId(5) },
-            PhysicalCnot { control: PhysicalAtomId(2), target: PhysicalAtomId(4) },
-            PhysicalCnot { control: PhysicalAtomId(2), target: PhysicalAtomId(6) },
-            PhysicalCnot { control: PhysicalAtomId(3), target: PhysicalAtomId(5) },
-            PhysicalCnot { control: PhysicalAtomId(3), target: PhysicalAtomId(6) },
+            PhysicalCnot {
+                control: PhysicalAtomId(0),
+                target: PhysicalAtomId(1),
+            },
+            PhysicalCnot {
+                control: PhysicalAtomId(0),
+                target: PhysicalAtomId(2),
+            },
+            PhysicalCnot {
+                control: PhysicalAtomId(0),
+                target: PhysicalAtomId(3),
+            },
+            PhysicalCnot {
+                control: PhysicalAtomId(1),
+                target: PhysicalAtomId(4),
+            },
+            PhysicalCnot {
+                control: PhysicalAtomId(1),
+                target: PhysicalAtomId(5),
+            },
+            PhysicalCnot {
+                control: PhysicalAtomId(2),
+                target: PhysicalAtomId(4),
+            },
+            PhysicalCnot {
+                control: PhysicalAtomId(2),
+                target: PhysicalAtomId(6),
+            },
+            PhysicalCnot {
+                control: PhysicalAtomId(3),
+                target: PhysicalAtomId(5),
+            },
+            PhysicalCnot {
+                control: PhysicalAtomId(3),
+                target: PhysicalAtomId(6),
+            },
         ];
         let all_atoms: Vec<PhysicalAtomId> = (0..7).map(PhysicalAtomId).collect();
         let na = load_na();
@@ -1543,7 +1563,10 @@ mod tests {
                     .count()
             })
             .sum();
-        assert_eq!(entangle2, 9, "all 9 Steane CZ pairs must appear as Entangle2");
+        assert_eq!(
+            entangle2, 9,
+            "all 9 Steane CZ pairs must appear as Entangle2"
+        );
 
         // Schedule verification: no atom in two gates of the same entangle
         // layer — the exact colouring guarantee (movement-compatible).

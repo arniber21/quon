@@ -16,8 +16,8 @@ use melior::{Context, ContextRef};
 use thiserror::Error;
 
 use crate::diagnostics::Diagnostics;
-use crate::ffi::{self, PassContext};
 use crate::dialect::{quantum_circ, quantum_dynamic};
+use crate::ffi::{self, PassContext};
 use crate::passes::qubit_wiring::{self, WireTracker};
 
 fn set_i32_attr<'c>(context: &'c Context, op: OperationRef<'c, '_>, key: &str, value: i32) {
@@ -685,7 +685,14 @@ fn route_module<'c, 'a>(
     // just each named `quantum.circ.func`).
     let mut top_level_state = RouteState::new(target.num_qubits);
     top_level_state.tracker.seed_block_args(&body);
-    route_block(context, target, cost, body, &mut top_level_state, diagnostics);
+    route_block(
+        context,
+        target,
+        cost,
+        body,
+        &mut top_level_state,
+        diagnostics,
+    );
 
     // Each named `quantum.circ.func` is an independent circuit (its own qubit
     // register), so it gets a fresh `RouteState`. Post-inlining these are dead
@@ -718,7 +725,13 @@ pub fn run_on_module<'c>(
 ) -> Diagnostics<'c> {
     let mut diagnostics = Diagnostics::new();
     if let Some(target) = target.fixed_target() {
-        route_module(context, target, cost, module.as_operation(), &mut diagnostics);
+        route_module(
+            context,
+            target,
+            cost,
+            module.as_operation(),
+            &mut diagnostics,
+        );
     }
     diagnostics.emit();
     diagnostics

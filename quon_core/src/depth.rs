@@ -258,7 +258,7 @@ impl DepthExpr {
             // A `Var` whose name starts with `_` versus `Hole` (`_`): compare
             // the full name against the single underscore.
             (DepthExpr::Var(a), DepthExpr::Hole) => a.as_bytes().cmp(&b"_"[..]),
-            (DepthExpr::Hole, DepthExpr::Var(b)) => (&b"_"[..]).cmp(b.as_bytes()),
+            (DepthExpr::Hole, DepthExpr::Var(b)) => b"_"[..].cmp(b.as_bytes()),
             _ => unreachable!("cmp_atom_full on atoms with differing first bytes"),
         }
     }
@@ -408,14 +408,6 @@ fn leading_decimal_byte(n: u64) -> u8 {
 /// access. This helper carries no flux spec, so trusting it skips no
 /// verification. Remove once flux-infer can infer loop invariants here.
 #[cfg_attr(feature = "flux", flux_rs::trusted)]
-/// `#[trusted]` under Flux: the decrement-then-index digit-extraction loop
-/// needs a loop invariant Flux cannot synthesize (`i >= 1` follows from `m > 0`
-/// implying at most 20 digits, but Flux has no refined spec for the division-
-/// driven iteration count). The body is panic-free by construction (a `u64` has
-/// <= 20 decimal digits, so `i` never underflows and `buf[i]` stays in `0..20`)
-/// and carries no Flux spec, so trusting it skips no verification. See ADR-0027
-/// for the `#[trusted]` convention.
-#[cfg_attr(feature = "flux", trusted)]
 fn write_decimal(n: u64, buf: &mut [u8; 20]) -> usize {
     if n == 0 {
         buf[19] = b'0';
@@ -838,7 +830,8 @@ mod tests {
                 let by_ord = a.cmp(b);
                 let by_sexpr = a.to_sexpr().cmp(&b.to_sexpr());
                 assert_eq!(
-                    by_ord, by_sexpr,
+                    by_ord,
+                    by_sexpr,
                     "Ord disagrees with sexpr string cmp:\n  a = {}\n  b = {}\n  ord = {:?}\n  sexpr = {:?}",
                     a.to_sexpr(),
                     b.to_sexpr(),
@@ -866,10 +859,7 @@ mod tests {
         let other = (0..100u64)
             .map(|i| var(&format!("w{i}")))
             .fold(nat(0), |acc, v| acc.seq(v));
-        let expr = DepthExpr::repeat(
-            DepthExpr::Max(Box::new(expr), Box::new(other)),
-            nat(3),
-        );
+        let expr = DepthExpr::repeat(DepthExpr::Max(Box::new(expr), Box::new(other)), nat(3));
 
         let once = expr.normalize();
         // Idempotent: a second pass is a no-op (also exercises the sort path again).

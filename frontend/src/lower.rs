@@ -655,12 +655,12 @@ impl<'c> LoweringCtx<'c> {
                                 let x_op = qc::gate(
                                     self.context,
                                     "X",
-                                    1, // depth_contribution (Clifford)
+                                    1,    // depth_contribution (Clifford)
                                     true, // clifford
                                     &wires,
                                     self.location,
                                 )?;
-                                return Ok(self.append_dynamic_op(x_op, 1)?);
+                                return self.append_dynamic_op(x_op, 1);
                             }
                         }
                         // `init_plus()` — allocate a fresh qubit and apply H
@@ -673,12 +673,12 @@ impl<'c> LoweringCtx<'c> {
                                 let h_op = qc::gate(
                                     self.context,
                                     "H",
-                                    1, // depth_contribution (Clifford)
+                                    1,    // depth_contribution (Clifford)
                                     true, // clifford
                                     &wires,
                                     self.location,
                                 )?;
-                                return Ok(self.append_dynamic_op(h_op, 1)?);
+                                return self.append_dynamic_op(h_op, 1);
                             }
                         }
                         // `measure(q)` — consume one qubit, produce one bit.

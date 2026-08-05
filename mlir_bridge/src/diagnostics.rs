@@ -10,7 +10,7 @@
 //!     typed [`Result`] into it with [`Diagnostics::report`]. None of that code
 //!     touches the FFI boundary.
 //!   * [`Diagnostics::emit`] flushes the accumulator to MLIR via the safe
-//!     [`crate::ffi::emit_error`] wrapper. The `unsafe` `mlirEmitError` call
+//!     `crate::ffi::emit_error` wrapper. The `unsafe` `mlirEmitError` call
 //!     lives solely in [`crate::ffi`], alongside all other unsafe MLIR FFI in
 //!     the crate.
 //!
@@ -53,7 +53,7 @@ impl<'c> Diagnostic<'c> {
     ///
     /// The message is sanitized of interior NUL bytes so the `CString`
     /// conversion is infallible. The actual FFI call is delegated to the safe
-    /// [`crate::ffi::emit_error`] wrapper — this module contains no `unsafe` code.
+    /// `crate::ffi::emit_error` wrapper — this module contains no `unsafe` code.
     fn emit(&self) {
         let sanitized: String = self
             .message

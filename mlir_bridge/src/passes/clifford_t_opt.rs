@@ -39,8 +39,8 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use quon_core::DepthExpr;
 
-use crate::ffi::{self, PassContext};
 use crate::dialect::quantum_circ::{self, attr};
+use crate::ffi::{self, PassContext};
 use crate::passes::{phase_polynomial, stabilizer_tableau};
 
 // ---------------------------------------------------------------------------
@@ -188,7 +188,13 @@ fn rebuild_block<'c, 'a>(
     // Build new gates, inserting before the return op.
     let location = return_op.location();
     let mut wires: Vec<Value<'c, 'a>> = (0..n_qubits)
-        .map(|i| Value::from(block.argument(i).unwrap_or_else(|_| unreachable!("block {i} has argument {i}"))))
+        .map(|i| {
+            Value::from(
+                block
+                    .argument(i)
+                    .unwrap_or_else(|_| unreachable!("block {i} has argument {i}")),
+            )
+        })
         .collect();
 
     for (gate_name, targets) in new_gates {
@@ -200,7 +206,11 @@ fn rebuild_block<'c, 'a>(
                 .unwrap_or_else(|_| unreachable!("rebuilt gate builds")),
         );
         for (i, &target) in targets.iter().enumerate() {
-            wires[target] = Value::from(new_op.result(i).unwrap_or_else(|_| unreachable!("rebuilt result {i}")));
+            wires[target] = Value::from(
+                new_op
+                    .result(i)
+                    .unwrap_or_else(|_| unreachable!("rebuilt result {i}")),
+            );
         }
     }
 
@@ -309,7 +319,9 @@ struct CliffordTOpt {
 
 impl CliffordTOpt {
     fn new() -> Self {
-        Self { context: PassContext::new() }
+        Self {
+            context: PassContext::new(),
+        }
     }
 }
 

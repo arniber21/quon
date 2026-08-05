@@ -328,7 +328,6 @@ fn nat_only_alias_params_still_parse() {
     }
 }
 
-
 #[test]
 fn valid_comments_parse() {
     // Line and block comments are part of the lex grammar; a program using both
@@ -351,5 +350,8 @@ fn c_style_comment_fails_at_lex_with_recommendation() {
     let src = "fn f(): Int = 1 // oops";
     let err = lex(src).expect_err("expected `//` to be a lex error");
     let (msg, _) = &err[0];
-    assert!(msg.contains("//") && msg.contains("--"), "lex message: {msg:?}");
+    assert!(
+        msg.contains("//") && msg.contains("--"),
+        "lex message: {msg:?}"
+    );
 }

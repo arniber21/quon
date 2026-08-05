@@ -229,4 +229,3 @@ pub(crate) fn free_interaction_pairs(
         .filter(|p| !occ_site.contains_key(&p.left) && !occ_site.contains_key(&p.right))
         .collect()
 }
-

@@ -224,9 +224,7 @@ impl TryFrom<QecWorkloadRaw> for QecWorkload {
                     basis,
                     logical_id,
                 } => builder.construct(*family, *distance, *basis, *logical_id)?,
-                WorkloadOp::MemoryRound { logical_id } => {
-                    builder.memory_round(*logical_id)?
-                }
+                WorkloadOp::MemoryRound { logical_id } => builder.memory_round(*logical_id)?,
                 WorkloadOp::MeasureLogical { logical_id, basis } => {
                     builder.measure_logical(*logical_id, *basis)?
                 }
@@ -882,8 +880,10 @@ mod tests {
         b.construct(SourceFamily::Surface, 3, LogicalBasis::X, LogicalQubitId(1))
             .unwrap();
         b.logical_cx(LogicalQubitId(0), LogicalQubitId(1)).unwrap();
-        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z).unwrap();
-        b.measure_logical(LogicalQubitId(1), LogicalBasis::X).unwrap();
+        b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+            .unwrap();
+        b.measure_logical(LogicalQubitId(1), LogicalBasis::X)
+            .unwrap();
         let original = b.finish();
 
         let json = serde_json::to_string(&original).expect("serialize");
@@ -895,12 +895,16 @@ mod tests {
     fn deserialization_rejects_use_after_measure() {
         let mut value = valid_repetition_json();
         // Insert a memory_round after the measure op.
-        value["ops"].as_array_mut().unwrap().push(serde_json::json!({
-            "op": "memory_round", "logical_id": 0
-        }));
+        value["ops"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "op": "memory_round", "logical_id": 0
+            }));
         let err = serde_json::from_value::<QecWorkload>(value).expect_err("use-after-measure");
         assert!(
-            err.to_string().contains("use of logical qubit 0 after it was measured"),
+            err.to_string()
+                .contains("use of logical qubit 0 after it was measured"),
             "{err}"
         );
     }
@@ -908,12 +912,16 @@ mod tests {
     #[test]
     fn deserialization_rejects_double_measure() {
         let mut value = valid_repetition_json();
-        value["ops"].as_array_mut().unwrap().push(serde_json::json!({
-            "op": "measure_logical", "logical_id": 0, "basis": "z"
-        }));
+        value["ops"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "op": "measure_logical", "logical_id": 0, "basis": "z"
+            }));
         let err = serde_json::from_value::<QecWorkload>(value).expect_err("double measure");
         assert!(
-            err.to_string().contains("logical qubit 0 was already measured"),
+            err.to_string()
+                .contains("logical qubit 0 was already measured"),
             "{err}"
         );
     }
@@ -926,7 +934,10 @@ mod tests {
             "ops": [{ "op": "memory_round", "logical_id": 0 }]
         });
         let err = serde_json::from_value::<QecWorkload>(value).expect_err("use-before-construct");
-        assert!(err.to_string().contains("unknown logical qubit id 0"), "{err}");
+        assert!(
+            err.to_string().contains("unknown logical qubit id 0"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -937,7 +948,8 @@ mod tests {
         }));
         let err = serde_json::from_value::<QecWorkload>(value).expect_err("duplicate construct");
         assert!(
-            err.to_string().contains("duplicate construct for logical qubit 0"),
+            err.to_string()
+                .contains("duplicate construct for logical qubit 0"),
             "{err}"
         );
     }
@@ -954,9 +966,11 @@ mod tests {
                 { "op": "logical_t", "logical_id": 0 }
             ]
         });
-        let err = serde_json::from_value::<QecWorkload>(value).expect_err("logical_t on repetition");
+        let err =
+            serde_json::from_value::<QecWorkload>(value).expect_err("logical_t on repetition");
         assert!(
-            err.to_string().contains("`logical_t` requires surface-code blocks"),
+            err.to_string()
+                .contains("`logical_t` requires surface-code blocks"),
             "{err}"
         );
     }
@@ -976,9 +990,11 @@ mod tests {
                 { "op": "logical_cx", "control": 0, "target": 1 }
             ]
         });
-        let err = serde_json::from_value::<QecWorkload>(value).expect_err("logical_cx on repetition");
+        let err =
+            serde_json::from_value::<QecWorkload>(value).expect_err("logical_cx on repetition");
         assert!(
-            err.to_string().contains("logical_cx requires surface-code blocks"),
+            err.to_string()
+                .contains("logical_cx requires surface-code blocks"),
             "{err}"
         );
     }
@@ -997,7 +1013,8 @@ mod tests {
         });
         let err = serde_json::from_value::<QecWorkload>(value).expect_err("inconsistent blocks");
         assert!(
-            err.to_string().contains("block metadata inconsistent with construct ops"),
+            err.to_string()
+                .contains("block metadata inconsistent with construct ops"),
             "{err}"
         );
     }

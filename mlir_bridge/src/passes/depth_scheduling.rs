@@ -16,9 +16,9 @@ use melior::ir::{BlockLike, OperationRef, RegionLike};
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef};
 
-use crate::ffi::{self, PassContext};
 use crate::dialect::quantum_circ;
 use crate::dynamic_walk::{self, DynamicVisitor};
+use crate::ffi::{self, PassContext};
 
 const GATE_TIME_US: f64 = 0.1;
 

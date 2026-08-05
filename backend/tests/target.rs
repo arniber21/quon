@@ -206,8 +206,8 @@ fn trivial_native_gates() -> Vec<NativeGate> {
 
 #[test]
 fn fixed_target_new_derives_num_qubits_from_topology() {
-    let topology = ConnectivityGraph::try_from_edges(4, vec![(0, 1), (1, 2), (2, 3)])
-        .expect("valid topology");
+    let topology =
+        ConnectivityGraph::try_from_edges(4, vec![(0, 1), (1, 2), (2, 3)]).expect("valid topology");
     let target = FixedTarget::new(
         topology,
         trivial_native_gates(),
@@ -223,8 +223,8 @@ fn fixed_target_new_derives_num_qubits_from_topology() {
 #[test]
 fn fixed_target_try_new_rejects_inconsistent_dimensions() {
     // Topology has 4 qubits but the declared count is 3.
-    let topology = ConnectivityGraph::try_from_edges(4, vec![(0, 1), (1, 2), (2, 3)])
-        .expect("valid topology");
+    let topology =
+        ConnectivityGraph::try_from_edges(4, vec![(0, 1), (1, 2), (2, 3)]).expect("valid topology");
     let err = FixedTarget::try_new(
         3,
         topology,
@@ -243,8 +243,8 @@ fn fixed_target_try_new_rejects_inconsistent_dimensions() {
 
 #[test]
 fn fixed_target_try_new_accepts_agreeing_dimensions() {
-    let topology = ConnectivityGraph::try_from_edges(3, vec![(0, 1), (1, 2)])
-        .expect("valid topology");
+    let topology =
+        ConnectivityGraph::try_from_edges(3, vec![(0, 1), (1, 2)]).expect("valid topology");
     let target = FixedTarget::try_new(
         3,
         topology,
@@ -371,7 +371,10 @@ fn json_round_trips_through_descriptor() {
 
     assert_eq!(reloaded.id, target.id);
     assert_eq!(reloaded_fixed.num_qubits, target_fixed.num_qubits);
-    assert_eq!(reloaded_fixed.topology.edges(), target_fixed.topology.edges());
+    assert_eq!(
+        reloaded_fixed.topology.edges(),
+        target_fixed.topology.edges()
+    );
     assert_eq!(
         reloaded_fixed.noise.single_qubit_fidelity,
         target_fixed.noise.single_qubit_fidelity
@@ -513,14 +516,12 @@ fn all_to_all_1000_qubits_constructs_quickly() {
     let graph = ConnectivityGraph::all_to_all(1000);
     let elapsed = start.elapsed();
 
-    assert_eq!(graph.num_qubits, 1000);
+    assert_eq!(graph.num_qubits(), 1000);
     assert_eq!(graph.dist(0, 0), 0);
     assert_eq!(graph.dist(0, 999), 1);
     assert_eq!(graph.dist(999, 0), 1);
     assert_eq!(graph.dist(500, 501), 1);
     assert_eq!(graph.dist(501, 500), 1);
-    assert_eq!(graph.dist.len(), 1000);
-    assert_eq!(graph.dist[0].len(), 1000);
 
     assert!(
         elapsed.as_secs() < 1,

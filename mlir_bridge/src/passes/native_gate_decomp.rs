@@ -17,9 +17,9 @@ use melior::{Context, ContextRef, IrRewriter};
 use thiserror::Error;
 
 use crate::diagnostics::Diagnostics;
-use crate::ffi::{self, PassContext};
 use crate::dialect::quantum_circ::{self, attr};
 use crate::dialect::quantum_dynamic;
+use crate::ffi::{self, PassContext};
 
 #[derive(Debug, Error)]
 pub enum DecompError {

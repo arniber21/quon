@@ -196,7 +196,9 @@ impl<'a, 'v> LintWalker<'a, 'v> {
     /// rule callback. `child` is private to this module; `LintWalker` lives in
     /// the same module so it can reach it.
     fn callback(&mut self, expr: &Sp<frontend::ast::Expr>) {
-        let ctx = self.base.child(self.current_in_circuit(), self.borrow_depth);
+        let ctx = self
+            .base
+            .child(self.current_in_circuit(), self.borrow_depth);
         (self.visit)(&ctx, expr);
     }
 }

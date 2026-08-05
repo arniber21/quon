@@ -444,7 +444,10 @@ fn color_edge(
     let mut fan: Vec<usize> = vec![v];
     let mut in_fan: BTreeSet<usize> = BTreeSet::from([v]);
     loop {
-        let tip = fan.last().copied().unwrap_or_else(|| unreachable!("fan non-empty"));
+        let tip = fan
+            .last()
+            .copied()
+            .unwrap_or_else(|| unreachable!("fan non-empty"));
         let free_at_tip = free_color(&color_to_edge[tip]);
         let mut next = None;
         for (&w, &eidx) in &adj[u] {
@@ -466,7 +469,10 @@ fn color_edge(
     }
 
     let c = free_color(&color_to_edge[u]);
-    let tip = fan.last().copied().unwrap_or_else(|| unreachable!("fan non-empty"));
+    let tip = fan
+        .last()
+        .copied()
+        .unwrap_or_else(|| unreachable!("fan non-empty"));
     let d = free_color(&color_to_edge[tip]);
 
     // Always invert the cd-path at u. Because c is free at u, any non-empty

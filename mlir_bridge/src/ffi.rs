@@ -9,8 +9,8 @@
 //!   * Error emission (`mlirEmitError`) — called by [`crate::diagnostics`].
 //!   * Raw operation mutation (`mlirOperationSetAttributeByName`,
 //!     `mlirOperationSetOperand`).
-//!   * External-pass context lifetime erasure ([`PassContext`] +
-//!     [`with_context`]).
+//!   * External-pass context lifetime erasure (`PassContext` +
+//!     `with_context`).
 //!
 //! Every `unsafe` block below carries a `SAFETY` comment tied to the upstream
 //! FFI contract or the MLIR pass-framework lifetime guarantee.
@@ -129,11 +129,6 @@ impl PassContext {
         // The `&Context` is alive only for this expression; the stored
         // `MlirContext` is an independent value, not a dangling pointer.
         self.raw = Some(unsafe { context.to_ref().to_raw() });
-    }
-
-    /// Whether a context has been captured.
-    pub(crate) fn is_captured(&self) -> bool {
-        self.raw.is_some()
     }
 
     /// Returns the raw `MlirContext` handle, or `None` if [`capture`](Self::capture)

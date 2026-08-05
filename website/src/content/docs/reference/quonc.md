@@ -388,7 +388,7 @@ exit codes, read the
 
 ## Where to go next
 
-- **[Compiler pipeline](../compiler/)** — the companion reference page: the
+- **[Compiler pipeline](./compiler/)** — the companion reference page: the
   per-stage contract this CLI drives.
 - **[Language guide: Introduction](/language/introduction/)** `(concept —
   Language guide)` — step back when a flag's behavior depends on a
@@ -401,4 +401,4 @@ exit codes, read the
 
 For error-specific guidance — minimal reproducers, explanations, and supported
 repairs for every compiler diagnostic — see the
-[diagnostic catalog](../diagnostics/).
+[diagnostic catalog](./diagnostics/).

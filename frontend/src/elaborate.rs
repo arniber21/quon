@@ -191,10 +191,10 @@ pub fn eval_classical(
             }
         }
         Expr::Neg(inner) => match eval_classical(inner, env, fuel)? {
-            Value::Int(n) => Ok(Value::Int(
-                n.checked_neg()
-                    .ok_or(ElabError::Overflow { op: "negate", span: expr.1 })?,
-            )),
+            Value::Int(n) => Ok(Value::Int(n.checked_neg().ok_or(ElabError::Overflow {
+                op: "negate",
+                span: expr.1,
+            })?)),
             Value::Float(f) => Ok(Value::Float(-f)),
             _ => Err(ElabError::NotClassical {
                 name: "negation of a non-numeric value",
@@ -283,21 +283,30 @@ pub fn eval_classical(
 fn eval_binop(op: BinOp, a: &Value, b: &Value, span: SimpleSpan) -> Result<Value, ElabError> {
     if let (&Value::Int(x), &Value::Int(y)) = (a, b) {
         let result = match op {
-            BinOp::Add => x.checked_add(y).ok_or(ElabError::Overflow { op: "add", span })?,
-            BinOp::Sub => x.checked_sub(y).ok_or(ElabError::Overflow { op: "subtract", span })?,
-            BinOp::Mul => x.checked_mul(y).ok_or(ElabError::Overflow { op: "multiply", span })?,
+            BinOp::Add => x
+                .checked_add(y)
+                .ok_or(ElabError::Overflow { op: "add", span })?,
+            BinOp::Sub => x.checked_sub(y).ok_or(ElabError::Overflow {
+                op: "subtract",
+                span,
+            })?,
+            BinOp::Mul => x.checked_mul(y).ok_or(ElabError::Overflow {
+                op: "multiply",
+                span,
+            })?,
             BinOp::Div => {
                 if y == 0 {
                     return Err(ElabError::DivByZero { span });
                 }
-                x.checked_div(y).ok_or(ElabError::Overflow { op: "divide", span })?
+                x.checked_div(y)
+                    .ok_or(ElabError::Overflow { op: "divide", span })?
             }
             BinOp::Pow => {
                 if y < 0 {
                     return Err(ElabError::NegativeExponent { exp: y, span });
                 }
-                let exp = u32::try_from(y)
-                    .map_err(|_| ElabError::Overflow { op: "power", span })?;
+                let exp =
+                    u32::try_from(y).map_err(|_| ElabError::Overflow { op: "power", span })?;
                 x.checked_pow(exp)
                     .ok_or(ElabError::Overflow { op: "power", span })?
             }
@@ -531,7 +540,13 @@ pub fn elaborate_circuit_body(
             if let Expr::Controlled(inner) = &gate.0 {
                 let (control, target) = tuple2(&qubits)?;
                 return decompose_controlled(
-                    inner, &control, &target, classical_env, ctx, fuel, span,
+                    inner,
+                    &control,
+                    &target,
+                    classical_env,
+                    ctx,
+                    fuel,
+                    span,
                 );
             }
             let gate = subst_classical_vars(gate, classical_env)?;
@@ -1221,7 +1236,10 @@ fn elaborate_named_callee(
             && ctx.parametric.contains_key(name)
         {
             return Ok(Some(elaborate_circuit_body(
-                inner, classical_env, ctx, fuel,
+                inner,
+                classical_env,
+                ctx,
+                fuel,
             )?));
         }
     }
@@ -1268,17 +1286,13 @@ fn decompose_controlled(
     // fully-unrolled gate tree — the same partial-evaluation pass a bare
     // call site runs (issue #374).
     if let Some(elaborated) = elaborate_named_callee(inner, classical_env, ctx, fuel)? {
-        return decompose_controlled(
-            &elaborated, control, target, classical_env, ctx, fuel, span,
-        );
+        return decompose_controlled(&elaborated, control, target, classical_env, ctx, fuel, span);
     }
     let fail = |construct: &'static str| ElabError::unsupported(construct, inner.1);
     match &inner.0 {
         Expr::Compose(lhs, rhs) => {
-            let left =
-                decompose_controlled(lhs, control, target, classical_env, ctx, fuel, span)?;
-            let right =
-                decompose_controlled(rhs, control, target, classical_env, ctx, fuel, span)?;
+            let left = decompose_controlled(lhs, control, target, classical_env, ctx, fuel, span)?;
+            let right = decompose_controlled(rhs, control, target, classical_env, ctx, fuel, span)?;
             Ok(compose_nonempty(left, right, span))
         }
         Expr::CircuitBlock(stmts) => {
@@ -1300,8 +1314,7 @@ fn decompose_controlled(
             let mut composed = empty_circuit(span);
             for i in 0..k {
                 let t = shift_qubit_targets(target, i);
-                let step =
-                    decompose_controlled(body, control, &t, classical_env, ctx, fuel, span)?;
+                let step = decompose_controlled(body, control, &t, classical_env, ctx, fuel, span)?;
                 composed = compose_nonempty(composed, step, span);
             }
             Ok(composed)
@@ -1316,8 +1329,7 @@ fn decompose_controlled(
             let mut offset = 0i64;
             for elem in elems {
                 let t = shift_qubit_targets(target, offset);
-                let step =
-                    decompose_controlled(elem, control, &t, classical_env, ctx, fuel, span)?;
+                let step = decompose_controlled(elem, control, &t, classical_env, ctx, fuel, span)?;
                 let w = max_qubit_index(&step).map(|m| m as i64 + 1).unwrap_or(1);
                 offset += w;
                 composed = compose_nonempty(composed, step, span);
@@ -1369,7 +1381,7 @@ fn decompose_controlled(
                 _ => {
                     return Err(fail(
                         "controlled() of an unrecognized gate in a named circuit body",
-                    ))
+                    ));
                 }
             };
             // Reject multi-qubit body gates: the controlled decomposition only
@@ -1645,7 +1657,13 @@ mod controlled_tests {
         let ctx = empty_ctx();
         let mut fuel = 10_000u32;
         decompose_controlled(
-            &inner, &lit_int(0), &lit_int(1), &HashMap::new(), &ctx, &mut fuel, no_span(),
+            &inner,
+            &lit_int(0),
+            &lit_int(1),
+            &HashMap::new(),
+            &ctx,
+            &mut fuel,
+            no_span(),
         )
     }
 
@@ -1865,7 +1883,12 @@ mod controlled_tests {
         // `trotter_step(theta)` body: `circuit { Rz(theta) @0 }`.
         let step_body = (
             Expr::CircuitBlock(vec![(
-                Stmt::Expr(rotation_gate_app("Rz", &var("theta"), &lit_int(0), no_span())),
+                Stmt::Expr(rotation_gate_app(
+                    "Rz",
+                    &var("theta"),
+                    &lit_int(0),
+                    no_span(),
+                )),
                 no_span(),
             )]),
             no_span(),
@@ -1955,7 +1978,10 @@ mod controlled_tests {
             .iter()
             .filter(|(g, _)| matches!(&g.0, Expr::Var(n) if n == "CNOT"))
             .count();
-        assert_eq!(cnots, 4, "expected four CNOTs (two per controlled step): {decomposed:?}");
+        assert_eq!(
+            cnots, 4,
+            "expected four CNOTs (two per controlled step): {decomposed:?}"
+        );
         // Every gate targets either the control (qubit 0) or target (qubit 1)
         // — the controlled realization never touches another wire.
         for (_, qubits) in &gates {
@@ -1963,7 +1989,10 @@ mod controlled_tests {
                 Expr::Int(n) => vec![*n],
                 Expr::Tuple(items) => items
                     .iter()
-                    .filter_map(|q| match q.0 { Expr::Int(n) => Some(n), _ => None })
+                    .filter_map(|q| match q.0 {
+                        Expr::Int(n) => Some(n),
+                        _ => None,
+                    })
                     .collect(),
                 _ => vec![],
             };
@@ -2084,13 +2113,31 @@ mod arithmetic_totality_tests {
             assert_eq!(eval(&int(n)).unwrap(), Value::Int(n), "literal {n}");
         }
         // Sanity: ordinary in-range arithmetic still works.
-        assert_eq!(eval(&binop(BinOp::Add, 1, 2, no_span())).unwrap(), Value::Int(3));
-        assert_eq!(eval(&binop(BinOp::Sub, 10, 4, no_span())).unwrap(), Value::Int(6));
-        assert_eq!(eval(&binop(BinOp::Mul, 6, 7, no_span())).unwrap(), Value::Int(42));
-        assert_eq!(eval(&binop(BinOp::Div, 20, 5, no_span())).unwrap(), Value::Int(4));
-        assert_eq!(eval(&binop(BinOp::Pow, 2, 10, no_span())).unwrap(), Value::Int(1024));
+        assert_eq!(
+            eval(&binop(BinOp::Add, 1, 2, no_span())).unwrap(),
+            Value::Int(3)
+        );
+        assert_eq!(
+            eval(&binop(BinOp::Sub, 10, 4, no_span())).unwrap(),
+            Value::Int(6)
+        );
+        assert_eq!(
+            eval(&binop(BinOp::Mul, 6, 7, no_span())).unwrap(),
+            Value::Int(42)
+        );
+        assert_eq!(
+            eval(&binop(BinOp::Div, 20, 5, no_span())).unwrap(),
+            Value::Int(4)
+        );
+        assert_eq!(
+            eval(&binop(BinOp::Pow, 2, 10, no_span())).unwrap(),
+            Value::Int(1024)
+        );
         // 0^0 is defined as 1 by checked_pow (matches i64::pow).
-        assert_eq!(eval(&binop(BinOp::Pow, 0, 0, no_span())).unwrap(), Value::Int(1));
+        assert_eq!(
+            eval(&binop(BinOp::Pow, 0, 0, no_span())).unwrap(),
+            Value::Int(1)
+        );
         // 1^(large u32 exponent) stays 1, no overflow.
         assert_eq!(
             eval(&binop(BinOp::Pow, 1, u32::MAX as i64, no_span())).unwrap(),
@@ -2100,7 +2147,7 @@ mod arithmetic_totality_tests {
         // contract) even for a base of 1 — the exponent must be a valid power count.
         assert!(matches!(
             eval(&binop(BinOp::Pow, 1, i64::MAX, no_span())),
- Err(ElabError::Overflow { op: "power", .. })
+            Err(ElabError::Overflow { op: "power", .. })
         ));
     }
 
@@ -2123,26 +2170,26 @@ mod arithmetic_totality_tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(1024))]
-        /// Arbitrary (op, i64, i64) pairs must never panic the elaborator:
-        /// every combination returns either Ok or a span-aware ElabError.
-        #[test]
-        fn prop_arith_never_panics(op in 0u8..5, x in any::<i64>(), y in any::<i64>()) {
-            let kind = match op {
-                0 => BinOp::Add,
-                1 => BinOp::Sub,
-                2 => BinOp::Mul,
-                3 => BinOp::Div,
-                _ => BinOp::Pow,
-            };
-            let expr = binop(kind, x, y, SimpleSpan::from(0..0));
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eval(&expr)));
-            match result {
-                Ok(Ok(_)) | Ok(Err(_)) => (),
-                Err(_) => panic!("arithmetic panicked for ({:?}, {}, {})", kind, x, y),
+            #![proptest_config(ProptestConfig::with_cases(1024))]
+            /// Arbitrary (op, i64, i64) pairs must never panic the elaborator:
+            /// every combination returns either Ok or a span-aware ElabError.
+            #[test]
+            fn prop_arith_never_panics(op in 0u8..5, x in any::<i64>(), y in any::<i64>()) {
+                let kind = match op {
+                    0 => BinOp::Add,
+                    1 => BinOp::Sub,
+                    2 => BinOp::Mul,
+                    3 => BinOp::Div,
+                    _ => BinOp::Pow,
+                };
+                let expr = binop(kind, x, y, SimpleSpan::from(0..0));
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eval(&expr)));
+                match result {
+                    Ok(Ok(_)) | Ok(Err(_)) => (),
+                    Err(_) => panic!("arithmetic panicked for ({:?}, {}, {})", kind, x, y),
+                }
             }
-        }
-}
+    }
 }
 
 #[cfg(test)]

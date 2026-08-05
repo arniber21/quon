@@ -180,13 +180,12 @@ cargo run -p quonc -- \
   --print-target
 ```
 
-See the [quonc CLI reference](../quonc/) for command examples, the [diagnostic catalog](../diagnostics/) for error-specific guidance, and the
 See the [quonc CLI reference](./quonc/) for command examples and the
 [maturation path](/guides/roadmap/) for the production-hardening direction.
 
 ## Where to go next
 
-- **[quonc CLI](../quonc/)** — the companion reference page: every flag and
+- **[quonc CLI](./quonc/)** — the companion reference page: every flag and
   option the compiler accepts.
 - **[Language guide: Introduction](/language/introduction/)** `(concept —
   Language guide)` — step back when a contract references a source-language

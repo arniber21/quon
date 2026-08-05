@@ -2,10 +2,10 @@
 
 pub mod circ_extract;
 pub mod diagnostics;
-pub mod ffi;
 pub mod dialect;
 pub mod dynamic_walk;
 pub mod emit;
+pub mod ffi;
 pub mod fixed_physical;
 pub mod metrics;
 pub mod passes;
