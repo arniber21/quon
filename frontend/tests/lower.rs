@@ -344,7 +344,10 @@ fn main(): Q<Qubit> = run {
 }
 "#;
     let text = lower_text(src);
-    assert!(text.contains("quantum.dynamic.alloc"), "missing allocation: {text}");
+    assert!(
+        text.contains("quantum.dynamic.alloc"),
+        "missing allocation: {text}"
+    );
     assert!(
         text.contains(r#"gate_name = "H""#),
         "missing H prep gate: {text}"
@@ -366,7 +369,10 @@ fn main(): Q<Qubit> = run {
 }
 "#;
     let text = lower_text(src);
-    assert!(text.contains("quantum.dynamic.alloc"), "missing allocation: {text}");
+    assert!(
+        text.contains("quantum.dynamic.alloc"),
+        "missing allocation: {text}"
+    );
     assert!(
         text.contains(r#"gate_name = "X""#),
         "missing X prep gate: {text}"
@@ -420,7 +426,10 @@ fn main(): Q<Qubit> = run {
 }
 "#;
     let text = lower_text(src);
-    assert!(text.contains("quantum.dynamic.alloc"), "missing allocation: {text}");
+    assert!(
+        text.contains("quantum.dynamic.alloc"),
+        "missing allocation: {text}"
+    );
     assert!(
         !text.contains(r#"gate_name = "H""#),
         "qubit() must not emit H: {text}"

@@ -533,14 +533,19 @@ fn alloc_verifier_rejections() {
     let op = generic_op(&context, qd::op::ALLOC, &[], &[], &[], vec![], location);
     assert!(matches!(
         qd::verify(&op),
-        Err(qd::VerifyError::Arity {
-            role: "result",
-            ..
-        })
+        Err(qd::VerifyError::Arity { role: "result", .. })
     ));
 
     // Operands present — allocation takes no operands.
-    let op = generic_op(&context, qd::op::ALLOC, &[q], &[qubit], &[], vec![], location);
+    let op = generic_op(
+        &context,
+        qd::op::ALLOC,
+        &[q],
+        &[qubit],
+        &[],
+        vec![],
+        location,
+    );
     assert!(matches!(
         qd::verify(&op),
         Err(qd::VerifyError::Arity {
@@ -553,10 +558,7 @@ fn alloc_verifier_rejections() {
     let op = generic_op(&context, qd::op::ALLOC, &[], &[bit], &[], vec![], location);
     assert!(matches!(
         qd::verify(&op),
-        Err(qd::VerifyError::WrongValueType {
-            role: "result",
-            ..
-        })
+        Err(qd::VerifyError::WrongValueType { role: "result", .. })
     ));
 
     // A well-formed single-qubit allocation verifies.

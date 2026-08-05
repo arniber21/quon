@@ -183,7 +183,10 @@ ci-rust: setup-python
       test/verify/qaoa.py \
       test/verify/shor.py \
       samples/research/compiler_experiment_log_smoke.py \
-      samples/research/algorithm_correctness_narrative_smoke.py \
+      samples/research/algorithm_correctness_narrative_smoke.py
+    do
+      python3 "$script"
+    done
 # RAP Table I dump (#111, --release --include-ignored). Local convenience:
 # the same enforced n42 dump test `just ci-rust` runs (#111 Phase-2b). The
 # OOM concern that kept this out of ci-rust pre-#297 is resolved — #297's

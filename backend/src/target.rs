@@ -104,7 +104,11 @@ impl ConnectivityGraph {
         // Floyd-Warshall relaxation that `try_from_edges` performs for sparse
         // topologies.
         let dist: Vec<Vec<usize>> = (0..num_qubits)
-            .map(|i| (0..num_qubits).map(|j| if i == j { 0 } else { 1 }).collect())
+            .map(|i| {
+                (0..num_qubits)
+                    .map(|j| if i == j { 0 } else { 1 })
+                    .collect()
+            })
             .collect();
         ConnectivityGraph {
             num_qubits,

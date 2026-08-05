@@ -1452,7 +1452,10 @@ fn render_target_summary(target: &BackendTarget) -> String {
     match &target.kind {
         TargetKind::Fixed(fixed) => {
             out.push_str(&format!("num_qubits: {}\n", fixed.num_qubits));
-            out.push_str(&format!("topology_edges: {}\n", fixed.topology.edges().len()));
+            out.push_str(&format!(
+                "topology_edges: {}\n",
+                fixed.topology.edges().len()
+            ));
             out.push_str(&format!(
                 "native_gates: {}\n",
                 fixed

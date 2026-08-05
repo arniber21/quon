@@ -1267,7 +1267,12 @@ mod tests {
         assert_eq!(program.gates[0].params.len(), 3);
         let err = build_interaction_graph(&program).unwrap_err();
         match err {
-            QasmError::TooManyParams { line, gate, got, max } => {
+            QasmError::TooManyParams {
+                line,
+                gate,
+                got,
+                max,
+            } => {
                 assert_eq!(line, 2);
                 assert_eq!(gate, "u3");
                 assert_eq!(got, 3);
@@ -1281,7 +1286,12 @@ mod tests {
     fn u2_two_params_is_rejected_before_graph() {
         let err = parse_to_graph("qreg q[1];\nu2(pi/2, 0) q[0];\n").unwrap_err();
         match err {
-            QasmError::TooManyParams { line, gate, got, max } => {
+            QasmError::TooManyParams {
+                line,
+                gate,
+                got,
+                max,
+            } => {
                 assert_eq!(line, 2);
                 assert_eq!(gate, "u2");
                 assert_eq!(got, 2);
@@ -1298,7 +1308,12 @@ mod tests {
         // lose its angle entirely, so reject it.
         let err = parse_to_graph("qreg q[2];\ncrz(0.5) q[0],q[1];\n").unwrap_err();
         match err {
-            QasmError::TooManyParams { line, gate, got, max } => {
+            QasmError::TooManyParams {
+                line,
+                gate,
+                got,
+                max,
+            } => {
                 assert_eq!(line, 2);
                 assert_eq!(gate, "crz");
                 assert_eq!(got, 1);
@@ -1337,9 +1352,15 @@ ry(1.0) q[2];
         // Two ≥2-qubit gates → two interactions, names and operands preserved.
         assert_eq!(graph.interactions.len(), 2);
         assert_eq!(graph.interactions[0].gate_name, "cz");
-        assert_eq!(graph.interactions[0].qubits, [LogicalQubitId(0), LogicalQubitId(1)]);
+        assert_eq!(
+            graph.interactions[0].qubits,
+            [LogicalQubitId(0), LogicalQubitId(1)]
+        );
         assert_eq!(graph.interactions[1].gate_name, "cx");
-        assert_eq!(graph.interactions[1].qubits, [LogicalQubitId(1), LogicalQubitId(2)]);
+        assert_eq!(
+            graph.interactions[1].qubits,
+            [LogicalQubitId(1), LogicalQubitId(2)]
+        );
 
         // Three 1-qubit gates → three local extracts with names + angles kept.
         assert_eq!(local.len(), 3);

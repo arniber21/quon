@@ -141,7 +141,10 @@ impl std::fmt::Display for Token {
 /// On failure returns one `(message, span)` per lexical error — never panics.
 pub fn lex(src: &str) -> Result<Vec<Sp<Token>>, Vec<Sp<String>>> {
     if let Some(start) = c_style_comment_outside_comments(src) {
-        return Err(vec![(C_STYLE_COMMENT_MSG.to_owned(), (start..start + 2).into())]);
+        return Err(vec![(
+            C_STYLE_COMMENT_MSG.to_owned(),
+            (start..start + 2).into(),
+        )]);
     }
     lexer().parse(src).into_result().map_err(|errs| {
         errs.into_iter()

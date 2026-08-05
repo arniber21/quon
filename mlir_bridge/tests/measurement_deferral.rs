@@ -452,7 +452,9 @@ fn fails_closed_on_measure_missing_qubit() {
         "pass should fail closed on a measure missing its qubit"
     );
     assert!(
-        messages.iter().any(|m| m.contains("missing measured qubit")),
+        messages
+            .iter()
+            .any(|m| m.contains("missing measured qubit")),
         "expected the error routed through Diagnostics, got: {messages:?}"
     );
 }

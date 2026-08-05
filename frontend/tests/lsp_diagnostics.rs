@@ -69,7 +69,6 @@ fn unterminated_block_comment_has_code() {
     assert_code(src, "quon.lex.unterminated-comment");
 }
 
-
 #[test]
 fn c_style_comment_has_code() {
     // `//` is the common C-style comment mistake; it must surface as a stable
@@ -79,7 +78,11 @@ fn c_style_comment_has_code() {
     let d = first_with_code(src, "quon.lex.unsupported-comment");
     let slashes = src.find("//").unwrap();
     assert_eq!(d.span.start, slashes);
-    assert!(d.message.contains("--"), "message should recommend `--`: {}", d.message);
+    assert!(
+        d.message.contains("--"),
+        "message should recommend `--`: {}",
+        d.message
+    );
 }
 
 #[test]

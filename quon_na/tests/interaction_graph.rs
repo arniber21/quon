@@ -212,7 +212,7 @@ fn cubic_generator_is_3_regular() {
 
 /// A valid triangle graph serialized to a JSON value — the base for mutations.
 fn valid_graph_value() -> serde_json::Value {
-    serde_json::to_value(&triangle_graph()).expect("serialize valid graph")
+    serde_json::to_value(triangle_graph()).expect("serialize valid graph")
 }
 
 /// Assert that deserializing a mutated graph fails with a `GraphError`

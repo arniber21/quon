@@ -5,7 +5,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use melior::pass::{Pass, PassManager};
 use melior::Context;
 use melior::ir::attribute::{BoolAttribute, FloatAttribute, IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationBuilder;
@@ -15,6 +14,7 @@ use melior::ir::{
     Attribute, Block, BlockLike, Identifier, Location, Module, Operation, Region, RegionLike, Type,
     Value,
 };
+use melior::pass::{Pass, PassManager};
 
 use mlir_bridge::dialect::quantum_circ as qc;
 use mlir_bridge::dialect::quantum_dynamic as qd;

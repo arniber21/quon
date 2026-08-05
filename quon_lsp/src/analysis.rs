@@ -91,8 +91,12 @@ impl AnalysisScheduler {
                 let (lsp_diags, analysis) = match tokio::task::spawn_blocking(move || {
                     let result = frontend::analyze(&text_for_task);
                     let line_index = LineIndex::new(&text_for_task);
-                    let mut diags =
-                        analysis_to_lsp_diags(&text_for_task, &result, &line_index, &uri_for_analysis);
+                    let mut diags = analysis_to_lsp_diags(
+                        &text_for_task,
+                        &result,
+                        &line_index,
+                        &uri_for_analysis,
+                    );
 
                     if result.diagnostics.is_empty() {
                         let lint_path = std::path::Path::new(uri_for_analysis.path());
@@ -144,10 +148,9 @@ impl AnalysisScheduler {
                 }
             }
         });
-        guard.pending.insert(
-            uri_for_pending,
-            PendingTask { handle, generation },
-        );
+        guard
+            .pending
+            .insert(uri_for_pending, PendingTask { handle, generation });
     }
 
     /// Cancel any pending analysis for `uri` and drop its task handle.
@@ -208,10 +211,7 @@ mod tests {
     fn scheduler(debounce: Duration) -> AnalysisSchedulerView {
         let (service, _socket) =
             LspService::new(move |c| QuonLanguageServer::with_debounce(c, debounce));
-        AnalysisSchedulerView {
-            _socket,
-            service,
-        }
+        AnalysisSchedulerView { _socket, service }
     }
 
     struct AnalysisSchedulerView {
@@ -251,7 +251,11 @@ mod tests {
         let view = scheduler(Duration::from_millis(1));
         let sched = view.sched();
         sched.request_analysis(uri("a"));
-        assert_eq!(sched.pending_count(), 1, "task pending immediately after request");
+        assert_eq!(
+            sched.pending_count(),
+            1,
+            "task pending immediately after request"
+        );
         assert_settles(sched, 0, Duration::from_secs(2)).await;
     }
 
@@ -262,7 +266,11 @@ mod tests {
         for i in 0..8 {
             sched.request_analysis(uri(&format!("doc{i}")));
         }
-        assert_eq!(sched.pending_count(), 8, "one pending task per unique document");
+        assert_eq!(
+            sched.pending_count(),
+            8,
+            "one pending task per unique document"
+        );
         assert_settles(sched, 0, Duration::from_secs(2)).await;
     }
 

@@ -231,7 +231,11 @@ fn canonical_visitor_visits_every_node_kind_with_balanced_pre_post() {
     assert!(rec.seen_pat >= 1, "pats: {}", rec.seen_pat);
     assert!(rec.seen_type >= 3, "types: {}", rec.seen_type);
     assert!(rec.seen_nat_expr >= 2, "nat exprs: {}", rec.seen_nat_expr);
-    assert!(rec.seen_type_param >= 1, "type params: {}", rec.seen_type_param);
+    assert!(
+        rec.seen_type_param >= 1,
+        "type params: {}",
+        rec.seen_type_param
+    );
 
     // All pre/post stacks drained: nesting is balanced.
     assert!(rec.expr_stack.is_empty(), "unbalanced expr pre/post");
@@ -264,10 +268,7 @@ fn assert_pat_balanced(ev: &VecDeque<Event>) {
 }
 
 fn assert_nat_expr_balanced(ev: &VecDeque<Event>) {
-    let pre = ev
-        .iter()
-        .filter(|e| matches!(e, Event::NatExprPre))
-        .count();
+    let pre = ev.iter().filter(|e| matches!(e, Event::NatExprPre)).count();
     let post = ev
         .iter()
         .filter(|e| matches!(e, Event::NatExprPost))

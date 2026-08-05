@@ -13,11 +13,11 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use quon_core::DepthExpr;
 
-use crate::ffi::{self, PassContext};
 use crate::dialect::{
     quantum_circ::{self, attr},
     quantum_dynamic,
 };
+use crate::ffi::{self, PassContext};
 
 #[derive(Clone, Copy)]
 struct GateRef<'c, 'a> {
@@ -278,7 +278,9 @@ struct GateCancellation {
 
 impl GateCancellation {
     fn new() -> Self {
-        Self { context: PassContext::new() }
+        Self {
+            context: PassContext::new(),
+        }
     }
 }
 

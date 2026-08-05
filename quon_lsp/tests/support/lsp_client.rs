@@ -24,12 +24,12 @@ pub struct LspClient {
 }
 
 impl LspClient {
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     pub fn spawn() -> Self {
         Self::spawn_with_env(&[])
     }
 
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     pub fn spawn_with_env(extra_env: &[(&str, &str)]) -> Self {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_quon_lsp"));
         cmd.stdin(Stdio::piped())
@@ -58,7 +58,7 @@ impl LspClient {
         }
     }
 
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     pub fn send_request(&mut self, method: &str, params: Option<Value>) {
         let id = self.next_id;
         self.next_id += 1;
@@ -73,20 +73,20 @@ impl LspClient {
         self.pending_response_id = Some(id);
     }
 
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     pub fn recv_response(&mut self) -> Value {
         let id = self.pending_response_id.expect("no pending request");
         self.pending_response_id = None;
         self.wait_response(id)
     }
 
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     pub fn send_request_with_response(&mut self, method: &str, params: Option<Value>) -> Value {
         self.send_request(method, params);
         self.recv_response()
     }
 
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     pub fn send_notification(&mut self, method: &str, params: Value) {
         let msg = json!({
             "jsonrpc": "2.0",
@@ -96,7 +96,7 @@ impl LspClient {
         write_message(&mut self.stdin, &msg);
     }
 
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     pub fn wait_notification(&self, method: &str, timeout: Duration) -> Option<LspMessage> {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
@@ -109,7 +109,7 @@ impl LspClient {
         None
     }
 
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     pub fn wait_publish_diagnostics(&self, uri: &str, timeout: Duration) -> Option<Value> {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
@@ -125,7 +125,7 @@ impl LspClient {
         None
     }
 
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     pub fn shutdown_and_exit(mut self) {
         self.send_request("shutdown", None);
         let _ = self.recv_response();
@@ -135,7 +135,7 @@ impl LspClient {
         let _ = self.child.wait();
     }
 
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     fn wait_response(&self, id: i64) -> Value {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
@@ -153,7 +153,7 @@ impl LspClient {
 }
 
 impl Drop for LspClient {
-#[allow(dead_code)] // shared test helper — not every integration test uses every helper
+    #[allow(dead_code)] // shared test helper — not every integration test uses every helper
     fn drop(&mut self) {
         if !self.graceful_shutdown {
             let _ = self.child.kill();

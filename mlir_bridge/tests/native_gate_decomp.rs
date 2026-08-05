@@ -158,9 +158,8 @@ fn fails_closed_on_undecomposable_gate() {
     let qubit = qc::qubit_type(&context);
     let block = Block::new(&[(qubit, location)]);
     let q = Value::from(block.argument(0).unwrap());
-    let gate = block.append_operation(
-        qc::gate(&context, "NOPENOPE", 1, true, &[q], location).unwrap(),
-    );
+    let gate =
+        block.append_operation(qc::gate(&context, "NOPENOPE", 1, true, &[q], location).unwrap());
     let r = Value::from(gate.result(0).unwrap());
     block.append_operation(qc::r#return(&[r], location).unwrap());
     let region = Region::new();

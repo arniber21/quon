@@ -195,7 +195,9 @@ struct CompilerUncomputation {
 
 impl CompilerUncomputation {
     fn new() -> Self {
-        Self { context: PassContext::new() }
+        Self {
+            context: PassContext::new(),
+        }
     }
 }
 

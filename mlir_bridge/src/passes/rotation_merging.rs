@@ -11,11 +11,11 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use quon_core::DepthExpr;
 
-use crate::ffi::{self, PassContext};
 use crate::dialect::{
     quantum_circ::{self, attr},
     quantum_dynamic,
 };
+use crate::ffi::{self, PassContext};
 
 #[derive(Clone, Copy)]
 struct GateRef<'c, 'a> {
@@ -184,7 +184,11 @@ fn merge_pair<'c, 'a>(
         )
         .unwrap_or_else(|_| unreachable!("merged rotation builds")),
     );
-    let merged_out = Value::from(merged.result(0).unwrap_or_else(|_| unreachable!("merged result")));
+    let merged_out = Value::from(
+        merged
+            .result(0)
+            .unwrap_or_else(|_| unreachable!("merged result")),
+    );
     for output in outputs {
         base.replace_all_uses_with(output, merged_out);
     }
@@ -352,7 +356,9 @@ struct RotationMerging {
 
 impl RotationMerging {
     fn new() -> Self {
-        Self { context: PassContext::new() }
+        Self {
+            context: PassContext::new(),
+        }
     }
 }
 

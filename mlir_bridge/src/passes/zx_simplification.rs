@@ -11,9 +11,9 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef};
 use zx::{GateRef, circuit_to_zx, simplify, zx_to_circuit};
 
-use crate::ffi::PassContext;
 use crate::circ_extract;
 use crate::dialect::{quantum_circ, quantum_dynamic};
+use crate::ffi::PassContext;
 
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
     operation
@@ -147,7 +147,9 @@ struct ZxSimplification {
 
 impl ZxSimplification {
     fn new() -> Self {
-        Self { context: PassContext::new() }
+        Self {
+            context: PassContext::new(),
+        }
     }
 }
 

@@ -73,7 +73,6 @@ mod smoke {
         // the Flux spec makes it a contract violation at verified call sites.
     }
 
-
     #[test]
     fn quon_core_linearity_kernels_match_issue6() {
         assert!(is_linear_use_count(1));

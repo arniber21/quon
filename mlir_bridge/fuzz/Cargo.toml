@@ -15,6 +15,15 @@ cargo-fuzz = true
 [workspace]
 members = ["."]
 
+# Same _FORTIFY_SOURCE / -O0 fix as the main workspace Cargo.toml: Nix's gcc
+# injects -D_FORTIFY_SOURCE, and glibc emits a fatal -Werror warning at -O0,
+# which tblgen's -Werror turns fatal.
+[profile.dev.build-override]
+opt-level = 1
+
+[profile.release.build-override]
+opt-level = 1
+
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }

@@ -137,11 +137,7 @@ pub fn walk_type_param<V: Visitor + ?Sized>(v: &mut V, tp: &TypeParam) {
 pub fn walk_expr<V: Visitor + ?Sized>(v: &mut V, expr: &Sp<Expr>) {
     if matches!(v.visit_expr_pre(expr), Traversal::Recurse) {
         match &expr.0 {
-            Expr::Int(_)
-            | Expr::Float(_)
-            | Expr::Bool(_)
-            | Expr::Unit
-            | Expr::Var(_) => {}
+            Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(_) => {}
 
             Expr::Lam { params, body } => {
                 for (pat, ty) in params {

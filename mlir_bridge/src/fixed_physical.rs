@@ -108,11 +108,7 @@ fn corrupt_block<'c, 'a>(
     }
 }
 
-fn corrupt_op<'c, 'a>(
-    op: OperationRef<'c, 'a>,
-    name: &str,
-    attr: &melior::ir::Attribute<'c>,
-) {
+fn corrupt_op<'c, 'a>(op: OperationRef<'c, 'a>, name: &str, attr: &melior::ir::Attribute<'c>) {
     // Only ops that already have a phys_qubit attr are touched — overwriting
     // a non-existent attr would *add* one, which is not the test's intent.
     if op.attribute(quantum_dynamic::attr::PHYS_QUBIT).is_ok() {

@@ -62,7 +62,7 @@ pub struct Parity {
 impl Parity {
     /// Number of `u64` words needed to address `n` qubits (`ceil(n / 64)`).
     const fn width(n: usize) -> usize {
-        (n + 63) / 64
+        n.div_ceil(64)
     }
 
     /// The zero parity (no bits set).
