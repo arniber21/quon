@@ -127,7 +127,7 @@ find_static_lib() {
   return 1
 }
 
-for syslib in zstd z3; do
+for syslib in zstd z3 z xml2; do
   if archive="$(find_static_lib "$syslib")"; then
     echo "release: staging static $archive"
     cp "$archive" "$SYSROOT_STATIC/lib/lib${syslib}.a"

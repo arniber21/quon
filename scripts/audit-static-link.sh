@@ -42,9 +42,13 @@ audit_linux() {
     fail "$bin links shared MLIR and/or z3 (see ldd above)"
   fi
   # Binaries built inside devbox can silently link /nix/store .so paths
-  # (zlib, libxml2, ...) that won't exist on user machines.
-  if echo "$deps" | grep -q '/nix/store/'; then
-    fail "$bin links Nix store libraries (see ldd above)"
+  # (zlib, libxml2, ...) that won't exist on user machines. Standard
+  # runtime libraries (glibc, libstdc++, libgcc, libm, ld-linux) are OK
+  # from Nix — every Linux system has its own copies of those.
+  local nonstandard_nix
+  nonstandard_nix="$(echo "$deps" | grep '/nix/store/' | grep -ivE 'lib(c|stdc\+\+|gcc_s|m)\.so|ld-linux' || true)"
+  if [[ -n "$nonstandard_nix" ]]; then
+    fail "$bin links non-standard Nix store libraries (see ldd above)"
   fi
 }
 
