@@ -47,6 +47,27 @@ as the `cx q[1],q[2]; cx q[2],q[1]; cx q[1],q[2];` triple straddling the
 decomposed that SWAP into the 3 CNOTs above — so the counter and the QASM
 disagree about whether a SWAP happened. **#135's mapper visualizer must
 recognize the 3-CNOT pattern directly in the trace, not trust this counter.**
+
+**First implementation**: [`python/visualize_routing.py`](../../python/visualize_routing.py)
+does exactly that — it parses the emitted QASM's gate trace (not the metrics
+counter), detects the literal `cx a,b; cx b,a; cx a,b` triple, and renders one
+frame per two-qubit event on the target's connectivity graph (device topology
+drawn from `topology.edges`; a straight-line layout when the topology is a
+simple path, as `fake_manila_v2` is). Passing `--metrics-json` cross-checks
+and prints the exact mismatch above. Reproduce it against this golden:
+
+```sh
+python/visualize_routing.py goldens/dense_swap_mismatch/qaoa_manila.qasm \
+  --target ../../targets/ibm/fake_manila_v2.json \
+  --metrics-json goldens/dense_swap_mismatch/metrics.json \
+  -o /tmp/dense-swap --format svg
+```
+
+A rendered run is checked in at
+[`renders/dense_swap_mismatch_routing.gif`](./renders/dense_swap_mismatch_routing.gif)
+(not a byte-exact golden — regenerate freely, it's a demo render, not
+provenance-pinned by `viz_showcase.rs`). `python/test_visualize_routing.py`
+covers the parsing/detection/layout logic against a small synthetic fixture.
 That is the actual "what you should see" lesson this entry exists to teach,
 not a bug this pack is positioned to fix.
 

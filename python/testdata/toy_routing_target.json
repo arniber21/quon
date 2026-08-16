@@ -1,0 +1,10 @@
+{
+  "id": "toy_line_3q",
+  "num_qubits": 3,
+  "topology": {
+    "edges": [
+      [0, 1],
+      [1, 2]
+    ]
+  }
+}
