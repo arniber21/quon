@@ -59,7 +59,7 @@ discipline the fixed gate-model path uses, applied to logical patches.
 
 ## 2. Emitted schedule / IR excerpt
 
-The neutral-atom schedule view (`--emit-na-schedule`) is a large document — 272
+The neutral-atom schedule view (`--emit-na-schedule`) is a large document — 255
 cycle layers of trap transfers, rearrangement, Rydberg entangling stages, and
 measurement rounds. Its `meta` + `metrics` envelope is the compact summary
 (canonical schedule IR is `quantum.na`, available via `--emit-na-mlir`). The
@@ -80,11 +80,11 @@ carries timing keys (`rearrangement_time_us`, `transfer_time_us`,
   "metrics": {
     "evidence_kind": "analytic",
     "rydberg_stages": 24,
-    "rearrangement_steps": 72,
-    "trap_transfers": 240,
+    "rearrangement_steps": 66,
+    "trap_transfers": 258,
     "entangle2_count": 72,
     "measurement_rounds": 9,
-    "estimated_cycles": 272,
+    "estimated_cycles": 255,
     "bottleneck": "rearrangement",
     "logical_qubits": 3,
     "physical_atoms": 57,
@@ -94,9 +94,28 @@ carries timing keys (`rearrangement_time_us`, `transfer_time_us`,
     "memory_rounds": 2
     // ... timing (*_time_us), reset_rounds, evidence_disclaimer, error_budget
   }
-  // ... "zones", "layout", and 272 "layers" elided
+  // ... "zones", "layout", and 255 "layers" elided
 }
 ```
+
+Numbers on this page are captured from a real run and refreshed when the
+scheduler changes; a fresh clone reproducing the command above should match.
+
+That schedule is a list of atom positions and actions per cycle — hard to
+read as JSON. Piping it through the same
+[`python/visualize_na_schedule.py`](https://github.com/arniber21/quon/blob/main/python/visualize_na_schedule.py)
+this page's images are made with renders each cycle as a zoned atom-trap
+layout (storage / entanglement / readout regions, colored by zone, movement
+drawn as arrows):
+
+```bash
+devbox run -- python/visualize_na_schedule.py /tmp/na-ft-demo.schedule.json \
+  -o /tmp/na-ft-demo --format png
+```
+
+Sampled frames from that exact run, animated:
+
+![Neutral-atom schedule for the distance-3 surface-code logical CX, animated across cycles: atoms move between storage, entanglement, and readout zones as the lattice-surgery merge/split executes.](/images/na-ft-demo-schedule.gif)
 
 The sibling **structure** Stim circuit encodes the lattice-surgery CX as
 Horsman-style logical-operator `MPP` merges (ADR-0019). The header states the
@@ -142,19 +161,19 @@ error-budget contributions (`rate × schedule count`) — not sampled results:
 ## Schedule metrics
 | Metric | Value |
 | --- | ---: |
-| Estimated cycles | 272 |
+| Estimated cycles | 255 |
 | Bottleneck | rearrangement |
 | Rydberg stages | 24 |
-| Total time (µs) | 15545 |
+| Total time (µs) | 14321 |
 
 ## Physical error budget
 | Category | Contribution (rate × count) |
 | --- | ---: |
 | Rydberg | 0.048 |
 | Measurement | 0.027 |
-| Reset | 0.024 |
-| Transfer | 0.168 |
-| Movement | 0.036 |
+| Reset | 0.028 |
+| Transfer | 0.1806 |
+| Movement | 0.033 |
 | Idle | 1.6e-8 |
 ```
 
@@ -200,8 +219,8 @@ schedule, including the lattice-surgery merge/split rounds with their
 [
   {"round_index": 0, "kind": "construct", "logical_id": 0},
   // ... round_index 1 elided (non-contiguous excerpt)
-  {"round_index": 2, "kind": "memory_round", "logical_id": 0, "barrier_cycle": 84},
-  {"round_index": 3, "kind": "memory_round", "logical_id": 1, "barrier_cycle": 166}
+  {"round_index": 2, "kind": "memory_round", "logical_id": 0, "barrier_cycle": 78},
+  {"round_index": 3, "kind": "memory_round", "logical_id": 1, "barrier_cycle": 157}
   // ... merge/split/frame_update and measure_logical refs elided
 ]
 ```

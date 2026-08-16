@@ -349,6 +349,22 @@ entries:
     artifacts: []
     ci: none
 
+  - id: research/lanyon-2011-ising
+    path: samples/research/lanyon_2011_ising.qn
+    tags:
+      [
+        research,
+        hamiltonian-simulation,
+        trotter,
+        ising,
+        paper-reproduction,
+        pack-190,
+      ]
+    difficulty: intermediate
+    quonc_args: ["--emit-qasm", "--metrics", "--verify-linear"]
+    artifacts: []
+    ci: smoke
+
   - id: neutral-atom/bell-pair
     path: test/na/bell.qn
     tags: [neutral-atom, beginner, bell-state, na-backend, pack-192]

@@ -1,0 +1,36 @@
+fn hadamard(): Circuit<1, 1, 1, Clifford> = circuit {
+    H @0
+}
+
+fn rz(theta: Float): Circuit<1, 1, 1, Universal> = circuit {
+    Rz(theta) @0
+}
+
+fn field_layer(theta: Float): Circuit<2, 2, 1, Universal> =
+    par { rz(theta) } * 2
+
+fn xx_interaction(theta: Float): Circuit<2, 2, 5, Universal> = circuit {
+    par { hadamard() } * 2
+    |> CNOT @(0, 1)
+    |> Rz(theta) @1
+    |> CNOT @(0, 1)
+    |> par { hadamard() } * 2
+}
+
+fn trotter_step(field_angle: Float, interaction_angle: Float): Circuit<2, 2, 6, Universal> = circuit {
+    field_layer(field_angle) |> xx_interaction(interaction_angle)
+}
+
+fn evolve(steps: Nat, field: Float, interaction: Float, phase: Float): Circuit<2, 2, steps * 6, Universal> =
+    let field_angle = 2.0 * field * phase / float(steps)
+    in let interaction_angle = 2.0 * interaction * phase / float(steps)
+    in repeat(steps, trotter_step(field_angle, interaction_angle))
+
+fn x_readout(): Circuit<2, 2, 1, Clifford> =
+    par { hadamard() } * 2
+
+fn main(): Q<List<Bit>> = run {
+    evolved <- (evolve(4, 0.5, 1.0, 1.5707963267948966) |> x_readout()) @ qreg(2)
+    bits <- measure_all(evolved)
+    return bits
+}

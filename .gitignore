@@ -41,3 +41,8 @@ test/na/Output/
 # insta pending-snapshot scratch files: never intended to be committed
 # (review via `cargo insta review`, then the .snap itself is the artifact)
 *.snap.new
+
+# Claude Code local session state (commands/skills stay tracked)
+.claude/plans/
+.claude/worktrees/
+.claude/settings.local.json
