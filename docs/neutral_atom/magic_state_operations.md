@@ -17,6 +17,10 @@ All three are surface-code only. Type checking enforces:
 - Correct operation arity
 - Distinct logical ids (for CCZ)
 
+These operations bind as source identifiers in the frontend prelude (#311,
+landed via #354) and compile end-to-end through `quonc`; see
+`samples/neutral-atom/benchmarks/surface_d3_t.qn` and `surface_d3_ccz.qn`.
+
 ## Resource reports
 
 Resource reports include:
@@ -42,10 +46,3 @@ distillation factory.
   diagnostics.
 - **Not a threshold claim**: magic-state consumption is modeled for resource
   accounting, not for claiming fault-tolerant performance.
-- **Not yet reachable from `.qn` source**: `logical_t`, `logical_tdag`, and
-  `logical_ccz` exist as `WorkloadBuilder` methods (`quon_qec/src/workload.rs`)
-  with expansion (`quon_qec/src/expand.rs`) and resource-report wiring, but
-  the frontend typechecker/prelude was not updated to bind them as source
-  identifiers. `examples/na_qec/surface_d3_t.qn` and `surface_d3_ccz.qn` sketch
-  the intended syntax but do not currently compile through `quonc`
-  (`unbound variable`); tracked in #311.
