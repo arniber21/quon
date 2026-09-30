@@ -15,11 +15,14 @@
 //!
 //! ## Extract / rebuild
 //!
-//! Each `quantum.circ.func` body is extracted to a flat gate list
-//! (`Vec<(name, Vec<qubit_index>)>`), optimized by the pure-Rust kernel,
-//! and rebuilt with new `quantum.circ.gate` ops if the kernel reports a
-//! reduction. The func `depth` attribute is recomputed to the new gate
-//! count (ADR-0013: depth may change, unlike peephole passes).
+//! Each `quantum.circ.func` body is extracted through [`circ_extract::extract`]
+//! (the shared seam). The resulting [`circ_extract::CircIr`] is mapped to the
+//! flat `(canonical name, qubit indices)` list the kernels consume. Names come
+//! from the gate registry, so aliases such as `CX` are `CNOT` before the
+//! tableau and phase-polynomial predicates run. The optimized list is rebuilt
+//! with new `quantum.circ.gate` ops when the kernel reports a reduction. The
+//! func `depth` attribute is recomputed to the new gate count (ADR-0013: depth
+//! may change, unlike peephole passes). Extraction errors decline the rewrite.
 //!
 //! ## Pipeline
 //!
@@ -29,8 +32,6 @@
 //! already-simplified IR; its non-adjacent analysis complements the
 //! peephole's adjacent-only scope.
 
-use std::collections::HashMap;
-
 use melior::ir::attribute::{BoolAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
@@ -39,7 +40,7 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use quon_core::DepthExpr;
 
-use crate::circ_extract::SeamError;
+use crate::circ_extract::{self, SeamError};
 use crate::dialect::quantum_circ::{self, attr};
 use crate::ffi::{self, PassContext};
 use crate::passes::{phase_polynomial, stabilizer_tableau};
@@ -47,10 +48,6 @@ use crate::passes::{phase_polynomial, stabilizer_tableau};
 // ---------------------------------------------------------------------------
 // Helpers (same patterns as gate_cancellation / rotation_merging)
 // ---------------------------------------------------------------------------
-
-fn value_key<'a>(value: &impl ValueLike<'a>) -> usize {
-    value.to_raw().ptr as usize
-}
 
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
     operation
@@ -95,58 +92,15 @@ fn gate_is_clifford(name: &str) -> bool {
 // Extract
 // ---------------------------------------------------------------------------
 
-/// Extract a flat gate list from a `quantum.circ.func` body block.
+/// Map extracted [`circ_extract::CircIr`] into the kernel gate list.
 ///
-/// Returns `(gates, n_qubits)` where `gates` is `Vec<(name, Vec<qubit_index>)>`
-/// with qubit indices relative to the block arguments (0-based).
-/// Returns `None` if the block is not a simple linear gate chain.
-#[allow(clippy::type_complexity)]
-fn extract_gate_list<'c, 'a>(
-    block: melior::ir::BlockRef<'c, 'a>,
-) -> Option<(Vec<(String, Vec<usize>)>, usize)> {
-    let n = block.argument_count();
-    let mut ssa_to_wire: HashMap<usize, usize> = HashMap::new();
-    for i in 0..n {
-        let arg = block.argument(i).ok()?;
-        ssa_to_wire.insert(value_key(&arg), i);
-    }
-
-    let mut gates = Vec::new();
-    let mut op = block.first_operation();
-    while let Some(current) = op {
-        op = current.next_in_block();
-        let name = op_name(&current);
-        if name == quantum_circ::op::RETURN {
-            break;
-        }
-        if name != quantum_circ::op::GATE {
-            // Non-gate ops (compose, borrow, etc.) — not supported
-            return None;
-        }
-        let gate_name = read_string_attr(&current, attr::GATE_NAME)?;
-        let operands: Vec<Value<'c, 'a>> = current
-            .operands()
-            .filter(|v| quantum_circ::is_qubit_type(v.r#type()))
-            .collect();
-        let qubit_indices: Vec<usize> = operands
-            .iter()
-            .map(|v| ssa_to_wire.get(&value_key(v)).copied())
-            .collect::<Option<Vec<usize>>>()?;
-        // Update wire tracking with results
-        let results: Vec<Value<'c, 'a>> = (0..current.result_count())
-            .filter_map(|i| current.result(i).ok())
-            .filter(|r| quantum_circ::is_qubit_type(r.r#type()))
-            .map(Value::from)
-            .collect();
-        if results.len() != qubit_indices.len() {
-            return None;
-        }
-        for (op_idx, &wire_idx) in qubit_indices.iter().enumerate() {
-            ssa_to_wire.insert(value_key(&results[op_idx]), wire_idx);
-        }
-        gates.push((gate_name, qubit_indices));
-    }
-    Some((gates, n))
+/// Gate names are registry ids (`quon_core::gates`), not the raw attribute
+/// text, so `CX` and `CNOT` are the same predicate input.
+fn gate_list(circ: &circ_extract::CircIr) -> Vec<(String, Vec<usize>)> {
+    circ.gates
+        .iter()
+        .map(|gate| (gate.name.clone(), gate.qubits.clone()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -274,9 +228,14 @@ fn optimize_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) {
     };
 
     let func_clifford = read_bool_attr(&func, attr::CLIFFORD).unwrap_or(false);
-    let Some((gate_list, n_qubits)) = extract_gate_list(block) else {
-        return; // not a simple gate chain
+    // Shared seam (#320). Decline on structural ops, unknown gates, or arity
+    // mismatches instead of walking SSA wires a second time.
+    let circ = match circ_extract::extract(func) {
+        Ok(circ) => circ,
+        Err(_) => return,
     };
+    let n_qubits = circ.n_qubits;
+    let gate_list = gate_list(&circ);
     if gate_list.is_empty() {
         return;
     }
