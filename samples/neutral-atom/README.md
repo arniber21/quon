@@ -55,7 +55,7 @@ On `bell.qn` (2 qubits, 1 `CNOT`), both backends succeed:
 
 | Backend | Estimated cycles | Rearrangement steps | Trap transfers | Bottleneck |
 | --- | ---: | ---: | ---: | --- |
-| `zoned` (default) | 10 | 1 | 4 | rearrangement |
+| `zoned` (default) | 13 | 2 | 8 | rearrangement |
 | `flat` | 7 | 0 | 0 | mixed |
 
 (Issue #298: `H @0`'s Z-Y-Z decomposition into a local `rz` + a global `ry`
@@ -69,17 +69,28 @@ it, since every atom is bound into the trap array from schedule start (see
 `quon_na::pipeline::push_global_ry_with_refocus`). Rearrangement/transfer are
 unaffected: none of this needs a site placement.)
 
-`bell.qn`'s terminal `measure_all` adds one more cycle on top of the #298
-numbers above (9 -> 10 zoned, 6 -> 7 flat): `quantum.dynamic.measure` was
-extracted but never lowered into a schedule action at all — every NA
-resource report showed `measurement_rounds: 0` regardless of the source
-program, and the ~1500us readout never entered `total_time_us`. Fixed: the
-terminal measurement is its own final layer (both atoms measured in the
-same cycle, since the bare-qubit NA path has no mid-circuit feed-forward).
-On the `flat` backend this flips `bottleneck` from `rydberg` to `mixed`: the
-readout now dominates `total_time_us`, and the bottleneck heuristic reads
-that as a genuine tie by count rather than the old, measurement-blind
-`rydberg` reading.
+`bell.qn`'s terminal `measure_all` is one final layer on top of the #298
+gate layers (6 -> 7 on `flat`; 9 -> 10 on `zoned` before readout residency):
+`quantum.dynamic.measure` was extracted but never lowered into a schedule
+action at all — every NA resource report showed `measurement_rounds: 0`
+regardless of the source program, and the ~1500us readout never entered
+`total_time_us`. Fixed: the terminal measurement is its own final layer
+(both atoms measured in the same cycle, since the bare-qubit NA path has no
+mid-circuit feed-forward). On the `flat` backend this flips `bottleneck`
+from `rydberg` to `mixed`: the readout now dominates `total_time_us`, and
+the bottleneck heuristic reads that as a genuine tie by count rather than
+the old, measurement-blind `rydberg` reading.
+
+`generic_rna_v0` declares a readout zone, so the zoned backend shuttles both
+atoms into it before that measure. They leave the entanglement sites in one
+AOD grab — SLM→AOD, one move, AOD→SLM — and only then are measured. That
+stage is three extra layers, one extra rearrangement step, and four extra
+trap transfers (two atoms, load and store each) on top of the entanglement
+shuttle, which is why the zoned row is 13 / 2 / 8 rather than the
+pre-residency 10 / 1 / 4. `measurement_rounds` stays 1, and `bottleneck`
+stays `rearrangement`: the added move time still strictly dominates the
+bottleneck scores. `flat` does not consult the readout zone and still
+measures in place.
 
 `zoned` moves qubit 0 into a dedicated entanglement zone before the Rydberg
 pulse; `flat` entangles the two atoms in place on the row-major storage

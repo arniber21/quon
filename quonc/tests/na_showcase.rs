@@ -130,18 +130,25 @@ fn bell_backend_headline_numbers_match_readme() {
     // trapped from schedule start, so a bare raster would otherwise hit it
     // too; see `quon_na::pipeline::push_global_ry_with_refocus`).
     // Movement-side numbers (rearrangement/transfers/bottleneck) are
-    // unaffected — none of this needs a site placement.
-    // 9 -> 10: `bell.qn`'s terminal `measure_all` was previously extracted
-    // but never lowered into a schedule action at all (`DynamicVisitor::measure`
-    // had no qubit_roots to report which qubit was measured), so every NA
-    // resource report showed `measurement_rounds: 0` regardless of the
-    // source program. Fixed: the terminal measurement is now its own final
-    // layer (both atoms, same cycle — the bare-qubit NA path has no
-    // mid-circuit feed-forward, so every measurement is simultaneous and
-    // terminal), which is why `estimated_cycles` grows by exactly 1 here.
-    assert_eq!(m["estimated_cycles"], 10, "zoned bell.qn: {zoned}");
-    assert_eq!(m["rearrangement_steps"], 1, "zoned bell.qn: {zoned}");
-    assert_eq!(m["trap_transfers"], 4, "zoned bell.qn: {zoned}");
+    // unaffected by #298 — none of that decomposition needs a site placement.
+    // The terminal `measure_all` was previously extracted but never lowered
+    // into a schedule action (`DynamicVisitor::measure` had no qubit_roots
+    // to report which qubit was measured), so every NA resource report
+    // showed `measurement_rounds: 0`. It is now its own final layer (both
+    // atoms, same cycle — the bare-qubit NA path has no mid-circuit
+    // feed-forward). That alone is +1 cycle (9 -> 10 on zoned, before
+    // readout residency).
+    //
+    // `generic_rna_v0` declares a readout zone, so zoned residency shuttles
+    // both atoms from the entanglement sites into that zone before the
+    // measure. They share one AOD grab: SLM→AOD, one move, AOD→SLM. That
+    // is 3 more layers, 1 more rearrangement step, and 4 more trap transfers
+    // (2 atoms × load and store) on top of the entanglement shuttle:
+    // 10/1/4 -> 13/2/8. `measurement_rounds` stays 1. Bottleneck stays
+    // `rearrangement` because the added move time still strictly dominates.
+    assert_eq!(m["estimated_cycles"], 13, "zoned bell.qn: {zoned}");
+    assert_eq!(m["rearrangement_steps"], 2, "zoned bell.qn: {zoned}");
+    assert_eq!(m["trap_transfers"], 8, "zoned bell.qn: {zoned}");
     assert_eq!(m["measurement_rounds"], 1, "zoned bell.qn: {zoned}");
     assert_eq!(m["bottleneck"], "rearrangement", "zoned bell.qn: {zoned}");
 
