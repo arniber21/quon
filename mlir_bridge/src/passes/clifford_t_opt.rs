@@ -39,6 +39,7 @@ use melior::ir::{Attribute, BlockLike, OperationRef, RegionLike, Value, ValueLik
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use quon_core::DepthExpr;
+use quon_core::gates::GateId;
 
 use crate::circ_extract::{self, SeamError};
 use crate::dialect::quantum_circ::{self, attr};
@@ -84,8 +85,8 @@ fn set_func_depth<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>, dept
     ffi::set_operation_attribute(func, attr::DEPTH, &attribute);
 }
 
-fn gate_is_clifford(name: &str) -> bool {
-    quon_core::gates::lookup(name).is_some_and(|g| g.class == quon_core::gates::GateClass::Clifford)
+fn gate_is_clifford(id: GateId) -> bool {
+    id.info().class == quon_core::gates::GateClass::Clifford
 }
 
 // ---------------------------------------------------------------------------
@@ -96,10 +97,10 @@ fn gate_is_clifford(name: &str) -> bool {
 ///
 /// Gate names are registry ids (`quon_core::gates`), not the raw attribute
 /// text, so `CX` and `CNOT` are the same predicate input.
-fn gate_list(circ: &circ_extract::CircIr) -> Vec<(String, Vec<usize>)> {
+fn gate_list(circ: &circ_extract::CircIr) -> Vec<(GateId, Vec<usize>)> {
     circ.gates
         .iter()
-        .map(|gate| (gate.name.clone(), gate.qubits.clone()))
+        .map(|gate| (gate.name, gate.qubits.clone()))
         .collect()
 }
 
@@ -117,7 +118,7 @@ fn gate_list(circ: &circ_extract::CircIr) -> Vec<(String, Vec<usize>)> {
 fn rebuild_block<'c, 'a>(
     context: &'c Context,
     block: melior::ir::BlockRef<'c, 'a>,
-    new_gates: &[(String, Vec<usize>)],
+    new_gates: &[(GateId, Vec<usize>)],
     n_qubits: usize,
 ) -> Result<(), SeamError> {
     let rewriter = IrRewriter::new(context);
@@ -164,9 +165,16 @@ fn rebuild_block<'c, 'a>(
     let mut inserted: Vec<OperationRef<'c, 'a>> = Vec::new();
     for (gate_name, targets) in new_gates {
         let operands: Vec<Value<'c, 'a>> = targets.iter().map(|&i| wires[i]).collect();
-        let is_clifford = gate_is_clifford(gate_name);
-        let built = quantum_circ::gate(context, gate_name, 1, is_clifford, &operands, location)
-            .map_err(|error| SeamError::Build(error.to_string()));
+        let is_clifford = gate_is_clifford(*gate_name);
+        let built = quantum_circ::gate(
+            context,
+            gate_name.as_str(),
+            1,
+            is_clifford,
+            &operands,
+            location,
+        )
+        .map_err(|error| SeamError::Build(error.to_string()));
         let built = match built {
             Ok(operation) => operation,
             Err(error) => {
@@ -345,7 +353,7 @@ pub fn create_pass() -> Pass {
 
 #[cfg(test)]
 mod tests {
-    use super::rebuild_block;
+    use super::{GateId, rebuild_block};
     use crate::circ_extract::SeamError;
     use crate::dialect::quantum_circ as qc;
 
@@ -389,8 +397,13 @@ mod tests {
             .expect("region")
             .first_block()
             .expect("block");
-        let error = rebuild_block(&context, body, &[("X".to_string(), vec![5])], 1)
-            .expect_err("out-of-range wire");
+        let error = rebuild_block(
+            &context,
+            body,
+            &[(GateId::parse("X").expect("X"), vec![5])],
+            1,
+        )
+        .expect_err("out-of-range wire");
 
         assert_eq!(
             error,
