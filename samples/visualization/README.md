@@ -3,10 +3,13 @@
 Stress programs and **checked-in golden artifacts** — QASM, MLIR snippets, NA
 interaction-graph DOT, and NA analytic resource reports — for the viz
 implementers building `quonviz` (#134), `quonmapviz` (#135), and `quontopo`
-(#136), plus `python/visualize_na_schedule.py` (#113, closed). None of these
-viz packages need to exist yet: every entry below is "here is the real
-`quonc` artifact your tool will consume, and here is what a human should see
-in it."
+(#136), plus `python/visualize_na_schedule.py` (#113, closed). The gate-model
+slice of #136 is [`python/visualize_topology.py`](../../python/visualize_topology.py):
+it draws a device coupling graph, overlays a `mapping_trace`, and rejects a
+two-qubit event that is not a coupling edge. Neutral-atom timelines stay on
+`visualize_na_schedule.py` — `quonc` does not produce `--emit-na-json`. Every
+entry below is "here is the real `quonc` artifact your tool will consume, and
+here is what a human should see in it."
 
 ## Status
 

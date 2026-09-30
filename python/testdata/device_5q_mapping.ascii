@@ -1,0 +1,16 @@
+quontopo  device=my_device  qubits=5  trace=line3
+summary: Sabre inserted 1 SWAP on physical edges (1, 2).
+final layout: 0→0 1→2 2→1
+coupling:
+  q0[L0] — q1[L2]
+  q0[L0] — q2[L1]
+  q1[L2] — q2[L1]
+  q2[L1] — q3[.]
+  q3[.] — q4[.]
+nodes:
+  q0  logical 0
+  q1  logical 2
+  q2  logical 1
+  q3  (unoccupied)
+  q4  (unoccupied)
+validation: ok

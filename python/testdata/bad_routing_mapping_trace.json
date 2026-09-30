@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "kind": "mapping_trace",
+  "summary": "Sabre inserted 1 SWAP on physical edges (1, 2).",
+  "meta": { "target_id": "line3" },
+  "topology": { "edges": [[0, 1], [1, 2]] },
+  "initial_layout": [
+    { "logical": 0, "physical": 0 },
+    { "logical": 1, "physical": 1 },
+    { "logical": 2, "physical": 2 }
+  ],
+  "final_layout": [
+    { "logical": 0, "physical": 0 },
+    { "logical": 1, "physical": 2 },
+    { "logical": 2, "physical": 1 }
+  ],
+  "events": [
+    {
+      "kind": "swap",
+      "logical": [1, 2],
+      "physical": [1, 2],
+      "summary": "Sabre inserted a SWAP on physical edge (1, 2), exchanging logical qubits 1 and 2."
+    },
+    {
+      "kind": "interaction",
+      "gate": "cx",
+      "logical": [0, 2],
+      "physical": [0, 3],
+      "summary": "cx on logical qubits (0, 2) executes on physical qubits (0, 3)."
+    }
+  ],
+  "stages": [
+    {
+      "id": "layout",
+      "summary": "Initial layout places 3 logical qubits in first-use order: 0→0, 1→1, 2→2.",
+      "metrics": { "gate_count": 4, "depth": 0, "swap_count": 0, "t_count": 0 }
+    },
+    {
+      "id": "routing",
+      "summary": "Sabre inserted 1 SWAP on physical edges (1, 2). gate_count: 4 → 5 (+1), depth: 0 → 0 (+0), swap_count: 0 → 1 (+1), t_count: 0 → 0 (+0).",
+      "metrics": { "gate_count": 5, "depth": 0, "swap_count": 1, "t_count": 0 }
+    },
+    {
+      "id": "native_decomp",
+      "summary": "Native decomposition rewrote 1 literal SWAP gate(s) into CX triples before final metrics, so swap_count dropped from 1 to 0. Trust the event list (1 SWAP insertion(s)), not the final counter.",
+      "metrics": { "gate_count": 7, "depth": 5, "swap_count": 0, "t_count": 0 }
+    }
+  ]
+}
