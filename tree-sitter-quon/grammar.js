@@ -1,6 +1,7 @@
 /**
  * Highlighting-grade Tree-sitter grammar for Quon.
- * Lexical surface mirrors frontend/src/lexer.rs — not a second frontend parser.
+ * Keyword / operator / punctuation tokens come from highlight-lexicon.json
+ * (the editor highlight vocabulary). This is not a second frontend parser.
  *
  * Structure is intentionally loose (error-tolerant) so highlights.scm can paint
  * keywords, comments, numbers, and operators without full type fidelity.
@@ -10,6 +11,8 @@
  * named token — that makes `("{" @open "}" @close)` fail with
  * "Invalid node type `{`".
  */
+const lexicon = require("./highlight-lexicon.json");
+
 module.exports = grammar({
   name: "quon",
 
@@ -48,37 +51,18 @@ module.exports = grammar({
     type_declaration: ($) =>
       seq("type", field("name", $.identifier)),
 
-    keyword: (_) =>
-      token(
-        choice(
-          "circuit",
-          "run",
-          "borrow",
-          "par",
-          "match",
-          "let",
-          "in",
-          "return",
-          "for",
-          "if",
-          "then",
-          "else",
-          "adjoint",
-          "controlled",
-        ),
-      ),
+    keyword: (_) => token(choice(...lexicon.rule_keywords)),
 
-    boolean: (_) => token(choice("true", "false")),
+    boolean: (_) => token(choice(...lexicon.booleans)),
 
     number: (_) =>
       token(choice(/-?\d+\.\d+([eE][+-]?\d+)?/, /-?\d+([eE][+-]?\d+)?/)),
 
     identifier: (_) => /[A-Za-z_][A-Za-z0-9_]*/,
 
-    operator: (_) =>
-      token(choice("|>", "<-", "->", "-o", "=>", "@", "=", "+", "-", "*", "/", "^", "|")),
+    operator: (_) => token(choice(...lexicon.operators)),
 
-    punctuation: (_) => token(choice(":", ",", ".", "_", "`")),
+    punctuation: (_) => token(choice(...lexicon.punctuation)),
 
     line_comment: (_) => token(seq("--", /[^\n]*/)),
 

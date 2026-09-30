@@ -1,4 +1,4 @@
-;; synced from tree-sitter-quon — update both when grammar nodes change
+;; Zed-only outline query. Not a copy of tree-sitter-quon/queries.
 
 (fn_declaration
   name: (identifier) @name) @item

@@ -34,7 +34,15 @@ rev = "<commit that contains tree-sitter-quon/>"
 path = "tree-sitter-quon"
 ```
 
-Do **not** use absolute `file://…` paths or `rev = "local"`. After grammar updates on `#131` / `main`, bump `rev` to a commit that contains the matching `tree-sitter-quon/` (and keep `languages/quon/*.scm` in sync with `tree-sitter-quon/queries/`).
+Do **not** use absolute `file://…` paths or `rev = "local"`. After a grammar commit is on GitHub, pin it and refresh the copied queries in one command from the repo root:
+
+```bash
+scripts/bump-zed-grammar-rev.sh <40-char SHA>
+```
+
+That rewrites `languages/quon/{highlights,brackets,indents}.scm` from `tree-sitter-quon/queries/` and sets `rev`. `outline.scm` is Zed-only (not a copy). `locals.scm` stays in `tree-sitter-quon/queries/`. Then reinstall the Dev Extension.
+
+`grammars/` and `*.wasm` under this directory are local build products (gitignored). They are not a second grammar source.
 
 ## LSP discovery
 
