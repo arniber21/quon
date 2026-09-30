@@ -256,11 +256,13 @@ pub fn plan_aod_movement<V: VertexId>(
         }
     }
 
-    // Update layout bindings to final occupancy.
+    // Update layout bindings to final occupancy. The declared start was
+    // recorded before this rewrite so the verifier does not replay from it.
     let layout = req
         .layout
         .as_mut()
         .ok_or(MovementPlanError::MissingLayout)?;
+    layout.preserve_declared_start();
     layout.initial_bindings = occ_atom
         .iter()
         .map(|(&atom, &site)| AtomBinding {

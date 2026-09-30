@@ -32,10 +32,11 @@ use mlir_bridge::pipeline::{
     run_fixed_physical, run_fixed_physical_with_mapping,
 };
 use quon_na::{
-    GraphScheduleRequest, InteractionGraph, NaBackendKind, NaScheduleOptions, NaScheduleView,
-    NaScheduleViewMeta, NaStats, NeutralAtomLayout, PlacementStrategy, PlacerMode, ResourceReport,
-    ScheduleLayer, ScheduleLowerParams, ScheduleSpec, ScheduleViewZone, dump_schedule_text,
-    lower_schedule, run_from_graph, run_from_module, run_from_qec_workload, verify_schedule_spec,
+    DeclaredArchitecture, GraphScheduleRequest, InteractionGraph, NaBackendKind, NaScheduleOptions,
+    NaScheduleView, NaScheduleViewMeta, NaStats, NeutralAtomLayout, PlacementStrategy, PlacerMode,
+    ResourceReport, ScheduleLayer, ScheduleLowerParams, ScheduleSpec, ScheduleViewZone,
+    dump_schedule_text, lower_schedule, run_from_graph, run_from_module, run_from_qec_workload,
+    verify_emitted_schedule,
 };
 
 /// Inputs for one compile invocation.
@@ -319,7 +320,14 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 .map_err(|e| format!("lowering schedule to quantum.na failed: {e}"))?;
             // ADR-0021: auto-verify any QEC-backed NA compile; physical NA only
             // when `--verify-na` is set. Feed-forward deps stay compaction-only.
-            maybe_verify_na_schedule(&schedule_spec, request.verify_na, qec_backed)?;
+            let declared =
+                declared_architecture(na, artifacts.request.layout.as_ref(), request.na_backend)?;
+            maybe_verify_na_schedule(
+                &schedule_spec,
+                Some(&declared),
+                request.verify_na,
+                qec_backed,
+            )?;
             let circuit_metrics = CircuitMetrics {
                 depth: artifacts.resource_report.estimated_cycles,
                 depth_bound: Some(artifacts.resource_report.estimated_cycles.to_string()),
@@ -410,7 +418,9 @@ fn compile_qasm(request: &CompileRequest) -> Result<CompileArtifacts, String> {
     let lower_params = ScheduleLowerParams::from_target(request.target.id.clone(), na);
     let schedule_spec = lower_schedule(&artifacts.request, &lower_params)
         .map_err(|e| format!("lowering schedule to quantum.na failed: {e}"))?;
-    maybe_verify_na_schedule(&schedule_spec, request.verify_na, false)?;
+    let declared =
+        declared_architecture(na, artifacts.request.layout.as_ref(), request.na_backend)?;
+    maybe_verify_na_schedule(&schedule_spec, Some(&declared), request.verify_na, false)?;
     let circuit_metrics = CircuitMetrics {
         depth: artifacts.resource_report.estimated_cycles,
         depth_bound: Some(artifacts.resource_report.estimated_cycles.to_string()),
@@ -610,18 +620,41 @@ pub fn should_verify_na(verify_na: bool, qec_backed: bool) -> bool {
     verify_na || qec_backed
 }
 
-/// Run [`verify_schedule_spec`] when [`should_verify_na`] is true.
+/// Architecture and placement-time bindings for the post-compaction replay.
+///
+/// Fails closed when the layout never recorded a declared start. The
+/// planner's rewritten `initial_bindings` are not a substitute.
+fn declared_architecture(
+    na: &backend::NeutralAtomTarget,
+    layout: Option<&NeutralAtomLayout>,
+    backend: NaBackendKind,
+) -> Result<DeclaredArchitecture, String> {
+    let layout = layout.ok_or_else(|| {
+        "quantum.na verification requires a layout with declared initial bindings".to_string()
+    })?;
+    DeclaredArchitecture::from_compiled(na, layout, backend == NaBackendKind::Zoned)
+        .map_err(|error| format!("quantum.na verification failed: {error}"))
+}
+
+/// Run [`verify_emitted_schedule`] when [`should_verify_na`] is true.
 ///
 /// Extracted so tests fail if the auto-verify gate stops calling the verifier.
+/// The replay starts from `declared`, not from planner-final occupancy.
 pub fn maybe_verify_na_schedule(
     spec: &ScheduleSpec,
+    declared: Option<&DeclaredArchitecture>,
     verify_na: bool,
     qec_backed: bool,
 ) -> Result<(), String> {
     if !should_verify_na(verify_na, qec_backed) {
         return Ok(());
     }
-    verify_schedule_spec(spec).map_err(|e| format!("quantum.na verification failed: {e}"))
+    let declared = declared.ok_or_else(|| {
+        "quantum.na verification requires the declared architecture and initial bindings"
+            .to_string()
+    })?;
+    verify_emitted_schedule(spec, declared)
+        .map_err(|error| format!("quantum.na verification failed: {error}"))
 }
 
 /// Renders frontend diagnostics with a caret at the offending source span.
@@ -833,19 +866,44 @@ mod verify_na_gate_tests {
         }
     }
 
+    fn declared() -> DeclaredArchitecture {
+        DeclaredArchitecture {
+            sites: vec![quon_na::AtomSite {
+                id: quon_na::SiteId(0),
+                position: quon_na::Position {
+                    x_um: 0.0,
+                    y_um: 0.0,
+                },
+            }],
+            initial_bindings: vec![quon_na::AtomBinding {
+                atom: quon_na::AtomId(0),
+                trap: quon_na::TrapBinding::Slm {
+                    site: quon_na::SiteId(0),
+                },
+            }],
+            zones: vec![],
+            check_zones: false,
+            require_readout_zone: false,
+            rydberg_range_um: 7.5,
+            min_rydberg_spacing_um: 18.75,
+            aod_min_separation_um: 2.0,
+        }
+    }
+
     #[test]
     fn qec_backed_gate_runs_verify_without_flag() {
         let bad = bad_measure_reuse_spec();
+        let declared = declared();
         assert!(
-            maybe_verify_na_schedule(&bad, false, true).is_err(),
+            maybe_verify_na_schedule(&bad, Some(&declared), false, true).is_err(),
             "QEC-backed must verify even when verify_na=false"
         );
         assert!(
-            maybe_verify_na_schedule(&bad, false, false).is_ok(),
+            maybe_verify_na_schedule(&bad, None, false, false).is_ok(),
             "physical without flag must skip verify"
         );
         assert!(
-            maybe_verify_na_schedule(&bad, true, false).is_err(),
+            maybe_verify_na_schedule(&bad, Some(&declared), true, false).is_err(),
             "physical with --verify-na must verify"
         );
     }

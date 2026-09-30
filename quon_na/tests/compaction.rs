@@ -103,6 +103,7 @@ fn close_pair_layout() -> NeutralAtomLayout {
                 trap: TrapBinding::Slm { site: SiteId(i) },
             })
             .collect(),
+        declared_initial_bindings: Vec::new(),
     }
 }
 
@@ -144,6 +145,7 @@ fn far_pair_layout() -> NeutralAtomLayout {
                 trap: TrapBinding::Slm { site: SiteId(i) },
             })
             .collect(),
+        declared_initial_bindings: Vec::new(),
     }
 }
 
@@ -623,6 +625,8 @@ fn zoned_entangle_only_passthrough() {
                 trap: TrapBinding::Slm { site: SiteId(i) },
             })
             .collect(),
+
+        declared_initial_bindings: Vec::new(),
     });
     let opts = CompactionOptions {
         greedy: true,

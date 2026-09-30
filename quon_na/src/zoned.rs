@@ -939,10 +939,14 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
     let (layout, _storage_sites, entangle_pairs) = match req.layout.take() {
         Some(existing) => {
             let (fresh, storage, pairs) = build_zoned_layout(&req.graph, arch)?;
-            let layout = NeutralAtomLayout {
+            let mut layout = NeutralAtomLayout {
                 sites: fresh.sites,
                 initial_bindings: existing.initial_bindings,
+                // Keep the first phase's placement. Do not snapshot this
+                // phase's incoming occupancy: that vector is already final.
+                declared_initial_bindings: existing.declared_initial_bindings,
             };
+            layout.preserve_declared_start();
             (layout, storage, pairs)
         }
         None => build_zoned_layout(&req.graph, arch)?,
@@ -1729,14 +1733,13 @@ fn build_zoned_layout<V: VertexId>(
         });
     }
 
-    Ok((
-        NeutralAtomLayout {
-            sites,
-            initial_bindings: bindings,
-        },
-        storage_sites,
-        entangle_pairs,
-    ))
+    let mut layout = NeutralAtomLayout {
+        sites,
+        initial_bindings: bindings,
+        declared_initial_bindings: Vec::new(),
+    };
+    layout.preserve_declared_start();
+    Ok((layout, storage_sites, entangle_pairs))
 }
 
 fn nearest_site_id(layout: &NeutralAtomLayout, pos: Position) -> SiteId {
@@ -3771,6 +3774,8 @@ mod tests {
                     trap: TrapBinding::Slm { site: SiteId(0) },
                 },
             ],
+
+            declared_initial_bindings: Vec::new(),
         };
         let layers = vec![ScheduleLayer {
             cycle: 0,
@@ -3837,6 +3842,7 @@ mod tests {
                 atom: AtomId(0),
                 trap: TrapBinding::Slm { site: SiteId(0) },
             }],
+            declared_initial_bindings: Vec::new(),
         }
     }
 
@@ -4063,6 +4069,8 @@ mod tests {
                 atom: AtomId(0),
                 trap: TrapBinding::Slm { site: SiteId(0) },
             }],
+
+            declared_initial_bindings: Vec::new(),
         };
         let layers = vec![ScheduleLayer {
             cycle: 0,
@@ -4099,6 +4107,8 @@ mod tests {
                 atom: AtomId(0),
                 trap: TrapBinding::Slm { site: SiteId(0) },
             }],
+
+            declared_initial_bindings: Vec::new(),
         };
         let layers = vec![
             ScheduleLayer {
@@ -4153,6 +4163,8 @@ mod tests {
                     trap: TrapBinding::Slm { site: SiteId(0) },
                 },
             ],
+
+            declared_initial_bindings: Vec::new(),
         };
         let layers = vec![ScheduleLayer {
             cycle: 0,
@@ -4668,6 +4680,8 @@ mod tests {
                 }))
                 .collect(),
             initial_bindings: Vec::new(),
+
+            declared_initial_bindings: Vec::new(),
         };
 
         let cost = assignment_error_budget_cost(
@@ -4700,6 +4714,7 @@ mod tests {
                 })
                 .collect(),
             initial_bindings: Vec::new(),
+            declared_initial_bindings: Vec::new(),
         }
     }
 

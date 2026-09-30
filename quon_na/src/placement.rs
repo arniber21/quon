@@ -210,10 +210,13 @@ fn build_layout<V: VertexId>(
         });
     }
 
-    Ok(NeutralAtomLayout {
+    let mut layout = NeutralAtomLayout {
         sites,
         initial_bindings,
-    })
+        declared_initial_bindings: Vec::new(),
+    };
+    layout.preserve_declared_start();
+    Ok(layout)
 }
 
 /// Compact rectangle with `rows * cols >= n`.

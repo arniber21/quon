@@ -465,6 +465,102 @@ pub enum VerifyError {
         previous_reuse_cycle: u32,
         reuse_cycle: u32,
     },
+    #[error(
+        "replay has no declared initial bindings; refusing to start from planner-final occupancy"
+    )]
+    MissingDeclaredBindings,
+    #[error("declared architecture lists site {site} more than once")]
+    DuplicateArchitectureSite { site: u32 },
+    #[error("declared binding for atom {atom} names site {site}, which is not in the architecture")]
+    UnboundBindingSite { atom: u32, site: u32 },
+    #[error("declared bindings place atoms {first} and {second} on site {site}")]
+    DuplicateInitialSite { site: u32, first: u32, second: u32 },
+    #[error("cycle {cycle}: atom {atom} is not in the declared initial bindings")]
+    ReplayUnboundAtom { cycle: u32, atom: u32 },
+    #[error("cycle {cycle}: site {site} is not in the declared architecture")]
+    UnknownArchitectureSite { cycle: u32, site: u32 },
+    #[error(
+        "cycle {cycle}: atom {atom} moves from site {found_site}, but the replay holds it at site {held_site}"
+    )]
+    MoveOriginMismatch {
+        cycle: u32,
+        atom: u32,
+        held_site: u32,
+        found_site: u32,
+    },
+    #[error(
+        "cycle {cycle}: atom {atom} {end} coordinates ({x_um}, {y_um}) do not match architecture site {site} at ({site_x_um}, {site_y_um})"
+    )]
+    SiteCoordinateMismatch {
+        cycle: u32,
+        atom: u32,
+        site: u32,
+        end: &'static str,
+        x_um: f64,
+        y_um: f64,
+        site_x_um: f64,
+        site_y_um: f64,
+    },
+    #[error("cycle {cycle}: atom {atom} moves onto site {site}, which atom {occupant} still holds")]
+    DestinationOccupied {
+        cycle: u32,
+        atom: u32,
+        site: u32,
+        occupant: u32,
+    },
+    #[error(
+        "cycle {cycle}: atom {atom} moves while held in {held}; a move requires the AOD trap loaded by slm_to_aod (loaded trap ({bound_aod_id}, {bound_row}, {bound_col}), move trap ({aod_id}, {row}, {col}))"
+    )]
+    MoveOwnership {
+        cycle: u32,
+        atom: u32,
+        held: &'static str,
+        aod_id: u32,
+        row: u32,
+        col: u32,
+        bound_aod_id: u32,
+        bound_row: u32,
+        bound_col: u32,
+    },
+    #[error(
+        "cycle {cycle}: atom {atom} {direction} transfer is not legal from trap {held} at site {held_site} (transfer site {site})"
+    )]
+    TransferOwnership {
+        cycle: u32,
+        atom: u32,
+        direction: &'static str,
+        held: &'static str,
+        held_site: u32,
+        site: u32,
+    },
+    #[error(
+        "cycle {cycle}: atom {atom} entangle position ({x_um}, {y_um}) does not match replayed site {site} at ({site_x_um}, {site_y_um})"
+    )]
+    EntanglePositionMismatch {
+        cycle: u32,
+        atom: u32,
+        site: u32,
+        x_um: f64,
+        y_um: f64,
+        site_x_um: f64,
+        site_y_um: f64,
+    },
+    #[error(
+        "cycle {cycle}: atom {atom} at site {site} is in {found}, which cannot host {operation}"
+    )]
+    ZoneCapability {
+        cycle: u32,
+        atom: u32,
+        site: u32,
+        found: &'static str,
+        operation: &'static str,
+    },
+    #[error("emitted schedule {field} is {emitted}, declared architecture requires {declared}")]
+    ArchitectureLimitMismatch {
+        field: &'static str,
+        declared: f64,
+        emitted: f64,
+    },
     #[error("module: expected a top-level quantum.na.schedule op, found none")]
     MissingSchedule,
     #[error("failed to parse quantum.na MLIR module")]

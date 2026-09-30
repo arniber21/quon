@@ -2629,6 +2629,7 @@ mod tests {
                 },
             ],
             initial_bindings: Vec::new(),
+            declared_initial_bindings: Vec::new(),
         }
     }
 

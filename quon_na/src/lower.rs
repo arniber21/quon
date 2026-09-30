@@ -630,6 +630,7 @@ mod tests {
                 site(3, 2.0, 310.0),
             ],
             initial_bindings: vec![slm_binding(0, 2), slm_binding(1, 3)],
+            declared_initial_bindings: Vec::new(),
         }
     }
 
@@ -846,6 +847,8 @@ mod tests {
         let layout = NeutralAtomLayout {
             sites: vec![site(0, 0.0, 0.0), site(1, 2.0, 0.0)],
             initial_bindings: vec![slm_binding(0, 0), slm_binding(1, 1)],
+
+            declared_initial_bindings: Vec::new(),
         };
 
         let spec = match lower_layers(&layers, &layout, &params()) {
@@ -952,6 +955,8 @@ mod tests {
         let layout = NeutralAtomLayout {
             sites: bell_layout().sites,
             initial_bindings: vec![slm_binding(0, 2)],
+
+            declared_initial_bindings: Vec::new(),
         };
         assert_eq!(
             lower_layers(&layers, &layout, &params()),
@@ -1011,6 +1016,8 @@ mod tests {
         let layout = NeutralAtomLayout {
             sites: bell_layout().sites,
             initial_bindings: vec![slm_binding(0, 99)],
+
+            declared_initial_bindings: Vec::new(),
         };
         assert_eq!(
             lower_layers(&layers, &layout, &params()),
@@ -1023,6 +1030,8 @@ mod tests {
         let layout = NeutralAtomLayout {
             sites: vec![site(0, 0.0, 0.0), site(0, 1.0, 1.0)],
             initial_bindings: Vec::new(),
+
+            declared_initial_bindings: Vec::new(),
         };
         assert_eq!(
             lower_layers(&[], &layout, &params()),
@@ -1110,6 +1119,8 @@ mod tests {
         let layout = NeutralAtomLayout {
             sites: bell_layout().sites,
             initial_bindings: vec![slm_binding(0, 0)],
+
+            declared_initial_bindings: Vec::new(),
         };
         let spec = match lower_layers(&layers, &layout, &params()) {
             Ok(spec) => spec,
@@ -1159,6 +1170,8 @@ mod tests {
         let layout = NeutralAtomLayout {
             sites: bell_layout().sites,
             initial_bindings: vec![slm_binding(0, 0), slm_binding(1, 1)],
+
+            declared_initial_bindings: Vec::new(),
         };
 
         let spec = match lower_layers(&layers, &layout, &params()) {
