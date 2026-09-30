@@ -114,11 +114,11 @@ pub struct SearchDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_completed_layers: Option<u64>,
     /// Per-layer calls that exhausted the expansion budget and fell back to
-    /// the greedy assignment.
+    /// the routing-agnostic dispatcher.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_budget_exceeded_layers: Option<u64>,
-    /// Per-layer calls that exhausted the entire search space (no legal full
-    /// assignment exists) and fell back to the greedy assignment.
+    /// Per-layer calls that exhausted the reachable search space and fell
+    /// back to the routing-agnostic dispatcher.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_no_legal_assignment_layers: Option<u64>,
     /// Sum of best-first search node expansions across every per-layer
@@ -145,13 +145,16 @@ pub struct SearchDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_pruning_window: Option<u64>,
     /// Which routing-agnostic placement mechanism produced the schedule
-    /// (issue #300): [`AgnosticPlacerMechanism::Matching`] (min-weight
-    /// bipartite matching, the default for normal-size layers) or
-    /// [`AgnosticPlacerMechanism::GreedyFallback`] (very-large layers or
-    /// matching's conflict-repair failure). `None` for the flat-AOD backend
-    /// and for [`PlacerMode::RoutingAware`] (the agnostic concept does not
-    /// apply); under [`PlacerMode::RoutingAgnostic`] it is always `Some`,
-    /// matching the `aware_search_*` "always `Some` under zoned" convention.
+    /// (issue #300 / #485): [`AgnosticPlacerMechanism::Matching`],
+    /// [`AgnosticPlacerMechanism::GreedyFallback`], or
+    /// [`AgnosticPlacerMechanism::Mixed`] when both mechanisms were kept on
+    /// different layers. `None` for the flat-AOD backend and for a
+    /// [`PlacerMode::RoutingAware`] schedule whose search completed every
+    /// layer. Under [`PlacerMode::RoutingAgnostic`] it is always `Some`.
+    /// A routing-aware fallback reports the seam's mechanism here while
+    /// `aware_search_budget_exceeded_layers` /
+    /// `aware_search_no_legal_assignment_layers` still record why the search
+    /// stopped — the two facts are independent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
 }

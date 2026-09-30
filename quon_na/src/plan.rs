@@ -54,9 +54,11 @@ pub struct BackendStageInfo {
     pub search_diagnostics: SearchDiagnostics,
     pub aware_search_status: Option<(u64, u64)>,
     /// Which routing-agnostic mechanism produced the zoned schedule (issue
-    /// #300): `Some(Matching)`/`Some(GreedyFallback)` under
-    /// [`PlacerMode::RoutingAgnostic`], `None` otherwise (flat-AOD or
-    /// routing-aware). Mirrors `aware_search_status`'s "zoned-only" shape.
+    /// #300 / #485): `Some(Matching)` / `Some(GreedyFallback)` /
+    /// `Some(Mixed)` under [`PlacerMode::RoutingAgnostic`], and the same
+    /// labels under [`PlacerMode::RoutingAware`] when at least one layer
+    /// fell back to the agnostic seam. `None` for flat-AOD and for a
+    /// routing-aware schedule whose search completed every layer.
     pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
     /// Whether the schedule was produced by the exact SMT solver or a
     /// heuristic (issue #302). `None` when no exact mode was requested;
@@ -139,19 +141,23 @@ pub fn plan_backend<V: VertexId>(
                 zoned.aware_search_budget_exceeded_layers
                     + zoned.aware_search_no_legal_assignment_layers,
             ));
-            let agnostic_placer_mechanism =
-                if opts.placer == PlacerMode::RoutingAgnostic || opts.placer == PlacerMode::Exact {
-                    // Exact mode uses the agnostic per-layer assignment (the
-                    // exact optimization is in the initial placement), so it
-                    // reports the same mechanism. Issue #302.
-                    Some(if zoned.agnostic_greedy_fallback_layers == 0 {
-                        AgnosticPlacerMechanism::Matching
-                    } else {
-                        AgnosticPlacerMechanism::GreedyFallback
-                    })
-                } else {
-                    None
-                };
+            let counted = AgnosticPlacerMechanism::from_layer_counts(
+                zoned.agnostic_matching_layers,
+                zoned.agnostic_greedy_fallback_layers,
+            );
+            // Exact mode uses the agnostic per-layer assignment (the exact
+            // optimization is in the initial placement), so it reports the
+            // same mechanism. Issue #302. Routing-agnostic always emits a
+            // label (`Matching` when no entangling layer ran the seam).
+            // Routing-aware emits one only for layers that actually fell
+            // back, and `Mixed` when those layers did not all keep the same
+            // mechanism (issue #485).
+            let agnostic_placer_mechanism = match opts.placer {
+                PlacerMode::RoutingAgnostic | PlacerMode::Exact => {
+                    Some(counted.unwrap_or(AgnosticPlacerMechanism::Matching))
+                }
+                PlacerMode::RoutingAware => counted,
+            };
             info.agnostic_placer_mechanism = agnostic_placer_mechanism;
             info.search_diagnostics = SearchDiagnostics {
                 aware_search_completed_layers: Some(zoned.aware_search_completed_layers),
@@ -225,6 +231,16 @@ pub fn plan_backend<V: VertexId>(
     };
 
     Ok((req, info))
+}
+
+fn merge_agnostic_mechanisms(
+    left: Option<AgnosticPlacerMechanism>,
+    right: Option<AgnosticPlacerMechanism>,
+) -> Option<AgnosticPlacerMechanism> {
+    match (left, right) {
+        (None, other) | (other, None) => other,
+        (Some(left), Some(right)) => Some(left.merge(right)),
+    }
 }
 
 /// Saturating-sum two optional timings: `None + None = None`, else `Some(a+b)`.
@@ -343,20 +359,13 @@ impl QecStageAccumulator {
                 self.aware_search_status = Some((a1 + a2, b1 + b2));
             }
         }
-        // agnostic_placer_mechanism: config echo (same across phases), keep
-        // the first non-None — but if any phase fell back to greedy, downgrade
-        // a `Matching` to `GreedyFallback` so the aggregate is truthful.
-        match (
+        // agnostic_placer_mechanism: if phases disagree (matching on one,
+        // greedy on another), the aggregate is Mixed — a single greedy
+        // label would hide the matching phases (issue #485).
+        self.agnostic_placer_mechanism = merge_agnostic_mechanisms(
             self.agnostic_placer_mechanism,
             backend.agnostic_placer_mechanism,
-        ) {
-            (None, v) => self.agnostic_placer_mechanism = v,
-            (Some(AgnosticPlacerMechanism::GreedyFallback), _) => {}
-            (_, Some(AgnosticPlacerMechanism::GreedyFallback)) => {
-                self.agnostic_placer_mechanism = Some(AgnosticPlacerMechanism::GreedyFallback);
-            }
-            _ => {}
-        }
+        );
         // schedule_optimality: config echo (same across phases), keep the
         // first non-None — but if any phase reports Heuristic, downgrade
         // Exact to Heuristic so the aggregate is truthful.
@@ -414,6 +423,29 @@ mod tests {
         assert_eq!(acc.entangling_layers_us, 10);
         assert_eq!(acc.placement_us, Some(10)); // not re-placed
         assert_eq!(acc.movement_us, Some(50)); // 20 + 30
+    }
+
+    #[test]
+    fn accumulator_keeps_mixed_agnostic_mechanisms() {
+        let mut acc = QecStageAccumulator::default();
+        let matching = BackendStageInfo {
+            agnostic_placer_mechanism: Some(AgnosticPlacerMechanism::Matching),
+            ..Default::default()
+        };
+        acc.accumulate_phase(1, 1, &matching);
+        assert_eq!(
+            acc.agnostic_placer_mechanism,
+            Some(AgnosticPlacerMechanism::Matching)
+        );
+        let greedy = BackendStageInfo {
+            agnostic_placer_mechanism: Some(AgnosticPlacerMechanism::GreedyFallback),
+            ..Default::default()
+        };
+        acc.accumulate_phase(1, 1, &greedy);
+        assert_eq!(
+            acc.agnostic_placer_mechanism,
+            Some(AgnosticPlacerMechanism::Mixed)
+        );
     }
 
     /// Issue #309: requesting `ErrorBudget` objective on a target without an

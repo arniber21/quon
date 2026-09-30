@@ -322,7 +322,7 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
     if aware_fell_back > 0 {
         eprintln!(
             "FALLBACK: routing-aware fell back from its best-first search to the \
-             routing-agnostic greedy assignment on {aware_fell_back} of \
+             routing-agnostic assignment on {aware_fell_back} of \
              {} layer-assignment call(s) ({aware_completed} completed the search). On this \
              fixture/target pair the per-layer search space (up to 21 gates × 340 candidate \
              entanglement-zone pairs, uniform-cost h=0) vastly exceeds AWARE_NODE_BUDGET, so \
@@ -372,7 +372,7 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
     // SOFT (eprintln warning) even under the enforce flag.
     assert_eq!(
         aware_fell_back, 0,
-        "routing-aware search fell back to greedy on {aware_fell_back} layer(s) — the \
+        "routing-aware search fell back to the routing-agnostic assignment on {aware_fell_back} layer(s) — the \
          #297 acceptance criterion (search completes, 0 fallback) regressed; \
          routing-aware is no longer a completed A* search"
     );
@@ -538,7 +538,7 @@ fn ising_n98_preflight_and_dump_metrics() {
 
     if aware_fell_back > 0 {
         eprintln!(
-            "FALLBACK: routing-aware fell back to greedy on {aware_fell_back} of \
+            "FALLBACK: routing-aware fell back to the routing-agnostic assignment on {aware_fell_back} of \
              {} layer-assignment call(s) on ising_n98 ({aware_completed} completed). At this \
              larger scale (up to 49 simultaneous gates/layer, vs n42's 20-21), the default \
              AwareSearchParams (node_budget=100_000, beam_width=2_000 — tuned empirically on \
