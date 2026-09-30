@@ -230,7 +230,7 @@ User `gate` definitions, `for`/`while`, `opaque`, and pulse/OpenPulse are not em
 | Bernstein–Vazirani | oracle of CNOTs into an ancilla, Hadamards around it, one shot | [`bernstein_vazirani.qn`](https://github.com/arniber21/quon/blob/main/test/verify/bernstein_vazirani.qn): secret `110` as `CNOT @(0, 3)` and `CNOT @(1, 3)` |
 | Grover (n=2) | H, oracle phase on `11`, diffusion, measure | [`grover.qn`](https://github.com/arniber21/quon/blob/main/test/verify/grover.qn): `oracle` is `CZ @(0, 1)`, one `repeat` of oracle then diffusion |
 
-Quon circuits are values of type `Circuit<n, m, d, C>`. Qubits are linear: `measure` consumes them, and there is no implicit reuse. A Qiskit circuit that measures a qubit and then applies another gate needs a `reset` (or a fresh qubit) in Quon, and the target must set `supports_mid_circuit_meas`.
+Quon circuits are values of type `Circuit<n, m, d, C>`. Qubits are linear: `measure` consumes them, and there is no implicit reuse. A Qiskit circuit that measures a qubit and then applies another gate needs a `reset` (or a fresh qubit) in Quon. The fixed-target descriptor records that capability as `supports_mid_circuit_meas`.
 
 ## OpenQASM import
 
