@@ -201,6 +201,14 @@ impl ConnectivityGraph {
         }
         self.dist[a][b]
     }
+
+    /// True when `a` and `b` are the two ends of one undirected coupling edge.
+    ///
+    /// A self-pair and any unreachable or longer path are not an edge. Indices
+    /// outside the topology are not an edge.
+    pub fn is_edge(&self, a: usize, b: usize) -> bool {
+        a != b && self.dist(a, b) == 1
+    }
 }
 
 /// A backend target descriptor with one architecture-specific payload.

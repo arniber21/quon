@@ -404,3 +404,37 @@ fn controlled_named_parametric_circuit_schedules_on_neutral_atom() {
         "expected six entangle2 stages (three CNOTs): {stdout}"
     );
 }
+
+/// Issue #499: Bell on the checked-in Manila snapshot must emit. Success means
+/// routing plus the hardware check accepted the native program.
+#[test]
+fn bell_on_fake_manila_emits_hardware_valid_qasm() {
+    let source = workspace_path("../frontend/tests/fixtures/bell_state.qn");
+    let target = workspace_path("../targets/ibm/fake_manila_v2.json");
+    let output = quonc()
+        .arg("--emit-qasm")
+        .arg("--target")
+        .arg(&target)
+        .arg(&source)
+        .output()
+        .expect("failed to run quonc");
+
+    assert!(
+        output.status.success(),
+        "quonc failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let qasm = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        qasm.contains("OPENQASM 3.0;"),
+        "missing OpenQASM header: {qasm}"
+    );
+    assert!(
+        qasm.contains("cx "),
+        "expected a native cx after routing: {qasm}"
+    );
+    assert!(
+        !qasm.lines().any(|line| line.trim_start().starts_with("h ")),
+        "hadamard is not native on fake_manila and must be decomposed: {qasm}"
+    );
+}

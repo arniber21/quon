@@ -16,10 +16,16 @@ with a compilation:
 - `id` names the target in diagnostics and metrics.
 - `num_qubits` sets the available physical qubits.
 - `topology.edges` lists directly connected qubit pairs. Routing inserts swaps
-  when a two-qubit operation is not adjacent.
+  when a two-qubit operation is not adjacent. Emission rejects a two-qubit
+  gate whose operands are not one of those edges.
 - `native_gates` lists the OpenQASM gate names the target accepts. The compiler
   decomposes unsupported operations before emission and rejects unknown gate
   names.
+- `supports_mid_circuit_meas` and `supports_feed_forward` are enforced at
+  emission. A feed-forward `if` requires `supports_feed_forward`. A measure
+  that is not part of the trailing end-of-circuit measures requires
+  `supports_mid_circuit_meas`. Trailing measures stay legal when that flag
+  is false.
 - `noise` can record gate fidelity, T1/T2 times, and readout error. T1 values
   can inform scheduling; the values are target metadata rather than an Aer
   simulator noise model.
