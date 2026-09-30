@@ -48,7 +48,14 @@ decomposed that SWAP into the 3 CNOTs above — so the counter and the QASM
 disagree about whether a SWAP happened. **#135's mapper visualizer must
 recognize the 3-CNOT pattern directly in the trace, not trust this counter.**
 
-**First implementation**: [`python/visualize_routing.py`](../../python/visualize_routing.py)
+**Compiler trace**: `quonc --emit-mapping-json` writes a `mapping_trace` v1
+document whose SWAP events are recorded in SABRE *before* that decomposition,
+so `routing.swap_count` and the event list stay honest when final
+`metrics.json` `swap_count` is 0.
+[`python/visualize_mapping.py`](../../python/visualize_mapping.py) renders that
+JSON (ASCII or self-contained HTML).
+
+**QASM-side check**: [`python/visualize_routing.py`](../../python/visualize_routing.py)
 does exactly that — it parses the emitted QASM's gate trace (not the metrics
 counter), detects the literal `cx a,b; cx b,a; cx a,b` triple, and renders one
 frame per two-qubit event on the target's connectivity graph (device topology

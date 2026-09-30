@@ -13,7 +13,8 @@ use anyhow::{Result, anyhow, bail};
 use melior::ir::operation::OperationLike;
 use melior::ir::{BlockLike, RegionLike};
 use quon_core::{
-    CircuitMetrics, CompileStatus, MetricsSnapshot, ProgramInfo, TargetInfo, ToolchainInfo,
+    CircuitMetrics, CompileStatus, MappingStageMetrics, MappingTrace, MappingTraceParts,
+    MetricsSnapshot, ProgramInfo, TargetInfo, ToolchainInfo, assemble_mapping_trace,
 };
 use sha2::{Digest, Sha256};
 
@@ -22,12 +23,13 @@ use backend::{BackendTarget, TargetKind};
 use mlir_bridge::collect_qec_workload;
 use mlir_bridge::emit::openqasm3;
 use mlir_bridge::metrics;
+use mlir_bridge::metrics::CircuitMetricsRaw;
 use mlir_bridge::passes::{
     dynamic_linearity_verifier, linearity_verifier, sabre_routing::SabreCost,
 };
 use mlir_bridge::pipeline::{
-    dump_ir_stage, emit_openqasm, run_circ_passes_to_fixpoint, run_dynamic_passes,
-    run_fixed_physical,
+    MappingCapture, dump_ir_stage, emit_openqasm, run_circ_passes_to_fixpoint, run_dynamic_passes,
+    run_fixed_physical, run_fixed_physical_with_mapping,
 };
 use quon_na::{
     GraphScheduleRequest, InteractionGraph, NaBackendKind, NaScheduleOptions, NaScheduleView,
@@ -77,6 +79,8 @@ pub struct CompileRequest {
     /// several Quon sources (issue #195). Empty means `source` is exactly
     /// `source_path` and diagnostics use that path.
     pub source_chunks: Vec<SourceChunk>,
+    /// Record a [`quon_core::MappingTrace`] during SABRE (fixed targets only).
+    pub record_mapping: bool,
 }
 
 impl Default for CompileRequest {
@@ -100,6 +104,7 @@ impl Default for CompileRequest {
             na_objective: quon_na::pipeline::NaObjective::default(),
             from_qasm: false,
             source_chunks: Vec::new(),
+            record_mapping: false,
         }
     }
 }
@@ -131,6 +136,9 @@ pub struct CompileReport {
     pub qec_backed: bool,
     /// QEC workload IR when the compile took the hybrid path (ADR-0016 / #255).
     pub qec_workload: Option<quon_qec::QecWorkload>,
+    /// SABRE mapping capture when `CompileRequest::record_mapping` is set on a
+    /// fixed target. `None` for neutral-atom compiles and when the flag is off.
+    pub mapping: Option<MappingCapture>,
     pub snapshot: MetricsSnapshot,
 }
 
@@ -154,6 +162,17 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
     match compile_inner(request) {
         Ok(artifacts) => {
             let compile_ms = started.elapsed().as_millis() as u64;
+            let mut snapshot = MetricsSnapshot::ok(
+                program,
+                target_info,
+                toolchain,
+                compile_ms,
+                artifacts.circuit_metrics,
+            );
+            if let Some(message) = artifacts.openqasm_error {
+                snapshot.compile.status = quon_core::CompileStatus::Error;
+                snapshot.compile.error = Some(message);
+            }
             CompileReport {
                 qasm: artifacts.qasm,
                 na_schedule: artifacts.na_schedule,
@@ -165,13 +184,8 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
                 na_logical_qubits: artifacts.na_logical_qubits,
                 qec_backed: artifacts.qec_backed,
                 qec_workload: artifacts.qec_workload,
-                snapshot: MetricsSnapshot::ok(
-                    program,
-                    target_info,
-                    toolchain,
-                    compile_ms,
-                    artifacts.circuit_metrics,
-                ),
+                mapping: artifacts.mapping,
+                snapshot,
             }
         }
         Err(message) => {
@@ -187,6 +201,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
                 na_logical_qubits: None,
                 qec_backed: false,
                 qec_workload: None,
+                mapping: None,
                 snapshot: MetricsSnapshot {
                     schema_version: quon_core::SCHEMA_VERSION,
                     program,
@@ -216,7 +231,12 @@ struct CompileArtifacts {
     na_logical_qubits: Option<u64>,
     qec_backed: bool,
     qec_workload: Option<quon_qec::QecWorkload>,
+    mapping: Option<MappingCapture>,
     circuit_metrics: CircuitMetrics,
+    /// Set when fixed-target OpenQASM emission rejects the circuit. The
+    /// mapping capture is kept so `--emit-mapping-json` can still print the
+    /// trace; the compile status stays an error.
+    openqasm_error: Option<String>,
 }
 
 fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
@@ -320,7 +340,9 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 na_logical_qubits: Some(artifacts.logical_qubits),
                 qec_backed,
                 qec_workload: qec_backed.then_some(workload),
+                mapping: None,
                 circuit_metrics,
+                openqasm_error: None,
             })
         }
         TargetKind::Fixed(_) => compile_fixed(request, &context, &module),
@@ -409,7 +431,9 @@ fn compile_qasm(request: &CompileRequest) -> Result<CompileArtifacts, String> {
         na_logical_qubits: Some(artifacts.logical_qubits),
         qec_backed: false,
         qec_workload: None,
+        mapping: None,
         circuit_metrics,
+        openqasm_error: None,
     })
 }
 
@@ -424,7 +448,16 @@ fn compile_fixed(
         lookahead: request.sabre_lookahead,
         ..SabreCost::default()
     };
-    let physical = run_fixed_physical(context, &request.target, sabre_cost, module);
+    let (physical, mapping) = if request.record_mapping {
+        let (physical, capture) =
+            run_fixed_physical_with_mapping(context, &request.target, sabre_cost, module);
+        (physical, Some(capture))
+    } else {
+        (
+            run_fixed_physical(context, &request.target, sabre_cost, module),
+            None,
+        )
+    };
     dump_ir_stage(request.dump_ir, "after physical passes", module);
 
     let raw = metrics::collect_module_metrics(module, &request.target);
@@ -441,11 +474,16 @@ fn compile_fixed(
         swap_count: raw.swap_count,
     };
 
-    let qasm = emit_openqasm(module, &request.target)
-        .map_err(|e| format!("OpenQASM emission failed: {e}"))?;
+    // Hardware rejection is a failed compile, but the SABRE log was already
+    // captured. Keep it so a mapping trace can still describe the circuit
+    // that emission refused.
+    let (qasm, openqasm_error) = match emit_openqasm(module, &request.target) {
+        Ok(qasm) => (Some(qasm), None),
+        Err(error) => (None, Some(format!("OpenQASM emission failed: {error}"))),
+    };
 
     Ok(CompileArtifacts {
-        qasm: Some(qasm),
+        qasm,
         na_schedule: None,
         na_layout: None,
         na_graph: None,
@@ -455,8 +493,59 @@ fn compile_fixed(
         na_logical_qubits: None,
         qec_backed: false,
         qec_workload: None,
+        mapping,
         circuit_metrics,
+        openqasm_error,
     })
+}
+
+fn stage_metrics(raw: &CircuitMetricsRaw) -> MappingStageMetrics {
+    MappingStageMetrics {
+        gate_count: raw.gate_count,
+        depth: raw.depth,
+        swap_count: raw.swap_count,
+        t_count: raw.t_count,
+    }
+}
+
+/// Build the fixed-target mapping trace (issue #135).
+///
+/// Requires [`CompileRequest::record_mapping`] on a fixed target. SWAP events
+/// come from SABRE before native decomposition; the `native_decomp` stage is
+/// the final scheduled circuit, whose `swap_count` may be 0 after SWAP→CX
+/// decomposition.
+pub fn build_mapping_trace(
+    report: &CompileReport,
+    request: &CompileRequest,
+) -> Result<MappingTrace, anyhow::Error> {
+    let fixed = request.target.fixed_target().ok_or_else(|| {
+        anyhow!(
+            "--emit-mapping-json requires a fixed target (neutral-atom schedules use --emit-na-schedule)"
+        )
+    })?;
+    let capture = report.mapping.as_ref().ok_or_else(|| {
+        anyhow!("no mapping trace was recorded (fixed-target compile did not capture SABRE)")
+    })?;
+    let final_metrics = report.snapshot.metrics.clone().unwrap_or_default();
+    let edges = fixed
+        .topology
+        .edges()
+        .iter()
+        .map(|(left, right)| (*left as u64, *right as u64))
+        .collect();
+    Ok(assemble_mapping_trace(MappingTraceParts {
+        target_id: request.target.id.clone(),
+        edges,
+        log: capture.log.clone(),
+        before_routing: stage_metrics(&capture.before_routing),
+        after_routing: stage_metrics(&capture.after_routing),
+        final_metrics: MappingStageMetrics {
+            gate_count: final_metrics.gate_count,
+            depth: final_metrics.depth,
+            swap_count: final_metrics.swap_count,
+            t_count: final_metrics.t_count,
+        },
+    }))
 }
 
 /// Build the debug/visualization schedule envelope (#113).

@@ -49,6 +49,19 @@ pub struct FixedPhysicalResult {
     pub t_count: u64,
 }
 
+/// SABRE mapping log plus the metric snapshots that bracket routing (issue #135).
+///
+/// `before_routing` is after the first native-gate decomposition. `after_routing`
+/// is after SABRE and before the post-SWAP decomposition, so `swap_count` still
+/// counts literal SWAP ops. Final scheduled metrics are collected by the caller
+/// after `depth_scheduling`.
+#[derive(Clone, Debug)]
+pub struct MappingCapture {
+    pub log: quon_core::MappingLog,
+    pub before_routing: metrics::CircuitMetricsRaw,
+    pub after_routing: metrics::CircuitMetricsRaw,
+}
+
 /// Runs Fixed physical passes in the implemented strict order.
 ///
 /// Order: `native_gate_decomp` → `sabre_routing` → `native_gate_decomp` →
@@ -69,6 +82,31 @@ pub fn run_fixed_physical(
     native_gate_decomp::run_on_module(context, target, module);
     depth_scheduling::run_on_module(context, target, module);
     FixedPhysicalResult { t_count }
+}
+
+/// Same pass order as [`run_fixed_physical`], also returning a mapping trace.
+pub fn run_fixed_physical_with_mapping(
+    context: &Context,
+    target: &BackendTarget,
+    sabre_cost: SabreCost,
+    module: &Module<'_>,
+) -> (FixedPhysicalResult, MappingCapture) {
+    native_gate_decomp::run_on_module(context, target, module);
+    let before_routing = metrics::collect_module_metrics(module, target);
+    let (_diagnostics, log) =
+        sabre_routing::run_on_module_logged(context, target, sabre_cost, module);
+    let after_routing = metrics::collect_module_metrics(module, target);
+    let t_count = metrics::count_t_gates(module);
+    native_gate_decomp::run_on_module(context, target, module);
+    depth_scheduling::run_on_module(context, target, module);
+    (
+        FixedPhysicalResult { t_count },
+        MappingCapture {
+            log,
+            before_routing,
+            after_routing,
+        },
+    )
 }
 
 // ─── Derived-annotation helpers ─────────────────────────────────────────────

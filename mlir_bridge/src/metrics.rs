@@ -8,6 +8,8 @@
 //! (WireTracker roots); the `phys_qubit` attr is a derived annotation
 //! (ADR-0034, issue #316).
 
+use std::collections::HashMap;
+
 use melior::ir::attribute::{IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::{Module, OperationRef, RegionLike};
@@ -106,7 +108,15 @@ fn aggregate_visits(visits: &[GateVisit], count_t: bool) -> CircuitMetricsRaw {
         }
     }
 
-    let depth = max_schedule.map(|t| (t + 1) as u64).unwrap_or(0);
+    // `schedule_time` exists only after `depth_scheduling`. Snapshots taken
+    // before that pass (mapping layout and routing stages) use the same
+    // qubit-dependence depth the scheduler would assign: one layer per gate
+    // that touches a qubit already used by an earlier gate.
+    let depth = if max_schedule.is_some() {
+        max_schedule.map(|t| (t + 1) as u64).unwrap_or(0)
+    } else {
+        gate_dag_depth(visits)
+    };
     let qubit_count = max_phys.map(|q| (q + 1) as u64).unwrap_or(0);
 
     CircuitMetricsRaw {
@@ -117,6 +127,29 @@ fn aggregate_visits(visits: &[GateVisit], count_t: bool) -> CircuitMetricsRaw {
         qubit_count,
         depth_bound: None,
     }
+}
+
+/// Critical-path depth of `visits` in program order. Gates that do not share
+/// a qubit stay in the same layer.
+fn gate_dag_depth(visits: &[GateVisit]) -> u64 {
+    if visits.is_empty() {
+        return 0;
+    }
+    let mut last_layer: HashMap<i32, u64> = HashMap::new();
+    let mut max_layer = 0u64;
+    for visit in visits {
+        let layer = visit
+            .phys_qubits
+            .iter()
+            .filter_map(|qubit| last_layer.get(qubit).map(|previous| previous + 1))
+            .max()
+            .unwrap_or(0);
+        max_layer = max_layer.max(layer);
+        for qubit in &visit.phys_qubits {
+            last_layer.insert(*qubit, layer);
+        }
+    }
+    max_layer + 1
 }
 
 fn visits_from_module(module: &Module<'_>) -> Vec<GateVisit> {

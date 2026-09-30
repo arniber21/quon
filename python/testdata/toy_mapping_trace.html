@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mapping trace — line3</title>
+<style>
+body { font: 15px/1.45 sans-serif; margin: 1.5rem; color: #14202b; }
+h1 { font-size: 1.25rem; }
+table { border-collapse: collapse; width: 100%; }
+td, th { border: 1px solid #d5dde5; padding: 0.35rem 0.5rem; text-align: left; vertical-align: top; }
+th { background: #f4f7fa; }
+.swap { background: #fff4f6; }
+</style>
+</head>
+<body>
+<h1>mapping_trace v1 — line3</h1>
+<p>Sabre inserted 1 SWAP on physical edges (1, 2).</p>
+<h2>Layout</h2>
+<p>initial layout: 0→0 1→1 2→2</p>
+<p>final layout: 0→0 1→2 2→1</p>
+<label>Stage <select id="stage"><option value="0" selected>layout</option><option value="1">routing</option><option value="2">native_decomp</option></select></label>
+<section class="stage" data-index="0"><h2>layout</h2><p>Initial layout places 3 logical qubits in first-use order: 0→0, 1→1, 2→2.</p><ul><li>gate_count: 4</li><li>depth: 0</li><li>swap_count: 0</li><li>t_count: 0</li></ul></section><section class="stage" data-index="1" hidden><h2>routing</h2><p>Sabre inserted 1 SWAP on physical edges (1, 2). gate_count: 4 → 5 (+1), depth: 0 → 0 (+0), swap_count: 0 → 1 (+1), t_count: 0 → 0 (+0).</p><ul><li>gate_count: 5</li><li>depth: 0</li><li>swap_count: 1</li><li>t_count: 0</li></ul></section><section class="stage" data-index="2" hidden><h2>native_decomp</h2><p>Native decomposition rewrote 1 literal SWAP gate(s) into CX triples before final metrics, so swap_count dropped from 1 to 0. Trust the event list (1 SWAP insertion(s)), not the final counter.</p><ul><li>gate_count: 7</li><li>depth: 5</li><li>swap_count: 0</li><li>t_count: 0</li></ul></section>
+<h2>Events</h2>
+<table>
+<thead><tr><th>#</th><th>kind</th><th>gate</th><th>logical</th><th>physical</th><th>summary</th></tr></thead>
+<tbody>
+<tr><td>0</td><td>swap</td><td>swap</td><td>[1, 2]</td><td>[1, 2]</td><td>Sabre inserted a SWAP on physical edge (1, 2), exchanging logical qubits 1 and 2.</td></tr><tr><td>1</td><td>interaction</td><td>cx</td><td>[0, 2]</td><td>[0, 1]</td><td>cx on logical qubits (0, 2) executes on physical qubits (0, 1).</td></tr>
+</tbody>
+</table>
+<script>
+const select = document.getElementById("stage");
+const sections = document.querySelectorAll(".stage");
+select.addEventListener("change", () => {
+  sections.forEach((section) => {
+    section.hidden = section.dataset.index !== select.value;
+  });
+});
+</script>
+</body>
+</html>

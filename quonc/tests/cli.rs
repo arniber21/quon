@@ -71,6 +71,7 @@ fn help_lists_all_documented_flags() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     for flag in [
         "--emit-qasm",
+        "--emit-mapping-json",
         "--emit-na-schedule",
         "--emit-na-graph",
         "--emit-resource-report",

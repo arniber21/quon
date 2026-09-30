@@ -102,19 +102,19 @@ Numbers on this page are captured from a real run and refreshed when the
 scheduler changes; a fresh clone reproducing the command above should match.
 
 That schedule is a list of atom positions and actions per cycle — hard to
-read as JSON. Piping it through the same
+read as JSON.
 [`python/visualize_na_schedule.py`](https://github.com/arniber21/quon/blob/main/python/visualize_na_schedule.py)
-this page's images are made with renders each cycle as a zoned atom-trap
-layout (storage / entanglement / readout regions, colored by zone, movement
-drawn as arrows):
+renders each cycle as a zoned atom-trap layout (storage / entanglement /
+readout regions, colored by zone, movement drawn as arrows):
 
 ```bash
 devbox run -- python/visualize_na_schedule.py /tmp/na-ft-demo.schedule.json \
   -o /tmp/na-ft-demo --format png
 ```
 
-Sampled frames from that exact run are the PNGs that command writes under
-`/tmp/na-ft-demo`. They are not checked in.
+Sampled frames from that run, animated:
+
+![Neutral-atom schedule for the distance-3 surface-code logical CX, animated across cycles: atoms move between storage, entanglement, and readout zones as the lattice-surgery merge/split executes.](/images/na-ft-demo-schedule.gif)
 
 The sibling **structure** Stim circuit encodes the lattice-surgery CX as
 Horsman-style logical-operator `MPP` merges (ADR-0019). The header states the

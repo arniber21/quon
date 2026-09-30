@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use backend::target::{BackendTarget, FixedTarget};
-use melior::ir::attribute::IntegerAttribute;
+use melior::ir::attribute::{IntegerAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::r#type::TypeId;
 use melior::ir::{BlockLike, Location, OperationRef, RegionLike, Value, ValueLike};
@@ -138,6 +138,26 @@ impl Layout {
             })
     }
 
+    /// Logical → physical pairs, sorted by logical id.
+    fn pairs(&self) -> Vec<(u64, u64)> {
+        let mut pairs: Vec<(u64, u64)> = self
+            .mapping
+            .iter()
+            .map(|(logical, physical)| (*logical as u64, *physical as u64))
+            .collect();
+        pairs.sort_by_key(|(logical, _)| *logical);
+        pairs
+    }
+
+    fn same_permutation(&self, other: &Layout) -> bool {
+        self.mapping == other.mapping
+    }
+
+    fn clear(&mut self) {
+        self.mapping.clear();
+        self.inverse.fill(None);
+    }
+
     fn swap_phys(&mut self, a: usize, b: usize) -> Result<(usize, usize), RouteError> {
         if a >= self.inverse.len() || b >= self.inverse.len() {
             return Err(RouteError::Build {
@@ -187,11 +207,22 @@ fn set_qubit_operands<'c, 'a>(gate: OperationRef<'c, 'a>, values: &[Value<'c, 'a
     }
 }
 
+fn read_gate_name<'c: 'a, 'a>(operation: &impl OperationLike<'c, 'a>) -> String {
+    operation
+        .attribute(quantum_circ::attr::GATE_NAME)
+        .ok()
+        .and_then(|value| StringAttribute::try_from(value).ok())
+        .map(|string| string.value().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "gate".to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn route_two_qubit<'c, 'a>(
     context: &'c Context,
     target: &FixedTarget,
     cost: SabreCost,
+    log: &mut Option<quon_core::MappingLog>,
     layout: &mut Layout,
     block: melior::ir::BlockRef<'c, 'a>,
     gate: OperationRef<'c, 'a>,
@@ -220,6 +251,9 @@ fn route_two_qubit<'c, 'a>(
         let wire_v = wires[&logical_v];
         let (out_u, out_v) = append_swap(context, block, gate, wire_u, wire_v, location)?;
         let (new_u, new_v) = layout.swap_phys(u, v)?;
+        if let Some(recorded) = log.as_mut() {
+            recorded.note_swap([logical_u as u64, logical_v as u64], [u as u64, v as u64]);
+        }
         // A register slot is a fixed physical location: SWAP exchanges the
         // *contents* of slots u and v, it does not relabel the slots
         // themselves — so `out_u` (the SWAP result continuing slot u) is
@@ -239,6 +273,14 @@ fn route_two_qubit<'c, 'a>(
         tracker.alias(out_u, new_v);
         p_a = layout.phys(logical_a)?;
         p_b = layout.phys(logical_b)?;
+    }
+
+    if let Some(recorded) = log.as_mut() {
+        recorded.note_interaction(
+            read_gate_name(&gate),
+            [logical_a as u64, logical_b as u64],
+            [p_a as u64, p_b as u64],
+        );
     }
 
     set_qubit_operands(gate, &[wires[&logical_a], wires[&logical_b]]);
@@ -485,15 +527,45 @@ struct RouteState<'c, 'a> {
     wires: HashMap<usize, Value<'c, 'a>>,
     tracker: WireTracker,
     next_phys: usize,
+    /// Set when `quantum.dynamic.if` arms finish on different permutations.
+    /// Later gates must not be routed against the pre-branch map.
+    layout_diverged: bool,
+    /// Populated only when the caller asked for a mapping trace (issue #135).
+    log: Option<quon_core::MappingLog>,
 }
 
 impl<'c, 'a> RouteState<'c, 'a> {
-    fn new(num_qubits: usize) -> Self {
+    fn new(num_qubits: usize, capture: bool) -> Self {
         Self {
             layout: Layout::new(num_qubits),
             wires: HashMap::new(),
             tracker: WireTracker::new(),
             next_phys: 0,
+            layout_diverged: false,
+            log: capture.then(quon_core::MappingLog::default),
+        }
+    }
+
+    fn place(&mut self, logical: usize, physical: usize) -> Result<(), RouteError> {
+        self.layout.assign(logical, physical)?;
+        if let Some(log) = &mut self.log {
+            log.note_initial(logical as u64, physical as u64);
+        }
+        Ok(())
+    }
+
+    fn finish_log(&mut self) {
+        if self.log.is_none() {
+            return;
+        }
+        let pairs: Vec<(u64, u64)> = self
+            .layout
+            .mapping
+            .iter()
+            .map(|(logical, physical)| (*logical as u64, *physical as u64))
+            .collect();
+        if let Some(log) = &mut self.log {
+            log.set_final(pairs);
         }
     }
 }
@@ -534,8 +606,7 @@ fn route_block<'c, 'a>(
             continue;
         }
         if name == quantum_dynamic::op::IF {
-            recurse_region(context, target, cost, current, 0, state, diagnostics);
-            recurse_region(context, target, cost, current, 1, state, diagnostics);
+            route_if(context, target, cost, current, state, diagnostics);
             continue;
         }
         if name != quantum_circ::op::GATE {
@@ -564,9 +635,23 @@ fn route_block<'c, 'a>(
 
         let qubits: Vec<(usize, Value<'c, 'a>)> = raw_roots.into_iter().zip(synced).collect();
 
+        if state.layout_diverged {
+            // The branch arms did not agree on a permutation. Routing this
+            // gate against the pre-branch map would treat qubits as still
+            // adjacent after the arm that moved them. Leave the SSA wires
+            // continuous and do not insert SWAPs.
+            state.tracker.observe_operation(current);
+            for (index, (logical, _)) in qubits.iter().enumerate() {
+                if let Ok(result) = current.result(index) {
+                    state.wires.insert(*logical, Value::from(result));
+                }
+            }
+            continue;
+        }
+
         for (logical, _) in &qubits {
             if !state.layout.mapping.contains_key(logical) {
-                if let Err(error) = state.layout.assign(*logical, state.next_phys) {
+                if let Err(error) = state.place(*logical, state.next_phys) {
                     diagnostics.error(current.location(), error.to_string());
                     return;
                 }
@@ -584,6 +669,7 @@ fn route_block<'c, 'a>(
                 context,
                 target,
                 cost,
+                &mut state.log,
                 &mut state.layout,
                 block,
                 current,
@@ -615,13 +701,93 @@ fn route_block<'c, 'a>(
     }
 }
 
+/// Routes both arms of a `quantum.dynamic.if` from the layout at the branch.
+///
+/// Each arm is routed as the arm that runs. When both finish on the same
+/// permutation, that map is the layout for later gates. When they differ,
+/// each arm's layout is recorded on its branch event and later gates are not
+/// routed against the pre-branch map.
+fn route_if<'c, 'a>(
+    context: &'c Context,
+    target: &FixedTarget,
+    cost: SabreCost,
+    op: OperationRef<'c, 'a>,
+    state: &mut RouteState<'c, 'a>,
+    diagnostics: &mut Diagnostics<'c>,
+) {
+    let layout_at_if = state.layout.clone();
+    let wires_at_if = state.wires.clone();
+    let next_phys_at_if = state.next_phys;
+    let diverged_at_if = state.layout_diverged;
+    let event_mark = state.log.as_ref().map(|log| log.events.len());
+
+    recurse_region(context, target, cost, op, 0, state, diagnostics);
+    let then_events = take_new_events(state, event_mark);
+    let then_layout = state.layout.clone();
+    let then_next = state.next_phys;
+    let then_diverged = state.layout_diverged;
+
+    state.layout = layout_at_if;
+    state.wires = wires_at_if.clone();
+    state.next_phys = next_phys_at_if;
+    // The else arm starts from the pre-branch map, not from a divergence the
+    // then arm already recorded.
+    state.layout_diverged = diverged_at_if;
+
+    recurse_region(context, target, cost, op, 1, state, diagnostics);
+    let else_events = take_new_events(state, event_mark);
+    let else_layout = state.layout.clone();
+    let else_next = state.next_phys;
+    let else_diverged = state.layout_diverged;
+
+    state.wires = wires_at_if;
+    publish_region_results(op, state);
+    let agreed = then_layout.same_permutation(&else_layout) && !then_diverged && !else_diverged;
+    if agreed {
+        state.layout = then_layout.clone();
+        state.next_phys = then_next.max(else_next);
+        state.layout_diverged = diverged_at_if;
+    } else {
+        state.layout.clear();
+        state.layout_diverged = true;
+    }
+
+    if let Some(log) = &mut state.log {
+        log.note_branch(quon_core::BranchArm::Then, then_events, then_layout.pairs());
+        log.note_branch(quon_core::BranchArm::Else, else_events, else_layout.pairs());
+    }
+}
+
+fn take_new_events(
+    state: &mut RouteState<'_, '_>,
+    mark: Option<usize>,
+) -> Vec<quon_core::RawMappingEvent> {
+    let Some(mark) = mark else {
+        return Vec::new();
+    };
+    let Some(log) = &mut state.log else {
+        return Vec::new();
+    };
+    if mark > log.events.len() {
+        return Vec::new();
+    }
+    log.events.split_off(mark)
+}
+
+fn publish_region_results<'c, 'a>(op: OperationRef<'c, 'a>, state: &mut RouteState<'c, 'a>) {
+    let operand_roots = state.tracker.roots_for_operands(op);
+    for (result, root) in qubit_wiring::qubit_results(op)
+        .into_iter()
+        .zip(operand_roots.iter())
+    {
+        state.tracker.alias(result, *root);
+        state.wires.insert(*root, result);
+    }
+}
+
 /// Recurses into region `region_index` of a `quantum.dynamic.unitary_region`
 /// or `quantum.dynamic.if` op, aliasing the region's block arguments to the
-/// *caller's* already-established logical roots for the op's qubit operands
-/// (rather than the fresh per-block roots `WireTracker::seed_block_args` would
-/// assign) so physical qubit identity survives the boundary. After the region
-/// is processed, the op's own qubit results are aliased back to those same
-/// roots so the surrounding block sees a continuous wire.
+/// caller's already-established logical roots.
 fn recurse_region<'c, 'a>(
     context: &'c Context,
     target: &FixedTarget,
@@ -632,13 +798,18 @@ fn recurse_region<'c, 'a>(
     diagnostics: &mut Diagnostics<'c>,
 ) {
     let operand_roots = state.tracker.roots_for_operands(op);
-    for root in &operand_roots {
-        if !state.layout.mapping.contains_key(root) {
-            if let Err(error) = state.layout.assign(*root, state.next_phys) {
-                diagnostics.error(op.location(), error.to_string());
-                return;
+    // After a diverging branch the live map was cleared. Placing these roots
+    // onto fresh physical indices would invent a permutation neither arm
+    // finished on.
+    if !state.layout_diverged {
+        for root in &operand_roots {
+            if !state.layout.mapping.contains_key(root) {
+                if let Err(error) = state.place(*root, state.next_phys) {
+                    diagnostics.error(op.location(), error.to_string());
+                    return;
+                }
+                state.next_phys += 1;
             }
-            state.next_phys += 1;
         }
     }
     let Ok(region) = op.region(region_index) else {
@@ -669,21 +840,22 @@ fn route_module<'c, 'a>(
     target: &FixedTarget,
     cost: SabreCost,
     module: OperationRef<'c, 'a>,
+    capture: bool,
     diagnostics: &mut Diagnostics<'c>,
-) {
+) -> quon_core::MappingLog {
     let Some(body) = module
         .region(0)
         .ok()
         .and_then(|region| region.first_block())
     else {
-        return;
+        return quon_core::MappingLog::default();
     };
 
     // One shared `RouteState` for the module's own top-level block (the real,
     // executed program after lowering — see `native_gate_decomp`'s
     // `decompose_block` doc comment for why this must be walked directly, not
     // just each named `quantum.circ.func`).
-    let mut top_level_state = RouteState::new(target.num_qubits);
+    let mut top_level_state = RouteState::new(target.num_qubits, capture);
     top_level_state.tracker.seed_block_args(&body);
     route_block(
         context,
@@ -693,11 +865,14 @@ fn route_module<'c, 'a>(
         &mut top_level_state,
         diagnostics,
     );
+    top_level_state.finish_log();
+    let top_log = top_level_state.log.take().unwrap_or_default();
 
     // Each named `quantum.circ.func` is an independent circuit (its own qubit
     // register), so it gets a fresh `RouteState`. Post-inlining these are dead
     // code for `main`'s callees, but standalone `quantum.circ.func`-only
     // modules (e.g. this pass's own lit tests) rely on this path.
+    let mut func_logs = Vec::new();
     let mut op = body.first_operation();
     while let Some(current) = op {
         op = current.next_in_block();
@@ -710,10 +885,32 @@ fn route_module<'c, 'a>(
         let Some(block) = region.first_block() else {
             continue;
         };
-        let mut state = RouteState::new(target.num_qubits);
+        let mut state = RouteState::new(target.num_qubits, capture);
         state.tracker.seed_block_args(&block);
         route_block(context, target, cost, block, &mut state, diagnostics);
+        state.finish_log();
+        if capture && let Some(log) = state.log.take() {
+            func_logs.push(log);
+        }
     }
+    select_mapping_log(top_log, func_logs)
+}
+
+fn select_mapping_log(
+    top: quon_core::MappingLog,
+    funcs: Vec<quon_core::MappingLog>,
+) -> quon_core::MappingLog {
+    // The executed program lives at module top level after lowering. Named
+    // `quantum.circ.func` bodies are a second, independent register (lit tests
+    // and pre-inline modules). Prefer the top-level log when it saw qubits so
+    // a trace does not double-count dead callees.
+    if !top.initial.is_empty() || !top.events.is_empty() {
+        return top;
+    }
+    funcs
+        .into_iter()
+        .max_by_key(|log| log.events.len().saturating_add(log.initial.len()))
+        .unwrap_or_default()
 }
 
 /// Runs SABRE routing on `module`, returning any error diagnostics.
@@ -723,18 +920,44 @@ pub fn run_on_module<'c>(
     cost: SabreCost,
     module: &melior::ir::Module<'c>,
 ) -> Diagnostics<'c> {
+    run_routing(context, target, cost, module, false).0
+}
+
+/// Runs SABRE and returns the mapping log for `--emit-mapping-json` (issue #135).
+///
+/// Routing behavior matches [`run_on_module`]. The log is empty when `target`
+/// is not a fixed device.
+pub fn run_on_module_logged<'c>(
+    context: &'c Context,
+    target: &BackendTarget,
+    cost: SabreCost,
+    module: &melior::ir::Module<'c>,
+) -> (Diagnostics<'c>, quon_core::MappingLog) {
+    run_routing(context, target, cost, module, true)
+}
+
+fn run_routing<'c>(
+    context: &'c Context,
+    target: &BackendTarget,
+    cost: SabreCost,
+    module: &melior::ir::Module<'c>,
+    capture: bool,
+) -> (Diagnostics<'c>, quon_core::MappingLog) {
     let mut diagnostics = Diagnostics::new();
-    if let Some(target) = target.fixed_target() {
+    let log = if let Some(fixed) = target.fixed_target() {
         route_module(
             context,
-            target,
+            fixed,
             cost,
             module.as_operation(),
+            capture,
             &mut diagnostics,
-        );
-    }
+        )
+    } else {
+        quon_core::MappingLog::default()
+    };
     diagnostics.emit();
-    diagnostics
+    (diagnostics, log)
 }
 
 #[repr(align(8))]
@@ -774,7 +997,7 @@ impl<'c> RunExternalPass<'c> for SabreRouting {
         let success = crate::ffi::with_context(raw, |context| {
             let mut diagnostics = Diagnostics::new();
             if let Some(t) = target.fixed_target() {
-                route_module(context, t, cost, operation, &mut diagnostics);
+                let _log = route_module(context, t, cost, operation, false, &mut diagnostics);
             }
             diagnostics.emit()
         });

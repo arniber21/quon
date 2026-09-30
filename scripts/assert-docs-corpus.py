@@ -386,6 +386,14 @@ def _resolve_link_target(page, tgt):
     ]
 
 
+def _public_asset(tgt):
+    """True when an absolute link is a file under website/public."""
+    clean = tgt.split("#", 1)[0].split("?", 1)[0]
+    if not clean.startswith("/") or ".." in clean.split("/"):
+        return False
+    return repo_path_exists("website/public" + clean)
+
+
 def _dir_has_doc_page(dir_rel):
     """True if a docs directory exists and contains at least one .md/.mdx."""
     p = os.path.join(ROOT, dir_rel)
@@ -431,6 +439,10 @@ def check_links(page, lines, errors):
         if not cands:
             continue
         if any(repo_path_exists(c) for c in cands):
+            continue
+        # Starlight serves website/public at the site root, so `/images/x.gif`
+        # is a file, not a docs page.
+        if _public_asset(tgt):
             continue
         # Lenient fallback: a section-landing link like `/language/` or
         # `../cookbook/` may target a directory with child pages but no index.

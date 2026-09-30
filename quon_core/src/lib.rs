@@ -25,6 +25,7 @@
 //! | [`qasm`]         | Emit-domain AST — the faithful OpenQASM 3.0 syntax tree + total renderer.   |
 //! | [`linearity`]    | SSA use-count adapter for the no-cloning / linear-use judgment.              |
 //! | [`metrics`]      | Snapshot/regression DTO — metrics wire types and comparison (no collector).  |
+//! | [`mapping`]      | Fixed-target routing trace DTO — [`mapping::MappingTrace`] (no IR walker).   |
 //!
 //! # The linearity story (Δ ⇄ SSA)
 //!
@@ -62,10 +63,15 @@
 //! collector* (walking the IR to populate [`CircuitMetrics`]) stays in
 //! `mlir_bridge`, not here — `quon_core` owns only the DTO and its tests.
 //!
+//! [`mapping`] is the same kind of exception: the `--emit-mapping-json` wire
+//! type (issue #135). SABRE in `mlir_bridge` fills a [`mapping::MappingLog`];
+//! narration and `deny_unknown_fields` live here so they can be tested without
+//! LLVM. Frontend code does not construct traces.
+//!
 //! ```
 //! // Issue #216: every domain module stays reachable from the crate root,
 //! // and each one's canonical export is the documented center of its role.
-//! use quon_core::{depth, optimization, gates, qasm, linearity, metrics};
+//! use quon_core::{depth, optimization, gates, qasm, linearity, metrics, mapping};
 //! use quon_core::{DepthExpr, REGISTRY, LINEAR_USE_COUNT, CircuitMetrics};
 //!
 //! // depth — Circuit index algebra (the crate's center of gravity).
@@ -80,11 +86,14 @@
 //! assert_eq!(LINEAR_USE_COUNT, 1);
 //! // metrics — snapshot/regression DTO (collector lives in mlir_bridge).
 //! let _ = CircuitMetrics::default();
+//! // mapping — routing-trace DTO (collector lives in mlir_bridge).
+//! assert_eq!(mapping::MAPPING_TRACE_KIND, "mapping_trace");
 //! ```
 
 pub mod depth;
 pub mod gates;
 pub mod linearity;
+pub mod mapping;
 pub mod metrics;
 pub mod optimization;
 pub mod qasm;
@@ -104,6 +113,10 @@ pub use gates::{
 pub use linearity::{
     LINEAR_USE_COUNT, UseCountViolation, barrier_identity_ok, classify_use_count,
     if_qubit_threading_ok, is_linear_use_count, is_reuse_after_measure, unitary_region_boundary_ok,
+};
+pub use mapping::{
+    BranchArm, MAPPING_TRACE_KIND, MAPPING_TRACE_VERSION, MappingEvent, MappingLog, MappingStage,
+    MappingStageMetrics, MappingTrace, MappingTraceParts, RawMappingEvent, assemble_mapping_trace,
 };
 pub use metrics::{
     CircuitMetrics, ComparisonReport, CompileInfo, CompileStatus, MetricTolerance,
