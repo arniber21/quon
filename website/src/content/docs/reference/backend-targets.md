@@ -216,10 +216,14 @@ fused validation); these require a filesystem path, never `-`/stdout.
 - **Producer:** `quonc program.qn --target <fixed.json> --emit-mapping-json [PATH]`.
 - **Schema / version:** `kind: "mapping_trace"`, `schema_version: 1`. Fields:
   `summary`, `meta` (target id), `topology.edges`, `initial_layout`,
-  `final_layout`, `events` (`swap` or `interaction`, each with a compile-time
-  `summary`), and `stages` (`layout`, `routing`, `native_decomp`) carrying
-  gate count, depth, SWAP count, and T count plus a metric-delta sentence.
-  Unknown fields are rejected.
+  `final_layout`, `events` (`swap`, `interaction`, or `branch`, each with a
+  compile-time `summary`), and `stages` (`layout`, `routing`,
+  `native_decomp`) carrying gate count, depth, SWAP count, and T count plus a
+  metric-delta sentence. `layout` and `routing` depth are the gate-dependence
+  depth of those snapshots (taken before `depth_scheduling` writes
+  `schedule_time`). A `branch` event is one arm of a `quantum.dynamic.if`;
+  the other arm is a separate event, and exactly one arm runs. Unknown fields
+  are rejected.
 - **Canonical status:** a debug view of SABRE's layout and SWAP insertions.
   OpenQASM remains the fixed-target program artifact. The trace is recorded
   before post-SWAP native decomposition, so it can list SWAPs that the final

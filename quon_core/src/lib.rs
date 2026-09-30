@@ -115,7 +115,7 @@ pub use linearity::{
     if_qubit_threading_ok, is_linear_use_count, is_reuse_after_measure, unitary_region_boundary_ok,
 };
 pub use mapping::{
-    MAPPING_TRACE_KIND, MAPPING_TRACE_VERSION, MappingEvent, MappingLog, MappingStage,
+    BranchArm, MAPPING_TRACE_KIND, MAPPING_TRACE_VERSION, MappingEvent, MappingLog, MappingStage,
     MappingStageMetrics, MappingTrace, MappingTraceParts, RawMappingEvent, assemble_mapping_trace,
 };
 pub use metrics::{

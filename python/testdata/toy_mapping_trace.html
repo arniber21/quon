@@ -15,6 +15,9 @@ th { background: #f4f7fa; }
 <body>
 <h1>mapping_trace v1 — line3</h1>
 <p>Sabre inserted 1 SWAP on physical edges (1, 2).</p>
+<h2>Layout</h2>
+<p>initial layout: 0→0 1→1 2→2</p>
+<p>final layout: 0→0 1→2 2→1</p>
 <label>Stage <select id="stage"><option value="0" selected>layout</option><option value="1">routing</option><option value="2">native_decomp</option></select></label>
 <section class="stage" data-index="0"><h2>layout</h2><p>Initial layout places 3 logical qubits in first-use order: 0→0, 1→1, 2→2.</p><ul><li>gate_count: 4</li><li>depth: 0</li><li>swap_count: 0</li><li>t_count: 0</li></ul></section><section class="stage" data-index="1" hidden><h2>routing</h2><p>Sabre inserted 1 SWAP on physical edges (1, 2). gate_count: 4 → 5 (+1), depth: 0 → 0 (+0), swap_count: 0 → 1 (+1), t_count: 0 → 0 (+0).</p><ul><li>gate_count: 5</li><li>depth: 0</li><li>swap_count: 1</li><li>t_count: 0</li></ul></section><section class="stage" data-index="2" hidden><h2>native_decomp</h2><p>Native decomposition rewrote 1 literal SWAP gate(s) into CX triples before final metrics, so swap_count dropped from 1 to 0. Trust the event list (1 SWAP insertion(s)), not the final counter.</p><ul><li>gate_count: 7</li><li>depth: 5</li><li>swap_count: 0</li><li>t_count: 0</li></ul></section>
 <h2>Events</h2>

@@ -59,9 +59,12 @@ quonc program.qn --emit-qasm > program.qasm
 Emit the fixed-target **mapping trace** (issue #135): a versioned JSON
 document (`kind: mapping_trace`, `schema_version: 1`) of SABRE layout and
 routing. Fields are `summary`, `meta.target_id`, `topology.edges`,
-`initial_layout`, `final_layout`, `events` (`swap` or `interaction`, each with
-a compile-time `summary`), and `stages` (`layout`, `routing`,
-`native_decomp`) with `#48`-shaped metrics and a metric-delta sentence.
+`initial_layout`, `final_layout`, `events` (`swap`, `interaction`, or
+`branch`, each with a compile-time `summary`), and `stages` (`layout`,
+`routing`, `native_decomp`) with `#48`-shaped metrics and a metric-delta
+sentence. Layout and routing depth are the gate-dependence depth of those
+pre-schedule snapshots. A `branch` event is one arm of a measurement `if`;
+exactly one arm runs.
 Unknown fields are rejected. SWAP events are recorded before native
 decomposition, so `routing.swap_count` can be non-zero when the final
 `native_decomp` stage (and `--metrics-json`) reports `swap_count: 0` because

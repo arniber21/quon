@@ -112,7 +112,9 @@ devbox run -- python/visualize_na_schedule.py /tmp/na-ft-demo.schedule.json \
   -o /tmp/na-ft-demo --format png
 ```
 
-The viewer writes one PNG per cycle under `/tmp/na-ft-demo`. Those frames stay local to the run; the repo does not store the animation.
+Sampled frames from that run, animated:
+
+![Neutral-atom schedule for the distance-3 surface-code logical CX, animated across cycles: atoms move between storage, entanglement, and readout zones as the lattice-surgery merge/split executes.](/images/na-ft-demo-schedule.gif)
 
 The sibling **structure** Stim circuit encodes the lattice-surgery CX as
 Horsman-style logical-operator `MPP` merges (ADR-0019). The header states the

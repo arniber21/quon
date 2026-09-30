@@ -43,6 +43,7 @@ STAGE_KEYS = {"id", "summary", "metrics"}
 METRICS_KEYS = {"gate_count", "depth", "swap_count", "t_count"}
 SWAP_KEYS = {"kind", "logical", "physical", "summary"}
 INTERACTION_KEYS = {"kind", "gate", "logical", "physical", "summary"}
+BRANCH_KEYS = {"kind", "arm", "summary", "events"}
 
 
 def _die(msg: str, code: int = 1) -> None:
@@ -134,22 +135,7 @@ def load_trace(data: Any) -> dict[str, Any]:
     events = trace["events"]
     if not isinstance(events, list):
         raise ValueError("events must be an array")
-    for index, event in enumerate(events):
-        obj = _require_object(event, f"events[{index}]")
-        kind = obj.get("kind")
-        where = f"events[{index}]"
-        if kind == "swap":
-            _reject_unknown(obj, SWAP_KEYS, where)
-            _require_fields(obj, SWAP_KEYS, where)
-        elif kind == "interaction":
-            _reject_unknown(obj, INTERACTION_KEYS, where)
-            _require_fields(obj, INTERACTION_KEYS, where)
-            _str_field(obj, "gate", where)
-        else:
-            raise ValueError(f"{where}.kind must be 'swap' or 'interaction'")
-        _pair(obj["logical"], f"{where}.logical")
-        _pair(obj["physical"], f"{where}.physical")
-        _str_field(obj, "summary", where)
+    _validate_events(events, "events")
 
     stages = trace["stages"]
     if not isinstance(stages, list) or not stages:
@@ -169,27 +155,72 @@ def load_trace(data: Any) -> dict[str, Any]:
     return trace
 
 
+def _validate_events(events: list[Any], where: str) -> None:
+    for index, event in enumerate(events):
+        obj = _require_object(event, f"{where}[{index}]")
+        kind = obj.get("kind")
+        at = f"{where}[{index}]"
+        if kind == "swap":
+            _reject_unknown(obj, SWAP_KEYS, at)
+            _require_fields(obj, SWAP_KEYS, at)
+            _pair(obj["logical"], f"{at}.logical")
+            _pair(obj["physical"], f"{at}.physical")
+            _str_field(obj, "summary", at)
+        elif kind == "interaction":
+            _reject_unknown(obj, INTERACTION_KEYS, at)
+            _require_fields(obj, INTERACTION_KEYS, at)
+            _str_field(obj, "gate", at)
+            _pair(obj["logical"], f"{at}.logical")
+            _pair(obj["physical"], f"{at}.physical")
+            _str_field(obj, "summary", at)
+        elif kind == "branch":
+            _reject_unknown(obj, BRANCH_KEYS, at)
+            _require_fields(obj, BRANCH_KEYS, at)
+            arm = _str_field(obj, "arm", at)
+            if arm not in ("then", "else"):
+                raise ValueError(f"{at}.arm must be 'then' or 'else'")
+            _str_field(obj, "summary", at)
+            nested = obj["events"]
+            if not isinstance(nested, list):
+                raise ValueError(f"{at}.events must be an array")
+            _validate_events(nested, f"{at}.events")
+        else:
+            raise ValueError(f"{at}.kind must be 'swap', 'interaction', or 'branch'")
+
+
 def _layout_line(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "(empty)"
     return " ".join(f"{row['logical']}→{row['physical']}" for row in rows)
 
 
-def _event_line(index: int, event: dict[str, Any]) -> str:
+def _event_line(index: int, event: dict[str, Any], indent: str = "  ") -> str:
+    if event["kind"] == "branch":
+        lines = [
+            f"{indent}{index:03d} branch {event['arm']}",
+            f"{indent}    {event['summary']}",
+        ]
+        nested = event["events"]
+        if not nested:
+            lines.append(f"{indent}    (no routed gates)")
+        else:
+            for child_index, child in enumerate(nested):
+                lines.append(_event_line(child_index, child, indent + "  "))
+        return "\n".join(lines)
     logical = event["logical"]
     physical = event["physical"]
     if event["kind"] == "swap":
         head = (
-            f"  {index:03d} swap logical=[{logical[0]}, {logical[1]}] "
+            f"{indent}{index:03d} swap logical=[{logical[0]}, {logical[1]}] "
             f"physical=[{physical[0]}, {physical[1]}]"
         )
     else:
         head = (
-            f"  {index:03d} interaction {event['gate']} "
+            f"{indent}{index:03d} interaction {event['gate']} "
             f"logical=[{logical[0]}, {logical[1]}] "
             f"physical=[{physical[0]}, {physical[1]}]"
         )
-    return f"{head}\n      {event['summary']}"
+    return f"{head}\n{indent}    {event['summary']}"
 
 
 def render_ascii(trace: dict[str, Any]) -> str:
@@ -241,23 +272,13 @@ def render_html(trace: dict[str, Any]) -> str:
             f"<li>t_count: {metrics['t_count']}</li>"
             "</ul></section>"
         )
-    event_rows = []
-    for index, event in enumerate(trace["events"]):
-        kind = html.escape(event["kind"])
-        gate = html.escape(event.get("gate", "swap"))
-        logical = html.escape(str(event["logical"]))
-        physical = html.escape(str(event["physical"]))
-        summary = html.escape(event["summary"])
-        event_rows.append(
-            "<tr>"
-            f"<td>{index}</td><td>{kind}</td><td>{gate}</td>"
-            f"<td>{logical}</td><td>{physical}</td><td>{summary}</td>"
-            "</tr>"
-        )
+    event_rows = _html_event_rows(trace["events"])
     if not event_rows:
         event_rows.append('<tr><td colspan="6">(no routing events)</td></tr>')
     title = html.escape(trace["meta"]["target_id"])
     summary = html.escape(trace["summary"])
+    initial_layout = html.escape(_layout_line(trace["initial_layout"]))
+    final_layout = html.escape(_layout_line(trace["final_layout"]))
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -275,6 +296,9 @@ th {{ background: #f4f7fa; }}
 <body>
 <h1>mapping_trace v{trace["schema_version"]} — {title}</h1>
 <p>{summary}</p>
+<h2>Layout</h2>
+<p>initial layout: {initial_layout}</p>
+<p>final layout: {final_layout}</p>
 <label>Stage <select id="stage">{"".join(stage_options)}</select></label>
 {"".join(stage_sections)}
 <h2>Events</h2>
@@ -296,6 +320,34 @@ select.addEventListener("change", () => {{
 </body>
 </html>
 """
+
+
+def _html_event_rows(events: list[dict[str, Any]], prefix: str = "") -> list[str]:
+    rows = []
+    for index, event in enumerate(events):
+        label = f"{prefix}{index}"
+        if event["kind"] == "branch":
+            arm = html.escape(event["arm"])
+            summary = html.escape(event["summary"])
+            rows.append(
+                '<tr class="branch"><td colspan="6">'
+                f"branch {label} {arm}: {summary}"
+                "</td></tr>"
+            )
+            rows.extend(_html_event_rows(event["events"], prefix=f"{label}."))
+            continue
+        kind = html.escape(event["kind"])
+        gate = html.escape(event.get("gate", "swap"))
+        logical = html.escape(str(event["logical"]))
+        physical = html.escape(str(event["physical"]))
+        summary = html.escape(event["summary"])
+        rows.append(
+            "<tr>"
+            f"<td>{label}</td><td>{kind}</td><td>{gate}</td>"
+            f"<td>{logical}</td><td>{physical}</td><td>{summary}</td>"
+            "</tr>"
+        )
+    return rows
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -37,6 +37,17 @@ pub struct MappingLog {
     pub final_layout: Vec<(u64, u64)>,
 }
 
+/// Which arm of a `quantum.dynamic.if` an event list belongs to.
+///
+/// Then is region 0 (condition bit set). Else is region 1 (bit clear).
+/// Exactly one arm runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchArm {
+    Then,
+    Else,
+}
+
 /// One routing action, before narration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RawMappingEvent {
@@ -48,6 +59,12 @@ pub enum RawMappingEvent {
         gate: String,
         logical: [u64; 2],
         physical: [u64; 2],
+    },
+    /// Events for one arm of a measurement branch. The sibling arm is a
+    /// separate alternative; the two lists are not one execution.
+    Branch {
+        arm: BranchArm,
+        events: Vec<RawMappingEvent>,
     },
 }
 
@@ -85,13 +102,28 @@ impl MappingLog {
         self.final_layout = pairs;
     }
 
-    /// Number of recorded SWAP insertions.
-    pub fn swap_count(&self) -> usize {
-        self.events
-            .iter()
-            .filter(|event| matches!(event, RawMappingEvent::Swap { .. }))
-            .count()
+    /// Appends one measurement-branch arm. An empty arm is still recorded so
+    /// the trace shows the alternative instead of implying the other arm
+    /// always runs.
+    pub fn note_branch(&mut self, arm: BranchArm, events: Vec<RawMappingEvent>) {
+        self.events.push(RawMappingEvent::Branch { arm, events });
     }
+
+    /// Number of recorded SWAP insertions, including those inside branch arms.
+    pub fn swap_count(&self) -> usize {
+        count_swaps(&self.events)
+    }
+}
+
+fn count_swaps(events: &[RawMappingEvent]) -> usize {
+    events
+        .iter()
+        .map(|event| match event {
+            RawMappingEvent::Swap { .. } => 1,
+            RawMappingEvent::Interaction { .. } => 0,
+            RawMappingEvent::Branch { events, .. } => count_swaps(events),
+        })
+        .sum()
 }
 
 /// Inputs to [`assemble_mapping_trace`]. Metric snapshots are taken by the
@@ -152,6 +184,13 @@ pub enum MappingEvent {
         logical: [u64; 2],
         physical: [u64; 2],
         summary: String,
+    },
+    /// One arm of a `quantum.dynamic.if`. The sibling arm is a separate event,
+    /// not the next step of this one.
+    Branch {
+        arm: BranchArm,
+        summary: String,
+        events: Vec<MappingEvent>,
     },
 }
 
@@ -286,21 +325,64 @@ fn narrate_events(events: &[RawMappingEvent]) -> Vec<MappingEvent> {
                     logical[0], logical[1], physical[0], physical[1]
                 ),
             },
+            RawMappingEvent::Branch { arm, events } => MappingEvent::Branch {
+                arm: *arm,
+                summary: branch_summary(*arm, events),
+                events: narrate_events(events),
+            },
         })
         .collect()
 }
 
+fn branch_summary(arm: BranchArm, events: &[RawMappingEvent]) -> String {
+    let (name, other) = match arm {
+        BranchArm::Then => ("Then", "else"),
+        BranchArm::Else => ("Else", "then"),
+    };
+    let swaps = count_swaps(events);
+    format!(
+        "{name} arm of a measurement branch ({swaps} SWAP insertion(s) on this arm only). The {other} arm is an alternative and does not also run."
+    )
+}
+
 fn routing_summary(log: &MappingLog) -> String {
-    let swaps = log.swap_count();
-    if swaps == 0 {
-        return "Sabre inserted no SWAPs; every two-qubit interaction was already on a coupling edge.".to_string();
+    let swaps = top_level_swaps(&log.events);
+    let sentence = if swaps == 0 && !has_branch(&log.events) {
+        "Sabre inserted no SWAPs; every two-qubit interaction was already on a coupling edge."
+            .to_string()
+    } else if swaps == 0 {
+        "Outside measurement branches, Sabre inserted no SWAPs.".to_string()
+    } else {
+        swap_sentence(&log.events, swaps)
+    };
+    if has_branch(&log.events) {
+        format!(
+            "{sentence} Each measurement branch lists its then and else arms separately; exactly one arm runs."
+        )
+    } else {
+        sentence
     }
-    let mut edges: Vec<[u64; 2]> = log
-        .events
+}
+
+fn has_branch(events: &[RawMappingEvent]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, RawMappingEvent::Branch { .. }))
+}
+
+fn top_level_swaps(events: &[RawMappingEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| matches!(event, RawMappingEvent::Swap { .. }))
+        .count()
+}
+
+fn swap_sentence(events: &[RawMappingEvent], swaps: usize) -> String {
+    let mut edges: Vec<[u64; 2]> = events
         .iter()
         .filter_map(|event| match event {
             RawMappingEvent::Swap { physical, .. } => Some(canon_pair(*physical)),
-            RawMappingEvent::Interaction { .. } => None,
+            RawMappingEvent::Interaction { .. } | RawMappingEvent::Branch { .. } => None,
         })
         .collect();
     edges.sort_unstable();
@@ -462,6 +544,49 @@ mod tests {
         assert!(trace.summary.contains("no SWAPs"));
         assert!(trace.stages[2].summary.contains("Final circuit"));
         assert!(!trace.stages[2].summary.contains("CX triples"));
+    }
+
+    #[test]
+    fn branch_arms_are_alternatives_not_one_sequence() {
+        let mut log = MappingLog::default();
+        log.note_branch(
+            BranchArm::Then,
+            vec![RawMappingEvent::Swap {
+                logical: [0, 2],
+                physical: [0, 1],
+            }],
+        );
+        log.note_branch(BranchArm::Else, Vec::new());
+        let trace = assemble_mapping_trace(MappingTraceParts {
+            target_id: "line".to_string(),
+            edges: vec![(0, 1)],
+            log,
+            before_routing: MappingStageMetrics::default(),
+            after_routing: MappingStageMetrics::default(),
+            final_metrics: MappingStageMetrics::default(),
+        });
+        assert!(trace.summary.contains("exactly one arm runs"));
+        assert!(!trace.summary.contains("inserted 1 SWAP"));
+        assert_eq!(trace.events.len(), 2);
+        match &trace.events[0] {
+            MappingEvent::Branch {
+                arm,
+                summary,
+                events,
+            } => {
+                assert_eq!(*arm, BranchArm::Then);
+                assert!(summary.contains("does not also run"));
+                assert_eq!(events.len(), 1);
+            }
+            other => panic!("expected then branch, got {other:?}"),
+        }
+        match &trace.events[1] {
+            MappingEvent::Branch { arm, events, .. } => {
+                assert_eq!(*arm, BranchArm::Else);
+                assert!(events.is_empty());
+            }
+            other => panic!("expected else branch, got {other:?}"),
+        }
     }
 
     #[test]

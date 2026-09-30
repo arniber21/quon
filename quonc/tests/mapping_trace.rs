@@ -89,6 +89,16 @@ fn line_span_records_swaps_that_final_metrics_drop() {
     let final_swaps = stages[2]["metrics"]["swap_count"].as_u64().expect("final");
     assert_eq!(routing_swaps, swaps as u64);
     assert_eq!(final_swaps, 0, "final metrics should drop decomposed SWAPs");
+    let layout_depth = stages[0]["metrics"]["depth"]
+        .as_u64()
+        .expect("layout depth");
+    let routing_depth = stages[1]["metrics"]["depth"]
+        .as_u64()
+        .expect("routing depth");
+    assert!(
+        layout_depth > 0 && routing_depth > layout_depth,
+        "non-adjacent CNOT should deepen the routing stage (layout {layout_depth}, routing {routing_depth})"
+    );
     let decomp = stages[2]["summary"].as_str().expect("decomp summary");
     assert!(decomp.contains("CX triples"), "{decomp}");
     assert!(trace["summary"].as_str().unwrap_or("").contains("SWAP"));
@@ -112,6 +122,70 @@ fn line_span_records_swaps_that_final_metrics_drop() {
     assert!(ascii.contains("mapping_trace v1"), "{ascii}");
     assert!(ascii.contains("swap insertions:"), "{ascii}");
     assert!(ascii.contains("CX triples"), "{ascii}");
+}
+
+const BRANCH: &str = "\
+fn place(): Circuit<3, 3, 3, Clifford> = circuit { I @0 |> I @1 |> I @2 }
+fn far_cx(): Circuit<2, 2, 2, Clifford> = circuit { CNOT @(0, 1) }
+fn idle2(): Circuit<2, 2, 2, Clifford> = circuit { I @0 |> I @1 }
+
+fn main(): Q<Bit> = run {
+    (q0, q1, q2) <- place() @ qreg(3)
+    bit          <- measure(q1)
+    (a, c)       <- (if bit then far_cx() else idle2()) @ (q0, q2)
+    _ba          <- measure(a)
+    bc           <- measure(c)
+    return bc
+}
+";
+
+#[test]
+fn if_arms_are_alternatives_on_a_line() {
+    let source = std::env::temp_dir().join(format!("quon-mapping-if-{}.qn", std::process::id()));
+    std::fs::write(&source, BRANCH).expect("write if source");
+    let target = workspace_path("../targets/ibm/fake_manila_v2.json");
+    let output = emit_mapping(&source, Some(&target));
+    assert!(
+        output.status.success(),
+        "quonc failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace: Value = serde_json::from_slice(&output.stdout).expect("json");
+    let events = trace["events"].as_array().expect("events");
+    let branches: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["kind"] == "branch")
+        .collect();
+    assert_eq!(branches.len(), 2, "trace events: {events:?}");
+    assert_eq!(branches[0]["arm"], "then");
+    assert_eq!(branches[1]["arm"], "else");
+    let then_swaps = branches[0]["events"]
+        .as_array()
+        .expect("then events")
+        .iter()
+        .filter(|event| event["kind"] == "swap")
+        .count();
+    let else_swaps = branches[1]["events"]
+        .as_array()
+        .expect("else events")
+        .iter()
+        .filter(|event| event["kind"] == "swap")
+        .count();
+    assert!(
+        then_swaps >= 1,
+        "then arm should route the non-adjacent CNOT: {events:?}"
+    );
+    assert_eq!(else_swaps, 0, "else arm is idle: {events:?}");
+    let flat_swaps = events
+        .iter()
+        .filter(|event| event["kind"] == "swap")
+        .count();
+    assert_eq!(
+        flat_swaps, 0,
+        "arm SWAPs must not sit on the top-level list"
+    );
+    let summary = trace["summary"].as_str().expect("summary");
+    assert!(summary.contains("exactly one arm runs"), "{summary}");
 }
 
 #[test]

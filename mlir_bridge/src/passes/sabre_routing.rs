@@ -582,8 +582,7 @@ fn route_block<'c, 'a>(
             continue;
         }
         if name == quantum_dynamic::op::IF {
-            recurse_region(context, target, cost, current, 0, state, diagnostics);
-            recurse_region(context, target, cost, current, 1, state, diagnostics);
+            route_if(context, target, cost, current, state, diagnostics);
             continue;
         }
         if name != quantum_circ::op::GATE {
@@ -671,6 +670,73 @@ fn route_block<'c, 'a>(
 /// assign) so physical qubit identity survives the boundary. After the region
 /// is processed, the op's own qubit results are aliased back to those same
 /// roots so the surrounding block sees a continuous wire.
+/// Routes both arms of a `quantum.dynamic.if` from the layout at the branch.
+///
+/// The condition bit is only known at run time, so each arm is routed as the
+/// arm that runs, starting from the same incoming layout. Events from the two
+/// arms are recorded as alternatives. They are not appended as one sequence,
+/// and the arm that does not run does not move the layout seen by later gates.
+fn route_if<'c, 'a>(
+    context: &'c Context,
+    target: &FixedTarget,
+    cost: SabreCost,
+    op: OperationRef<'c, 'a>,
+    state: &mut RouteState<'c, 'a>,
+    diagnostics: &mut Diagnostics<'c>,
+) {
+    let layout_at_if = state.layout.clone();
+    let wires_at_if = state.wires.clone();
+    let next_phys_at_if = state.next_phys;
+    let event_mark = state.log.as_ref().map(|log| log.events.len());
+
+    recurse_region(context, target, cost, op, 0, state, diagnostics);
+    let then_events = take_new_events(state, event_mark);
+
+    state.layout = layout_at_if.clone();
+    state.wires = wires_at_if.clone();
+    state.next_phys = next_phys_at_if;
+
+    recurse_region(context, target, cost, op, 1, state, diagnostics);
+    let else_events = take_new_events(state, event_mark);
+
+    state.layout = layout_at_if;
+    state.wires = wires_at_if;
+    state.next_phys = next_phys_at_if;
+    publish_region_results(op, state);
+
+    if let Some(log) = &mut state.log {
+        log.note_branch(quon_core::BranchArm::Then, then_events);
+        log.note_branch(quon_core::BranchArm::Else, else_events);
+    }
+}
+
+fn take_new_events(
+    state: &mut RouteState<'_, '_>,
+    mark: Option<usize>,
+) -> Vec<quon_core::RawMappingEvent> {
+    let Some(mark) = mark else {
+        return Vec::new();
+    };
+    let Some(log) = &mut state.log else {
+        return Vec::new();
+    };
+    if mark > log.events.len() {
+        return Vec::new();
+    }
+    log.events.split_off(mark)
+}
+
+fn publish_region_results<'c, 'a>(op: OperationRef<'c, 'a>, state: &mut RouteState<'c, 'a>) {
+    let operand_roots = state.tracker.roots_for_operands(op);
+    for (result, root) in qubit_wiring::qubit_results(op)
+        .into_iter()
+        .zip(operand_roots.iter())
+    {
+        state.tracker.alias(result, *root);
+        state.wires.insert(*root, result);
+    }
+}
+
 fn recurse_region<'c, 'a>(
     context: &'c Context,
     target: &FixedTarget,
