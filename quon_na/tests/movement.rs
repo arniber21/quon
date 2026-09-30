@@ -150,6 +150,8 @@ fn pair_gap_leq_rb() {
             atom: AtomId(0),
             trap: TrapBinding::Slm { site: SiteId(0) },
         }],
+
+        declared_initial_bindings: Vec::new(),
     };
     let p = params();
     let pairs = ensure_interaction_pairs(&mut layout, &p, 3).expect("bank");
@@ -174,6 +176,8 @@ fn pair_pitch_isolates_non_partners() {
             atom: AtomId(0),
             trap: TrapBinding::Slm { site: SiteId(0) },
         }],
+
+        declared_initial_bindings: Vec::new(),
     };
     let p = params();
     let pairs = ensure_interaction_pairs(&mut layout, &p, 4).expect("bank");
@@ -1032,6 +1036,8 @@ fn skip_already_adjacent_no_move() {
                 trap: TrapBinding::Slm { site: SiteId(11) },
             },
         ],
+
+        declared_initial_bindings: Vec::new(),
     };
     let graph = graph_from_edges(2, &[(0, 1)]);
     let mut req = schedule_from_graph(graph).unwrap();
@@ -1266,6 +1272,8 @@ fn transfer_into_occupied_rejected() {
             },
         ],
         initial_bindings: vec![],
+
+        declared_initial_bindings: Vec::new(),
     };
     let mut occ_site = BTreeMap::new();
     let mut occ_atom = BTreeMap::new();
@@ -1382,6 +1390,8 @@ fn atom_moves_to_move_specs_fills_coords() {
             },
         ],
         initial_bindings: vec![],
+
+        declared_initial_bindings: Vec::new(),
     };
     let mut aod = BTreeMap::new();
     aod.insert(

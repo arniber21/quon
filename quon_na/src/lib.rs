@@ -57,6 +57,8 @@ pub mod placement;
 pub mod plan;
 pub mod qec;
 pub mod qec_schedule;
+#[cfg(feature = "mlir")]
+pub mod replay;
 pub mod report;
 pub mod schedule;
 pub mod schedule_entry;
@@ -152,3 +154,5 @@ pub use pipeline::{
     StatePrepMode, compaction_options, movement_params, run_from_graph, validate_speed_model,
     zoned_architecture,
 };
+#[cfg(feature = "mlir")]
+pub use replay::{DeclaredArchitecture, replay_emitted_schedule, verify_emitted_schedule};

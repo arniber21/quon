@@ -268,10 +268,13 @@ fn build_layout_from_assignment<V: VertexId>(
             },
         })
         .collect();
-    NeutralAtomLayout {
+    let mut layout = NeutralAtomLayout {
         sites: sites.to_vec(),
         initial_bindings,
-    }
+        declared_initial_bindings: Vec::new(),
+    };
+    layout.preserve_declared_start();
+    layout
 }
 
 /// `Σ w · √(euclidean_µm)` — the same metric

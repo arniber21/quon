@@ -375,6 +375,7 @@ mod tests {
                     trap: TrapBinding::Slm { site: SiteId(1) },
                 },
             ],
+            declared_initial_bindings: Vec::new(),
         }
     }
 

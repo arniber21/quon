@@ -207,6 +207,7 @@ pub(crate) fn layout_from_sites(site_pos: &BTreeMap<SiteId, Position>) -> Neutra
             .map(|(&id, &position)| AtomSite { id, position })
             .collect(),
         initial_bindings: Vec::new(),
+        declared_initial_bindings: Vec::new(),
     }
 }
 

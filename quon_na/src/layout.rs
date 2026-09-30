@@ -48,7 +48,24 @@ pub struct AtomBinding {
 #[serde(deny_unknown_fields)]
 pub struct NeutralAtomLayout {
     pub sites: Vec<AtomSite>,
+    /// Working occupancy. Zoned scheduling and flat AOD movement rewrite this
+    /// to the **final** sites. The emitted-schedule replay must not start here.
     pub initial_bindings: Vec<AtomBinding>,
+    /// Bindings at placement time. Recorded once, before those rewrites, and
+    /// kept when a later phase updates [`Self::initial_bindings`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_initial_bindings: Vec<AtomBinding>,
+}
+
+impl NeutralAtomLayout {
+    /// Remember the current bindings as the replay start, if that has not
+    /// already been recorded. Later rewrites of [`Self::initial_bindings`]
+    /// leave this vector alone.
+    pub fn preserve_declared_start(&mut self) {
+        if self.declared_initial_bindings.is_empty() && !self.initial_bindings.is_empty() {
+            self.declared_initial_bindings = self.initial_bindings.clone();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -78,6 +95,8 @@ mod tests {
                     },
                 },
             }],
+
+            declared_initial_bindings: Vec::new(),
         };
 
         let value = match serde_json::to_value(&layout) {

@@ -120,6 +120,8 @@ mod tests {
                     atom: AtomId(0),
                     trap: TrapBinding::Slm { site: SiteId(0) },
                 }],
+
+                declared_initial_bindings: Vec::new(),
             }),
             vec![ScheduleLayer {
                 cycle: 0,
