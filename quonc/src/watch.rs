@@ -1,6 +1,6 @@
 //! Debounced filesystem watch loop for rapid experiment iteration.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,37 @@ pub fn event_targets_paths(event: &notify::Event, paths: &[PathBuf]) -> bool {
     })
 }
 
+/// Locations watched for one input file.
+///
+/// The file itself stays in the list so events that name it still match
+/// `watch_paths`. Its parent directory is included the same way as the entry
+/// file: an editor rename-replace drops the old inode, and `is_relevant_event`
+/// ignores the removal, so only a non-recursive watch on the parent sees the
+/// new file.
+pub(crate) fn input_watch_targets(path: &Path) -> Vec<PathBuf> {
+    let mut targets = vec![path.to_path_buf()];
+    if let Some(parent) = path.parent() {
+        targets.push(parent.to_path_buf());
+    }
+    targets
+}
+
+/// Watch `path` and, when it has a parent, that parent non-recursively.
+///
+/// A parent-watch failure is ignored. The file watch is not: a missing input
+/// should still abort `--watch`.
+fn watch_file_and_parent(watcher: &mut RecommendedWatcher, path: &Path) -> Result<()> {
+    for (index, target) in input_watch_targets(path).into_iter().enumerate() {
+        let result = watcher.watch(&target, RecursiveMode::NonRecursive);
+        if index == 0 {
+            result.with_context(|| format!("watching {}", path.display()))?;
+        } else {
+            let _ = result;
+        }
+    }
+    Ok(())
+}
+
 /// Returns true for modify/create/rename events we should react to.
 pub fn is_relevant_event(event: &notify::Event) -> bool {
     matches!(
@@ -84,16 +115,9 @@ pub fn run_watch_loop(
     )
     .context("creating filesystem watcher")?;
 
-    watcher
-        .watch(&source, RecursiveMode::NonRecursive)
-        .with_context(|| format!("watching {}", source.display()))?;
-    if let Some(parent) = source.parent() {
-        let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
-    }
+    watch_file_and_parent(&mut watcher, &source)?;
     for path in extra_paths {
-        watcher
-            .watch(path, RecursiveMode::NonRecursive)
-            .with_context(|| format!("watching {}", path.display()))?;
+        watch_file_and_parent(&mut watcher, path)?;
     }
     if let Some(ref target) = target_path {
         let _ = watcher.watch(target, RecursiveMode::NonRecursive);
@@ -177,4 +201,18 @@ pub fn print_watch_metrics(
     _comparison: Option<&ComparisonReport>,
 ) {
     eprintln!("{}", format_watch_metrics_line(&report.snapshot, previous));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn include_watch_targets_include_the_parent_directory() {
+        let path = PathBuf::from("stdlib/qft.qn");
+        assert_eq!(
+            input_watch_targets(&path),
+            vec![path, PathBuf::from("stdlib")]
+        );
+    }
 }

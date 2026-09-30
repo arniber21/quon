@@ -33,7 +33,8 @@ or `--list-passes`.
 `--include PATH` (repeatable) prepends other `.qn` files before `SOURCE` and
 compiles them as one program. This is the experimental circuit-stdlib
 convention, not a module system: one flat scope, no nested includes, and
-duplicate top-level names are an error. See the
+duplicate `fn` names or duplicate `type` names are an error. A function and a
+type alias may share a name. See the
 [circuit stdlib](/reference/stdlib/).
 
 ```bash

@@ -62,8 +62,10 @@ pub fn chunk_at(chunks: &[SourceChunk], offset: usize) -> Option<&SourceChunk> {
 ///
 /// An empty `includes` list reads `main` alone and returns no chunks, which
 /// keeps single-file diagnostics on `main`. Duplicate canonical paths are
-/// rejected. When any include is present, duplicate top-level `fn` / `type`
-/// names across the concatenation are rejected.
+/// rejected. When any include is present, two top-level functions with the
+/// same name, or two top-level type aliases with the same name, are rejected.
+/// A function and a type alias may share a name; the typechecker keeps those
+/// namespaces separate.
 pub fn load_quon_sources(main: &Path, includes: &[PathBuf]) -> Result<(String, Vec<SourceChunk>)> {
     if includes.is_empty() {
         let source =
@@ -102,18 +104,22 @@ pub fn load_quon_sources(main: &Path, includes: &[PathBuf]) -> Result<(String, V
     Ok((source, chunks))
 }
 
-/// `Some` when `source` parses and two top-level declarations share a name.
-/// Parse failures return `None` so the compiler's diagnostic path can report them.
+/// `Some` when `source` parses and two top-level functions, or two top-level
+/// type aliases, share a name. A `fn` and a `type` with the same name are
+/// legal. Parse failures return `None` so the compiler's diagnostic path can
+/// report them.
 pub fn duplicate_toplevel_message(source: &str, chunks: &[SourceChunk]) -> Option<String> {
     let decls = frontend::parse_program(source).ok()?;
-    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut fns: HashMap<String, usize> = HashMap::new();
+    let mut types: HashMap<String, usize> = HashMap::new();
     for (decl, _) in &decls {
-        let (name, span) = match decl {
-            Decl::Fn { name, .. } | Decl::TypeAlias { name, .. } => (name.0.clone(), name.1),
+        let (seen, kind, name, span) = match decl {
+            Decl::Fn { name, .. } => (&mut fns, "function", &name.0, name.1),
+            Decl::TypeAlias { name, .. } => (&mut types, "type", &name.0, name.1),
         };
         if let Some(prev) = seen.insert(name.clone(), span.start) {
             return Some(format!(
-                "duplicate top-level name `{name}` ({} and {})",
+                "duplicate top-level {kind} `{name}` ({} and {})",
                 locate(source, chunks, prev),
                 locate(source, chunks, span.start),
             ));
@@ -164,11 +170,38 @@ mod tests {
             concatenate_sources(&[(&a, "fn a(): Int = 1\n"), (&b, "fn a(): Int = 2\n")]);
         let message = duplicate_toplevel_message(&source, &chunks).expect("duplicate name");
         assert!(
-            message.contains("duplicate top-level name `a`"),
+            message.contains("duplicate top-level function `a`"),
             "{message}"
         );
         assert!(message.contains("a.qn:1"), "{message}");
         assert!(message.contains("b.qn:1"), "{message}");
+    }
+
+    #[test]
+    fn duplicate_type_aliases_name_both_files() {
+        let a = PathBuf::from("a.qn");
+        let b = PathBuf::from("b.qn");
+        let (source, chunks) =
+            concatenate_sources(&[(&a, "type Foo = Int\n"), (&b, "type Foo = Qubit\n")]);
+        let message = duplicate_toplevel_message(&source, &chunks).expect("duplicate type");
+        assert!(
+            message.contains("duplicate top-level type `Foo`"),
+            "{message}"
+        );
+        assert!(message.contains("a.qn:1"), "{message}");
+        assert!(message.contains("b.qn:1"), "{message}");
+    }
+
+    #[test]
+    fn function_and_type_alias_may_share_a_name() {
+        let a = PathBuf::from("a.qn");
+        let b = PathBuf::from("b.qn");
+        let (source, chunks) =
+            concatenate_sources(&[(&a, "type Foo = Int\n"), (&b, "fn Foo(): Int = 1\n")]);
+        assert!(
+            duplicate_toplevel_message(&source, &chunks).is_none(),
+            "a function and a type alias with the same name are legal"
+        );
     }
 
     #[test]

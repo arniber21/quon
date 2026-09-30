@@ -15,13 +15,16 @@ order, then the entry source, and concatenates them into one program.
 
 - One flat top-level scope. A name defined in an include is visible to every
   later file, including the entry.
-- Duplicate top-level `fn` or `type` names are an error when any `--include` is
-  set. Listing the same path twice is an error.
+- Two top-level functions with the same name are an error, and two top-level
+  type aliases with the same name are an error, when any `--include` is set.
+  A function and a type alias may share a name. Listing the same path twice
+  is an error.
 - Diagnostics are attributed to the file whose byte range contains the span.
 - `--include` does not apply to OpenQASM input (`--from-qasm` or a `.qasm` path).
 - Includes are not nested. A file cannot itself request another file; the
   command line lists every input.
-- `--watch` also watches each included path.
+- `--watch` watches each included path and that file's parent directory, so an
+  editor rename-replace still rebuilds.
 
 This is reversible. A future `import` with namespaces would replace the flag.
 Samples that pass `--include stdlib/...` are the call sites to update.

@@ -3,10 +3,11 @@
 -- Stability: experimental. Compile with
 -- `quonc --include stdlib/qaoa.qn <program>.qn`. See stdlib/README.md.
 --
--- The cost layer is one Rzz(gamma) on every ordered pair from `pairs(n)`
--- (unweighted MaxCut on the complete graph). A `Matrix` of edge weights and
--- a circuit-valued `fold` over a parameter list are not used: elaboration
--- does not support those forms (same constraint as test/verify/qaoa.qn).
+-- The cost layer is one Rzz(gamma) on every unordered pair from `pairs(n)`
+-- (`0 <= i < j < n`; unweighted MaxCut on the complete graph). A `Matrix`
+-- of edge weights and a circuit-valued `fold` over a parameter list are not
+-- used: elaboration does not support those forms (same constraint as
+-- test/verify/qaoa.qn).
 -- Stack layers in the caller for p > 1.
 
 fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
