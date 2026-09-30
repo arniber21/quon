@@ -390,9 +390,9 @@ fn routing_summary(log: &MappingLog) -> String {
 
 /// True when a then/else pair finished on different permutations.
 fn arm_layouts_disagree(events: &[RawMappingEvent]) -> bool {
-    let mut index = 0;
-    while index < events.len() {
-        match &events[index] {
+    let mut rest = events;
+    while let Some((event, tail)) = rest.split_first() {
+        match event {
             RawMappingEvent::Branch {
                 arm: BranchArm::Then,
                 events: then_events,
@@ -401,16 +401,19 @@ fn arm_layouts_disagree(events: &[RawMappingEvent]) -> bool {
                 if arm_layouts_disagree(then_events) {
                     return true;
                 }
-                if let Some(RawMappingEvent::Branch {
-                    arm: BranchArm::Else,
-                    events: else_events,
-                    layout: else_layout,
-                }) = events.get(index + 1)
+                if let Some((
+                    RawMappingEvent::Branch {
+                        arm: BranchArm::Else,
+                        events: else_events,
+                        layout: else_layout,
+                    },
+                    after_else,
+                )) = tail.split_first()
                 {
                     if then_layout != else_layout || arm_layouts_disagree(else_events) {
                         return true;
                     }
-                    index += 2;
+                    rest = after_else;
                     continue;
                 }
             }
@@ -421,7 +424,7 @@ fn arm_layouts_disagree(events: &[RawMappingEvent]) -> bool {
             }
             RawMappingEvent::Swap { .. } | RawMappingEvent::Interaction { .. } => {}
         }
-        index += 1;
+        rest = tail;
     }
     false
 }
