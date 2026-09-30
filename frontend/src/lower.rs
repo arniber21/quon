@@ -17,13 +17,12 @@ use mlir_bridge::dialect::quantum_dynamic as qd;
 use quon_core::DepthExpr;
 use thiserror::Error;
 
-use crate::ast::{CliffordClass, Decl, Expr, Name, NatExpr, Pat, Stmt, Type as AstType};
+use crate::ast::{CliffordClass, Decl, Expr, Name, NatExpr, Pat, Type as AstType};
 use crate::diagnostics::Diagnostic;
 use crate::elaborate;
 use crate::lexer::Sp;
 use crate::specialized_circuit::{
-    SpecializationError, SpecializedCircuit, collect_gate_placements, flatten_app,
-    inverse_gate_name, qubit_targets,
+    SpecializationError, SpecializedCircuit, collect_gate_placements, flatten_app, qubit_targets,
 };
 use crate::typecheck::circuit;
 use crate::typecheck::{TypeChecker, TypeError};
@@ -40,6 +39,10 @@ pub enum LowerError {
     ParametricRunFn { name: String },
     #[error("could not read a constant qubit count from `{field}`")]
     NonConstWidth { field: &'static str },
+    /// A gate's `Circuit` depth did not reduce to a constant `i64`.
+    /// A symbolic depth used to be emitted as `1`.
+    #[error("could not read a constant gate depth")]
+    NonConstDepth,
     #[error("unknown gate `{name}`")]
     UnknownGate { name: String },
     #[error("rotation gate `{name}` needs a static angle literal")]
@@ -259,38 +262,45 @@ impl<'c> LoweringCtx<'c> {
             self.module.body().append_operation(adjoint);
         }
 
-        self.emit_circuit_func(name, in_qubits, out_qubits, &d, clifford, body)?;
+        let circuit = {
+            let ctx = self.elab_ctx();
+            let mut fuel = elaborate::fresh_fuel();
+            let elaborated =
+                elaborate::elaborate_circuit_body(body, &HashMap::new(), &ctx, &mut fuel)?;
+            SpecializedCircuit {
+                body: elaborated,
+                in_qubits,
+                out_qubits,
+                depth: d,
+                clifford,
+            }
+        };
+        self.emit_specialized(name, &circuit)?;
         Ok(())
     }
 
-    /// Emits `name` as a `quantum.circ.func` with the given, already-concrete
-    /// shape, lowering `body` with the existing zero-parameter walker
-    /// (`lower_circuit_block`/`lower_circuit_body_expr`). Shared by
-    /// `lower_circuit_fn` (a source-level zero-param definition) and
-    /// `specialize_named_fn` (a monomorphic instantiation of a parametric
-    /// one) so both funnel through one MLIR-emission path.
-    fn emit_circuit_func(
+    /// Emit a [`SpecializedCircuit`] as a `quantum.circ.func`.
+    ///
+    /// The body is already a gate sequence. This adapter places those gates; it
+    /// does not walk source `Expr` forms and it does not call `elaborate`.
+    fn emit_specialized(
         &mut self,
         name: &str,
-        in_qubits: i64,
-        out_qubits: i64,
-        depth: &DepthExpr,
-        clifford: bool,
-        body: &Sp<Expr>,
+        circuit: &SpecializedCircuit,
     ) -> Result<(), LowerError> {
         self.func_meta.insert(
             name.to_string(),
             FuncMeta {
-                depth: depth.clone(),
-                clifford,
+                depth: circuit.depth.clone(),
+                clifford: circuit.clifford,
             },
         );
-        Arc::make_mut(&mut self.bodies).insert(name.to_string(), body.clone());
+        Arc::make_mut(&mut self.bodies).insert(name.to_string(), circuit.body.clone());
 
         let region = Region::new();
         let qubit = qc::qubit_type(self.context);
         let mut block = Block::new(
-            &(0..in_qubits)
+            &(0..circuit.in_qubits)
                 .map(|_| (qubit, self.location))
                 .collect::<Vec<_>>(),
         );
@@ -302,16 +312,9 @@ impl<'c> LoweringCtx<'c> {
             wires.push(Value::from(arg));
         }
 
-        match &body.0 {
-            Expr::CircuitBlock(stmts) => {
-                self.lower_circuit_block(stmts, &mut block, &mut wires)?;
-            }
-            other => {
-                self.lower_circuit_body_expr(other, &mut block, &mut wires)?;
-            }
-        }
+        self.emit_placements(&circuit.body, &mut block, &mut wires)?;
 
-        if wires.len() != out_qubits as usize {
+        if wires.len() != circuit.out_qubits as usize {
             return Err(LowerError::Unsupported {
                 construct: "circuit output width mismatch",
             });
@@ -322,10 +325,10 @@ impl<'c> LoweringCtx<'c> {
         let func = qc::func(
             self.context,
             name,
-            in_qubits,
-            out_qubits,
-            depth,
-            clifford,
+            circuit.in_qubits,
+            circuit.out_qubits,
+            &circuit.depth,
+            circuit.clifford,
             region,
             self.location,
         )?;
@@ -333,21 +336,18 @@ impl<'c> LoweringCtx<'c> {
         Ok(())
     }
 
-    /// Emit a [`SpecializedCircuit`] as a monomorphic `quantum.circ.func` — the
-    /// Melior adapter half of issue #206 (specialization itself is Melior-free).
-    fn emit_specialized(
+    /// Place an elaborated gate sequence onto `wires`.
+    fn emit_placements(
         &mut self,
-        name: &str,
-        circuit: &SpecializedCircuit,
+        body: &Sp<Expr>,
+        block: &mut Block<'c>,
+        wires: &mut Vec<Value<'c, 'c>>,
     ) -> Result<(), LowerError> {
-        self.emit_circuit_func(
-            name,
-            circuit.in_qubits,
-            circuit.out_qubits,
-            &circuit.depth,
-            circuit.clifford,
-            &circuit.body,
-        )
+        let gates = collect_gate_placements(body)?;
+        for (gate, qubits) in gates {
+            self.apply_gate(&gate, &qubits, block, wires)?;
+        }
+        Ok(())
     }
 
     /// Build an [`elaborate::ElabCtx`] carrying both the parametric-circuit
@@ -822,9 +822,9 @@ impl<'c> LoweringCtx<'c> {
     /// `input_qubits`, for a `quantum.dynamic.unitary_region` body
     /// (`yield_terminator = false`, terminated by `quantum.circ.return`) or a
     /// `quantum.dynamic.if` branch (`yield_terminator = true`, terminated by
-    /// `quantum.dynamic.yield`). The callee's body is re-lowered from its
-    /// recorded AST so the inlined gates match the emitted `quantum.circ.func`
-    /// definition exactly — one source of truth for circuit-body lowering.
+    /// `quantum.dynamic.yield`). The callee's body is the gate sequence stored
+    /// when its `quantum.circ.func` was emitted, so the inlined gates match
+    /// that definition.
     fn inline_callee_region(
         &mut self,
         callee: &str,
@@ -856,10 +856,7 @@ impl<'c> LoweringCtx<'c> {
                 .map_err(|_| LowerError::Internal("missing unitary body block argument"))?;
             wires.push(Value::from(arg));
         }
-        match &body.0 {
-            Expr::CircuitBlock(stmts) => self.lower_circuit_block(stmts, &mut block, &mut wires)?,
-            other => self.lower_circuit_body_expr(other, &mut block, &mut wires)?,
-        }
+        self.emit_placements(&body, &mut block, &mut wires)?;
         if yield_terminator {
             block.append_operation(qd::r#yield(&wires, location)?);
         } else {
@@ -941,179 +938,6 @@ impl<'c> LoweringCtx<'c> {
             .ok_or(LowerError::Internal("missing QEC logical id for block SSA"))
     }
 
-    fn lower_circuit_block(
-        &mut self,
-        stmts: &[Sp<Stmt>],
-        block: &mut Block<'c>,
-        wires: &mut Vec<Value<'c, 'c>>,
-    ) -> Result<(), LowerError> {
-        let Some((last, leading)) = stmts.split_last() else {
-            return Err(LowerError::Unsupported {
-                construct: "empty circuit block",
-            });
-        };
-        let mut locals: HashMap<Name, Sp<Expr>> = HashMap::new();
-        for stmt in leading {
-            let Stmt::Let { pat, rhs } = &stmt.0 else {
-                return Err(LowerError::Unsupported {
-                    construct: "non-let statement inside a circuit block",
-                });
-            };
-            if let crate::ast::Pat::Var(var) = &pat.0 {
-                locals.insert(var.clone(), rhs.clone());
-            }
-        }
-        let Stmt::Expr(expr) = &last.0 else {
-            return Err(LowerError::Unsupported {
-                construct: "circuit block not ending in an expression",
-            });
-        };
-        self.lower_circuit_body_expr_with_locals(&expr.0, block, wires, &locals)
-    }
-
-    fn lower_circuit_body_expr_with_locals(
-        &mut self,
-        expr: &Expr,
-        block: &mut Block<'c>,
-        wires: &mut Vec<Value<'c, 'c>>,
-        locals: &HashMap<Name, Sp<Expr>>,
-    ) -> Result<(), LowerError> {
-        match expr {
-            // A circuit function's own body is a `circuit { .. }` block, but
-            // only its top-level caller (`emit_circuit_func`) unwraps that —
-            // inlining a *call* to it (e.g. `oracle()` composed into another
-            // circuit expression) reaches this walker directly on the callee's
-            // un-unwrapped `CircuitBlock`, so it must be handled here too.
-            Expr::CircuitBlock(stmts) => self.lower_circuit_block(stmts, block, wires),
-            Expr::Compose(lhs, rhs) => {
-                self.lower_circuit_body_expr_with_locals(&lhs.0, block, wires, locals)?;
-                self.lower_circuit_body_expr_with_locals(&rhs.0, block, wires, locals)
-            }
-            Expr::GateApp { gate, qubits } => {
-                // `controlled(c)` / `Rzz(θ)` have no native circ ops — rewrite via
-                // the elaborator (issue #182 / existing Rzz path) before apply.
-                if needs_gate_elaboration(gate) {
-                    let sp = (
-                        Expr::GateApp {
-                            gate: gate.clone(),
-                            qubits: qubits.clone(),
-                        },
-                        gate.1,
-                    );
-                    let mut fuel = elaborate::fresh_fuel();
-                    let ctx = self.elab_ctx();
-                    let elaborated =
-                        elaborate::elaborate_circuit_body(&sp, &HashMap::new(), &ctx, &mut fuel)?;
-                    return self.lower_circuit_body_expr_with_locals(
-                        &elaborated.0,
-                        block,
-                        wires,
-                        locals,
-                    );
-                }
-                self.apply_gate(gate, qubits, block, wires)
-            }
-            Expr::Adjoint(inner) => {
-                let name = zero_arg_callee_name(inner).ok_or(LowerError::Unsupported {
-                    construct: "adjoint of non-call",
-                })?;
-                self.inline_circuit_body(&name, block, wires, true)
-            }
-            Expr::App(f, x) => {
-                let name = zero_arg_callee_name_from_app(f, x).ok_or(LowerError::Unsupported {
-                    construct: "indirect circuit call",
-                })?;
-                self.inline_circuit_body(&name, block, wires, false)
-            }
-            Expr::Var(name) => {
-                let bound = locals
-                    .get(name)
-                    .cloned()
-                    .or_else(|| self.bodies.get(name).cloned());
-                if let Some(body) = bound {
-                    self.lower_circuit_body_expr_with_locals(&body.0, block, wires, locals)
-                } else {
-                    Err(LowerError::Unsupported {
-                        construct: "circuit variable",
-                    })
-                }
-            }
-            Expr::Par(body, count) => {
-                // `par { c } * k` reached inline (a zero-arg circuit fn whose
-                // body is a `par`, or a `par` inside a `circuit { }` block):
-                // reduce to a shifted `Compose` chain via the elaborator
-                // (resolving bare zero-arg callees against `self.bodies`), then
-                // lower the elaborated form so disjoint-qubit copies land as one
-                // layer.
-                let mut fuel = elaborate::fresh_fuel();
-                let ctx = self.elab_ctx();
-                let elaborated =
-                    elaborate::unroll_par(body, count, &HashMap::new(), &ctx, &mut fuel, body.1)?;
-                self.lower_circuit_body_expr_with_locals(&elaborated.0, block, wires, locals)
-            }
-            Expr::ParN(elems) => {
-                let mut fuel = elaborate::fresh_fuel();
-                let ctx = self.elab_ctx();
-                let span = elems
-                    .first()
-                    .map(|e| e.1)
-                    .unwrap_or_else(|| chumsky::span::SimpleSpan::from(0..0));
-                let elaborated =
-                    elaborate::unroll_parn(elems, &HashMap::new(), &ctx, &mut fuel, span)?;
-                self.lower_circuit_body_expr_with_locals(&elaborated.0, block, wires, locals)
-            }
-            _ => Err(LowerError::Unsupported {
-                construct: "circuit body expression",
-            }),
-        }
-    }
-
-    fn lower_circuit_body_expr(
-        &mut self,
-        expr: &Expr,
-        block: &mut Block<'c>,
-        wires: &mut Vec<Value<'c, 'c>>,
-    ) -> Result<(), LowerError> {
-        self.lower_circuit_body_expr_with_locals(expr, block, wires, &HashMap::new())
-    }
-
-    fn inline_circuit_body(
-        &mut self,
-        name: &str,
-        block: &mut Block<'c>,
-        wires: &mut Vec<Value<'c, 'c>>,
-        invert: bool,
-    ) -> Result<(), LowerError> {
-        let body = self
-            .bodies
-            .get(name)
-            .cloned()
-            .ok_or_else(|| LowerError::UnknownCallee {
-                name: name.to_string(),
-            })?;
-        if invert {
-            self.inline_inverted_body(&body, block, wires)
-        } else {
-            self.lower_circuit_body_expr(&body.0, block, wires)
-        }
-    }
-
-    fn inline_inverted_body(
-        &mut self,
-        body: &Sp<Expr>,
-        block: &mut Block<'c>,
-        wires: &mut Vec<Value<'c, 'c>>,
-    ) -> Result<(), LowerError> {
-        let gates = collect_gate_placements(body)?;
-        for (gate, qubits) in gates.into_iter().rev() {
-            let spec = self.gate_spec(&gate)?;
-            let inv_name = inverse_gate_name(&spec.name);
-            let inv_gate = (Expr::Var(inv_name), gate.1);
-            self.apply_gate(&inv_gate, &qubits, block, wires)?;
-        }
-        Ok(())
-    }
-
     fn apply_gate(
         &mut self,
         gate: &Sp<Expr>,
@@ -1187,7 +1011,7 @@ impl<'c> LoweringCtx<'c> {
             Expr::Var(name) => {
                 let ty = circuit::gate_type(name)
                     .ok_or_else(|| LowerError::UnknownGate { name: name.clone() })?;
-                let (clifford, depth) = circuit_meta(&ty);
+                let (clifford, depth) = circuit_meta(&ty)?;
                 Ok(GateSpec {
                     name: name.clone(),
                     angle: None,
@@ -1210,7 +1034,7 @@ impl<'c> LoweringCtx<'c> {
                 };
                 let ty = circuit::gate_type(name)
                     .ok_or_else(|| LowerError::UnknownGate { name: name.clone() })?;
-                let (clifford, depth) = circuit_meta(&ty);
+                let (clifford, depth) = circuit_meta(&ty)?;
                 Ok(GateSpec {
                     name: name.clone(),
                     angle: Some(*angle),
@@ -1260,14 +1084,19 @@ fn const_width(depth: &DepthExpr, field: &'static str) -> Result<i64, LowerError
         .ok_or(LowerError::NonConstWidth { field })
 }
 
-fn circuit_meta(ty: &Ty) -> (bool, i64) {
+fn circuit_meta(ty: &Ty) -> Result<(bool, i64), LowerError> {
     match ty {
         Ty::Fn(_, body) => circuit_meta(body),
-        Ty::Circuit { d, c, .. } => (
-            matches!(c, CliffordClass::Clifford),
-            i64::try_from(d.as_const().unwrap_or(1)).unwrap_or(1),
-        ),
-        _ => (true, 1),
+        Ty::Circuit { d, c, .. } => {
+            let depth = d
+                .as_const()
+                .and_then(|n| i64::try_from(n).ok())
+                .ok_or(LowerError::NonConstDepth)?;
+            Ok((matches!(c, CliffordClass::Clifford), depth))
+        }
+        _ => Err(LowerError::Unsupported {
+            construct: "gate type is not a circuit",
+        }),
     }
 }
 
@@ -1279,19 +1108,6 @@ fn is_split_call(expr: &Sp<Expr>) -> bool {
         Expr::App(f, x) => {
             let (head, args) = flatten_app(f, x);
             matches!(&head.0, Expr::Var(name) if name == "split") && args.len() == 2
-        }
-        _ => false,
-    }
-}
-
-/// Gates that `elaborate_circuit_body` rewrites before `quantum.circ` emission
-/// (`controlled(c)`, `Rzz(θ)`).
-fn needs_gate_elaboration(gate: &Sp<Expr>) -> bool {
-    match &gate.0 {
-        Expr::Controlled(_) => true,
-        Expr::App(f, x) => {
-            let (head, args) = flatten_app(f, x);
-            matches!(&head.0, Expr::Var(name) if name == "Rzz") && args.len() == 1
         }
         _ => false,
     }
@@ -1453,4 +1269,42 @@ pub fn lower_checked_decls<'c>(
     let mut lowering = LoweringCtx::new(context);
     lowering.lower_decls(decls)?;
     Ok(lowering.into_module())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn circuit_meta_rejects_non_const_depth() {
+        let symbolic = Ty::Circuit {
+            n: DepthExpr::Nat(1),
+            m: DepthExpr::Nat(1),
+            d: DepthExpr::Var("n".to_string()),
+            c: CliffordClass::Clifford,
+        };
+        assert!(matches!(
+            circuit_meta(&symbolic),
+            Err(LowerError::NonConstDepth)
+        ));
+
+        let overflow = Ty::Circuit {
+            n: DepthExpr::Nat(1),
+            m: DepthExpr::Nat(1),
+            d: DepthExpr::Nat(u64::MAX),
+            c: CliffordClass::Clifford,
+        };
+        assert!(matches!(
+            circuit_meta(&overflow),
+            Err(LowerError::NonConstDepth)
+        ));
+
+        let constant = Ty::Circuit {
+            n: DepthExpr::Nat(1),
+            m: DepthExpr::Nat(1),
+            d: DepthExpr::Nat(1),
+            c: CliffordClass::Clifford,
+        };
+        assert_eq!(circuit_meta(&constant).expect("const depth"), (true, 1));
+    }
 }
