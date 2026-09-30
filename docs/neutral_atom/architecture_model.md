@@ -302,7 +302,9 @@ the zone constraints degenerate to the flat model of [OLSQ-DPQA]/[Enola]. A
 zoned target (stage 2, #107) declares at least one `storage` and one
 `entanglement` zone. Loaded neutral-atom JSON also lists a `readout` zone.
 `ZonedArchitecture.require_readout_zone` is the in-memory switch for §7 and
-is set from that zone's presence; the flat AOD path leaves atoms in place.
+is set from that zone's presence. `validate` rejects a declared readout zone
+with the flag left false. An architecture with no readout zone, including
+the flat AOD path, leaves atoms in place.
 
 ### 8.3 Movement
 

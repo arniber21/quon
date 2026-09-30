@@ -161,12 +161,12 @@ pub struct ZonedArchitecture {
     pub trap_transfer_us: u64,
     /// Scheduler and verifier switch for readout-zone residency.
     ///
-    /// Loaded targets set this from the zone list: a declared `readout` zone
-    /// turns it on ([`crate::pipeline::zoned_architecture`]). That zone list
-    /// is the source of truth. While set, measurement, reset, and reuse run
-    /// only at a readout site, after a legal load–move–store when the atom
-    /// is elsewhere. Hand-built architectures may leave it false for in-place
-    /// ops. The flat AOD backend does not read this flag and does not shuttle.
+    /// A declared readout zone requires this flag. [`Self::validate`] rejects
+    /// the zone with the flag left false, so the zone list stays the source
+    /// of truth ([`crate::pipeline::zoned_architecture`] sets the flag from
+    /// that list). While set, measurement, reset, and reuse run only at a
+    /// readout site. An architecture with no readout zone may leave this
+    /// false and measure in place. The flat AOD backend does not read it.
     pub require_readout_zone: bool,
     /// Rydberg interaction range (µm) for simultaneous-gate legality.
     /// `0.0` disables the constraint (hand-built test architectures).
@@ -224,6 +224,11 @@ impl ZonedArchitecture {
         }
         if !self.storage_zones().any(|_| true) {
             return Err(ZonedScheduleError::MissingStorageZone);
+        }
+        if self.zones.iter().any(|zone| zone.kind == ZoneKind::Readout)
+            && !self.require_readout_zone
+        {
+            return Err(ZonedScheduleError::ReadoutZoneRequiresResidency);
         }
         Ok(())
     }
@@ -503,6 +508,8 @@ pub enum ZonedScheduleError {
         free: usize,
         capacity: usize,
     },
+    #[error("zoned architecture declares a readout zone but require_readout_zone is false")]
+    ReadoutZoneRequiresResidency,
     #[error("readout residency requires a placed layout")]
     MissingLayout,
     #[error("zone {0} occupancy {1} exceeds capacity {2}")]
@@ -575,8 +582,9 @@ pub fn euclidean_um(a: Position, b: Position) -> f64 {
 /// updated site. When [`ZonedArchitecture::require_readout_zone`] is set,
 /// measurement, reset, and reuse must sit in a readout zone for that layer,
 /// the same layer must not move or transfer that atom, and a reuse is legal
-/// only after that atom's measure and a later-or-same-cycle reset have
-/// completed in an earlier cycle.
+/// only after that atom's measure and reset have completed in an earlier
+/// cycle. Simultaneous readout ops must also fit in the readout sites that
+/// are still free after counting atoms already resident there.
 pub fn validate_zone_constraints(
     layers: &[ScheduleLayer],
     layout: &NeutralAtomLayout,
@@ -590,6 +598,10 @@ pub fn validate_zone_constraints(
 
     for layer in layers {
         if arch.require_readout_zone {
+            let readout_atoms = readout_atoms_in(layer);
+            if !readout_atoms.is_empty() {
+                ensure_readout_fits(&readout_fit(&readout_atoms, &atom_site, &site_zone))?;
+            }
             let moving = atoms_in_motion(layer);
             for action in &layer.actions {
                 let Some(atom) = readout_action_atom(action) else {
@@ -679,6 +691,74 @@ fn binding_sites(layout: &NeutralAtomLayout) -> BTreeMap<AtomId, SiteId> {
             (b.atom, site)
         })
         .collect()
+}
+
+fn readout_atoms_in(layer: &ScheduleLayer) -> BTreeSet<AtomId> {
+    layer
+        .actions
+        .iter()
+        .filter_map(readout_action_atom)
+        .collect()
+}
+
+/// Readout sites still free for this layer's readout ops.
+///
+/// `needed` counts distinct atoms measured, reset, or reused together.
+/// Sites already held by any atom, including atoms that are not in this
+/// operation, are not free. `movers` are the ops whose atoms are not
+/// already in the readout zone.
+struct ReadoutFit {
+    needed: usize,
+    movers: usize,
+    free: usize,
+    capacity: usize,
+}
+
+fn readout_fit(
+    atoms: &BTreeSet<AtomId>,
+    atom_site: &BTreeMap<AtomId, SiteId>,
+    site_zone: &BTreeMap<SiteId, ZoneKind>,
+) -> ReadoutFit {
+    let occupied: BTreeSet<SiteId> = atom_site.values().copied().collect();
+    let mut capacity = 0usize;
+    let mut taken = 0usize;
+    for (site, kind) in site_zone {
+        if *kind != ZoneKind::Readout {
+            continue;
+        }
+        capacity += 1;
+        if occupied.contains(site) {
+            taken += 1;
+        }
+    }
+    let movers = atoms
+        .iter()
+        .filter(|atom| {
+            atom_site
+                .get(atom)
+                .and_then(|site| site_zone.get(site))
+                .copied()
+                != Some(ZoneKind::Readout)
+        })
+        .count();
+    ReadoutFit {
+        needed: atoms.len(),
+        movers,
+        free: capacity.saturating_sub(taken),
+        capacity,
+    }
+}
+
+fn ensure_readout_fits(fit: &ReadoutFit) -> Result<(), ZonedScheduleError> {
+    if fit.needed > fit.capacity || fit.movers > fit.free {
+        Err(ZonedScheduleError::InsufficientReadout {
+            needed: fit.needed,
+            free: fit.free,
+            capacity: fit.capacity,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn readout_action_atom(action: &NeutralAtomAction) -> Option<AtomId> {
@@ -1328,6 +1408,7 @@ pub(crate) fn place_readout_layers(
     arch: &ZonedArchitecture,
     start_cycle: u32,
 ) -> Result<ReadoutPlacement, ZonedScheduleError> {
+    arch.validate()?;
     if !arch.require_readout_zone || !schedule_has_readout(layers) {
         return Ok(ReadoutPlacement {
             layers: layers.to_vec(),
@@ -1499,7 +1580,6 @@ fn plan_readout_moves(
     readout_sites: &[(SiteId, Position)],
     placement: &mut AtomPlacement,
 ) -> Result<Vec<PlannedMove>, ZonedScheduleError> {
-    let capacity = readout_sites.len();
     let mut unique = BTreeSet::new();
     for &atom in atoms {
         unique.insert(atom);
@@ -1520,13 +1600,13 @@ fn plan_readout_moves(
         .copied()
         .filter(|(id, _)| !taken.contains(id))
         .collect();
-    if unique.len() > capacity || movers.len() > free.len() {
-        return Err(ZonedScheduleError::InsufficientReadout {
-            needed: unique.len(),
-            free: free.len(),
-            capacity,
-        });
-    }
+    let fit = ReadoutFit {
+        needed: unique.len(),
+        movers: movers.len(),
+        free: free.len(),
+        capacity: readout_sites.len(),
+    };
+    ensure_readout_fits(&fit)?;
 
     let mut used = BTreeSet::new();
     let mut planned = Vec::new();
@@ -1545,9 +1625,9 @@ fn plan_readout_moves(
             });
         let Some((to_site, to_pos)) = target.copied() else {
             return Err(ZonedScheduleError::InsufficientReadout {
-                needed: unique.len(),
-                free: free.len(),
-                capacity,
+                needed: fit.needed,
+                free: fit.free,
+                capacity: fit.capacity,
             });
         };
         used.insert(to_site);
@@ -2845,7 +2925,7 @@ pub fn toy_zoned_architecture() -> ZonedArchitecture {
             max_velocity_m_s: 0.0,
         },
         trap_transfer_us: 15,
-        require_readout_zone: false,
+        require_readout_zone: true,
         rydberg_range_um: 7.5,
         min_rydberg_spacing_um: 18.75,
         aod_min_separation_um: 2.0,
@@ -3707,21 +3787,8 @@ mod tests {
 
     #[test]
     fn measure_requires_readout_when_configured() {
-        let mut arch = toy_zoned_architecture();
-        arch.require_readout_zone = true;
-        let layout = NeutralAtomLayout {
-            sites: vec![AtomSite {
-                id: SiteId(0),
-                position: Position {
-                    x_um: 0.0,
-                    y_um: 0.0,
-                },
-            }],
-            initial_bindings: vec![AtomBinding {
-                atom: AtomId(0),
-                trap: TrapBinding::Slm { site: SiteId(0) },
-            }],
-        };
+        let arch = readout_arch();
+        let layout = storage_and_readout_layout();
         let layers = vec![ScheduleLayer {
             cycle: 0,
             actions: vec![NeutralAtomAction::Measure {
@@ -3737,9 +3804,40 @@ mod tests {
     }
 
     fn readout_arch() -> ZonedArchitecture {
+        toy_zoned_architecture()
+    }
+
+    /// No readout zone: in-place measurement is the flat-array behavior.
+    fn arch_without_readout() -> ZonedArchitecture {
         let mut arch = toy_zoned_architecture();
-        arch.require_readout_zone = true;
+        arch.zones.retain(|zone| zone.kind != ZoneKind::Readout);
+        arch.require_readout_zone = false;
         arch
+    }
+
+    fn storage_and_readout_layout() -> NeutralAtomLayout {
+        NeutralAtomLayout {
+            sites: vec![
+                AtomSite {
+                    id: SiteId(0),
+                    position: Position {
+                        x_um: 0.0,
+                        y_um: 0.0,
+                    },
+                },
+                AtomSite {
+                    id: SiteId(1),
+                    position: Position {
+                        x_um: 0.0,
+                        y_um: 100.0,
+                    },
+                },
+            ],
+            initial_bindings: vec![AtomBinding {
+                atom: AtomId(0),
+                trap: TrapBinding::Slm { site: SiteId(0) },
+            }],
+        }
     }
 
     fn measure_action(atom: u32, duration_us: u64) -> NeutralAtomAction {
@@ -3782,7 +3880,7 @@ mod tests {
         let arch = readout_arch();
         let off = schedule_zoned(
             scheduled.request.clone(),
-            &toy_zoned_architecture(),
+            &arch_without_readout(),
             PlacerMode::RoutingAgnostic,
         )
         .expect("in-place");
@@ -3878,15 +3976,37 @@ mod tests {
     }
 
     #[test]
-    fn readout_flag_off_does_not_shuttle() {
+    fn declared_readout_zone_rejects_flag_off() {
+        let mut arch = toy_zoned_architecture();
+        arch.require_readout_zone = false;
+        assert!(matches!(
+            arch.validate(),
+            Err(ZonedScheduleError::ReadoutZoneRequiresResidency)
+        ));
         let graph = matching_graph(1);
         let mut req = schedule_from_graph(graph).expect("stub");
         req.layers = vec![ScheduleLayer {
             cycle: 0,
             actions: vec![measure_action(0, 10)],
         }];
-        let result = schedule_zoned(req, &toy_zoned_architecture(), PlacerMode::RoutingAgnostic)
-            .expect("in-place");
+        assert!(matches!(
+            schedule_zoned(req, &arch, PlacerMode::RoutingAgnostic),
+            Err(ZonedScheduleError::ReadoutZoneRequiresResidency)
+        ));
+    }
+
+    #[test]
+    fn no_readout_zone_measures_in_place() {
+        let arch = arch_without_readout();
+        arch.validate()
+            .expect("no readout zone is a valid in-place arch");
+        let graph = matching_graph(1);
+        let mut req = schedule_from_graph(graph).expect("stub");
+        req.layers = vec![ScheduleLayer {
+            cycle: 0,
+            actions: vec![measure_action(0, 10)],
+        }];
+        let result = schedule_zoned(req, &arch, PlacerMode::RoutingAgnostic).expect("in-place");
         assert_eq!(result.rearrangement_steps, 0);
         assert!(result.request.layers.iter().any(|layer| {
             layer
@@ -3905,19 +4025,7 @@ mod tests {
     #[test]
     fn rejects_reset_outside_readout_zone() {
         let arch = readout_arch();
-        let layout = NeutralAtomLayout {
-            sites: vec![AtomSite {
-                id: SiteId(0),
-                position: Position {
-                    x_um: 0.0,
-                    y_um: 0.0,
-                },
-            }],
-            initial_bindings: vec![AtomBinding {
-                atom: AtomId(0),
-                trap: TrapBinding::Slm { site: SiteId(0) },
-            }],
-        };
+        let layout = storage_and_readout_layout();
         let layers = vec![ScheduleLayer {
             cycle: 0,
             actions: vec![NeutralAtomAction::Reset {
@@ -4009,6 +4117,54 @@ mod tests {
         assert!(matches!(
             validate_zone_constraints(&layers, &layout, &arch),
             Err(ZonedScheduleError::ReuseBeforeReset(AtomId(0)))
+        ));
+    }
+
+    #[test]
+    fn verifier_rejects_readout_ops_beyond_free_sites() {
+        let arch = readout_arch();
+        // One readout site, already held by a resident atom. The measured
+        // atom is also outside the zone, but the capacity failure is reported
+        // first: free sites count atoms already resident.
+        let layout = NeutralAtomLayout {
+            sites: vec![
+                AtomSite {
+                    id: SiteId(0),
+                    position: Position {
+                        x_um: 0.0,
+                        y_um: 0.0,
+                    },
+                },
+                AtomSite {
+                    id: SiteId(1),
+                    position: Position {
+                        x_um: 0.0,
+                        y_um: 100.0,
+                    },
+                },
+            ],
+            initial_bindings: vec![
+                AtomBinding {
+                    atom: AtomId(0),
+                    trap: TrapBinding::Slm { site: SiteId(1) },
+                },
+                AtomBinding {
+                    atom: AtomId(1),
+                    trap: TrapBinding::Slm { site: SiteId(0) },
+                },
+            ],
+        };
+        let layers = vec![ScheduleLayer {
+            cycle: 0,
+            actions: vec![measure_action(1, 1)],
+        }];
+        assert!(matches!(
+            validate_zone_constraints(&layers, &layout, &arch),
+            Err(ZonedScheduleError::InsufficientReadout {
+                needed: 1,
+                free: 0,
+                capacity: 1,
+            })
         ));
     }
 
