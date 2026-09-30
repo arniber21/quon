@@ -11,6 +11,7 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use quon_core::DepthExpr;
 
+use crate::circ_extract::SeamError;
 use crate::dialect::{
     quantum_circ::{self, attr},
     quantum_dynamic,
@@ -142,7 +143,7 @@ fn merge_pair<'c, 'a>(
     current: GateRef<'c, 'a>,
     previous_info: &RotationInfo,
     current_info: &RotationInfo,
-) -> (i64, bool) {
+) -> Result<(i64, bool), SeamError> {
     let rewriter = IrRewriter::new(context);
     let base = rewriter.as_rewriter_base();
     let inputs: Vec<Value<'c, 'a>> = previous
@@ -155,6 +156,11 @@ fn merge_pair<'c, 'a>(
         .filter(|result| quantum_circ::is_qubit_type(result.r#type()))
         .map(Value::from)
         .collect();
+    if inputs.is_empty() || outputs.is_empty() {
+        return Err(SeamError::Build(
+            "rotation merge is missing a qubit wire".to_string(),
+        ));
+    }
     let total = previous_info.angle + current_info.angle;
     if is_zero_mod_2pi(total) {
         for (input, output) in inputs.into_iter().zip(outputs) {
@@ -162,45 +168,45 @@ fn merge_pair<'c, 'a>(
         }
         base.erase_op(current.operation);
         base.erase_op(previous.operation);
-        return (
+        return Ok((
             quon_core::optimization::seq_depth(
                 previous.depth_contribution as u64,
                 current.depth_contribution as u64,
             ) as i64,
             true,
-        );
+        ));
     }
     let location = current.operation.location();
-    let merged = module_block.insert_operation_before(
-        anchor,
-        quantum_circ::rotation_gate(
-            context,
-            &previous_info.axis,
-            total,
-            previous.depth_contribution,
-            false,
-            inputs[0],
-            location,
-        )
-        .unwrap_or_else(|_| unreachable!("merged rotation builds")),
-    );
-    let merged_out = Value::from(
-        merged
-            .result(0)
-            .unwrap_or_else(|_| unreachable!("merged result")),
-    );
+    let built = quantum_circ::rotation_gate(
+        context,
+        &previous_info.axis,
+        total,
+        previous.depth_contribution,
+        false,
+        inputs[0],
+        location,
+    )
+    .map_err(|error| SeamError::Build(error.to_string()))?;
+    let merged = module_block.insert_operation_before(anchor, built);
+    let merged_out = match merged.result(0) {
+        Ok(result) => Value::from(result),
+        Err(error) => {
+            base.erase_op(merged);
+            return Err(SeamError::Build(error.to_string()));
+        }
+    };
     for output in outputs {
         base.replace_all_uses_with(output, merged_out);
     }
     base.erase_op(current.operation);
     base.erase_op(previous.operation);
-    (
+    Ok((
         quon_core::optimization::seq_depth(
             previous.depth_contribution as u64,
             current.depth_contribution as u64,
         ) as i64,
         false,
-    )
+    ))
 }
 
 fn merge_once_in_block<'c, 'a>(context: &'c Context, block: melior::ir::BlockRef<'c, 'a>) -> i64 {
@@ -241,7 +247,7 @@ fn merge_once_in_block<'c, 'a>(context: &'c Context, block: melior::ir::BlockRef
                 gate_info.operand_keys.len(),
             )
         {
-            let (removed, _) = merge_pair(
+            let (removed, _) = match merge_pair(
                 context,
                 block,
                 current_op,
@@ -249,7 +255,18 @@ fn merge_once_in_block<'c, 'a>(context: &'c Context, block: melior::ir::BlockRef
                 gate_ref,
                 &previous_info,
                 &gate_info,
-            );
+            ) {
+                Ok(merged) => merged,
+                Err(error) => {
+                    eprintln!("warning: rotation_merging declined a rewrite: {error}");
+                    // Keep the current gate as the producer so this failed pair
+                    // is not immediately retried against the same predecessor.
+                    for key in &gate_info.result_keys {
+                        producer.insert(*key, (gate_ref, gate_info.clone()));
+                    }
+                    continue;
+                }
+            };
             removed_depth += removed;
             for key in &previous_info.result_keys {
                 producer.remove(key);
@@ -389,4 +406,46 @@ pub fn create_pass() -> Pass {
         "",
         &[],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GateRef, RotationInfo, merge_pair};
+    use crate::dialect::quantum_circ as qc;
+
+    use melior::ir::{BlockLike, Location, Module};
+
+    #[test]
+    fn merge_pair_declines_when_rotation_has_no_qubit_wire() {
+        let context = melior::Context::new();
+        qc::register_dialect(&context);
+        let location = Location::unknown(&context);
+        let module = Module::new(location);
+        let block = module.body();
+        let bare = block.append_operation(qc::r#return(&[], location).expect("return"));
+        let before = module.as_operation().to_string();
+        let gate = GateRef {
+            operation: bare,
+            depth_contribution: 1,
+        };
+        let info = RotationInfo {
+            axis: "Rz".to_string(),
+            angle: 0.2,
+            operand_keys: Vec::new(),
+            result_keys: Vec::new(),
+        };
+
+        let error = merge_pair(&context, block, bare, gate, gate, &info, &info)
+            .expect_err("missing qubit wire");
+
+        assert!(
+            error.to_string().contains("missing a qubit wire"),
+            "{error}"
+        );
+        assert_eq!(
+            module.as_operation().to_string(),
+            before,
+            "a declined merge must not rewrite the block"
+        );
+    }
 }
