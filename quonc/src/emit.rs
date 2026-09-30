@@ -6,8 +6,8 @@
 //! compiler stats. A later `-` path goes to stderr once an earlier artifact
 //! already owns stdout. Naviz and QEC paths are filesystem-only.
 //!
-//! QEC experiment dual-emit and validation stay in the binary. This module
-//! calls them through [`QecArtifactSink`] so the `emitted` flag and the
+//! QEC experiment dual-emit and validation live in [`crate::qec_emit`]. This
+//! module calls them through [`QecArtifactSink`] so the `emitted` flag and the
 //! success hint keep their original place in the sequence.
 
 use std::io::{self, Write};
@@ -59,10 +59,12 @@ pub struct ArtifactFlags<'a> {
     pub has_metrics_snapshot: bool,
 }
 
-/// Filesystem QEC artifacts that remain in the quonc binary.
+/// Filesystem QEC artifacts, invoked only when the corresponding flag is set
+/// and only after the stdout artifacts, so validation still sees the same
+/// `emitted` state.
 ///
-/// The sink runs only when the corresponding flag is set, after the stdout
-/// artifacts, so validation still sees the same `emitted` state.
+/// The CLI implements this by calling [`crate::qec_emit`]. Stim/Sinter sampling
+/// stays in the binary and is passed into validation from there.
 pub trait QecArtifactSink {
     fn emit_experiment(
         &self,
