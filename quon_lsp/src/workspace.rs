@@ -11,7 +11,8 @@ use frontend::analysis::{
     DocumentAnalysis, OccurrenceKind, ResolvedTarget, Symbol, SymbolId, SymbolIndex, SymbolKind,
     occurrences_of,
 };
-use frontend::lexer::{SimpleSpan, Token, lex};
+use frontend::ast::{Decl, Expr, Pat, Stmt};
+use frontend::lexer::{SimpleSpan, Sp, Token, lex};
 use tower_lsp::lsp_types::{Location, Url};
 
 use crate::convert::span_to_range;
@@ -261,11 +262,16 @@ pub fn is_workspace_export(symbols: &SymbolIndex, sym: &Symbol) -> bool {
 /// Identifier occurrences of `name` that are not shadowed by a local binding.
 ///
 /// Used for files that do not themselves define `name`. A lex failure falls
-/// back to resolved export occurrences only.
+/// back to resolved export occurrences only. A parse or desugar failure leaves
+/// an empty declaration list plus diagnostics and no symbol index; scraping
+/// idents there would treat parameters and `let` bindings as cross-file reads.
 pub fn cross_file_occurrences(
     analysis: &DocumentAnalysis,
     name: &str,
 ) -> Vec<(SimpleSpan, OccurrenceKind)> {
+    if analysis.decls.is_empty() && !analysis.diagnostics.is_empty() {
+        return Vec::new();
+    }
     let Ok(tokens) = lex(&analysis.src) else {
         return export_occurrences(analysis, name);
     };
@@ -298,18 +304,191 @@ fn classify_ident(
         }
         return None;
     }
-    if let Some(id) = analysis.symbols.resolve_name_at(name, span.start) {
-        let sym = analysis.symbols.get(id)?;
-        if sym.name == name && is_workspace_export(&analysis.symbols, sym) {
-            return Some(if sym.name_span == span {
-                OccurrenceKind::Write
-            } else {
-                OccurrenceKind::Read
-            });
+    if let Some(target) = analysis.resolutions.get(span) {
+        match target {
+            ResolvedTarget::Builtin(_)
+            | ResolvedTarget::Gate(_)
+            | ResolvedTarget::QuantumBuiltin(_) => return None,
+            ResolvedTarget::Symbol(_) | ResolvedTarget::TypeAlias(_) => {}
         }
+    }
+    // A local shadows this ident only where the typechecker would see that binding.
+    // Type parameters cover the whole `fn` or `type`. Value parameters cover the
+    // signature and body. `let` and circuit bindings stay statement-scoped.
+    if local_shadows(analysis, name, span.start) {
         return None;
     }
     Some(OccurrenceKind::Read)
+}
+
+fn local_shadows(analysis: &DocumentAnalysis, name: &str, offset: usize) -> bool {
+    analysis
+        .decls
+        .iter()
+        .any(|decl| decl_shadows(decl, name, offset))
+}
+
+fn span_contains(span: SimpleSpan, offset: usize) -> bool {
+    span.start <= offset && offset < span.end
+}
+
+fn decl_shadows(decl: &(Decl, SimpleSpan), name: &str, offset: usize) -> bool {
+    if !span_contains(decl.1, offset) {
+        return false;
+    }
+    match &decl.0 {
+        Decl::Fn {
+            type_params,
+            params,
+            body,
+            ..
+        } => {
+            // A type parameter covers the whole declaration. A value parameter
+            // covers the signature and the body, including type annotations.
+            if type_params.iter().any(|param| param.name.0 == name)
+                || params.iter().any(|(param, _)| param.0 == name)
+            {
+                return true;
+            }
+            expr_shadows(body, name, offset, false)
+        }
+        Decl::TypeAlias { params, .. } => params.iter().any(|param| param.name.0 == name),
+    }
+}
+
+fn expr_shadows(expr: &(Expr, SimpleSpan), name: &str, offset: usize, inherited: bool) -> bool {
+    if !span_contains(expr.1, offset) {
+        return false;
+    }
+    // An outer binding covers type arguments and ascriptions in this expression.
+    // `let` still passes `false` into its RHS so that RHS is not its own shadow.
+    if inherited {
+        return true;
+    }
+    match &expr.0 {
+        Expr::Let { pat, rhs, body } => {
+            if span_contains(rhs.1, offset) {
+                return expr_shadows(rhs, name, offset, inherited);
+            }
+            if span_contains(body.1, offset) {
+                return expr_shadows(body, name, offset, inherited || pat_binds(pat, name));
+            }
+            false
+        }
+        Expr::Bind { rhs, param, body } => {
+            if span_contains(rhs.1, offset) {
+                return expr_shadows(rhs, name, offset, inherited);
+            }
+            if span_contains(body.1, offset) {
+                return expr_shadows(body, name, offset, inherited || param.0 == name);
+            }
+            false
+        }
+        Expr::Lam { params, body } => {
+            if params.iter().any(|(pat, _)| pat_binds(pat, name)) {
+                return true;
+            }
+            expr_shadows(body, name, offset, false)
+        }
+        Expr::Match { scrutinee, arms } => {
+            if span_contains(scrutinee.1, offset) {
+                return expr_shadows(scrutinee, name, offset, inherited);
+            }
+            for (pat, arm) in arms {
+                if span_contains(arm.1, offset) {
+                    return expr_shadows(arm, name, offset, inherited || pat_binds(pat, name));
+                }
+            }
+            false
+        }
+        Expr::For { pat, iter, body } => {
+            if span_contains(iter.1, offset) {
+                return expr_shadows(iter, name, offset, inherited);
+            }
+            if span_contains(body.1, offset) {
+                return expr_shadows(body, name, offset, inherited || pat_binds(pat, name));
+            }
+            false
+        }
+        Expr::Borrow { bindings, body } => {
+            // A borrow binding covers its type annotations and the body, the
+            // same way a lambda parameter covers the whole lambda. Later
+            // bindings in the list sit in that span too.
+            if bindings.iter().any(|(bound, _)| bound.0 == name) {
+                return true;
+            }
+            stmts_shadows(body, name, offset, false)
+        }
+        Expr::CircuitBlock(stmts) | Expr::RunBlock(stmts) => {
+            stmts_shadows(stmts, name, offset, inherited)
+        }
+        Expr::App(lhs, rhs)
+        | Expr::Compose(lhs, rhs)
+        | Expr::Par(lhs, rhs)
+        | Expr::BinOp { lhs, rhs, .. } => {
+            expr_shadows(lhs, name, offset, inherited) || expr_shadows(rhs, name, offset, inherited)
+        }
+        Expr::GateApp { gate, qubits } => {
+            expr_shadows(gate, name, offset, inherited)
+                || expr_shadows(qubits, name, offset, inherited)
+        }
+        Expr::If { cond, then, else_ } => {
+            expr_shadows(cond, name, offset, inherited)
+                || expr_shadows(then, name, offset, inherited)
+                || expr_shadows(else_, name, offset, inherited)
+        }
+        Expr::ParN(elems) | Expr::Tuple(elems) | Expr::List(elems) => elems
+            .iter()
+            .any(|elem| expr_shadows(elem, name, offset, inherited)),
+        Expr::TypeApp { callee, .. }
+        | Expr::Neg(callee)
+        | Expr::Adjoint(callee)
+        | Expr::Controlled(callee)
+        | Expr::Return(callee)
+        | Expr::Ascribe(callee, _) => expr_shadows(callee, name, offset, inherited),
+        Expr::Var(_) => inherited,
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit => false,
+    }
+}
+
+fn stmts_shadows(stmts: &[Sp<Stmt>], name: &str, offset: usize, mut inherited: bool) -> bool {
+    for stmt in stmts {
+        if stmt.1.end <= offset {
+            if stmt_binds(stmt, name) {
+                inherited = true;
+            }
+            continue;
+        }
+        if !span_contains(stmt.1, offset) {
+            continue;
+        }
+        return match &stmt.0 {
+            Stmt::Let { rhs, .. } | Stmt::Bind { rhs, .. } => {
+                if span_contains(rhs.1, offset) {
+                    expr_shadows(rhs, name, offset, inherited)
+                } else {
+                    false
+                }
+            }
+            Stmt::Expr(expr) => expr_shadows(expr, name, offset, inherited),
+        };
+    }
+    false
+}
+
+fn stmt_binds(stmt: &Sp<Stmt>, name: &str) -> bool {
+    match &stmt.0 {
+        Stmt::Let { pat, .. } | Stmt::Bind { pat, .. } => pat_binds(pat, name),
+        Stmt::Expr(_) => false,
+    }
+}
+
+fn pat_binds(pat: &Sp<Pat>, name: &str) -> bool {
+    match &pat.0 {
+        Pat::Var(bound) => bound == name,
+        Pat::Tuple(pats) => pats.iter().any(|pat| pat_binds(pat, name)),
+        Pat::Wildcard | Pat::Lit(_) => false,
+    }
 }
 
 fn export_occurrences(

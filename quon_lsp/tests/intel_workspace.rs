@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process;
 
 use frontend::analyze;
-use tower_lsp::lsp_types::{GotoDefinitionResponse, Url};
+use tower_lsp::lsp_types::{GotoDefinitionResponse, Position, TextEdit, Url};
 
 use quon_lsp::intel::{
     definition_in_workspace, prepare_rename_in_workspace, references_in_workspace,
@@ -100,6 +100,192 @@ fn rename_edits_sibling_files() {
         changes[&use_url]
             .iter()
             .any(|edit| edit.new_text == "helper2")
+    );
+}
+
+fn edited_text(src: &str, edits: &[TextEdit]) -> String {
+    let mut ranges = Vec::new();
+    for edit in edits {
+        let start = offset_at(src, edit.range.start);
+        let end = offset_at(src, edit.range.end);
+        ranges.push((start, end, edit.new_text.as_str()));
+    }
+    ranges.sort_by_key(|range| std::cmp::Reverse(range.0));
+    let mut out = src.to_string();
+    for (start, end, text) in ranges {
+        out.replace_range(start..end, text);
+    }
+    out
+}
+
+fn offset_at(src: &str, position: Position) -> usize {
+    let mut offset = 0;
+    for (index, line) in src.split_inclusive('\n').enumerate() {
+        if index == position.line as usize {
+            return offset + position.character as usize;
+        }
+        offset += line.len();
+    }
+    offset
+}
+
+#[test]
+fn parse_error_sibling_is_not_rewritten() {
+    let def_url = url("proj", "defs");
+    let use_url = url("proj", "uses");
+    let def_marked = "fn /*cursor*/helper(): Int = 1\n";
+    let def_src = src_without_marker(def_marked);
+    let broken = "fn f(helper: Int): Int = helper +\n";
+    let index = index_of(&[(&def_url, &def_src), (&use_url, broken)]);
+    let analysis = analyze(&def_src).intelligence;
+    let edit = rename_in_workspace(
+        &analysis,
+        &def_url,
+        position_after_marker(def_marked),
+        "helper2",
+        &index,
+    )
+    .expect("rename ok")
+    .expect("workspace edit");
+    let changes = edit.changes.expect("changes");
+    assert!(
+        !changes.contains_key(&use_url),
+        "a file that does not parse must not be lex-scraped"
+    );
+    assert!(
+        changes[&def_url]
+            .iter()
+            .any(|edit| edit.new_text == "helper2")
+    );
+}
+
+#[test]
+fn let_rhs_is_renamed_and_body_stays() {
+    let def_url = url("proj", "defs");
+    let use_url = url("proj", "uses");
+    let def_marked = "fn /*cursor*/helper(): Int = 1\n";
+    let def_src = src_without_marker(def_marked);
+    let use_src = "fn f(): Int = let helper = helper() in helper\n";
+    let index = index_of(&[(&def_url, &def_src), (&use_url, use_src)]);
+    let analysis = analyze(&def_src).intelligence;
+    let edit = rename_in_workspace(
+        &analysis,
+        &def_url,
+        position_after_marker(def_marked),
+        "helper2",
+        &index,
+    )
+    .expect("rename ok")
+    .expect("workspace edit");
+    let changes = edit.changes.expect("changes");
+    let rewritten = edited_text(use_src, &changes[&use_url]);
+    assert_eq!(
+        rewritten,
+        "fn f(): Int = let helper = helper2() in helper\n"
+    );
+}
+
+#[test]
+fn params_shadow_types_but_bare_call_is_renamed() {
+    let def_url = url("proj", "defs");
+    let use_url = url("proj", "uses");
+    let def_marked = "fn /*cursor*/n(): Int = 1\n";
+    let def_src = src_without_marker(def_marked);
+    let use_src = "\
+fn f<n: Nat>(x: QReg<n>): QReg<n> = x
+type Box<n> = QReg<n>
+fn g(n: Nat): Int = (0 : QReg<n>)
+fn h(n: Nat): Int = id<n>(0)
+fn call(): Int = n()
+";
+    let index = index_of(&[(&def_url, &def_src), (&use_url, use_src)]);
+    let analysis = analyze(&def_src).intelligence;
+    let edit = rename_in_workspace(
+        &analysis,
+        &def_url,
+        position_after_marker(def_marked),
+        "n2",
+        &index,
+    )
+    .expect("rename ok")
+    .expect("workspace edit");
+    let changes = edit.changes.expect("changes");
+    let rewritten = edited_text(use_src, &changes[&use_url]);
+    assert_eq!(
+        rewritten,
+        "\
+fn f<n: Nat>(x: QReg<n>): QReg<n> = x
+type Box<n> = QReg<n>
+fn g(n: Nat): Int = (0 : QReg<n>)
+fn h(n: Nat): Int = id<n>(0)
+fn call(): Int = n2()
+"
+    );
+}
+
+#[test]
+fn borrow_annotation_is_shadowed() {
+    let def_url = url("proj", "defs");
+    let use_url = url("proj", "uses");
+    let def_marked = "fn /*cursor*/n(): Int = 1\n";
+    let def_src = src_without_marker(def_marked);
+    let use_src = "\
+fn f(): Q<Int> = run {
+  borrow n: QReg<n>, m: QReg<n> in {
+    return 0
+  }
+}
+fn call(): Int = n()
+";
+    let index = index_of(&[(&def_url, &def_src), (&use_url, use_src)]);
+    let analysis = analyze(&def_src).intelligence;
+    let edit = rename_in_workspace(
+        &analysis,
+        &def_url,
+        position_after_marker(def_marked),
+        "n2",
+        &index,
+    )
+    .expect("rename ok")
+    .expect("workspace edit");
+    let changes = edit.changes.expect("changes");
+    let rewritten = edited_text(use_src, &changes[&use_url]);
+    assert_eq!(
+        rewritten,
+        "\
+fn f(): Q<Int> = run {
+  borrow n: QReg<n>, m: QReg<n> in {
+    return 0
+  }
+}
+fn call(): Int = n2()
+"
+    );
+}
+
+#[test]
+fn circuit_call_before_let_is_renamed() {
+    let def_url = url("proj", "defs");
+    let use_url = url("proj", "uses");
+    let def_marked = "fn /*cursor*/helper(): Int = 1\n";
+    let def_src = src_without_marker(def_marked);
+    let use_src = "fn f(): Int =\n  circuit {\n    helper()\n    let helper = 1\n  }\n";
+    let index = index_of(&[(&def_url, &def_src), (&use_url, use_src)]);
+    let analysis = analyze(&def_src).intelligence;
+    let edit = rename_in_workspace(
+        &analysis,
+        &def_url,
+        position_after_marker(def_marked),
+        "helper2",
+        &index,
+    )
+    .expect("rename ok")
+    .expect("workspace edit");
+    let changes = edit.changes.expect("changes");
+    let rewritten = edited_text(use_src, &changes[&use_url]);
+    assert_eq!(
+        rewritten,
+        "fn f(): Int =\n  circuit {\n    helper2()\n    let helper = 1\n  }\n"
     );
 }
 
