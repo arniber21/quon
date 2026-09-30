@@ -278,64 +278,68 @@ fn placer_headline_numbers_match_readme() {
     // `estimated_cycles`/`total_time_us` well beyond just "2 extra layers
     // per `H`". `ising.qn` has no bare `H`/non-diagonal 1-qubit gate (its
     // `Rzz`-sandwich `Rz`s are diagonal, needing no `ry`/echo at all), so
-    // it is untouched by this and keeps its #298-era numbers below.
-    // `estimated_cycles` +1 and `total_time_us` +1500us across every row
-    // below vs. the pre-fix numbers: `qaoa_graph.qn`/`ising.qn` both end in
-    // `measure_all`, which — like `bell.qn` above — was extracted but never
-    // lowered into a schedule action, so `measurement_rounds` was always 0
-    // and the ~1500us terminal readout never entered `total_time_us`.
-    // Rearrangement/transfer counts are unaffected (measurement needs no
-    // atom movement).
+    // the echo fix does not add layers to it. The numbers below are that
+    // baseline plus the readout shuttle.
+    // The terminal `measure_all` used to be extracted but never lowered, so
+    // `measurement_rounds` was 0 and the ~1500us readout never entered
+    // `total_time_us`. That fix is the pre-residency baseline. `generic_rna_v0`
+    // declares a readout zone, so the zoned backend now shuttles those atoms
+    // before the measure. `qaoa_graph.qn` measures 4 atoms: agnostic needs
+    // three AOD groups (81/8/22/3186 -> 90/11/30/3887) and aware needs one
+    // (84/9/24/3242 -> 87/10/32/3473). `ising.qn` measures 6 atoms that share
+    // one group on both placers (49/9/20/3717 -> 52/10/32/3956).
     let m = &qaoa_agnostic["metrics"];
-    assert_eq!(m["estimated_cycles"], 81, "qaoa agnostic: {qaoa_agnostic}");
+    assert_eq!(m["estimated_cycles"], 90, "qaoa agnostic: {qaoa_agnostic}");
     assert_eq!(
-        m["rearrangement_steps"], 8,
+        m["rearrangement_steps"], 11,
         "qaoa agnostic: {qaoa_agnostic}"
     );
-    assert_eq!(m["trap_transfers"], 22, "qaoa agnostic: {qaoa_agnostic}");
-    assert_eq!(m["total_time_us"], 3186, "qaoa agnostic: {qaoa_agnostic}");
+    assert_eq!(m["trap_transfers"], 30, "qaoa agnostic: {qaoa_agnostic}");
+    assert_eq!(m["total_time_us"], 3887, "qaoa agnostic: {qaoa_agnostic}");
 
     let m = &qaoa_aware["metrics"];
-    assert_eq!(m["estimated_cycles"], 84, "qaoa aware: {qaoa_aware}");
-    assert_eq!(m["rearrangement_steps"], 9, "qaoa aware: {qaoa_aware}");
-    assert_eq!(m["trap_transfers"], 24, "qaoa aware: {qaoa_aware}");
+    assert_eq!(m["estimated_cycles"], 87, "qaoa aware: {qaoa_aware}");
+    assert_eq!(m["rearrangement_steps"], 10, "qaoa aware: {qaoa_aware}");
+    assert_eq!(m["trap_transfers"], 32, "qaoa aware: {qaoa_aware}");
     // 1764 -> 1742 under #297 (same step/transfer counts, corrected
     // grouped-cost search finds a lower-travel-distance placement), then
-    // +1500us for the terminal-measurement fix above.
-    assert_eq!(m["total_time_us"], 3242, "qaoa aware: {qaoa_aware}");
+    // +1500us for the terminal-measurement fix, then +231us for the one
+    // 4-atom readout grab above.
+    assert_eq!(m["total_time_us"], 3473, "qaoa aware: {qaoa_aware}");
 
     let agnostic_m = &ising_agnostic["metrics"];
     let aware_m = &ising_aware["metrics"];
     assert_eq!(
-        agnostic_m["estimated_cycles"], 49,
+        agnostic_m["estimated_cycles"], 52,
         "ising agnostic: {ising_agnostic}"
     );
     assert_eq!(
-        agnostic_m["rearrangement_steps"], 9,
+        agnostic_m["rearrangement_steps"], 10,
         "ising agnostic: {ising_agnostic}"
     );
     assert_eq!(
-        agnostic_m["trap_transfers"], 20,
+        agnostic_m["trap_transfers"], 32,
         "ising agnostic: {ising_agnostic}"
     );
     assert_eq!(
-        agnostic_m["total_time_us"], 3717,
+        agnostic_m["total_time_us"], 3956,
         "ising agnostic: {ising_agnostic}"
     );
     assert_eq!(
-        aware_m["estimated_cycles"], 49,
+        aware_m["estimated_cycles"], 52,
         "ising aware: {ising_aware}"
     );
     assert_eq!(
-        aware_m["rearrangement_steps"], 9,
+        aware_m["rearrangement_steps"], 10,
         "ising aware: {ising_aware}"
     );
-    assert_eq!(aware_m["trap_transfers"], 20, "ising aware: {ising_aware}");
+    assert_eq!(aware_m["trap_transfers"], 32, "ising aware: {ising_aware}");
     // #297: was 2256 (worse than agnostic's 2217) under the old per-gate
     // (ungrouped) search cost model; 2217 tied with agnostic after #297, then
-    // +1500us for the terminal-measurement fix above (still tied with
-    // agnostic — see the sanity assertion below).
-    assert_eq!(aware_m["total_time_us"], 3717, "ising aware: {ising_aware}");
+    // +1500us for the terminal-measurement fix, then the shared 6-atom
+    // readout grab above. Still tied with agnostic — see the sanity
+    // assertion below.
+    assert_eq!(aware_m["total_time_us"], 3956, "ising aware: {ising_aware}");
 
     // N2 (revised for #297): every structural metric above — including
     // `total_time_us`, which used to differ — is now byte-for-byte identical
@@ -393,7 +397,9 @@ fn repetition_d3_memory_schedule_is_genuinely_mid_circuit() {
     assert_eq!(m["rydberg_stages"], 6, "{schedule}");
     assert_eq!(m["measurement_rounds"], 3, "{schedule}");
     assert_eq!(m["reset_rounds"], 2, "{schedule}");
-    assert_eq!(m["estimated_cycles"], 37, "{schedule}");
+    // 37 -> 49: readout-zone shuttles around the measure and reset layers.
+    // The three counts above do not move.
+    assert_eq!(m["estimated_cycles"], 49, "{schedule}");
 
     let layers = schedule["layers"]
         .as_array()
