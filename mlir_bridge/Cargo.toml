@@ -15,6 +15,7 @@ backend   = { path = "../backend" }
 quon_core = { path = "../quon_core" } # shared DepthExpr (MLIR-free)
 quon_qec  = { path = "../quon_qec" }
 thiserror = { workspace = true }
+tracing   = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
