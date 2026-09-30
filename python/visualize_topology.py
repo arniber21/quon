@@ -279,6 +279,7 @@ def validate_routing(device: dict[str, Any], trace: dict[str, Any]) -> list[str]
         for index, event in enumerate(events):
             at = f"{where}[{index}]"
             if event["kind"] == "branch":
+                check_layout(f"{at}.layout", event["layout"])
                 walk(event["events"], f"{at}.events")
                 continue
             left, right = int(event["physical"][0]), int(event["physical"][1])

@@ -66,6 +66,28 @@ class TopologyViewerTests(unittest.TestCase):
         )
         self.assertNotIn("validation ok", completed.stdout)
 
+    def test_branch_layout_outside_device_fails(self) -> None:
+        viz = load_viz_module()
+        device = viz.load_device(json.loads(DEVICE.read_text(encoding="utf-8")))
+        trace = viz.load_trace(json.loads(TRACE.read_text(encoding="utf-8")))
+        trace["events"] = [
+            {
+                "kind": "branch",
+                "arm": "then",
+                "summary": "then arm",
+                "layout": [{"logical": 0, "physical": 99}],
+                "events": [],
+            }
+        ]
+        errors = viz.validate_routing(device, trace)
+        self.assertTrue(
+            any(
+                "events[0].layout: physical qubit 99 is outside my_device (5 qubits)" in error
+                for error in errors
+            ),
+            errors,
+        )
+
     def test_cli_ascii_matches_golden(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(SCRIPT), str(DEVICE), str(TRACE), "--ascii"],
