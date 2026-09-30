@@ -41,7 +41,9 @@ jobs:
           cache-dependency-path: tree-sitter-quon/package-lock.json
 
       - name: editor grammar sync
-        run: python3 scripts/check_editor_grammar_sync.py
+        run: |
+          python3 scripts/check_editor_grammar_sync.py --self-test
+          python3 scripts/check_editor_grammar_sync.py
 
       - name: tree-sitter test
         working-directory: tree-sitter-quon

@@ -152,23 +152,124 @@ def lexicon_errors(lexicon: object) -> list[str]:
     return errors
 
 
+def strip_js_comments(src: str) -> str:
+    """Drop // and /* */ comments. Quoted strings, including `"{"`, are kept."""
+    out: list[str] = []
+    i = 0
+    n = len(src)
+    while i < n:
+        ch = src[i]
+        if ch in "\"'`":
+            j = i + 1
+            while j < n:
+                if src[j] == "\\":
+                    j += 2
+                    continue
+                if src[j] == ch:
+                    j += 1
+                    break
+                j += 1
+            out.append(src[i:j])
+            i = j
+            continue
+        if ch == "/" and i + 1 < n and src[i + 1] == "/":
+            i += 2
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and src[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (src[i] == "*" and src[i + 1] == "/"):
+                i += 1
+            i = min(n, i + 2)
+            out.append(" ")
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _balanced_inside(src: str, open_paren: int) -> str | None:
+    """Return the text inside the paren that starts at `open_paren`."""
+    if open_paren >= len(src) or src[open_paren] != "(":
+        return None
+    depth = 0
+    quote: str | None = None
+    i = open_paren
+    while i < len(src):
+        ch = src[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "\"'`":
+            quote = ch
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return src[open_paren + 1 : i]
+        i += 1
+    return None
+
+
+def node_choice_body(stripped: str) -> str | None:
+    match = re.search(r"_node\s*:\s*\([^)]*\)\s*=>\s*choice\s*\(", stripped)
+    if match is None:
+        return None
+    return _balanced_inside(stripped, match.end() - 1)
+
+
+def quoted_literals(src: str) -> list[str]:
+    return re.findall(r'"((?:\\.|[^"\\])*)"', src)
+
+
+SPREAD_FIELDS = ("rule_keywords", "booleans", "operators", "punctuation")
+
+
 def grammar_errors(grammar: str, lexicon: dict) -> list[str]:
+    """Check grammar.js rule shape, ignoring comments.
+
+    Token rules must be exactly `token(choice(...lexicon.<field>))`.
+    Delimiter literals are read only from the `_node` choice, so a comment
+    that mentions `"{"` does not count.
+    """
     errors: list[str] = []
-    if 'require("./highlight-lexicon.json")' not in grammar:
+    stripped = strip_js_comments(grammar)
+    if 'require("./highlight-lexicon.json")' not in stripped:
         errors.append('grammar.js must require("./highlight-lexicon.json")')
-    for field in ("rule_keywords", "booleans", "operators", "punctuation"):
-        needle = f"lexicon.{field}"
-        if needle not in grammar:
-            errors.append(f"grammar.js must spread {needle} into a token rule")
-    for word in lexicon["declaration_keywords"]:
-        if f'"{word}"' not in grammar:
+    for field in SPREAD_FIELDS:
+        pattern = (
+            rf"token\s*\(\s*choice\s*\(\s*\.\.\.\s*lexicon\.{field}\s*\)\s*\)"
+        )
+        if re.search(pattern, stripped) is None:
             errors.append(
-                f'grammar.js must mention declaration keyword "{word}" '
+                "grammar.js must use "
+                f"token(choice(...lexicon.{field})) with no extra choice arguments"
+            )
+    for word in lexicon["declaration_keywords"]:
+        if re.search(rf'seq\s*\(\s*"{re.escape(word)}"', stripped) is None:
+            errors.append(
+                f'grammar.js must declare "{word}" with seq("{word}" '
                 "(fn/type stay literal seq tokens, not the keyword rule)"
             )
-    for delim in lexicon["delimiters"]:
-        if f'"{delim}"' not in grammar:
-            errors.append(f'grammar.js must keep anonymous delimiter "{delim}"')
+    body = node_choice_body(stripped)
+    if body is None:
+        errors.append("grammar.js must keep a _node choice of anonymous delimiters")
+    else:
+        literals = set(quoted_literals(body))
+        for delim in lexicon["delimiters"]:
+            if delim not in literals:
+                errors.append(
+                    f'grammar.js _node choice must include anonymous delimiter "{delim}"'
+                )
     return errors
 
 
@@ -445,6 +546,72 @@ class SyncUnitTests(unittest.TestCase):
         }
         messages = " ".join(lexicon_errors(lexicon))
         self.assertIn("overlap", messages)
+
+    def test_committed_grammar_matches_rule_shape(self) -> None:
+        root = repo_root()
+        grammar = (root / GRAMMAR_REL).read_text(encoding="utf-8")
+        lexicon = load_json(root / LEXICON_REL)
+        self.assertEqual(grammar_errors(grammar, lexicon), [])
+
+    def test_node_braces_in_comments_do_not_count(self) -> None:
+        grammar = _sample_grammar().replace('        "{",\n        "}",\n', "")
+        errors = " ".join(grammar_errors(grammar, _sample_lexicon()))
+        self.assertIn('anonymous delimiter "{"', errors)
+        self.assertIn('anonymous delimiter "}"', errors)
+
+    def test_commented_out_spreads_do_not_count(self) -> None:
+        grammar = _sample_grammar()
+        for field in SPREAD_FIELDS:
+            live = f"token(choice(...lexicon.{field}))"
+            grammar = grammar.replace(live, f"/* {live} */")
+        errors = " ".join(grammar_errors(grammar, _sample_lexicon()))
+        for field in SPREAD_FIELDS:
+            self.assertIn(f"token(choice(...lexicon.{field}))", errors)
+
+    def test_extra_choice_argument_is_rejected(self) -> None:
+        grammar = _sample_grammar().replace(
+            "token(choice(...lexicon.operators))",
+            "token(choice(...lexicon.operators, '??'))",
+        )
+        errors = " ".join(grammar_errors(grammar, _sample_lexicon()))
+        self.assertIn("token(choice(...lexicon.operators))", errors)
+
+
+def _sample_lexicon() -> dict:
+    return {
+        "declaration_keywords": ["fn", "type"],
+        "delimiters": ["{", "}", "[", "]", "(", ")", "<", ">"],
+    }
+
+
+def _sample_grammar() -> str:
+    """Minimal grammar.js. The header mentions braces and spreads on purpose."""
+    return """
+/**
+ * `"{"` `"}"` token(choice(...lexicon.rule_keywords))
+ * lexicon.booleans lexicon.operators lexicon.punctuation
+ */
+const lexicon = require("./highlight-lexicon.json");
+_node: ($) =>
+  choice(
+        "{",
+        "}",
+        "[",
+        "]",
+        "(",
+        ")",
+        "<",
+        ">",
+  ),
+fn_declaration: ($) =>
+  seq("fn", field("name", $.identifier)),
+type_declaration: ($) =>
+  seq("type", field("name", $.identifier)),
+keyword: (_) => token(choice(...lexicon.rule_keywords)),
+boolean: (_) => token(choice(...lexicon.booleans)),
+operator: (_) => token(choice(...lexicon.operators)),
+punctuation: (_) => token(choice(...lexicon.punctuation)),
+"""
 
 
 def main(argv: list[str]) -> int:

@@ -240,6 +240,7 @@ ci-feature-seams:
 
 # Editor highlight vocabulary: lexicon, TextMate, Zed query copies, compiler keywords.
 ci-editor-grammar:
+    python3 scripts/check_editor_grammar_sync.py --self-test
     python3 scripts/check_editor_grammar_sync.py
 
 # quonfmt · quonlint · LSP smoke on CI corpus
