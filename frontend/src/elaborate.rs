@@ -2,11 +2,12 @@
 //! classical parameters into a fully monomorphic, first-order circuit body
 //! (issue #1, MVP milestone M2).
 //!
-//! `lower.rs` already knows how to lower a *zero-parameter* circuit function
-//! body — a tree of `Compose`/`GateApp`/`Adjoint`/zero-arg `App`/`Var` nodes —
-//! directly to `quantum.circ` MLIR. This module bridges the gap for a
-//! *parametric* circuit function called with concrete arguments (e.g.
-//! `hadamard_all(3)`): it evaluates the classical fragment of the language
+//! The result is a first-order gate sequence (`Compose` / `GateApp` / the empty
+//! circuit block). `lower` wraps that sequence in a [`SpecializedCircuit`](crate::specialized_circuit::SpecializedCircuit)
+//! and emits MLIR from the placements only — it does not walk source `Expr`
+//! forms. This module bridges the gap for a *parametric* circuit function
+//! called with concrete arguments (e.g. `hadamard_all(3)`): it evaluates the
+//! classical fragment of the language
 //! (arithmetic, `let`, `if`, `match` on `Nat`, the builtins `range`/`qubits`/
 //! `diag`/`sqrt`/`round`/`float`/`PI`/`TAU`/`E`) and *unrolls* the circuit
 //! fragment's parametric forms (`for pat in iter { .. }`, `repeat(k, c)`, and
@@ -411,11 +412,11 @@ fn bind_classical_pat(
 }
 
 /// Elaborates a circuit-body expression under `classical_env` into a fully
-/// concrete tree of `Compose`/`GateApp`/`Adjoint`/zero-arg `App`/`Var` nodes —
-/// the shape `lower.rs`'s existing zero-parameter walker already knows how to
-/// emit as MLIR. Every span in the returned tree is copied from the innermost
-/// source node it was built from, so lowering errors still point somewhere
-/// meaningful.
+/// concrete gate sequence (`Compose` / `GateApp` / the empty circuit block).
+/// Zero-arg circuit calls are inlined here, so the result has no residual
+/// `App` / `Var` callees for `lower` to walk. Every span in the returned tree
+/// is copied from the innermost source node it was built from, so lowering
+/// errors still point somewhere meaningful.
 pub fn elaborate_circuit_body(
     expr: &Sp<Expr>,
     classical_env: &ClassicalEnv,
@@ -589,12 +590,14 @@ pub fn elaborate_circuit_body(
         }
         Expr::App(f, x) => elaborate_app(&expr.0, span, f, x, classical_env, ctx, fuel),
         Expr::Var(name) => {
-            // A reference to a zero-arg circuit function or a `let`-bound
-            // local circuit value: not classically substitutable (it names a
-            // circuit, not a number), so it passes through unchanged for
-            // `lower.rs`'s existing `Var` handling (locals map / `self.bodies`).
-            let _ = name;
-            Ok(expr.clone())
+            // A zero-arg circuit function is inlined to its gate sequence.
+            // Anything else (a bare gate name, an unbound circuit variable)
+            // is not a placement; leave it so the caller rejects it.
+            if ctx.bodies.contains_key(name) {
+                inline_zero_arg_callee(expr, ctx, fuel)
+            } else {
+                Ok(expr.clone())
+            }
         }
         Expr::Par(body, count) => unroll_par(body, count, classical_env, ctx, fuel, span),
         Expr::ParN(elems) => unroll_parn(elems, classical_env, ctx, fuel, span),
@@ -904,12 +907,39 @@ fn elaborate_app(
             }
         }
     }
-    // Not a parametric construct this elaborator understands (e.g. a
-    // zero-arg call to a plain circuit function) — substitute any classical
-    // variables in the argument list (there may be none) and pass through
-    // unchanged for `lower.rs`'s existing zero-arg `App` handling.
-    let _ = original;
-    subst_classical_vars(&(original.clone(), span), classical_env)
+    // A zero-arg call `f()` / bare `f` whose body is recorded inlines to that
+    // body's gate sequence. Anything else substitutes classical variables and
+    // is left for the caller to reject if it is not a placement.
+    let call = (original.clone(), span);
+    if zero_arg_callee_body(&call, ctx).is_some() {
+        return inline_zero_arg_callee(&call, ctx, fuel);
+    }
+    subst_classical_vars(&call, classical_env)
+}
+
+/// Inline a bare zero-arg circuit callee (`f` or `f()`) against `ctx.bodies`.
+///
+/// The callee body is elaborated under an empty classical environment: a
+/// zero-arg function does not capture the caller's bindings. The `expanding`
+/// set rejects a self-call, which has no decreasing-`Nat` termination witness.
+fn inline_zero_arg_callee(
+    body: &Sp<Expr>,
+    ctx: &ElabCtx,
+    fuel: &mut u32,
+) -> Result<Sp<Expr>, ElabError> {
+    let Some((name, stored)) = zero_arg_callee_body(body, ctx) else {
+        return elaborate_circuit_body(body, &HashMap::new(), ctx, fuel);
+    };
+    if ctx.expanding.borrow().contains(name) {
+        return Err(ElabError::unsupported(
+            "self-referential zero-arg circuit function (non-terminating call)",
+            body.1,
+        ));
+    }
+    ctx.expanding.borrow_mut().insert(name.to_string());
+    let result = elaborate_circuit_body(stored, &HashMap::new(), ctx, fuel);
+    ctx.expanding.borrow_mut().remove(name);
+    result
 }
 
 /// Renders an evaluated classical [`Value`] back into surface `Expr` syntax,
