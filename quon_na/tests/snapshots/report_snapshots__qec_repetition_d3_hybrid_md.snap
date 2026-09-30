@@ -1,5 +1,6 @@
 ---
 source: quon_na/tests/report_snapshots.rs
+assertion_line: 268
 expression: md
 ---
 # Neutral-atom analytic resource report
@@ -17,20 +18,20 @@ expression: md
 ## Schedule metrics
 | Metric | Value |
 | --- | ---: |
-| Estimated cycles | 37 |
+| Estimated cycles | 49 |
 | Bottleneck | rearrangement |
 | Rydberg stages | 6 |
-| Rearrangement steps | 8 |
-| Rearrangement time (µs) | 1060 |
-| Trap transfers | 26 |
-| Transfer time (µs) | 390 |
+| Rearrangement steps | 12 |
+| Rearrangement time (µs) | 2163 |
+| Trap transfers | 42 |
+| Transfer time (µs) | 630 |
 | Entangle2 count | 8 |
 | EntangleN count | 0 |
 | Measurement rounds | 3 |
 | Reset rounds | 2 |
 | Wait time (µs) | 2 |
-| Total time (µs) | 1313 |
-| Routing-agnostic placement mechanism | greedy_fallback |
+| Total time (µs) | 2536 |
+| Routing-agnostic placement mechanism | mixed |
 
 ## Atom pressure & reuse
 | Metric | Value |
@@ -47,15 +48,15 @@ expression: md
 | Rydberg | 0.012 |
 | Measurement | 0.009 |
 | Reset | 0.008 |
-| Movement | 0.004 |
-| Transfer | 0.0182 |
+| Movement | 0.006 |
+| Transfer | 0.0294 |
 | Idle | 4e-9 |
 
 ## Fidelity estimate (Enola Eq. (1))
 | Metric | Value |
 | --- | ---: |
-| Gate fidelity product | 0.936024766179 |
-| Estimated fidelity (with idle decay) | 0.933564346337 |
+| Gate fidelity product | 0.921160170418 |
+| Estimated fidelity (with idle decay) | 0.916211869282 |
 
 ## Notes
 - Compiler analytic metrics only — not fused with Python/Sinter sampled CSV; neither artifact is a threshold claim (ADR-0020).

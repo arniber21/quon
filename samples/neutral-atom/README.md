@@ -55,7 +55,7 @@ On `bell.qn` (2 qubits, 1 `CNOT`), both backends succeed:
 
 | Backend | Estimated cycles | Rearrangement steps | Trap transfers | Bottleneck |
 | --- | ---: | ---: | ---: | --- |
-| `zoned` (default) | 10 | 1 | 4 | rearrangement |
+| `zoned` (default) | 13 | 2 | 8 | rearrangement |
 | `flat` | 7 | 0 | 0 | mixed |
 
 (Issue #298: `H @0`'s Z-Y-Z decomposition into a local `rz` + a global `ry`
@@ -69,17 +69,28 @@ it, since every atom is bound into the trap array from schedule start (see
 `quon_na::pipeline::push_global_ry_with_refocus`). Rearrangement/transfer are
 unaffected: none of this needs a site placement.)
 
-`bell.qn`'s terminal `measure_all` adds one more cycle on top of the #298
-numbers above (9 -> 10 zoned, 6 -> 7 flat): `quantum.dynamic.measure` was
-extracted but never lowered into a schedule action at all — every NA
-resource report showed `measurement_rounds: 0` regardless of the source
-program, and the ~1500us readout never entered `total_time_us`. Fixed: the
-terminal measurement is its own final layer (both atoms measured in the
-same cycle, since the bare-qubit NA path has no mid-circuit feed-forward).
-On the `flat` backend this flips `bottleneck` from `rydberg` to `mixed`: the
-readout now dominates `total_time_us`, and the bottleneck heuristic reads
-that as a genuine tie by count rather than the old, measurement-blind
-`rydberg` reading.
+`bell.qn`'s terminal `measure_all` is one final layer on top of the #298
+gate layers (6 -> 7 on `flat`; 9 -> 10 on `zoned` before readout residency):
+`quantum.dynamic.measure` was extracted but never lowered into a schedule
+action at all — every NA resource report showed `measurement_rounds: 0`
+regardless of the source program, and the ~1500us readout never entered
+`total_time_us`. Fixed: the terminal measurement is its own final layer
+(both atoms measured in the same cycle, since the bare-qubit NA path has no
+mid-circuit feed-forward). On the `flat` backend this flips `bottleneck`
+from `rydberg` to `mixed`: the readout now dominates `total_time_us`, and
+the bottleneck heuristic reads that as a genuine tie by count rather than
+the old, measurement-blind `rydberg` reading.
+
+`generic_rna_v0` declares a readout zone, so the zoned backend shuttles both
+atoms into it before that measure. They leave the entanglement sites in one
+AOD grab — SLM→AOD, one move, AOD→SLM — and only then are measured. That
+stage is three extra layers, one extra rearrangement step, and four extra
+trap transfers (two atoms, load and store each) on top of the entanglement
+shuttle, which is why the zoned row is 13 / 2 / 8 rather than the
+pre-residency 10 / 1 / 4. `measurement_rounds` stays 1, and `bottleneck`
+stays `rearrangement`: the added move time still strictly dominates the
+bottleneck scores. `flat` does not consult the readout zone and still
+measures in place.
 
 `zoned` moves qubit 0 into a dedicated entanglement zone before the Rydberg
 pulse; `flat` entangles the two atoms in place on the row-major storage
@@ -116,15 +127,18 @@ quonc --target targets/neutral_atom/generic_rna_v0.json --na-backend zoned \
 
 | Sample | Placer | Estimated cycles | Rearrangement steps | Trap transfers | Total time (µs) |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `qaoa_graph.qn` (dense, 3-regular graph) | `routing-agnostic` (default) | 81 | 8 | 22 | 3186 |
-| `qaoa_graph.qn` | `routing-aware` | 84 | 9 | 24 | 3242 |
-| `ising.qn` (nearest-neighbor chain) | `routing-agnostic` (default) | 49 | 9 | 20 | 3717 |
-| `ising.qn` | `routing-aware` | 49 | 9 | 20 | 3717 |
+| `qaoa_graph.qn` (dense, 3-regular graph) | `routing-agnostic` (default) | 90 | 11 | 30 | 3887 |
+| `qaoa_graph.qn` | `routing-aware` | 87 | 10 | 32 | 3473 |
+| `ising.qn` (nearest-neighbor chain) | `routing-agnostic` (default) | 52 | 10 | 32 | 3956 |
+| `ising.qn` | `routing-aware` | 52 | 10 | 32 | 3956 |
 
-(Every row above is +1 cycle / +1500us over the #297 numbers for the same
-reason as the `bell.qn` terminal-measurement fix described above: both
-programs end in `measure_all`, which used to be dropped before it ever
-reached the schedule.)
+(The +1 cycle / +1500 µs terminal `measure_all` fix described for `bell.qn`
+is already in the pre-residency baselines. Readout residency then shuttles
+every measured atom into `generic_rna_v0`'s readout zone. `qaoa_graph.qn`
+measures 4 atoms: routing-agnostic needs three AOD groups
+(81 / 8 / 22 / 3186 → 90 / 11 / 30 / 3887) and routing-aware needs one
+(84 / 9 / 24 / 3242 → 87 / 10 / 32 / 3473). `ising.qn` measures 6 atoms that
+share one group on both placers (49 / 9 / 20 / 3717 → 52 / 10 / 32 / 3956).)
 
 (Issue #298: both programs apply per-qubit `H`/`Rx` rotations
 (`qaoa_graph.qn`'s `hadamard_all`/`mixer_4`; `ising.qn`'s `x_layer`) that
@@ -146,8 +160,8 @@ actions per rotation (O(N²) total for N independent rotations) — see
 for the full scaling analysis, measured benchmark, and the architectural
 changes needed to remove the ceiling. `ising.qn` has no bare `H` or other
 non-diagonal 1-qubit gate — its `Rzz`-sandwich `Rz`s are diagonal and need
-no `ry`/echo at all — so it is untouched by the echo fix and keeps its
-original #298 numbers.)
+no `ry`/echo at all — so the echo fix does not change it. The ising row in
+the table is that baseline plus the readout shuttle above.)
 
 Both zoned placer modes are ZAC-style descendants (Sec. VI-B of the RAP
 paper, arXiv:2505.22715): `routing-agnostic` (the default) places atoms by
@@ -161,19 +175,21 @@ walkthrough is drawn from.
 This is the honest result, not a cherry-picked one: at this small size,
 `routing-aware` is not a strict win over `routing-agnostic` on either
 graph — on the chain the two modes now produce *identical* metrics across
-the board, including total time (3717 µs both). That is not a silent
+the board, including total time (3956 µs both). That is not a silent
 fallback to the agnostic planner: both runs report `na_placer: routing_aware`
 in their schedule metadata and take the aware code path, and (verifiable via
 `--emit-na-stats`) the aware search genuinely completes every layer rather
 than exhausting its budget — it's a real search that, on this small,
 low-contention circuit, converges on the same joint-optimal placement
 distance-minimizing greedy already finds. On the denser MaxCut graph,
-`routing-aware` still uses one more rearrangement step and 2 more trap
-transfers than agnostic, but its post-#297 total time was *lower* than the
-1764 µs a mismatched (pre-#297) cost model used to report for the same step
-count — the guided search finds a shorter-travel placement within that
-group structure (3242 µs vs. 3186 µs today includes the +1500us terminal-
-measurement fix described above on top of that #297 delta). This aligns
+`routing-aware` still has 2 more trap transfers than agnostic (32 vs. 30).
+It now has one fewer rearrangement step (10 vs. 11) and a lower total time
+(3473 µs vs. 3887 µs), because its four atoms leave the entanglement zone in
+one readout grab and agnostic's take three. Before that shuttle, aware had
+one more rearrangement step (9 vs. 8) and the post-#297 total was 3242 µs
+vs. 3186 µs, already including the +1500 µs terminal-measurement fix on top
+of the #297 distance improvement (1742 µs, under the old mismatched 1764 µs).
+This aligns
 with the #111/#297 story: the comparison is
 about *when* aware placement pays off (denser, larger interaction graphs —
 see the RAP Table I reproduction on the 42-qubit `ising_n42` fixture in
@@ -199,15 +215,18 @@ terminal-measurement-only schedule:
 | `rydberg_stages` | 6 |
 | `measurement_rounds` | 3 |
 | `reset_rounds` | 2 |
-| `estimated_cycles` | 37 |
+| `estimated_cycles` | 49 |
 
 The schedule's layer order (see `quonc/tests/na_showcase.rs`'s
 `repetition_d3_memory_schedule_is_genuinely_mid_circuit` test) is
 `Entangle2* -> Measure -> Reset -> Wait -> Entangle2* -> Measure -> Reset ->
-Wait -> Entangle2* -> Measure`: each syndrome round's ancilla measurement
-and reset genuinely sits *between* two rounds of entangling layers, not
-after all of them. That is the real ordering constraint this pack can
-honestly claim on the NA schedule path today.
+Wait -> Entangle2* -> Measure`, with readout load/move/store layers around
+the measure and reset actions. Those shuttles are why `estimated_cycles` is
+49 rather than the pre-residency 37. Rydberg stages, measurement rounds, and
+reset rounds are unchanged. Each syndrome round's ancilla measurement and
+reset genuinely sits *between* two rounds of entangling layers, not after
+all of them. That is the real ordering constraint this pack can honestly
+claim on the NA schedule path today.
 
 What this sample does **not** demonstrate: branching a correction on a
 measured outcome. Feed-forward *correction* lowering (conditioning a later

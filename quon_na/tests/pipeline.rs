@@ -3,9 +3,20 @@
 use std::path::PathBuf;
 
 use quon_na::{
-    NaBackendKind, NaScheduleOptions, PlacementStrategy, PlacerMode, cubic_commutation_graph,
-    run_from_graph,
+    NaBackendKind, NaScheduleOptions, PlacementStrategy, PlacerMode, ZoneKind,
+    cubic_commutation_graph, run_from_graph,
 };
+
+#[test]
+fn loaded_target_requires_readout_when_zone_declared() {
+    let na = na_target();
+    assert!(
+        na.zones.iter().any(|zone| zone.kind == ZoneKind::Readout),
+        "generic target declares a readout zone"
+    );
+    let arch = quon_na::pipeline::zoned_architecture(&na);
+    assert!(arch.require_readout_zone);
+}
 
 fn na_target() -> backend::NeutralAtomTarget {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

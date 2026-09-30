@@ -224,8 +224,15 @@ Zone taxonomy, per [AbstractModel] Sec. III-A (formalizing [Bluvstein24] Fig.
   a lone atom in the beam performs a noisy identity.
 - **Readout zone** — measures every atom inside it simultaneously without
   disturbing atoms elsewhere; enables mid-circuit measurement. (Modeled by
-  [AbstractModel]; [RAP] models only storage + entanglement. The schema keeps
-  readout zones optional accordingly.)
+  [AbstractModel]; [RAP] models only storage + entanglement.) On the zoned
+  backend, declaring this zone is the source of truth for readout residency:
+  measurement, reset, and reuse run only there. The scheduler inserts a legal
+  load–move–store first when the atom is elsewhere, and the zone verifier
+  rejects an op in any other zone, movement of that atom during the op,
+  reuse before a completed reset, and more simultaneous readout ops than
+  readout sites. The flat AOD backend does not shuttle — atoms are measured,
+  reset, and reused where they already sit, which is the stage-1 flat-array
+  model even though a loaded target JSON still lists a readout zone.
 
 Executing a 2Q gate means: load the atom from a static trap into the AOD
 (15 µs), move it (√-law), drop it into an entanglement-zone trap, fire the
@@ -277,7 +284,7 @@ Units: lengths in µm, times in µs, fidelities as probabilities in [0, 1].
 | Field | Type | Meaning | Compiler constraint it feeds |
 | --- | --- | --- | --- |
 | `zone_id` | integer | Unique zone identifier | Cross-references in schedule actions |
-| `kind` | `"storage"` \| `"entanglement"` \| `"readout"` | Zone capability (§7) | 2Q ops only in `entanglement`; measurement only in `readout` when `require_readout_zone` is set |
+| `kind` | `"storage"` \| `"entanglement"` \| `"readout"` | Zone capability (§7) | 2Q ops only in `entanglement`. A declared `readout` zone is the zoned backend's source of truth for measurement, reset, and reuse residency (§7); the flat AOD backend does not shuttle |
 | `rows`, `cols` | integer | Static-trap grid extent (for `entanglement`: trap *pairs*) | Zone capacity = rows × cols; occupancy checks (#107) |
 | `origin_um` | [number, number] | Lower-left corner of the zone's trap grid | Absolute site coordinates; movement distances |
 | `site_pitch_um` | [number, number] | Trap spacing in x and y | Site coordinates; isolation checking |
@@ -293,7 +300,11 @@ A flat-array target (stage 1, #106) is expressed as a single `entanglement`
 zone covering the whole grid: every site is then a legal interaction site and
 the zone constraints degenerate to the flat model of [OLSQ-DPQA]/[Enola]. A
 zoned target (stage 2, #107) declares at least one `storage` and one
-`entanglement` zone.
+`entanglement` zone. Loaded neutral-atom JSON also lists a `readout` zone.
+`ZonedArchitecture.require_readout_zone` is the in-memory switch for §7 and
+is set from that zone's presence. `validate` rejects a declared readout zone
+with the flag left false. An architecture with no readout zone, including
+the flat AOD path, leaves atoms in place.
 
 ### 8.3 Movement
 
