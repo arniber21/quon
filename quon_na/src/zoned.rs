@@ -434,15 +434,15 @@ pub struct ZonedScheduleResult<V = LogicalQubitId> {
     pub aware_search_completed_layers: u64,
     /// Per-layer calls where the aware search exhausted the expansion budget
     /// before finding a full assignment and fell back to the current
-    /// routing-agnostic dispatcher ([`dispatch_agnostic_assignment`], issue
-    /// #485 — not [`assign_greedy_legal`] directly). Issue #111: a
+    /// routing-agnostic dispatcher (`dispatch_agnostic_assignment`, issue
+    /// #485 — not `assign_greedy_legal` directly). Issue #111: a
     /// budget-exhaustion fallback must stay visible instead of
     /// indistinguishable from "no routing contention". Always `0` under
     /// [`PlacerMode::RoutingAgnostic`].
     pub aware_search_budget_exceeded_layers: u64,
     /// Per-layer calls where the aware search exhausted its reachable space
     /// (no full assignment inside the windowed/beamed frontier) and fell
-    /// back to [`dispatch_agnostic_assignment`]. Always `0` under
+    /// back to `dispatch_agnostic_assignment`. Always `0` under
     /// [`PlacerMode::RoutingAgnostic`].
     pub aware_search_no_legal_assignment_layers: u64,
     /// Sum of best-first search node expansions across every
@@ -451,13 +451,13 @@ pub struct ZonedScheduleResult<V = LogicalQubitId> {
     /// [`PlacerMode::RoutingAgnostic`].
     pub aware_search_node_expansions: u64,
     /// Layers whose emitted assignment came from assign_matching_legal via
-    /// [`dispatch_agnostic_assignment`]: every routing-agnostic layer that
+    /// `dispatch_agnostic_assignment`: every routing-agnostic layer that
     /// kept matching, plus routing-aware layers that fell back to matching.
     /// Completed aware-search layers are not counted. See
     /// [`AgnosticPlacerMechanism`].
     pub agnostic_matching_layers: u64,
     /// Layers whose emitted assignment came from assign_greedy_legal via
-    /// [`dispatch_agnostic_assignment`] — the layer exceeded
+    /// `dispatch_agnostic_assignment` — the layer exceeded
     /// [`MATCHING_FALLBACK_GATE_PAIR_PRODUCT`], or the dispatch's comparison
     /// kept greedy. Includes routing-aware fallbacks that kept greedy.
     /// Completed aware-search layers are not counted. See
@@ -1274,9 +1274,8 @@ struct AssignInputs<'a> {
 /// for a layer, or gave up and fell back to the routing-agnostic dispatcher
 /// (issue #111 review finding: a silent fallback here is indistinguishable
 /// from "no routing contention" unless it is surfaced). Which agnostic
-/// mechanism that fallback kept is a separate field
-/// ([`GateAssignment::fallback_mechanism`]); this enum does not collapse
-/// matching and greedy into one label (issue #485).
+/// mechanism that fallback kept is reported separately from this outcome;
+/// this enum does not collapse matching and greedy into one label (issue #485).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AwareSearchOutcome {
     /// The routing-agnostic dispatcher ran directly; the
@@ -1290,12 +1289,12 @@ pub enum AwareSearchOutcome {
     Completed,
     /// The search exhausted [`AwareSearchParams::node_budget`] expansions
     /// before popping a full-assignment goal node and fell back to
-    /// [`dispatch_agnostic_assignment`].
+    /// `dispatch_agnostic_assignment`.
     BudgetExceeded,
     /// The search exhausted its reachable space (heap emptied) within the
     /// current [`AwareSearchParams::pruning_window`]/[`AwareSearchParams::beam_width`]
     /// bounds without popping a full-assignment goal node, and fell back to
-    /// [`dispatch_agnostic_assignment`]. Pre-#297 (unwindowed, unbeamed
+    /// `dispatch_agnostic_assignment`. Pre-#297 (unwindowed, unbeamed
     /// uniform-cost search) this proved no full legal assignment existed at
     /// all (e.g. spacing/occupancy conflicts); as of #297 it does **not**
     /// prove that — `pruning_window` can exclude the only choice a full
@@ -1900,7 +1899,7 @@ pub struct AwareSearchParams {
     /// small nonzero penalty proportional to how many gates remain. qmap:
     /// `deepeningValue`.
     pub deepening_value: f64,
-    /// Expansion budget before falling back to [`dispatch_agnostic_assignment`].
+    /// Expansion budget before falling back to `dispatch_agnostic_assignment`.
     pub node_budget: usize,
     /// \[RAP\] Sec. V-D pruning: number of nearest *legal* entanglement pairs
     /// considered per gate at each node expansion (bounds branching factor
