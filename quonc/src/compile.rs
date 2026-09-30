@@ -162,6 +162,17 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
     match compile_inner(request) {
         Ok(artifacts) => {
             let compile_ms = started.elapsed().as_millis() as u64;
+            let mut snapshot = MetricsSnapshot::ok(
+                program,
+                target_info,
+                toolchain,
+                compile_ms,
+                artifacts.circuit_metrics,
+            );
+            if let Some(message) = artifacts.openqasm_error {
+                snapshot.compile.status = quon_core::CompileStatus::Error;
+                snapshot.compile.error = Some(message);
+            }
             CompileReport {
                 qasm: artifacts.qasm,
                 na_schedule: artifacts.na_schedule,
@@ -174,13 +185,7 @@ pub fn compile(request: &CompileRequest) -> CompileReport {
                 qec_backed: artifacts.qec_backed,
                 qec_workload: artifacts.qec_workload,
                 mapping: artifacts.mapping,
-                snapshot: MetricsSnapshot::ok(
-                    program,
-                    target_info,
-                    toolchain,
-                    compile_ms,
-                    artifacts.circuit_metrics,
-                ),
+                snapshot,
             }
         }
         Err(message) => {
@@ -228,6 +233,10 @@ struct CompileArtifacts {
     qec_workload: Option<quon_qec::QecWorkload>,
     mapping: Option<MappingCapture>,
     circuit_metrics: CircuitMetrics,
+    /// Set when fixed-target OpenQASM emission rejects the circuit. The
+    /// mapping capture is kept so `--emit-mapping-json` can still print the
+    /// trace; the compile status stays an error.
+    openqasm_error: Option<String>,
 }
 
 fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
@@ -333,6 +342,7 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 qec_workload: qec_backed.then_some(workload),
                 mapping: None,
                 circuit_metrics,
+                openqasm_error: None,
             })
         }
         TargetKind::Fixed(_) => compile_fixed(request, &context, &module),
@@ -423,6 +433,7 @@ fn compile_qasm(request: &CompileRequest) -> Result<CompileArtifacts, String> {
         qec_workload: None,
         mapping: None,
         circuit_metrics,
+        openqasm_error: None,
     })
 }
 
@@ -463,11 +474,16 @@ fn compile_fixed(
         swap_count: raw.swap_count,
     };
 
-    let qasm = emit_openqasm(module, &request.target)
-        .map_err(|e| format!("OpenQASM emission failed: {e}"))?;
+    // Hardware rejection is a failed compile, but the SABRE log was already
+    // captured. Keep it so a mapping trace can still describe the circuit
+    // that emission refused.
+    let (qasm, openqasm_error) = match emit_openqasm(module, &request.target) {
+        Ok(qasm) => (Some(qasm), None),
+        Err(error) => (None, Some(format!("OpenQASM emission failed: {error}"))),
+    };
 
     Ok(CompileArtifacts {
-        qasm: Some(qasm),
+        qasm,
         na_schedule: None,
         na_layout: None,
         na_graph: None,
@@ -479,6 +495,7 @@ fn compile_fixed(
         qec_workload: None,
         mapping,
         circuit_metrics,
+        openqasm_error,
     })
 }
 

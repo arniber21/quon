@@ -616,6 +616,9 @@ fn run() -> Result<ExitCode> {
     let report = compile(&request);
 
     if report.snapshot.compile.status != quon_core::CompileStatus::Ok {
+        if cli.emit_mapping_json.is_some() && report.mapping.is_some() {
+            emit_mapping_json(&cli, &request, &report)?;
+        }
         if let Some(err) = &report.snapshot.compile.error {
             let style = error_style();
             eprintln!("{style}error{style:#}: {err}");
@@ -754,6 +757,24 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
     Ok(())
 }
 
+fn emit_mapping_json(
+    cli: &Cli,
+    request: &CompileRequest,
+    report: &quonc::CompileReport,
+) -> Result<()> {
+    let path = cli
+        .emit_mapping_json
+        .as_ref()
+        .context("mapping JSON path missing")?;
+    let trace = build_mapping_trace(report, request)?;
+    let json = trace
+        .to_json_string_pretty()
+        .context("serializing mapping trace")?;
+    let qasm_owns_stdout = cli.emit_qasm;
+    write_output(path, &json, qasm_owns_stdout && path == "-")?;
+    Ok(())
+}
+
 fn emit_artifacts(
     cli: &Cli,
     request: &CompileRequest,
@@ -772,12 +793,8 @@ fn emit_artifacts(
         }
     }
 
-    if let Some(path) = &cli.emit_mapping_json {
-        let trace = build_mapping_trace(report, request)?;
-        let json = trace
-            .to_json_string_pretty()
-            .context("serializing mapping trace")?;
-        write_output(path, &json, qasm_owns_stdout && path == "-")?;
+    if cli.emit_mapping_json.is_some() {
+        emit_mapping_json(cli, request, report)?;
         emitted = true;
     }
 

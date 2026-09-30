@@ -233,10 +233,20 @@ fn two_qubit_after_diverging_branch_is_not_routed_on_pre_branch_map() {
     std::fs::write(&source, BRANCH_THEN_FOLLOW).expect("write follow source");
     let target = workspace_path("../targets/ibm/fake_manila_v2.json");
     let output = emit_mapping(&source, Some(&target));
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "quonc failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "unrouted follow-up CNOT must fail the hardware OpenQASM check"
+    );
+    assert!(
+        stderr.contains("unsupported multi-qubit branch gate `CNOT`"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "OpenQASM emission failed: two-qubit gate `cx` on q[0], q[2] is not a coupling-map edge"
+        ),
+        "{stderr}"
     );
     let trace: Value = serde_json::from_slice(&output.stdout).expect("json");
     let events = trace["events"].as_array().expect("events");
