@@ -22,13 +22,15 @@ domain glossary lives in [CONTEXT.md](../CONTEXT.md).
 
 ## Boundary tensions
 
-1. **AST traversal is centralized, with one holdout.** `frontend::visitor`
-   (#399) is the exhaustive walk. `quonlint` (`LintWalker`) and `quon_lsp`
-   (folding ranges) already use it, so a new AST node fails in that one
-   module instead of in every tool. `quonfmt` still matches `Expr`/`Decl`
-   exhaustively because a pretty-printer has to build a document per node;
-   that match is not a visitor candidate. The remaining duplicated walk is
-   `frontend/src/analysis/symbols.rs` (`walk_expr`, #470).
+1. **AST traversal is centralized.** `frontend::visitor` (#399) is the
+   exhaustive walk. `quonlint` (`LintWalker`), `quon_lsp` (folding ranges),
+   and symbol indexing (`frontend/src/analysis/symbols.rs`, #470) use it, so
+   a new AST node fails in that one module instead of in every tool.
+   `quonfmt` still matches `Expr`/`Decl` exhaustively because a
+   pretty-printer has to build a document per node; that match is not a
+   visitor candidate. Symbol indexing still binds `let` / `match` / `for`
+   after the right-hand side, because the canonical child order visits the
+   pattern first.
 2. **`frontend` optionally depends on `mlir_bridge`** (feature `full`) so
    lowering entrypoints live behind the parser/typechecker. It works, but
    inverts the expected layering; #206 (Melior-free `SpecializedCircuit`
