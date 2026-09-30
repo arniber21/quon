@@ -260,11 +260,14 @@ pub enum PlacementCostModel {
     },
     /// architecture_model.md §9, using the target's `cost_model` weights.
     /// Movement time is `t(d_max)` per group and each moving atom costs two
-    /// trap transfers. Rydberg stages are charged once per non-empty layer
-    /// when two full assignments are compared.
+    /// trap transfers. An atom that misses a group's load, move, and store
+    /// layers is idle for `t(d_max) + 2 · trap_transfer_us`. Rydberg stages
+    /// are charged once per non-empty layer when two full assignments are
+    /// compared.
     Weighted {
         weights: backend::NeutralAtomCostModel,
         speed_model: SpeedModel,
+        trap_transfer_us: u64,
     },
 }
 
@@ -283,7 +286,14 @@ impl PlacementCostModel {
             Self::Weighted {
                 weights,
                 speed_model,
-            } => crate::objective::orientation_cost(dist_a, dist_b, weights, speed_model),
+                trap_transfer_us,
+            } => crate::objective::orientation_cost(
+                dist_a,
+                dist_b,
+                *trap_transfer_us,
+                weights,
+                speed_model,
+            ),
         }
     }
 
@@ -300,14 +310,25 @@ impl PlacementCostModel {
             Self::Weighted {
                 weights,
                 speed_model,
-            } => crate::objective::orientation_cost(dist_a, dist_b, weights, speed_model),
+                trap_transfer_us,
+            } => crate::objective::orientation_cost(
+                dist_a,
+                dist_b,
+                *trap_transfer_us,
+                weights,
+                speed_model,
+            ),
         }
     }
 
     /// Cost of one AOD-compatible movement group — the unit the routing
     /// cost sums over (\[RAP\] Eq. (1) for `Time`; error-budget per group for
     /// `ErrorBudget`). Used by the aware search's `groups_cost`.
-    fn group_cost(&self, group: &SearchGroup) -> f64 {
+    ///
+    /// `layer_atoms` is the number of atoms placed in the layer. `Time` and
+    /// `ErrorBudget` ignore it. `Weighted` charges idle for every placed atom
+    /// that is not in this group.
+    fn group_cost(&self, group: &SearchGroup, layer_atoms: usize) -> f64 {
         match self {
             Self::Time => sqrt_d_max(group.max_dist_um),
             Self::ErrorBudget { model, speed_model } => {
@@ -326,9 +347,12 @@ impl PlacementCostModel {
             Self::Weighted {
                 weights,
                 speed_model,
+                trap_transfer_us,
             } => crate::objective::group_weighted_cost(
                 group.moves.len(),
                 group.max_dist_um,
+                layer_atoms,
+                *trap_transfer_us,
                 weights,
                 speed_model,
             ),
@@ -2306,7 +2330,9 @@ fn assignment_error_budget_cost(
 }
 
 /// §9 cost of one layer assignment: one Rydberg stage when any gate is
-/// placed, plus each AOD group's movement time and two transfers per move.
+/// placed, plus each AOD group's movement time, two transfers per move, and
+/// idle for every placed atom that misses that group's load, move, and store.
+#[allow(clippy::too_many_arguments)]
 fn assignment_weighted_cost(
     assignment: &GateAssignment,
     gates: &[(AtomId, AtomId)],
@@ -2314,6 +2340,7 @@ fn assignment_weighted_cost(
     layout: &NeutralAtomLayout,
     weights: &backend::NeutralAtomCostModel,
     speed_model: &SpeedModel,
+    trap_transfer_us: u64,
     aod_min_sep_um: f64,
 ) -> f64 {
     let mut moves: Vec<PlannedMove> = Vec::new();
@@ -2336,11 +2363,19 @@ fn assignment_weighted_cost(
         }
     }
     let groups = partition_aod_compatible(&moves, aod_min_sep_um);
+    let layer_atoms = assignment.placed.len().saturating_mul(2);
     let movement = groups
         .iter()
         .map(|group| {
             let d_max = group.iter().fold(0.0_f64, |d, m| d.max(m.distance_um));
-            crate::objective::group_weighted_cost(group.len(), d_max, weights, speed_model)
+            crate::objective::group_weighted_cost(
+                group.len(),
+                d_max,
+                layer_atoms,
+                trap_transfer_us,
+                weights,
+                speed_model,
+            )
         })
         .sum::<f64>();
     let stages = u64::from(!assignment.placed.is_empty());
@@ -2404,6 +2439,7 @@ fn pick_agnostic_assignment(
         PlacementCostModel::Weighted {
             weights,
             speed_model,
+            trap_transfer_us,
         } => {
             let greedy_cost = assignment_weighted_cost(
                 &greedy,
@@ -2412,6 +2448,7 @@ fn pick_agnostic_assignment(
                 layout,
                 &weights,
                 &speed_model,
+                trap_transfer_us,
                 aod_min_sep_um,
             );
             let matching_cost = assignment_weighted_cost(
@@ -2421,6 +2458,7 @@ fn pick_agnostic_assignment(
                 layout,
                 &weights,
                 &speed_model,
+                trap_transfer_us,
                 aod_min_sep_um,
             );
             matching_cost < greedy_cost
@@ -2614,8 +2652,15 @@ fn add_move_to_groups(groups: &mut Vec<SearchGroup>, mv: (Position, Position), m
     }
 }
 
-fn groups_cost(groups: &[SearchGroup], cost_model: PlacementCostModel) -> f64 {
-    groups.iter().map(|g| cost_model.group_cost(g)).sum()
+fn groups_cost(
+    groups: &[SearchGroup],
+    layer_atoms: usize,
+    cost_model: PlacementCostModel,
+) -> f64 {
+    groups
+        .iter()
+        .map(|g| cost_model.group_cost(g, layer_atoms))
+        .sum()
 }
 
 /// Population standard deviation (`0.0` for fewer than 2 samples).
@@ -2795,10 +2840,10 @@ fn heuristic_estimate(
             }
         }
         PlacementCostModel::ErrorBudget { .. } | PlacementCostModel::Weighted { .. } => {
-            let max_cost_of_placed = node
-                .groups
-                .iter()
-                .fold(0.0_f64, |m, g| m.max(cost_model.group_cost(g)));
+            let layer_atoms = node.assigned.len().saturating_mul(2);
+            let max_cost_of_placed = node.groups.iter().fold(0.0_f64, |m, g| {
+                m.max(cost_model.group_cost(g, layer_atoms))
+            });
             let mut max_cost_of_unplaced = 0.0_f64;
             for gate_candidates in &candidates[level..] {
                 let best = gate_candidates
@@ -2911,7 +2956,8 @@ fn assign_aware_legal(
             let mut groups = node.groups.clone();
             add_move_to_groups(&mut groups, (pa, cand.orient.0), inputs.aod_min_sep_um);
             add_move_to_groups(&mut groups, (pb, cand.orient.1), inputs.aod_min_sep_um);
-            let cost_so_far = groups_cost(&groups, inputs.cost_model);
+            let layer_atoms = node.assigned.len().saturating_add(1).saturating_mul(2);
+            let cost_so_far = groups_cost(&groups, layer_atoms, inputs.cost_model);
             let mut used_pairs = node.used_pairs.clone();
             used_pairs.insert(cand.pair_index);
             let mut assigned = node.assigned.clone();

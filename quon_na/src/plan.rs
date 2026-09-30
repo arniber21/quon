@@ -115,9 +115,11 @@ pub fn plan_backend<V: VertexId>(
             // ErrorBudget is requested without an error_model (mirrors
             // --emit-resource-report discipline, ADR-0017).
             let cost_model = match opts.objective {
-                crate::pipeline::NaObjective::Time => {
-                    placement_cost_for_time_objective(&na.cost_model, arch.speed_model)
-                }
+                crate::pipeline::NaObjective::Time => placement_cost_for_time_objective(
+                    &na.cost_model,
+                    arch.speed_model,
+                    arch.trap_transfer_us,
+                ),
                 crate::pipeline::NaObjective::ErrorBudget => {
                     let model = na
                         .error_model
@@ -388,6 +390,7 @@ impl QecStageAccumulator {
 fn placement_cost_for_time_objective(
     weights: &backend::NeutralAtomCostModel,
     speed_model: crate::geometry::SpeedModel,
+    trap_transfer_us: u64,
 ) -> PlacementCostModel {
     if *weights == crate::objective::PLACEHOLDER_COST_WEIGHTS {
         PlacementCostModel::Time
@@ -395,6 +398,7 @@ fn placement_cost_for_time_objective(
         PlacementCostModel::Weighted {
             weights: *weights,
             speed_model,
+            trap_transfer_us,
         }
     }
 }
@@ -407,14 +411,14 @@ mod tests {
     fn time_objective_reads_non_placeholder_cost_weights() {
         let speed = crate::geometry::SpeedModel::default();
         assert_eq!(
-            placement_cost_for_time_objective(&crate::PLACEHOLDER_COST_WEIGHTS, speed),
+            placement_cost_for_time_objective(&crate::PLACEHOLDER_COST_WEIGHTS, speed, 15),
             PlacementCostModel::Time
         );
         let mut weights = crate::PLACEHOLDER_COST_WEIGHTS;
         weights.trap_transfer_weight = 10.0;
         assert!(matches!(
-            placement_cost_for_time_objective(&weights, speed),
-            PlacementCostModel::Weighted { weights: got, .. } if got == weights
+            placement_cost_for_time_objective(&weights, speed, 15),
+            PlacementCostModel::Weighted { weights: got, trap_transfer_us: 15, .. } if got == weights
         ));
     }
 

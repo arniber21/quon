@@ -15,6 +15,7 @@
 //! report reads those counts off the emitted `ScheduleSpec` after verification,
 //! not off planner-internal counters.
 
+#[cfg(feature = "mlir")]
 use std::collections::{BTreeMap, BTreeSet};
 
 use backend::NeutralAtomCostModel;
@@ -61,37 +62,64 @@ pub enum ObjectiveError {
     InvalidWeights,
 }
 
-/// Movement-time and transfer cost of one gate orientation.
+/// Movement, transfer, and idle cost of one gate orientation.
 ///
 /// One rearrangement group whose duration is `t(max(dist_a, dist_b))`, plus
-/// two trap transfers per atom that actually moves. The Rydberg stage is the
-/// same for both orientations of a gate, so it is left to the schedule-level
-/// total.
+/// two trap transfers per atom that actually moves. The gate's other atom, if
+/// it stays put, misses that group's load, move, and store layers, so its idle
+/// is `t(d_max) + 2 · trap_transfer_us`. The Rydberg stage is the same for
+/// both orientations of a gate, so it is left to the schedule-level total.
 pub fn orientation_cost(
     dist_a_um: f64,
     dist_b_um: f64,
+    trap_transfer_us: u64,
     weights: &NeutralAtomCostModel,
     speed: &SpeedModel,
 ) -> f64 {
-    let n_moves = u64::from(dist_a_um >= 1e-9) + u64::from(dist_b_um >= 1e-9);
+    let n_moves = usize::from(dist_a_um >= 1e-9) + usize::from(dist_b_um >= 1e-9);
     let d_max = dist_a_um.max(dist_b_um);
-    group_weighted_cost(n_moves as usize, d_max, weights, speed)
+    // A zero-distance pair emits no movement layers. Otherwise both atoms of
+    // the gate are in the layer, and any atom that does not move is idle for
+    // the load, move, and store.
+    let layer_atoms = if n_moves == 0 { 0 } else { 2 };
+    group_weighted_cost(
+        n_moves,
+        d_max,
+        layer_atoms,
+        trap_transfer_us,
+        weights,
+        speed,
+    )
 }
 
-/// Weighted movement-time and transfer cost of one AOD movement group.
+/// Weighted movement, transfer, and idle cost of one AOD movement group.
+///
+/// `layer_atoms` is every atom placed in the layer. Atoms that are not in this
+/// group miss its load, move, and store layers (`t(d_max) + 2 · trap_transfer_us`
+/// each). A group with no moves emits no layers and charges no idle.
 pub fn group_weighted_cost(
     n_moves: usize,
     d_max_um: f64,
+    layer_atoms: usize,
+    trap_transfer_us: u64,
     weights: &NeutralAtomCostModel,
     speed: &SpeedModel,
 ) -> f64 {
-    let movement_us = if d_max_um >= 1e-9 {
+    let movement_us = if n_moves > 0 && d_max_um >= 1e-9 {
         movement_duration_for_model(d_max_um, speed) as f64
     } else {
         0.0
     };
+    let idle_us = if n_moves == 0 {
+        0.0
+    } else {
+        let span = movement_us + 2.0 * trap_transfer_us as f64;
+        let idle_atoms = layer_atoms.saturating_sub(n_moves);
+        idle_atoms as f64 * span
+    };
     weights.movement_time_weight * movement_us
         + weights.trap_transfer_weight * (2.0 * n_moves as f64)
+        + weights.idle_time_weight * idle_us
 }
 
 /// §9 total from already-counted components.
@@ -284,6 +312,24 @@ mod tests {
     }
 
     #[test]
+    fn one_atom_orientation_charges_the_stationary_atoms_idle() {
+        let speed = crate::geometry::SpeedModel {
+            kind: crate::geometry::SpeedModelKind::Sqrt,
+            acceleration_m_s2: 2750.0,
+            jerk_m_s3: 0.0,
+            max_velocity_m_s: 0.0,
+        };
+        let trap_transfer_us = 15;
+        let idle_only = weights(0.0, 0.0, 0.0, 1.0);
+        let one = orientation_cost(206.0, 0.0, trap_transfer_us, &idle_only, &speed);
+        let two = orientation_cost(200.0, 6.0, trap_transfer_us, &idle_only, &speed);
+        let movement_us = crate::geometry::movement_duration_for_model(206.0, &speed) as f64;
+        assert_eq!(one, movement_us + 2.0 * trap_transfer_us as f64);
+        assert_eq!(two, 0.0);
+        assert!(one > two);
+    }
+
+    #[test]
     fn weighted_total_is_the_section_9_dot_product() {
         let total = weighted_total(2, 10, 4, 100, &weights(3.0, 0.5, 7.0, 0.01)).expect("weights");
         assert_eq!(total, 3.0 * 2.0 + 0.5 * 10.0 + 7.0 * 4.0 + 0.01 * 100.0);
@@ -456,6 +502,7 @@ mod tests {
         };
         let prefer_shorter_move = weights(1.0, 1.0, 0.0, 0.0);
         let prefer_fewer_transfers = weights(1.0, 0.0, 1.0, 0.0);
+        let prefer_less_idle = weights(1.0, 0.0, 0.0, 1.0);
 
         let (short_spec, short_transfers, short_movement, short_obj) =
             scheduled(&arch, prefer_shorter_move);
@@ -482,6 +529,23 @@ mod tests {
         assert_eq!(short_obj.movement_time_us, short_movement);
         assert_eq!(short_obj.trap_transfers, short_transfers);
         assert_eq!(transfer_obj.trap_transfers, transfer_transfers);
+        assert!(
+            transfer_obj.idle_time_us > short_obj.idle_time_us,
+            "the one-atom move leaves its partner idle through load, move, and store"
+        );
+
+        let (idle_spec, idle_transfers, _, idle_obj) = scheduled(&arch, prefer_less_idle);
+        assert_eq!(
+            idle_transfers, short_transfers,
+            "idle weight must take the two-atom move; dropping idle keeps the one-atom orientation"
+        );
+        assert!(idle_obj.idle_time_us < transfer_obj.idle_time_us);
+        let transfer_under_idle =
+            objective_from_verified_schedule(&transfer_spec, &prefer_less_idle).expect("rescore");
+        let idle_under_transfer =
+            objective_from_verified_schedule(&idle_spec, &prefer_fewer_transfers).expect("rescore");
+        assert!(idle_obj.total < transfer_under_idle.total);
+        assert!(transfer_obj.total < idle_under_transfer.total);
 
         fn scheduled(
             arch: &ZonedArchitecture,
@@ -530,6 +594,7 @@ mod tests {
                 PlacementCostModel::Weighted {
                     weights,
                     speed_model: arch.speed_model,
+                    trap_transfer_us: arch.trap_transfer_us,
                 },
             )
             .expect("zoned");
