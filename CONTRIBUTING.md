@@ -56,7 +56,7 @@ The two are equivalent; pick one and stay consistent within a session.
 | `just test-fast` | `devbox run -- just test-fast` | unit + integration tests (cargo-nextest; soft-skip lit) |
 | `just test-ci` | `devbox run -- just test-ci` | local CI-parity path (fmt + clippy + build + tests + tooling + docs) |
 | `just ci-rust` | `devbox run -- just ci-rust` | the rust CI gate alone |
-| `just ci-tooling` | `devbox run -- just ci-tooling` | quonfmt + quonlint + LSP smoke |
+| `just ci-tooling` | `devbox run -- just ci-tooling` | editor grammar sync + quonfmt + quonlint + LSP smoke |
 | `just ci-docs-assert` | `devbox run -- just ci-docs-assert` | assert agent validation docs match Justfile / CI |
 
 `just test-ci` is the local mirror of what CI runs. Run it before pushing

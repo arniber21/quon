@@ -15,6 +15,14 @@ export PATH="$PWD/target/release:$PATH"
 - Lint: merged into LSP; CLI `quonlint --format json` for offline tools.
 - Tree-sitter: single package [`tree-sitter-quon/`](../../tree-sitter-quon/) owned by #131.
   Do **not** invent a second grammar for Zed/Neovim.
+- Highlight vocabulary: [`tree-sitter-quon/highlight-lexicon.json`](../../tree-sitter-quon/highlight-lexicon.json)
+  (#205). `grammar.js` reads it. TextMate keyword/operator patterns, Zed copies of
+  `queries/{highlights,brackets,indents}.scm`, and `prelude_names::keywords()` are
+  checked copies — `just ci-editor-grammar` fails if they drift. The compiler lexer
+  is not generated from the lexicon.
+- JS packages: `tree-sitter-quon/` and `extensions/vscode-quon/` use **npm**
+  (`package-lock.json`, `npm ci`). `website/` stays **pnpm**. Do not add a second
+  lockfile under the editor or grammar packages.
 
 Public user docs: [Developer tooling](../../website/src/content/docs/guides/tooling.md).
 
@@ -109,8 +117,21 @@ See [`extensions/vscode-quon/README.md`](../../extensions/vscode-quon/README.md)
 ## Zed (`extensions/zed-quon/`) — #132
 
 Dev extension: Tree-sitter + `quon_lsp` + `quonfmt`. Consumes the same
-`tree-sitter-quon/` package (no forked `grammar.js`); keep local
-`languages/quon/*.scm` in sync with shared `queries/`.
+`tree-sitter-quon/` package (no forked `grammar.js`).
+
+Sync highlight queries and pin the grammar in one command (after the grammar
+commit exists on GitHub — Zed clones `rev` from the remote):
+
+```sh
+scripts/bump-zed-grammar-rev.sh [REV]
+```
+
+`REV` defaults to `HEAD` and must be a 40-character SHA. The command rewrites
+`languages/quon/{highlights,brackets,indents}.scm` from
+`tree-sitter-quon/queries/` and sets `[grammars.quon].rev`. `locals.scm` stays
+in the grammar package (Neovim loads it from there). `outline.scm` is Zed-only.
+`extensions/zed-quon/grammars/` and `*.wasm` are local build products; do not
+commit them.
 
 See [`extensions/zed-quon/README.md`](../../extensions/zed-quon/README.md).
 

@@ -1,6 +1,6 @@
-;; synced from tree-sitter-quon/queries/highlights.scm — update both
+;; synced from tree-sitter-quon/queries/highlights.scm — do not edit; run scripts/bump-zed-grammar-rev.sh
 ; Highlight queries for Quon (Zed / Neovim).
-; Keep in sync with the keyword / operator list in README.md and TextMate.
+; Keyword and operator vocabulary: highlight-lexicon.json (do not duplicate it here).
 
 (line_comment) @comment
 (block_comment) @comment

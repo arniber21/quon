@@ -163,6 +163,10 @@ just tooling-full
   Tree-sitter from `tree-sitter-quon/`, and conform.nvim → `quonfmt`.
 - **Shared Tree-sitter grammar:** [`tree-sitter-quon/`](https://github.com/arniber21/quon/tree/main/tree-sitter-quon)
   (corpus at `tree-sitter-quon/test/corpus/`) for Zed/Neovim consumers.
+  Highlight keywords and operators live in `tree-sitter-quon/highlight-lexicon.json`.
+  `just ci-editor-grammar` fails when the VS Code TextMate patterns or the Zed
+  query copies drift from that file. After a grammar commit is on GitHub, refresh
+  the Zed pin with `scripts/bump-zed-grammar-rev.sh`.
 - **Zed:** dev extension at [`extensions/zed-quon/`](https://github.com/arniber21/quon/tree/main/extensions/zed-quon)
   ([#132](https://github.com/arniber21/quon/issues/132)). Install via Zed → Extensions →
   Install Dev Extension; see the [zed-quon README](https://github.com/arniber21/quon/blob/main/extensions/zed-quon/README.md).

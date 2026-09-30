@@ -238,8 +238,12 @@ ci-feature-seams:
     echo "==> quonc full compiler (frontend full + quon_na mlir)"
     cargo build --release -p quonc
 
+# Editor highlight vocabulary: lexicon, TextMate, Zed query copies, compiler keywords.
+ci-editor-grammar:
+    python3 scripts/check_editor_grammar_sync.py
+
 # quonfmt · quonlint · LSP smoke on CI corpus
-ci-tooling: _tooling-build
+ci-tooling: ci-editor-grammar _tooling-build
     #!/usr/bin/env bash
     files=()
     while IFS= read -r f; do
@@ -257,7 +261,7 @@ ci-tooling: _tooling-build
     cargo test --release -p quon_lsp --test smoke -- --include-ignored
 
 # Broader local tooling sweep over fixture .qn files (not part of test-ci).
-tooling-full: _tooling-build
+tooling-full: ci-editor-grammar _tooling-build
     #!/usr/bin/env bash
     files=()
     while IFS= read -r f; do

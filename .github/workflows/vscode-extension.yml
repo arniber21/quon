@@ -5,6 +5,9 @@ on:
     paths:
       - "extensions/vscode-quon/**"
       - "tree-sitter-quon/**"
+      - "extensions/zed-quon/**"
+      - "scripts/check_editor_grammar_sync.py"
+      - "scripts/bump-zed-grammar-rev.sh"
       - ".github/workflows/vscode-extension.yml"
       - "quon_lsp/**"
       - "quonfmt/**"
@@ -12,6 +15,9 @@ on:
     paths:
       - "extensions/vscode-quon/**"
       - "tree-sitter-quon/**"
+      - "extensions/zed-quon/**"
+      - "scripts/check_editor_grammar_sync.py"
+      - "scripts/bump-zed-grammar-rev.sh"
       - ".github/workflows/vscode-extension.yml"
       - "quon_lsp/**"
       - "quonfmt/**"
@@ -34,10 +40,15 @@ jobs:
           cache: npm
           cache-dependency-path: tree-sitter-quon/package-lock.json
 
+      - name: editor grammar sync
+        run: python3 scripts/check_editor_grammar_sync.py
+
       - name: tree-sitter test
         working-directory: tree-sitter-quon
         run: |
           npm ci
+          npx tree-sitter generate
+          git diff --exit-code -- src
           npx tree-sitter test
 
   vscode-extension:

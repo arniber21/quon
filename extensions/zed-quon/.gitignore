@@ -1,1 +1,7 @@
 /target/
+
+# Install Dev Extension clones the pinned grammar and builds WASM here.
+# These are not source. Highlight queries live in languages/quon/.
+/grammars/
+*.wasm
+

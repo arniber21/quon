@@ -1,5 +1,5 @@
 ; Highlight queries for Quon (Zed / Neovim).
-; Keep in sync with the keyword / operator list in README.md and TextMate.
+; Keyword and operator vocabulary: highlight-lexicon.json (do not duplicate it here).
 
 (line_comment) @comment
 (block_comment) @comment

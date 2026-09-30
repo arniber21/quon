@@ -27,15 +27,15 @@ This package is a **grammar source** (`grammar.js`, committed `src/parser.c`, `q
 
 The VS Code extension (`extensions/vscode-quon/`) uses **TextMate** for lexical highlighting plus LSP semantic tokens. Tree-sitter is the canonical grammar for Zed/Neovim; embedding Tree-sitter WASM in VS Code is optional and not required for #131.
 
-## Lexical surface (keep TextMate in sync)
+## Lexical surface
 
-**Keywords:** `fn`, `type`, `let`, `in`, `return`, `match`, `circuit`, `run`, `borrow`, `for`, `if`, `then`, `else`, `true`, `false`, `adjoint`, `controlled`, `par`
+Editor highlight vocabulary lives in [`highlight-lexicon.json`](highlight-lexicon.json). `grammar.js` token rules read that file. Do not hand-copy keyword lists into TextMate, Zed queries, or docs — `scripts/check_editor_grammar_sync.py` (also `just ci-editor-grammar`) fails if those copies drift, including `frontend` `keywords()` and the lexer display strings. The compiler is not generated from the lexicon.
 
 **Comments:** line `-- …`, nested block `{- … -}`
 
-**Operators:** `|>`, `<-`, `@`, `->`, `-o`, `=>`, and arithmetic / delimiters
+## Package manager
 
-Source of truth for the language lexer: `frontend/src/lexer.rs`.
+This package uses npm (`package-lock.json`, `npm ci`), same as `extensions/vscode-quon/`. The website stays on pnpm. Do not commit `pnpm-lock.yaml` or `yarn.lock` here.
 
 ## Build / test
 
@@ -52,7 +52,7 @@ Generated `src/parser.c` is committed so consumers do not need the CLI at runtim
 
 | Query | Consumers |
 | ----- | --------- |
-| `queries/highlights.scm` | Zed, Neovim |
-| `queries/brackets.scm` | Zed (pair matching). Requires anonymous `"{"` / `"}"` tokens in `grammar.js` — do **not** collapse delimiters into a named `delimiter` node |
-| `queries/indents.scm` | Neovim / Zed (minimal stub) |
-| `queries/locals.scm` | Optional / minimal |
+| `queries/highlights.scm` | Canonical. Zed copy: `extensions/zed-quon/languages/quon/highlights.scm` (rewritten by `scripts/bump-zed-grammar-rev.sh`) |
+| `queries/brackets.scm` | Canonical. Zed copy, same command. Requires anonymous `"{"` / `"}"` tokens in `grammar.js` — do **not** collapse delimiters into a named `delimiter` node |
+| `queries/indents.scm` | Canonical. Zed copy, same command |
+| `queries/locals.scm` | Tree-sitter / Neovim only. Not copied into Zed |
