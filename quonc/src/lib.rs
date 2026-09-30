@@ -5,6 +5,7 @@
 //! this crate is the thin CLI/test adapter.
 
 pub mod compile;
+pub mod emit;
 pub mod include;
 pub mod na_target;
 pub mod qasm;

@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -11,9 +11,8 @@ use quon_core::{
     save_snapshot,
 };
 use quon_na::{
-    NeutralAtomAction, PlacementStrategy, PlacerMode, attach_qec_error_budget, na_stats_to_json,
-    require_target_error_model, resource_report_to_json, resource_report_to_markdown,
-    round_barrier_cuts,
+    NeutralAtomAction, PlacementStrategy, PlacerMode, attach_qec_error_budget,
+    require_target_error_model, resource_report_to_json, round_barrier_cuts,
 };
 use sha2::{Digest, Sha256};
 
@@ -23,10 +22,8 @@ use quon_qec::{
     attach_barrier_cycles, dual_emit, expand_workload, experiment_to_json, na_refs_from_expanded,
     sibling_stim_path,
 };
-use quonc::compile::{
-    CompileRequest, build_mapping_trace, build_na_schedule_view, compile, schedule_to_json,
-    schedule_to_mlir,
-};
+use quonc::compile::{CompileRequest, compile};
+use quonc::emit::{ArtifactFlags, QecArtifactSink, ReportFormat as EmitReportFormat};
 use quonc::na_target::{
     NaBackendKind, parse_na_backend, parse_na_objective, parse_placer_mode, parse_state_prep_mode,
 };
@@ -645,8 +642,10 @@ fn run() -> Result<ExitCode> {
     let report = compile(&request);
 
     if report.snapshot.compile.status != quon_core::CompileStatus::Ok {
-        if cli.emit_mapping_json.is_some() && report.mapping.is_some() {
-            emit_mapping_json(&cli, &request, &report)?;
+        if let Some(path) = cli.emit_mapping_json.as_deref()
+            && report.mapping.is_some()
+        {
+            quonc::emit::emit_mapping_json(path, cli.emit_qasm, &request, &report)?;
         }
         if let Some(err) = &report.snapshot.compile.error {
             let style = error_style();
@@ -655,7 +654,14 @@ fn run() -> Result<ExitCode> {
         return Ok(ExitCode::from(1));
     }
 
-    emit_artifacts(&cli, &request, &report)?;
+    let flags = artifact_flags(&cli);
+    quonc::emit::emit_artifacts(
+        &flags,
+        &request,
+        &report,
+        dim_style(),
+        &CliQecSink { cli: &cli },
+    )?;
 
     if report.na_schedule_spec.is_some() && (cli.verify_na || report.qec_backed) && !cli.quiet {
         let dim = dim_style();
@@ -766,212 +772,54 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
     Ok(())
 }
 
-fn emit_mapping_json(
-    cli: &Cli,
-    request: &CompileRequest,
-    report: &quonc::CompileReport,
-) -> Result<()> {
-    let path = cli
-        .emit_mapping_json
-        .as_ref()
-        .context("mapping JSON path missing")?;
-    let trace = build_mapping_trace(report, request)?;
-    let json = trace
-        .to_json_string_pretty()
-        .context("serializing mapping trace")?;
-    let qasm_owns_stdout = cli.emit_qasm;
-    write_output(path, &json, qasm_owns_stdout && path == "-")?;
-    Ok(())
+fn artifact_flags(cli: &Cli) -> ArtifactFlags<'_> {
+    ArtifactFlags {
+        emit_qasm: cli.emit_qasm,
+        emit_mapping_json: cli.emit_mapping_json.as_deref(),
+        emit_na_mlir: cli.emit_na_mlir.as_deref(),
+        emit_na_schedule: cli.emit_na_schedule.as_deref(),
+        emit_na_graph: cli.emit_na_graph.as_deref(),
+        emit_resource_report: cli.emit_resource_report.as_deref(),
+        emit_na_stats: cli.emit_na_stats.as_deref(),
+        emit_naviz: cli.emit_naviz.as_deref(),
+        emit_qec_experiment: cli.emit_qec_experiment.as_deref(),
+        emit_qec_validation: cli.emit_qec_validation.as_deref(),
+        resource_report_format: cli.resource_report_format.map(|fmt| match fmt {
+            ReportFormat::Json => EmitReportFormat::Json,
+            ReportFormat::Markdown => EmitReportFormat::Markdown,
+        }),
+        verify_na: cli.verify_na,
+        quiet: cli.quiet,
+        metrics: cli.metrics,
+        has_metrics_json: cli.metrics_json.is_some(),
+        has_metrics_snapshot: cli.metrics_snapshot.is_some(),
+    }
 }
 
-fn emit_artifacts(
-    cli: &Cli,
-    request: &CompileRequest,
-    report: &quonc::CompileReport,
-) -> Result<()> {
-    let mut emitted = false;
-    // When OpenQASM already owns stdout, subsequent `-` emits go to stderr.
-    let qasm_owns_stdout = cli.emit_qasm;
+/// QEC experiment and validation writers stay in this binary. The emit seam
+/// calls them in the same order as the old in-process `emit_artifacts`.
+struct CliQecSink<'a> {
+    cli: &'a Cli,
+}
 
-    if cli.emit_qasm {
-        if let Some(qasm) = &report.qasm {
-            print!("{qasm}");
-            emitted = true;
-        } else {
-            bail!("OpenQASM emission produced no output (is the target fixed?)");
-        }
+impl QecArtifactSink for CliQecSink<'_> {
+    fn emit_experiment(
+        &self,
+        request: &CompileRequest,
+        report: &quonc::CompileReport,
+        json_path: &Path,
+    ) -> Result<()> {
+        emit_qec_experiment_artifacts(request, report, json_path)
     }
 
-    if cli.emit_mapping_json.is_some() {
-        emit_mapping_json(cli, request, report)?;
-        emitted = true;
+    fn emit_validation(
+        &self,
+        request: &CompileRequest,
+        report: &quonc::CompileReport,
+        validation_path: &Path,
+    ) -> Result<()> {
+        emit_qec_validation(self.cli, request, report, validation_path)
     }
-
-    // quantum.na MLIR is the primary NA artifact (ADR-0011): it takes stdout
-    // ahead of the JSON debug view when both target `-`.
-    if let Some(path) = &cli.emit_na_mlir {
-        let spec = report.na_schedule_spec.as_ref().ok_or_else(|| {
-            anyhow!("no quantum.na schedule available (compile with a neutral-atom target)")
-        })?;
-        let mlir = schedule_to_mlir(spec)?;
-        // Prefer verifying the emitted text so dump drift cannot slip past the
-        // in-memory `verify_schedule_spec` path (ADR-0021 nit).
-        if cli.verify_na || report.qec_backed {
-            quon_na::verify_mlir_text(&mlir)
-                .map_err(|e| anyhow!("emitted quantum.na failed verification: {e}"))?;
-        }
-        write_output(path, &mlir, qasm_owns_stdout && path == "-")?;
-        emitted = true;
-    }
-    let mlir_owns_stdout = cli.emit_na_mlir.as_ref().is_some_and(|p| p == "-");
-
-    if let Some(path) = &cli.emit_na_schedule {
-        let view = build_na_schedule_view(report, request)?;
-        let json = schedule_to_json(&view)?;
-        write_output(
-            path,
-            &json,
-            (qasm_owns_stdout || mlir_owns_stdout) && path == "-",
-        )?;
-        emitted = true;
-    }
-    let schedule_on_stdout = cli.emit_na_schedule.as_ref().is_some_and(|p| p == "-");
-
-    if let Some(path) = &cli.emit_na_graph {
-        let graph = report.na_graph.as_ref().ok_or_else(|| {
-            anyhow!("no interaction graph available (compile with a neutral-atom target)")
-        })?;
-        let dot = graph.to_dot();
-        write_output(
-            path,
-            &dot,
-            (qasm_owns_stdout || mlir_owns_stdout || schedule_on_stdout) && path == "-",
-        )?;
-        emitted = true;
-    }
-    let graph_on_stdout = cli.emit_na_graph.as_ref().is_some_and(|p| p == "-");
-
-    if let Some(path) = &cli.emit_resource_report {
-        let report_body = report.resource_report.as_ref().ok_or_else(|| {
-            anyhow!("no resource report available (compile with a neutral-atom target)")
-        })?;
-        // ADR-0017: NA resource-report emit always attaches analytic error_budget
-        // and hard-fails when the target has no error_model (never 1−fidelity).
-        let na = match &request.target.kind {
-            TargetKind::NeutralAtomReconfigurable(na) => na,
-            _ => bail!(
-                "--emit-resource-report requires a neutral_atom_reconfigurable target \
-                 (see targets/neutral_atom/)"
-            ),
-        };
-        let model = require_target_error_model(na).map_err(|e| anyhow!("{e}"))?;
-        let report_body = attach_qec_error_budget(report_body.clone(), Some(model))
-            .map_err(|e| anyhow!("{e}"))?;
-        let text = match resolve_report_format(cli, path) {
-            ReportFormat::Json => resource_report_to_json(&report_body)?,
-            ReportFormat::Markdown => resource_report_to_markdown(&report_body),
-        };
-        // If MLIR / schedule / graph already printed to stdout on `-`, send the
-        // report to stderr so all artifacts remain recoverable without
-        // interleaving values.
-        write_output(
-            path,
-            &text,
-            (qasm_owns_stdout || mlir_owns_stdout || schedule_on_stdout || graph_on_stdout)
-                && path == "-",
-        )?;
-        emitted = true;
-    }
-    let resource_report_on_stdout = cli.emit_resource_report.as_ref().is_some_and(|p| p == "-");
-
-    if let Some(path) = &cli.emit_na_stats {
-        let stats = report.na_stats.as_ref().ok_or_else(|| {
-            anyhow!(
-                "no NA compiler stats available for this compile (the neutral-atom \
-                 pipeline failed to populate NaStats — this should not happen; see \
-                 issue #307)"
-            )
-        })?;
-        let json = na_stats_to_json(stats)?;
-        // If an earlier artifact already printed to stdout on `-`, send stats
-        // to stderr so all artifacts remain recoverable without interleaving.
-        write_output(
-            path,
-            &json,
-            (qasm_owns_stdout
-                || mlir_owns_stdout
-                || schedule_on_stdout
-                || graph_on_stdout
-                || resource_report_on_stdout)
-                && path == "-",
-        )?;
-        emitted = true;
-    }
-
-    if let Some(path) = &cli.emit_naviz {
-        let layers = report.na_schedule.as_ref().ok_or_else(|| {
-            anyhow!("no neutral-atom schedule available (compile with a neutral-atom target)")
-        })?;
-        let layout = report.na_layout.as_ref().ok_or_else(|| {
-            anyhow!("no neutral-atom layout available (compile with a neutral-atom target)")
-        })?;
-        let na = match &request.target.kind {
-            TargetKind::NeutralAtomReconfigurable(na) => na,
-            _ => bail!(
-                "--emit-naviz requires a neutral_atom_reconfigurable target \
-                 (see targets/neutral_atom/)"
-            ),
-        };
-        // NAViz machine id = the sibling .namachine file-name stem.
-        let machine_id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow!("--emit-naviz requires a file path with a stem"))?;
-        let namachine_path = path.with_extension("namachine");
-        let naviz = quon_na::naviz::schedule_to_naviz(layers, layout, machine_id);
-        let namachine = quon_na::naviz::target_to_namachine(na, layout, &request.target.id);
-        write_atomic(path, &naviz)?;
-        write_atomic(&namachine_path, &namachine)?;
-        emitted = true;
-    }
-
-    if let Some(json_path) = &cli.emit_qec_experiment {
-        emit_qec_experiment_artifacts(request, report, json_path)?;
-        emitted = true;
-    }
-
-    if let Some(validation_path) = &cli.emit_qec_validation {
-        emit_qec_validation(cli, request, report, validation_path)?;
-        emitted = true;
-    }
-
-    if !emitted
-        && cli.metrics_json.is_none()
-        && cli.metrics_snapshot.is_none()
-        && !cli.metrics
-        && !cli.quiet
-    {
-        let dim = dim_style();
-        match &report.snapshot.target.id {
-            id if report.na_schedule.is_some() => {
-                eprintln!(
-                    "{dim}(compiled successfully for neutral-atom target `{id}`; \
-                     pass --emit-na-mlir for quantum.na MLIR, or \
-                     --emit-na-schedule / --emit-na-graph / --emit-resource-report / \
-                     --emit-na-stats / --emit-naviz / --emit-qec-experiment / \
-                     --emit-qec-validation for debug / QEC evaluation artifacts){dim:#}"
-                );
-            }
-            id => {
-                eprintln!(
-                    "{dim}(compiled successfully for `{id}`; pass --emit-qasm to print OpenQASM 3.0, \
-                     or --emit-mapping-json for the routing trace){dim:#}"
-                );
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Dual-emit `*.qec.json` + sibling `.stim` from the same expanded QEC IR (ADR-0018).
@@ -1048,9 +896,9 @@ fn build_and_write_qec_experiment(
     }
 
     // Atomic dual write: Stim first, then JSON; clean up Stim if JSON fails.
-    write_atomic(&stim_path, &stim_body)
+    quonc::emit::write_atomic(&stim_path, &stim_body)
         .with_context(|| format!("write QEC Stim circuit {}", stim_path.display()))?;
-    if let Err(e) = write_atomic(json_path, &json_body)
+    if let Err(e) = quonc::emit::write_atomic(json_path, &json_body)
         .with_context(|| format!("write QEC experiment JSON {}", json_path.display()))
     {
         let _ = std::fs::remove_file(&stim_path);
@@ -1315,54 +1163,6 @@ fn memory_round_barrier_cycles(
     Ok(cycles)
 }
 
-fn write_atomic(path: &std::path::Path, contents: &str) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("artifact");
-    let tmp = parent.join(format!(".{file_name}.tmp"));
-    std::fs::write(&tmp, contents).with_context(|| format!("write temp {}", tmp.display()))?;
-    std::fs::rename(&tmp, path)
-        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
-    Ok(())
-}
-
-fn resolve_report_format(cli: &Cli, path: &str) -> ReportFormat {
-    if let Some(fmt) = cli.resource_report_format {
-        return fmt;
-    }
-    if path != "-" && path.to_ascii_lowercase().ends_with(".md") {
-        ReportFormat::Markdown
-    } else {
-        ReportFormat::Json
-    }
-}
-
-fn write_output(path: &str, body: &str, prefer_stderr: bool) -> Result<()> {
-    if path == "-" {
-        if prefer_stderr {
-            eprintln!("{body}");
-        } else {
-            io::stdout().write_all(body.as_bytes())?;
-            if !body.ends_with('\n') {
-                io::stdout().write_all(b"\n")?;
-            }
-        }
-    } else {
-        let path = PathBuf::from(path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut contents = body.to_string();
-        if !contents.ends_with('\n') {
-            contents.push('\n');
-        }
-        std::fs::write(&path, contents)?;
-    }
-    Ok(())
-}
-
 fn print_pass_list() {
     println!(
         "\
@@ -1537,7 +1337,7 @@ fn load_regression_config(path: Option<&PathBuf>) -> Result<RegressionConfig> {
 
 fn write_metrics_json(path: &str, report: &quonc::CompileReport, emit_qasm: bool) -> Result<()> {
     let json = serde_json::to_string_pretty(&report.snapshot)?;
-    write_output(path, &json, emit_qasm)?;
+    quonc::emit::write_output(path, &json, emit_qasm)?;
     Ok(())
 }
 
