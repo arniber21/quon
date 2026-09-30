@@ -11,13 +11,13 @@ pub mod semantic_tokens;
 pub mod signature_help;
 
 pub use completion::completions_at;
-pub use definition::definition_at;
+pub use definition::{definition_at, definition_in_workspace};
 pub use document_highlight::document_highlight_at;
 pub use document_symbol::document_symbols;
 pub use folding_range::folding_ranges;
 pub use hover::hover_at;
 pub use inlay_hint::{full_document_range, inlay_hints};
-pub use references::references_at;
-pub use rename::{prepare_rename_at, rename_at};
+pub use references::{references_at, references_in_workspace};
+pub use rename::{prepare_rename_at, prepare_rename_in_workspace, rename_at, rename_in_workspace};
 pub use semantic_tokens::{semantic_tokens_full, semantic_tokens_legend, semantic_tokens_range};
 pub use signature_help::signature_help_at;

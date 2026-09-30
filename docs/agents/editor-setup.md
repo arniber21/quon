@@ -142,6 +142,24 @@ bump `[grammars.quon].rev` in `extension.toml` and reinstall the Dev Extension.
 
 ---
 
+## Workspace namespace (LSP, #177)
+
+Quon has no `import` syntax. `quon_lsp` still answers cross-file go-to-definition,
+find-references, and rename for top-level `fn` and `type` names:
+
+- The server records workspace roots from `initialize` (`workspaceFolders`, or
+  `rootUri` when folders are absent) and indexes on-disk `*.qn` files under
+  those roots. Open buffers override disk text until the buffer closes.
+- Files in the **same directory** share one namespace. A subdirectory is a
+  different namespace. This is an interim convention, not a module system.
+- `didSave` and a `**/*.qn` file watcher refresh the index. Open buffers are
+  not replaced by a disk event.
+- Several definitions of the same name in one directory are all returned.
+  Rename refuses a new name that is already a top-level `fn` or `type` in that
+  directory. Locals that shadow a name stay in-file and are not rewritten.
+- Directories named `target`, `node_modules`, `.git`, `dist`, `.venv`,
+  `grammars`, and any other dot-directory, are not indexed.
+
 ## Agent checklist
 
 | Do | Don't |
