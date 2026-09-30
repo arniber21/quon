@@ -1,0 +1,28 @@
+id: no-panic-todo-unimplemented-in-src
+language: Rust
+severity: error
+message: Avoid panic!, todo!, and unimplemented! in library source
+note: |
+  Library crates should return Result instead of aborting. Tests, fuzz
+  targets, the quonc driver, and #[cfg(test)] modules are excluded, matching
+  no-unwrap-expect-in-src. unreachable! is a separate macro and is not covered.
+ignores:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/tests.rs"
+  - "**/test.rs"
+  - "**/fuzz/**"
+  - "quonc/**"
+rule:
+  all:
+    - any:
+        - pattern: panic!($$$)
+        - pattern: todo!($$$)
+        - pattern: unimplemented!($$$)
+    - not:
+        inside:
+          stopBy: end
+          kind: mod_item
+          follows:
+            kind: attribute_item
+            regex: cfg\(.*test

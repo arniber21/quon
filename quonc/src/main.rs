@@ -1,6 +1,7 @@
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use anstyle::{AnsiColor, Color, Style};
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -563,7 +564,35 @@ fn dim_style() -> Style {
     }
 }
 
+const COLOR_PENDING: u8 = 0;
+const COLOR_AUTO: u8 = 1;
+const COLOR_ALWAYS: u8 = 2;
+const COLOR_NEVER: u8 = 3;
+
+/// Parsed `--color` / `QUONC_COLOR` choice. Stored in-process so stderr styling
+/// does not call `std::env::set_var`, which is `unsafe` on edition 2024.
+static COLOR_CHOICE: AtomicU8 = AtomicU8::new(COLOR_PENDING);
+
+fn apply_color_choice(cli: &Cli) {
+    let mode = match cli.color {
+        CliColor::Always => COLOR_ALWAYS,
+        CliColor::Never => COLOR_NEVER,
+        CliColor::Auto => COLOR_AUTO,
+    };
+    COLOR_CHOICE.store(mode, Ordering::Relaxed);
+}
+
 fn stderr_color_enabled() -> bool {
+    match COLOR_CHOICE.load(Ordering::Relaxed) {
+        COLOR_ALWAYS => true,
+        COLOR_NEVER => false,
+        // Auto, or a style helper reached before `apply_color_choice`.
+        COLOR_AUTO | COLOR_PENDING => stderr_color_from_env_or_tty(),
+        _ => stderr_color_from_env_or_tty(),
+    }
+}
+
+fn stderr_color_from_env_or_tty() -> bool {
     match std::env::var("QUONC_COLOR")
         .unwrap_or_default()
         .to_ascii_lowercase()
@@ -577,7 +606,7 @@ fn stderr_color_enabled() -> bool {
 
 fn run() -> Result<ExitCode> {
     let mut cli = Cli::parse();
-    apply_color_env(&cli);
+    apply_color_choice(&cli);
 
     if cli.list_passes {
         print_pass_list();
@@ -671,26 +700,6 @@ fn run() -> Result<ExitCode> {
     }
 
     Ok(ExitCode::SUCCESS)
-}
-
-/// Propagates `--color` to `QUONC_COLOR` so our own stderr styling honors it.
-///
-/// `std::env::set_var` is `unsafe` in Edition 2024 because it is not re-entrant
-/// with concurrent `std::env::var` calls. This CLI sets the variable early in
-/// `main`, before any worker threads exist, so the data race cannot occur.
-#[allow(unsafe_code)]
-fn apply_color_env(cli: &Cli) {
-    // SAFETY: This runs single-threaded during CLI argument processing, before
-    // any tokio runtime or background thread is spawned. No concurrent
-    // `std::env::var` reader exists at this point, so the mutation is free of
-    // data races.
-    match cli.color {
-        // SAFETY: see function-level comment — single-threaded, pre-runtime.
-        CliColor::Always => unsafe { std::env::set_var("QUONC_COLOR", "always") },
-        // SAFETY: see function-level comment — single-threaded, pre-runtime.
-        CliColor::Never => unsafe { std::env::set_var("QUONC_COLOR", "never") },
-        CliColor::Auto => {}
-    }
 }
 
 fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {

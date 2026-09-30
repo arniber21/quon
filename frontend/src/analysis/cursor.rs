@@ -277,7 +277,9 @@ fn is_ident_part(b: u8) -> bool {
 }
 
 /// Cursor marker helper for tests: `/*cursor*/` in source.
-pub fn cursor_at(src: &str, marker: &str) -> usize {
+///
+/// `None` when `marker` is absent. Test callers assert that; library code
+/// does not abort.
+pub fn cursor_at(src: &str, marker: &str) -> Option<usize> {
     src.find(marker)
-        .unwrap_or_else(|| panic!("marker {marker:?} not found"))
 }

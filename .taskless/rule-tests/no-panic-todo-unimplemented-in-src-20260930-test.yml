@@ -1,0 +1,42 @@
+id: no-panic-todo-unimplemented-in-src
+valid:
+  - |
+    fn parse(s: &str) -> Result<i32, String> {
+        s.parse().map_err(|e| e.to_string())
+    }
+  - |
+    fn missing(marker: &str) -> Option<usize> {
+        marker.find("x")
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn it_works() {
+            panic!("fixture missing");
+        }
+    }
+  - |
+    #[cfg(all(test, feature = "mlir"))]
+    mod tests {
+        fn helper() {
+            todo!("wire the mlir fixture");
+        }
+    }
+invalid:
+  - |
+    fn bad() -> i32 {
+        panic!("missing")
+    }
+  - |
+    fn later() -> i32 {
+        todo!("implement lowering")
+    }
+  - |
+    fn stub() -> i32 {
+        unimplemented!()
+    }
+  - |
+    fn empty() {
+        panic!()
+    }
