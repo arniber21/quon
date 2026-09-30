@@ -572,16 +572,15 @@ the default `cargo test --workspace` gate should carry, so — mirroring
 `na-rap-sweep` is **not** wired into `just ci-rust`'s hosted-runner gate; it
 stays a documented local/nightly convenience recipe.
 
-**Scope: #304 (QASM ingestion) is not implemented.** [RAP] Table I's full
-benchmark set (Sec. VI-A) includes several QASMBench/MQT Bench circuits at
-multiple qubit counts beyond the `ising` rows (see
+**Scope: #304 (QASM ingestion) has landed for the benchmark subset.** [RAP]
+Table I's full benchmark set (Sec. VI-A) includes several QASMBench/MQT Bench
+circuits at multiple qubit counts beyond the `ising` rows (see
 [`literature_notes.md`](./literature_notes.md#rap--stade-lin-cong-wille-iccad-2025-arxiv250522715--the-reproduced-paper)'s
-"[RAP]" section). Quon has no QASM *ingestion* path today (only OpenQASM
-*emission*, for fixed targets) — issue #304 tracks building one, and it is
-**out of scope for #306**. The sweep therefore covers only the two
-hand-authored `ising` rows; it does **not** attempt to fabricate or
-approximate the paper's other benchmark rows. Closing this gap is entirely
-gated on #304 landing first.
+"[RAP]" section). `quonc` can ingest that subset into the neutral-atom
+pipeline (`test/na/ising_n42.qasm`, issue #304). The sweep still covers only
+the two hand-authored `ising` `.qn` rows; it does **not** vendor the paper's
+other benchmark circuits. Adding those rows needs a checked-in QASM fixture,
+not a new ingestion pipeline.
 
 CSV columns reuse `ResourceReport` / `NaStats` field names (this repo's own
 convention — matches `python/quon_qec_benchmarks.py`) rather than qmap's
@@ -628,9 +627,9 @@ report the 22/9 or 82/4 numbers above; only `rap_table_i.json` +
   [full sweep harness](#full-sweep-harness-306)
 - Issue #306 (full Table I sweep + qmap-comparable CSV harness) — see
   [n = 98](#n--98-optional-local--landed-by-306) and
-  [Full sweep harness (#306)](#full-sweep-harness-306); depends on #304
-  (QASM ingestion, not implemented) for the paper's non-`ising` rows —
-  explicitly out of scope, see that section
+  [Full sweep harness (#306)](#full-sweep-harness-306); #304 ingestion has
+  landed, and the non-`ising` Table I rows are still not vendored — see that
+  section
 - [RAP] Stade, Lin, Cong, Wille, ICCAD 2025, arXiv:2505.22715, Table I / Sec.
   VI-B
 - `docs/neutral_atom/literature_notes.md` ([RAP] section)

@@ -178,13 +178,72 @@ baseline:
 python test/verify/routing.py
 ```
 
-<<<<<<< HEAD
 Set `QUONC` only when you need to point at a specific binary instead of the
 auto-discovered one.
-=======
+
 ## Diagnostic catalog
 
 When a backend target or emission flag is rejected, the
 [diagnostic catalog](/reference/diagnostics/#backend-target-and-artifact-emission)
 lists every target-descriptor and emission error with its cause and repair.
->>>>>>> 4b74572 (docs: create task-oriented Quon diagnostic catalog (#381))
+
+## OpenQASM export to Qiskit
+
+`quonc --emit-qasm` writes OpenQASM 3 for a fixed target. The Python export
+helper is `to_qiskit_circuit` in `python/quon_aer.py` (issue #197).
+`load_circuit` calls it. Both normalize `c[i] == 1` to
+`c[i] == true` before `qiskit.qasm3.loads`. Calling `qasm3.loads` on the raw
+compiler output is unsupported.
+
+```python
+from quon_aer import compile_to_qasm, to_qiskit_circuit
+
+qasm = compile_to_qasm("test/verify/bell.qn")
+circuit = to_qiskit_circuit(qasm)
+```
+
+The emitted subset is the fixed-target statement set:
+
+- `OPENQASM 3.0`, `include "stdgates.inc"`, `qubit[n] q`, and `bit[m] c` when the program measures
+- standard gates that are native on the selected target (`h`, `x`, `y`, `z`, `s`, `sdg`, `sx`, `t`, `tdg`, `rx`, `ry`, `rz`, `cx`, `cy`, `cz`, `swap`, `ccx`, and the rotations those names denote)
+- `c[i] = measure q[j]`, `reset`, `barrier`, and `if (c[i] == 1) { ... } else { ... }`
+- identity gates are omitted
+
+User `gate` definitions, `for`/`while`, `opaque`, and pulse/OpenPulse are not emitted. A gate outside the target native set is an error, not a custom definition.
+
+`just ci-rust` compiles these cookbook programs and checks their Aer distributions, which is the export validation for the current cookbook:
+
+- [Bell](https://github.com/arniber21/quon/blob/main/test/verify/bell.qn)
+- [Teleportation](https://github.com/arniber21/quon/blob/main/test/verify/teleport.qn)
+- [Bernstein–Vazirani](https://github.com/arniber21/quon/blob/main/test/verify/bernstein_vazirani.qn)
+- [Grover](https://github.com/arniber21/quon/blob/main/test/verify/grover.qn)
+- [QFT](https://github.com/arniber21/quon/blob/main/test/verify/qft.qn)
+- [Ising](https://github.com/arniber21/quon/blob/main/test/verify/ising.qn)
+- [QAOA](https://github.com/arniber21/quon/blob/main/test/verify/qaoa.qn)
+- [Shor's kernel](https://github.com/arniber21/quon/blob/main/test/verify/shor.qn)
+
+### If you know QuantumCircuit
+
+| Circuit | Qiskit | Quon |
+| --- | --- | --- |
+| Bell | `qc.h(0); qc.cx(0, 1); qc.measure_all()` | [`bell.qn`](https://github.com/arniber21/quon/blob/main/test/verify/bell.qn): `H @0 \|> CNOT @(0, 1)`, then `measure` each qubit in `run` |
+| Bernstein–Vazirani | oracle of CNOTs into an ancilla, Hadamards around it, one shot | [`bernstein_vazirani.qn`](https://github.com/arniber21/quon/blob/main/test/verify/bernstein_vazirani.qn): secret `110` as `CNOT @(0, 3)` and `CNOT @(1, 3)` |
+| Grover (n=2) | H, oracle phase on `11`, diffusion, measure | [`grover.qn`](https://github.com/arniber21/quon/blob/main/test/verify/grover.qn): `oracle` is `CZ @(0, 1)`, one `repeat` of oracle then diffusion |
+
+Quon circuits are values of type `Circuit<n, m, d, C>`. Qubits are linear: `measure` consumes them, and there is no implicit reuse. A Qiskit circuit that measures a qubit and then applies another gate needs a `reset` (or a fresh qubit) in Quon, and the target must set `supports_mid_circuit_meas`.
+
+## OpenQASM import
+
+v1 does not translate OpenQASM or Qiskit into `.qn` source. The limited converter that shipped is neutral-atom ingestion (issue #304): `quonc` parses a benchmark subset and enters the neutral-atom scheduler. It does not produce Quon source.
+
+```bash
+cargo run -p quonc -- test/na/ising_n42.qasm \
+  --target targets/neutral_atom/rap_table_i.json \
+  --emit-resource-report -
+```
+
+Accepted on that path: an `OPENQASM` header, `include` (skipped, not expanded), `qreg` / `qubit`, `creg` / `bit` (skipped), gate calls `name(params) reg[i], ...` with at most one angle on a one-qubit gate and no angles on wider gates, and `barrier`.
+
+Rejected with a line number: `measure`, `reset`, `gate` / `opaque` definitions, `if` / `for` / `while`, and multi-parameter gates such as `u2` and `u3`. Fixed-target OpenQASM import is not supported; pass a neutral-atom `--target`.
+
+Source-level migration stays the cheat sheet above. A second QASM-to-`.qn` translator is not part of v1.

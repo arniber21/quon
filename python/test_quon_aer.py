@@ -214,6 +214,72 @@ class QuoncBinaryResolutionTests(unittest.TestCase):
         self.assertIn("cargo build --release -p quonc", message)
 
 
+# Cookbook programs whose OpenQASM export is covered by `test/verify/*.py`
+# in `just ci-rust` (issue #197). The guide in
+# website/src/content/docs/guides/backends.md names the same fixtures.
+COOKBOOK_QASM_FIXTURES = (
+    "test/verify/bell.qn",
+    "test/verify/teleport.qn",
+    "test/verify/bernstein_vazirani.qn",
+    "test/verify/grover.qn",
+    "test/verify/qft.qn",
+    "test/verify/ising.qn",
+    "test/verify/qaoa.qn",
+    "test/verify/shor.qn",
+)
+
+
+class ToQiskitCircuitTests(unittest.TestCase):
+    """Export helper: quonc OpenQASM 3 -> Qiskit circuit (issue #197)."""
+
+    def test_load_circuit_delegates_to_to_qiskit_circuit(self) -> None:
+        with mock.patch.object(
+            quon_aer, "to_qiskit_circuit", return_value="circ"
+        ) as helper:
+            self.assertEqual(quon_aer.load_circuit("OPENQASM 3.0;"), "circ")
+            helper.assert_called_once_with("OPENQASM 3.0;")
+
+    def test_normalizes_bit_integer_conditions_before_qasm3_loads(self) -> None:
+        loaded: dict[str, str] = {}
+
+        class FakeCircuit:
+            num_clbits = 1
+
+        def loads(src: str) -> FakeCircuit:
+            loaded["src"] = src
+            return FakeCircuit()
+
+        fake_qiskit = mock.Mock()
+        fake_qiskit.qasm3.loads = loads
+        with mock.patch.dict(sys.modules, {"qiskit": fake_qiskit}):
+            circuit = quon_aer.to_qiskit_circuit("if (c[0] == 1) { x q[1]; }")
+        self.assertIsInstance(circuit, FakeCircuit)
+        self.assertEqual(loaded["src"], "if (c[0] == true) { x q[1]; }")
+
+    def test_measures_all_when_the_circuit_has_no_classical_bits(self) -> None:
+        class FakeCircuit:
+            num_clbits = 0
+            measured = False
+
+            def measure_all(self) -> None:
+                self.measured = True
+
+        fake_qiskit = mock.Mock()
+        fake_qiskit.qasm3.loads = lambda _src: FakeCircuit()
+        with mock.patch.dict(sys.modules, {"qiskit": fake_qiskit}):
+            circuit = quon_aer.to_qiskit_circuit("OPENQASM 3.0;\nqubit[1] q;\nh q[0];")
+        self.assertTrue(circuit.measured)
+
+    def test_cookbook_export_fixtures_exist(self) -> None:
+        root = quon_aer._REPO_ROOT
+        missing = [
+            rel
+            for rel in COOKBOOK_QASM_FIXTURES
+            if not os.path.isfile(os.path.join(root, rel))
+        ]
+        self.assertEqual(missing, [])
+
+
 class SimulationDependencyMissingErrorTests(unittest.TestCase):
     def test_message_names_exact_pip_package_and_both_spellings(self) -> None:
         err = quon_aer.SimulationDependencyMissingError("qiskit-qasm3-import")
