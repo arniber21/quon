@@ -29,7 +29,9 @@ use crate::report::{ResourceReport, attach_qec_error_budget, build_resource_repo
 use crate::schedule::{MeasurementBasis, NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
 use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, StageTimingsUs};
-use crate::zoned::{AwareSearchParams, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture};
+use crate::zoned::{
+    AwareSearchParams, PlacerMode, ZoneKind, ZoneSpec, ZonedArchitecture, place_readout_layers,
+};
 
 /// Wall-clock elapsed microseconds since `start` (saturating on overflow —
 /// not reachable in practice, but keeps this instrumentation infallible).
@@ -253,7 +255,10 @@ pub fn zoned_architecture(na: &NeutralAtomTarget) -> ZonedArchitecture {
             .collect(),
         speed_model: crate::geometry::SpeedModel::from(&na.movement.speed_model),
         trap_transfer_us: na.movement.trap_transfer_us.round() as u64,
-        require_readout_zone: false,
+        // Zone list is the source of truth: a declared readout zone requires
+        // measurement, reset, and reuse to run there. The flat AOD backend
+        // does not consult this flag.
+        require_readout_zone: na.zones.iter().any(|z| z.kind == BackendZoneKind::Readout),
         rydberg_range_um: na.interaction.rydberg_range_um,
         min_rydberg_spacing_um: na.interaction.min_rydberg_spacing_um,
         aod_min_separation_um: na.movement.min_row_col_separation_um,
@@ -744,10 +749,35 @@ fn finish_pipeline(
                 duration_us,
             })
             .collect();
-        req.layers.push(ScheduleLayer {
+        let measure_layer = ScheduleLayer {
             cycle: req.layers.len() as u32,
             actions,
-        });
+        };
+        // Flat AOD keeps the in-place terminal measure. Zoned targets that
+        // declare a readout zone shuttle into it before the measure layer.
+        let zoned_readout = opts.backend == NaBackendKind::Zoned;
+        if zoned_readout {
+            if let Some(layout) = req.layout.clone() {
+                let arch = zoned_architecture(na);
+                if arch.require_readout_zone {
+                    let start_cycle = req
+                        .layers
+                        .last()
+                        .map(|layer| layer.cycle.saturating_add(1))
+                        .unwrap_or(0);
+                    let placed =
+                        place_readout_layers(&[measure_layer], &layout, &arch, start_cycle)?;
+                    req.layers.extend(placed.layers);
+                    req.layout = Some(placed.layout);
+                } else {
+                    req.layers.push(measure_layer);
+                }
+            } else {
+                req.layers.push(measure_layer);
+            }
+        } else {
+            req.layers.push(measure_layer);
+        }
     }
 
     let stage_started = Instant::now();

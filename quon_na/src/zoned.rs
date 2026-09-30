@@ -159,6 +159,14 @@ pub struct ZonedArchitecture {
     #[serde(default)]
     pub speed_model: SpeedModel,
     pub trap_transfer_us: u64,
+    /// Scheduler and verifier switch for readout-zone residency.
+    ///
+    /// Loaded targets set this from the zone list: a declared `readout` zone
+    /// turns it on ([`crate::pipeline::zoned_architecture`]). That zone list
+    /// is the source of truth. While set, measurement, reset, and reuse run
+    /// only at a readout site, after a legal load–move–store when the atom
+    /// is elsewhere. Hand-built architectures may leave it false for in-place
+    /// ops. The flat AOD backend does not read this flag and does not shuttle.
     pub require_readout_zone: bool,
     /// Rydberg interaction range (µm) for simultaneous-gate legality.
     /// `0.0` disables the constraint (hand-built test architectures).
@@ -479,6 +487,24 @@ pub enum ZonedScheduleError {
     EntangleOutsideZone(AtomId),
     #[error("measurement outside readout zone while require_readout_zone is set (atom {0:?})")]
     MeasureOutsideReadout(AtomId),
+    #[error("reset outside readout zone while require_readout_zone is set (atom {0:?})")]
+    ResetOutsideReadout(AtomId),
+    #[error("reuse outside readout zone while require_readout_zone is set (atom {0:?})")]
+    ReuseOutsideReadout(AtomId),
+    #[error("movement or transfer during readout (atom {0:?})")]
+    MovementDuringReadout(AtomId),
+    #[error("reuse before reset completed (atom {0:?})")]
+    ReuseBeforeReset(AtomId),
+    #[error(
+        "not enough free readout-zone sites for {needed} simultaneous readout operations ({free} free, capacity {capacity})"
+    )]
+    InsufficientReadout {
+        needed: usize,
+        free: usize,
+        capacity: usize,
+    },
+    #[error("readout residency requires a placed layout")]
+    MissingLayout,
     #[error("zone {0} occupancy {1} exceeds capacity {2}")]
     OccupancyExceeded(u32, u32, u32),
     #[error("not enough entanglement-zone pairs for {0} simultaneous gates")]
@@ -542,8 +568,15 @@ pub fn euclidean_um(a: Position, b: Position) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
-/// Validate that every entangling action’s atoms sit in an entanglement zone
-/// according to `layout` site positions, and occupancy ≤ capacity.
+/// Validate entanglement-zone gates, readout residency, and zone occupancy.
+///
+/// `layout.initial_bindings` are positions at the **start** of `layers`.
+/// Move destinations are applied after each layer so later gates see the
+/// updated site. When [`ZonedArchitecture::require_readout_zone`] is set,
+/// measurement, reset, and reuse must sit in a readout zone for that layer,
+/// the same layer must not move or transfer that atom, and a reuse is legal
+/// only after that atom's measure and a later-or-same-cycle reset have
+/// completed in an earlier cycle.
 pub fn validate_zone_constraints(
     layers: &[ScheduleLayer],
     layout: &NeutralAtomLayout,
@@ -551,18 +584,49 @@ pub fn validate_zone_constraints(
 ) -> Result<(), ZonedScheduleError> {
     arch.validate()?;
     let site_zone = site_to_zone(layout, arch);
-    let atom_site: BTreeMap<AtomId, SiteId> = layout
-        .initial_bindings
-        .iter()
-        .map(|b| {
-            let site = match b.trap {
-                TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
-            };
-            (b.atom, site)
-        })
-        .collect();
+    let mut atom_site = binding_sites(layout);
+    let mut measured_cycle: BTreeMap<AtomId, u32> = BTreeMap::new();
+    let mut reset_cycle: BTreeMap<AtomId, u32> = BTreeMap::new();
 
     for layer in layers {
+        if arch.require_readout_zone {
+            let moving = atoms_in_motion(layer);
+            for action in &layer.actions {
+                let Some(atom) = readout_action_atom(action) else {
+                    continue;
+                };
+                if moving.contains(&atom) {
+                    return Err(ZonedScheduleError::MovementDuringReadout(atom));
+                }
+                require_readout_site(atom, action, &atom_site, &site_zone)?;
+                match action {
+                    NeutralAtomAction::Measure { .. } => {
+                        measured_cycle.insert(atom, layer.cycle);
+                        reset_cycle.remove(&atom);
+                    }
+                    NeutralAtomAction::Reset { .. } => {
+                        reset_cycle.insert(atom, layer.cycle);
+                    }
+                    NeutralAtomAction::Reuse { .. } => {
+                        let legal = matches!(
+                            (
+                                measured_cycle.get(&atom).copied(),
+                                reset_cycle.get(&atom).copied(),
+                            ),
+                            (Some(measured), Some(reset))
+                                if measured <= reset && reset < layer.cycle
+                        );
+                        if !legal {
+                            return Err(ZonedScheduleError::ReuseBeforeReset(atom));
+                        }
+                        measured_cycle.remove(&atom);
+                        reset_cycle.remove(&atom);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         let mut occupancy: BTreeMap<u32, u32> = BTreeMap::new();
         for action in &layer.actions {
             match action {
@@ -576,22 +640,12 @@ pub fn validate_zone_constraints(
                         check_entangle_zone(atom, &atom_site, &site_zone)?;
                     }
                 }
-                NeutralAtomAction::Measure { atom, .. } => {
-                    if arch.require_readout_zone {
-                        let site = atom_site.get(atom).copied();
-                        let zone = site.and_then(|s| site_zone.get(&s).copied());
-                        if zone != Some(ZoneKind::Readout) {
-                            return Err(ZonedScheduleError::MeasureOutsideReadout(*atom));
-                        }
-                    }
-                }
                 NeutralAtomAction::Move(group) => {
                     for m in &group.moves {
-                        if let Some(kind) = site_zone.get(&m.to) {
+                        if site_zone.contains_key(&m.to) {
                             *occupancy
                                 .entry(zone_id_for_site(layout, arch, m.to))
                                 .or_insert(0) += 1;
-                            let _ = kind;
                         }
                     }
                 }
@@ -609,8 +663,88 @@ pub fn validate_zone_constraints(
                 ));
             }
         }
+        apply_move_sites(&mut atom_site, layer);
     }
     Ok(())
+}
+
+fn binding_sites(layout: &NeutralAtomLayout) -> BTreeMap<AtomId, SiteId> {
+    layout
+        .initial_bindings
+        .iter()
+        .map(|b| {
+            let site = match b.trap {
+                TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
+            };
+            (b.atom, site)
+        })
+        .collect()
+}
+
+fn readout_action_atom(action: &NeutralAtomAction) -> Option<AtomId> {
+    match action {
+        NeutralAtomAction::Measure { atom, .. }
+        | NeutralAtomAction::Reset { atom, .. }
+        | NeutralAtomAction::Reuse { atom, .. } => Some(*atom),
+        _ => None,
+    }
+}
+
+fn atoms_in_motion(layer: &ScheduleLayer) -> BTreeSet<AtomId> {
+    let mut atoms = BTreeSet::new();
+    for action in &layer.actions {
+        match action {
+            NeutralAtomAction::Move(group) => {
+                for m in &group.moves {
+                    atoms.insert(m.atom);
+                }
+            }
+            NeutralAtomAction::Transfer(transfer) => {
+                atoms.insert(transfer.atom);
+            }
+            _ => {}
+        }
+    }
+    atoms
+}
+
+fn require_readout_site(
+    atom: AtomId,
+    action: &NeutralAtomAction,
+    atom_site: &BTreeMap<AtomId, SiteId>,
+    site_zone: &BTreeMap<SiteId, ZoneKind>,
+) -> Result<(), ZonedScheduleError> {
+    let zone = atom_site
+        .get(&atom)
+        .and_then(|site| site_zone.get(site))
+        .copied();
+    if zone == Some(ZoneKind::Readout) {
+        return Ok(());
+    }
+    Err(match action {
+        NeutralAtomAction::Reset { .. } => ZonedScheduleError::ResetOutsideReadout(atom),
+        NeutralAtomAction::Reuse { .. } => ZonedScheduleError::ReuseOutsideReadout(atom),
+        _ => ZonedScheduleError::MeasureOutsideReadout(atom),
+    })
+}
+
+fn apply_move_sites(atom_site: &mut BTreeMap<AtomId, SiteId>, layer: &ScheduleLayer) {
+    for action in &layer.actions {
+        if let NeutralAtomAction::Move(group) = action {
+            for m in &group.moves {
+                atom_site.insert(m.atom, m.to);
+            }
+        }
+    }
+}
+
+fn schedule_has_readout(layers: &[ScheduleLayer]) -> bool {
+    layers.iter().any(|layer| {
+        layer
+            .actions
+            .iter()
+            .any(|a| readout_action_atom(a).is_some())
+    })
 }
 
 fn check_entangle_zone(
@@ -882,66 +1016,11 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
         // row). Partition into compatible groups — the greedily grouped
         // compatible movements \[RAP\] Eq. (1) sums over — and emit each as
         // its own load → move → store stage.
-        for group in partition_aod_compatible(&planned_moves, arch.aod_min_separation_um) {
-            let d_max = group.iter().fold(0.0_f64, |d, m| d.max(m.distance_um));
-            total_routing_cost += sqrt_d_max(d_max);
-            rearrangement_steps += 1;
-            let duration_us =
-                crate::geometry::movement_duration_for_model(d_max, &arch.speed_model);
-            trap_transfers += 2 * group.len() as u64;
-
-            let load: Vec<_> = group
-                .iter()
-                .map(|m| {
-                    NeutralAtomAction::Transfer(TrapTransfer {
-                        atom: m.atom,
-                        direction: TransferDirection::SlmToAod,
-                        site: m.from_site,
-                        aod: AodTrapRef {
-                            aod_id: 0,
-                            row: 0,
-                            col: 0,
-                        },
-                        duration_us: arch.trap_transfer_us,
-                    })
-                })
-                .collect();
-            let moves: Vec<_> = group
-                .iter()
-                .map(|m| AtomMove {
-                    atom: m.atom,
-                    from: m.from_site,
-                    to: m.to_site,
-                })
-                .collect();
-            let store: Vec<_> = group
-                .iter()
-                .map(|m| {
-                    NeutralAtomAction::Transfer(TrapTransfer {
-                        atom: m.atom,
-                        direction: TransferDirection::AodToSlm,
-                        site: m.to_site,
-                        aod: AodTrapRef {
-                            aod_id: 0,
-                            row: 0,
-                            col: 0,
-                        },
-                        duration_us: arch.trap_transfer_us,
-                    })
-                })
-                .collect();
-
-            push_validated_layer(&mut out_layers, &mut next_cycle, load)?;
-            push_validated_layer(
-                &mut out_layers,
-                &mut next_cycle,
-                vec![NeutralAtomAction::Move(MovementGroup {
-                    moves,
-                    duration_us,
-                })],
-            )?;
-            push_validated_layer(&mut out_layers, &mut next_cycle, store)?;
-        }
+        let move_stats =
+            emit_aod_move_groups(&mut out_layers, &mut next_cycle, &planned_moves, arch)?;
+        total_routing_cost += move_stats.routing_cost;
+        rearrangement_steps += move_stats.rearrangement_steps;
+        trap_transfers += move_stats.trap_transfers;
 
         // Entangle layer (atoms now in entanglement zone). Gates are emitted
         // as pairwise Entangle2 (same rewrite as before deferral existed).
@@ -976,24 +1055,20 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
         next_cycle = next_cycle.saturating_add(1);
     }
 
-    // Update layout bindings to final atom positions (entanglement or storage).
-    let mut final_layout = layout;
-    let site_updates: Vec<(AtomId, SiteId)> = final_layout
-        .initial_bindings
-        .iter()
-        .filter_map(|binding| {
-            atom_pos
-                .get(&binding.atom)
-                .map(|pos| (binding.atom, nearest_site_id(&final_layout, *pos)))
-        })
-        .collect();
-    for binding in &mut final_layout.initial_bindings {
-        if let Some((_, site)) = site_updates.iter().find(|(a, _)| *a == binding.atom) {
-            binding.trap = TrapBinding::Slm { site: *site };
-        }
-    }
-    let validate_layout = layout_with_atoms_at(&final_layout, &atom_pos);
-    validate_zone_constraints(&out_layers, &validate_layout, arch)?;
+    // Readout residency runs after entangling placement so a measure glued
+    // onto an entangle layer is split out, shuttled, and checked against
+    // positions at the start of the schedule (not the final bindings).
+    let enforced = arch.require_readout_zone && schedule_has_readout(&out_layers);
+    let (out_layers, final_layout) = if enforced {
+        let placed = place_readout_layers(&out_layers, &layout, arch, 0)?;
+        total_routing_cost += placed.routing_cost;
+        rearrangement_steps += placed.rearrangement_steps;
+        trap_transfers += placed.trap_transfers;
+        (placed.layers, placed.layout)
+    } else {
+        (out_layers, layout_with_atoms_at(&layout, &atom_pos))
+    };
+    validate_zone_constraints(&out_layers, &layout, arch)?;
 
     req.layers = out_layers;
     req.layout = Some(final_layout);
@@ -1146,6 +1221,356 @@ fn push_validated_layer(
     out_layers.push(layer);
     *next_cycle = next_cycle.saturating_add(1);
     Ok(())
+}
+
+struct MoveRoutingStats {
+    routing_cost: f64,
+    rearrangement_steps: u64,
+    trap_transfers: u64,
+}
+
+fn emit_aod_move_groups(
+    out_layers: &mut Vec<ScheduleLayer>,
+    next_cycle: &mut u32,
+    planned_moves: &[PlannedMove],
+    arch: &ZonedArchitecture,
+) -> Result<MoveRoutingStats, ZonedScheduleError> {
+    let mut stats = MoveRoutingStats {
+        routing_cost: 0.0,
+        rearrangement_steps: 0,
+        trap_transfers: 0,
+    };
+    for group in partition_aod_compatible(planned_moves, arch.aod_min_separation_um) {
+        let d_max = group.iter().fold(0.0_f64, |d, m| d.max(m.distance_um));
+        stats.routing_cost += sqrt_d_max(d_max);
+        stats.rearrangement_steps += 1;
+        stats.trap_transfers += 2 * group.len() as u64;
+        let duration_us = movement_duration_for_model(d_max, &arch.speed_model);
+        let load: Vec<_> = group
+            .iter()
+            .map(|m| {
+                NeutralAtomAction::Transfer(TrapTransfer {
+                    atom: m.atom,
+                    direction: TransferDirection::SlmToAod,
+                    site: m.from_site,
+                    aod: AodTrapRef {
+                        aod_id: 0,
+                        row: 0,
+                        col: 0,
+                    },
+                    duration_us: arch.trap_transfer_us,
+                })
+            })
+            .collect();
+        let moves: Vec<_> = group
+            .iter()
+            .map(|m| AtomMove {
+                atom: m.atom,
+                from: m.from_site,
+                to: m.to_site,
+            })
+            .collect();
+        let store: Vec<_> = group
+            .iter()
+            .map(|m| {
+                NeutralAtomAction::Transfer(TrapTransfer {
+                    atom: m.atom,
+                    direction: TransferDirection::AodToSlm,
+                    site: m.to_site,
+                    aod: AodTrapRef {
+                        aod_id: 0,
+                        row: 0,
+                        col: 0,
+                    },
+                    duration_us: arch.trap_transfer_us,
+                })
+            })
+            .collect();
+        push_validated_layer(out_layers, next_cycle, load)?;
+        push_validated_layer(
+            out_layers,
+            next_cycle,
+            vec![NeutralAtomAction::Move(MovementGroup {
+                moves,
+                duration_us,
+            })],
+        )?;
+        push_validated_layer(out_layers, next_cycle, store)?;
+    }
+    Ok(stats)
+}
+
+/// Layers produced by [`place_readout_layers`], plus the movement it added.
+pub(crate) struct ReadoutPlacement {
+    pub layers: Vec<ScheduleLayer>,
+    pub layout: NeutralAtomLayout,
+    pub routing_cost: f64,
+    pub rearrangement_steps: u64,
+    pub trap_transfers: u64,
+}
+
+struct AtomPlacement {
+    pos: BTreeMap<AtomId, Position>,
+    occupant: BTreeMap<SiteId, AtomId>,
+}
+
+/// Move atoms that are measured, reset, or reused into a free readout site
+/// and emit those ops only after the transfer, in measure → reset → reuse
+/// order when one input layer batched them.
+///
+/// `start_layout` bindings are positions at the start of `layers`. The
+/// returned layout bindings are positions after every move in the result,
+/// including readout shuttles. No-op (aside from cloning) when
+/// `require_readout_zone` is false or `layers` has no readout op.
+pub(crate) fn place_readout_layers(
+    layers: &[ScheduleLayer],
+    start_layout: &NeutralAtomLayout,
+    arch: &ZonedArchitecture,
+    start_cycle: u32,
+) -> Result<ReadoutPlacement, ZonedScheduleError> {
+    if !arch.require_readout_zone || !schedule_has_readout(layers) {
+        return Ok(ReadoutPlacement {
+            layers: layers.to_vec(),
+            layout: start_layout.clone(),
+            routing_cost: 0.0,
+            rearrangement_steps: 0,
+            trap_transfers: 0,
+        });
+    }
+
+    let site_zone = site_to_zone(start_layout, arch);
+    let readout_sites = readout_site_list(start_layout, &site_zone);
+    let mut placement = placement_from_layout(start_layout);
+    let mut out_layers = Vec::new();
+    let mut next_cycle = start_cycle;
+    let mut routing_cost = 0.0;
+    let mut rearrangement_steps = 0u64;
+    let mut trap_transfers = 0u64;
+
+    for layer in layers {
+        let split = partition_readout_actions(&layer.actions);
+        if split.measures.is_empty() && split.resets.is_empty() && split.reuses.is_empty() {
+            push_cycle(&mut out_layers, &mut next_cycle, layer.actions.clone());
+            apply_layer_placement(start_layout, &mut placement, layer);
+            continue;
+        }
+        if !split.rest.is_empty() {
+            let rest_layer = ScheduleLayer {
+                cycle: next_cycle,
+                actions: split.rest,
+            };
+            apply_layer_placement(start_layout, &mut placement, &rest_layer);
+            push_cycle(&mut out_layers, &mut next_cycle, rest_layer.actions);
+        }
+        for group in [split.measures, split.resets, split.reuses] {
+            if group.is_empty() {
+                continue;
+            }
+            let atoms: Vec<AtomId> = group.iter().filter_map(readout_action_atom).collect();
+            let planned = plan_readout_moves(
+                &atoms,
+                start_layout,
+                &site_zone,
+                &readout_sites,
+                &mut placement,
+            )?;
+            let stats = emit_aod_move_groups(&mut out_layers, &mut next_cycle, &planned, arch)?;
+            routing_cost += stats.routing_cost;
+            rearrangement_steps += stats.rearrangement_steps;
+            trap_transfers += stats.trap_transfers;
+            push_cycle(&mut out_layers, &mut next_cycle, group);
+        }
+    }
+
+    Ok(ReadoutPlacement {
+        layers: out_layers,
+        layout: layout_with_atoms_at(start_layout, &placement.pos),
+        routing_cost,
+        rearrangement_steps,
+        trap_transfers,
+    })
+}
+
+fn push_cycle(
+    out_layers: &mut Vec<ScheduleLayer>,
+    next_cycle: &mut u32,
+    actions: Vec<NeutralAtomAction>,
+) {
+    if actions.is_empty() {
+        return;
+    }
+    out_layers.push(ScheduleLayer {
+        cycle: *next_cycle,
+        actions,
+    });
+    *next_cycle = next_cycle.saturating_add(1);
+}
+
+struct SplitReadout {
+    measures: Vec<NeutralAtomAction>,
+    resets: Vec<NeutralAtomAction>,
+    reuses: Vec<NeutralAtomAction>,
+    rest: Vec<NeutralAtomAction>,
+}
+
+fn partition_readout_actions(actions: &[NeutralAtomAction]) -> SplitReadout {
+    let mut split = SplitReadout {
+        measures: Vec::new(),
+        resets: Vec::new(),
+        reuses: Vec::new(),
+        rest: Vec::new(),
+    };
+    for action in actions {
+        match action {
+            NeutralAtomAction::Measure { .. } => split.measures.push(action.clone()),
+            NeutralAtomAction::Reset { .. } => split.resets.push(action.clone()),
+            NeutralAtomAction::Reuse { .. } => split.reuses.push(action.clone()),
+            _ => split.rest.push(action.clone()),
+        }
+    }
+    split
+}
+
+fn placement_from_layout(layout: &NeutralAtomLayout) -> AtomPlacement {
+    let mut pos = BTreeMap::new();
+    let mut occupant = BTreeMap::new();
+    for binding in &layout.initial_bindings {
+        let site = match binding.trap {
+            TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
+        };
+        if let Some(spec) = layout.sites.iter().find(|s| s.id == site) {
+            pos.insert(binding.atom, spec.position);
+            occupant.insert(site, binding.atom);
+        }
+    }
+    AtomPlacement { pos, occupant }
+}
+
+fn apply_layer_placement(
+    layout: &NeutralAtomLayout,
+    placement: &mut AtomPlacement,
+    layer: &ScheduleLayer,
+) {
+    for action in &layer.actions {
+        let NeutralAtomAction::Move(group) = action else {
+            continue;
+        };
+        for m in &group.moves {
+            if placement.occupant.get(&m.from) == Some(&m.atom) {
+                placement.occupant.remove(&m.from);
+            }
+            placement.occupant.insert(m.to, m.atom);
+            if let Some(spec) = layout.sites.iter().find(|s| s.id == m.to) {
+                placement.pos.insert(m.atom, spec.position);
+            }
+        }
+    }
+}
+
+fn readout_site_list(
+    layout: &NeutralAtomLayout,
+    site_zone: &BTreeMap<SiteId, ZoneKind>,
+) -> Vec<(SiteId, Position)> {
+    let mut sites: Vec<(SiteId, Position)> = layout
+        .sites
+        .iter()
+        .filter(|site| site_zone.get(&site.id) == Some(&ZoneKind::Readout))
+        .map(|site| (site.id, site.position))
+        .collect();
+    sites.sort_by_key(|(id, _)| id.0);
+    sites
+}
+
+fn atom_zone(
+    layout: &NeutralAtomLayout,
+    site_zone: &BTreeMap<SiteId, ZoneKind>,
+    placement: &AtomPlacement,
+    atom: AtomId,
+) -> Option<ZoneKind> {
+    let pos = placement.pos.get(&atom).copied()?;
+    let site = nearest_site_id(layout, pos);
+    site_zone.get(&site).copied()
+}
+
+fn plan_readout_moves(
+    atoms: &[AtomId],
+    layout: &NeutralAtomLayout,
+    site_zone: &BTreeMap<SiteId, ZoneKind>,
+    readout_sites: &[(SiteId, Position)],
+    placement: &mut AtomPlacement,
+) -> Result<Vec<PlannedMove>, ZonedScheduleError> {
+    let capacity = readout_sites.len();
+    let mut unique = BTreeSet::new();
+    for &atom in atoms {
+        unique.insert(atom);
+    }
+    let mut movers = Vec::new();
+    for &atom in &unique {
+        if atom_zone(layout, site_zone, placement, atom) != Some(ZoneKind::Readout) {
+            movers.push(atom);
+        }
+    }
+    let taken: BTreeSet<SiteId> = readout_sites
+        .iter()
+        .filter(|(id, _)| placement.occupant.contains_key(id))
+        .map(|(id, _)| *id)
+        .collect();
+    let free: Vec<(SiteId, Position)> = readout_sites
+        .iter()
+        .copied()
+        .filter(|(id, _)| !taken.contains(id))
+        .collect();
+    if unique.len() > capacity || movers.len() > free.len() {
+        return Err(ZonedScheduleError::InsufficientReadout {
+            needed: unique.len(),
+            free: free.len(),
+            capacity,
+        });
+    }
+
+    let mut used = BTreeSet::new();
+    let mut planned = Vec::new();
+    for atom in movers {
+        let cur = placement.pos.get(&atom).copied().unwrap_or(Position {
+            x_um: 0.0,
+            y_um: 0.0,
+        });
+        let target = free
+            .iter()
+            .filter(|(id, _)| !used.contains(id))
+            .min_by(|a, b| {
+                euclidean_um(cur, a.1)
+                    .total_cmp(&euclidean_um(cur, b.1))
+                    .then(a.0.0.cmp(&b.0.0))
+            });
+        let Some((to_site, to_pos)) = target.copied() else {
+            return Err(ZonedScheduleError::InsufficientReadout {
+                needed: unique.len(),
+                free: free.len(),
+                capacity,
+            });
+        };
+        used.insert(to_site);
+        let from_site = nearest_site_id(layout, cur);
+        if placement.occupant.get(&from_site) == Some(&atom) {
+            placement.occupant.remove(&from_site);
+        }
+        placement.occupant.insert(to_site, atom);
+        placement.pos.insert(atom, to_pos);
+        let distance_um = euclidean_um(cur, to_pos);
+        if distance_um < 1e-9 {
+            continue;
+        }
+        planned.push(PlannedMove {
+            atom,
+            from_site,
+            to_site,
+            from: cur,
+            to: to_pos,
+            distance_um,
+        });
+    }
+    Ok(planned)
 }
 
 type EntanglePair = (Position, Position);
@@ -2435,6 +2860,7 @@ mod tests {
         DEFAULT_GAMMA, Interaction, InteractionGraph, InteractionId, InteractionSegment,
         LogicalQubitId, SegmentKind,
     };
+    use crate::report::ResourceReport;
     use crate::schedule::{MeasurementBasis, NeutralAtomAction, ScheduleLayer};
     use crate::schedule_entry::schedule_from_graph;
     use proptest::prelude::*;
@@ -3307,6 +3733,302 @@ mod tests {
         assert!(matches!(
             validate_zone_constraints(&layers, &layout, &arch),
             Err(ZonedScheduleError::MeasureOutsideReadout(_))
+        ));
+    }
+
+    fn readout_arch() -> ZonedArchitecture {
+        let mut arch = toy_zoned_architecture();
+        arch.require_readout_zone = true;
+        arch
+    }
+
+    fn measure_action(atom: u32, duration_us: u64) -> NeutralAtomAction {
+        NeutralAtomAction::Measure {
+            atom: AtomId(atom),
+            basis: MeasurementBasis::Z,
+            duration_us,
+        }
+    }
+
+    /// Issue #482: one mid-circuit ancilla measure → reset → reuse stays in
+    /// the readout zone, and the resource report counts the shuttle.
+    #[test]
+    fn mid_circuit_ancilla_stays_in_readout_zone() {
+        let graph = matching_graph(1);
+        let req = schedule_from_graph(graph).expect("stub");
+        let mut scheduled = schedule_entangling_layers(req, 340).expect("layers");
+        let ancilla = AtomId(1);
+        let data = AtomId(0);
+        let readout_ops = [
+            measure_action(ancilla.0, 1_000),
+            NeutralAtomAction::Reset {
+                atom: ancilla,
+                duration_us: 800,
+            },
+            NeutralAtomAction::Reuse {
+                atom: ancilla,
+                region: None,
+                duration_us: 50,
+            },
+        ];
+        for action in readout_ops {
+            let cycle = scheduled.request.layers.len() as u32;
+            scheduled.request.layers.push(ScheduleLayer {
+                cycle,
+                actions: vec![action],
+            });
+        }
+
+        let arch = readout_arch();
+        let off = schedule_zoned(
+            scheduled.request.clone(),
+            &toy_zoned_architecture(),
+            PlacerMode::RoutingAgnostic,
+        )
+        .expect("in-place");
+        let on =
+            schedule_zoned(scheduled.request, &arch, PlacerMode::RoutingAgnostic).expect("readout");
+
+        assert!(on.rearrangement_steps > off.rearrangement_steps);
+        assert!(on.trap_transfers > off.trap_transfers);
+
+        let layout = on.request.layout.as_ref().expect("layout");
+        let mut site_of = binding_sites(layout);
+        // Final bindings are post-shuttle. Replay from the returned layout is
+        // the end state, so check each readout op's layer directly: no motion
+        // in that layer, and the atom's final site is readout (it never left
+        // after the first shuttle).
+        let final_site = site_of.remove(&ancilla).expect("ancilla binding");
+        let final_pos = layout
+            .sites
+            .iter()
+            .find(|site| site.id == final_site)
+            .expect("site")
+            .position;
+        assert_eq!(
+            classify_site(final_pos, &arch),
+            Some(ZoneKind::Readout),
+            "ancilla must finish in the readout zone"
+        );
+
+        let mut saw_measure = false;
+        let mut saw_reset = false;
+        let mut saw_reuse = false;
+        for layer in &on.request.layers {
+            let moves_ancilla = atoms_in_motion(layer).contains(&ancilla);
+            for action in &layer.actions {
+                match action {
+                    NeutralAtomAction::Measure { atom, .. } if *atom == ancilla => {
+                        assert!(!moves_ancilla, "measurement layer moves the ancilla");
+                        saw_measure = true;
+                        assert!(!saw_reset && !saw_reuse);
+                    }
+                    NeutralAtomAction::Reset { atom, .. } if *atom == ancilla => {
+                        assert!(!moves_ancilla, "reset layer moves the ancilla");
+                        assert!(saw_measure);
+                        saw_reset = true;
+                    }
+                    NeutralAtomAction::Reuse { atom, .. } if *atom == ancilla => {
+                        assert!(!moves_ancilla, "reuse layer moves the ancilla");
+                        assert!(saw_reset);
+                        saw_reuse = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(saw_measure && saw_reset && saw_reuse);
+
+        let report = ResourceReport::from_layers(&on.request.layers);
+        assert!(report.rearrangement_steps >= 1);
+        assert!(report.trap_transfers >= 2);
+        assert_eq!(report.measurement_rounds, 1);
+        assert_eq!(report.reset_rounds, 1);
+        assert_eq!(report.temporal_atom_metrics.reset_count, 1);
+        assert_eq!(report.temporal_atom_metrics.reuse_count, 1);
+        assert!(report.total_time_us >= 1_000);
+
+        let mut data_active = 0u64;
+        for layer in &on.request.layers {
+            let touches = layer.actions.iter().any(|action| match action {
+                NeutralAtomAction::Move(group) => group.moves.iter().any(|m| m.atom == data),
+                NeutralAtomAction::Transfer(transfer) => transfer.atom == data,
+                NeutralAtomAction::Entangle2 { atoms, .. } => atoms.contains(&data),
+                NeutralAtomAction::Measure { atom, .. }
+                | NeutralAtomAction::Reset { atom, .. }
+                | NeutralAtomAction::Reuse { atom, .. } => *atom == data,
+                _ => false,
+            });
+            if touches {
+                let busy = layer
+                    .actions
+                    .iter()
+                    .map(NeutralAtomAction::duration_us)
+                    .max()
+                    .unwrap_or(0);
+                data_active += busy;
+            }
+        }
+        assert!(
+            report.total_time_us > data_active,
+            "data atom is idle while the ancilla is read out (total {} active {})",
+            report.total_time_us,
+            data_active
+        );
+    }
+
+    #[test]
+    fn readout_flag_off_does_not_shuttle() {
+        let graph = matching_graph(1);
+        let mut req = schedule_from_graph(graph).expect("stub");
+        req.layers = vec![ScheduleLayer {
+            cycle: 0,
+            actions: vec![measure_action(0, 10)],
+        }];
+        let result = schedule_zoned(req, &toy_zoned_architecture(), PlacerMode::RoutingAgnostic)
+            .expect("in-place");
+        assert_eq!(result.rearrangement_steps, 0);
+        assert!(result.request.layers.iter().any(|layer| {
+            layer
+                .actions
+                .iter()
+                .any(|action| matches!(action, NeutralAtomAction::Measure { .. }))
+        }));
+        assert!(result.request.layers.iter().all(|layer| {
+            layer
+                .actions
+                .iter()
+                .all(|action| !matches!(action, NeutralAtomAction::Move(_)))
+        }));
+    }
+
+    #[test]
+    fn rejects_reset_outside_readout_zone() {
+        let arch = readout_arch();
+        let layout = NeutralAtomLayout {
+            sites: vec![AtomSite {
+                id: SiteId(0),
+                position: Position {
+                    x_um: 0.0,
+                    y_um: 0.0,
+                },
+            }],
+            initial_bindings: vec![AtomBinding {
+                atom: AtomId(0),
+                trap: TrapBinding::Slm { site: SiteId(0) },
+            }],
+        };
+        let layers = vec![ScheduleLayer {
+            cycle: 0,
+            actions: vec![NeutralAtomAction::Reset {
+                atom: AtomId(0),
+                duration_us: 1,
+            }],
+        }];
+        assert!(matches!(
+            validate_zone_constraints(&layers, &layout, &arch),
+            Err(ZonedScheduleError::ResetOutsideReadout(AtomId(0)))
+        ));
+    }
+
+    #[test]
+    fn rejects_movement_during_readout() {
+        let arch = readout_arch();
+        let layout = NeutralAtomLayout {
+            sites: vec![
+                AtomSite {
+                    id: SiteId(0),
+                    position: Position {
+                        x_um: 0.0,
+                        y_um: 100.0,
+                    },
+                },
+                AtomSite {
+                    id: SiteId(1),
+                    position: Position {
+                        x_um: 4.0,
+                        y_um: 100.0,
+                    },
+                },
+            ],
+            initial_bindings: vec![AtomBinding {
+                atom: AtomId(0),
+                trap: TrapBinding::Slm { site: SiteId(0) },
+            }],
+        };
+        let layers = vec![ScheduleLayer {
+            cycle: 0,
+            actions: vec![
+                NeutralAtomAction::Move(MovementGroup {
+                    duration_us: 5,
+                    moves: vec![AtomMove {
+                        atom: AtomId(0),
+                        from: SiteId(0),
+                        to: SiteId(1),
+                    }],
+                }),
+                measure_action(0, 10),
+            ],
+        }];
+        assert!(matches!(
+            validate_zone_constraints(&layers, &layout, &arch),
+            Err(ZonedScheduleError::MovementDuringReadout(AtomId(0)))
+        ));
+    }
+
+    #[test]
+    fn rejects_reuse_before_reset() {
+        let arch = readout_arch();
+        let layout = NeutralAtomLayout {
+            sites: vec![AtomSite {
+                id: SiteId(0),
+                position: Position {
+                    x_um: 0.0,
+                    y_um: 100.0,
+                },
+            }],
+            initial_bindings: vec![AtomBinding {
+                atom: AtomId(0),
+                trap: TrapBinding::Slm { site: SiteId(0) },
+            }],
+        };
+        let layers = vec![
+            ScheduleLayer {
+                cycle: 0,
+                actions: vec![measure_action(0, 10)],
+            },
+            ScheduleLayer {
+                cycle: 1,
+                actions: vec![NeutralAtomAction::Reuse {
+                    atom: AtomId(0),
+                    region: None,
+                    duration_us: 1,
+                }],
+            },
+        ];
+        assert!(matches!(
+            validate_zone_constraints(&layers, &layout, &arch),
+            Err(ZonedScheduleError::ReuseBeforeReset(AtomId(0)))
+        ));
+    }
+
+    #[test]
+    fn rejects_insufficient_readout_capacity() {
+        let graph = matching_graph(5);
+        let mut req = schedule_from_graph(graph).expect("stub");
+        req.layers = vec![ScheduleLayer {
+            cycle: 0,
+            actions: (0..9).map(|atom| measure_action(atom, 1)).collect(),
+        }];
+        let err = schedule_zoned(req, &readout_arch(), PlacerMode::RoutingAgnostic)
+            .expect_err("readout capacity");
+        assert!(matches!(
+            err,
+            ZonedScheduleError::InsufficientReadout {
+                needed: 9,
+                capacity: 8,
+                ..
+            }
         ));
     }
 

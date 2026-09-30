@@ -28,7 +28,8 @@ use crate::graph::{
 };
 use crate::layout::{AtomId, NeutralAtomLayout};
 use crate::pipeline::{
-    NaPipelineError, NaScheduleArtifacts, NaScheduleOptions, validate_speed_model,
+    NaBackendKind, NaPipelineError, NaScheduleArtifacts, NaScheduleOptions, validate_speed_model,
+    zoned_architecture,
 };
 use crate::plan::{QecStageAccumulator, plan_backend};
 use crate::qec::code_blocks_from_expanded;
@@ -38,6 +39,7 @@ use crate::report::{attach_qec_error_budget, build_resource_report};
 use crate::schedule::{LocalGateKind, MeasurementBasis, NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
 use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, StageTimingsUs};
+use crate::zoned::{ZonedScheduleError, place_readout_layers};
 use backend::NeutralAtomTarget;
 
 /// Default duration (µs) for synthetic measure/reset/local actions from QEC expansion.
@@ -364,7 +366,23 @@ fn schedule_round(
     }
 
     append_local_gate_layers(&mut layers, &round.local_after);
+    let terminal_at = layers.len();
     append_terminal_layers(&mut layers, &round.terminal);
+    // Mid-circuit measure/reset are appended after place→move. Zoned targets
+    // that declare a readout zone shuttle those atoms in before the op.
+    if opts.backend == NaBackendKind::Zoned && layers.len() > terminal_at {
+        let arch = zoned_architecture(na);
+        if arch.require_readout_zone {
+            let Some(layout) = shared_layout.clone() else {
+                return Err(NaPipelineError::Zoned(ZonedScheduleError::MissingLayout));
+            };
+            let start_cycle = layers[terminal_at].cycle;
+            let placed = place_readout_layers(&layers[terminal_at..], &layout, &arch, start_cycle)?;
+            layers.truncate(terminal_at);
+            layers.extend(placed.layers);
+            *shared_layout = Some(placed.layout);
+        }
+    }
 
     let segment = if interaction_ids.is_empty() {
         None
