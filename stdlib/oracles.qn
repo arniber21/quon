@@ -1,0 +1,28 @@
+-- Experimental circuit stdlib: fixed phase-kickback oracle patterns (issue #195).
+--
+-- Stability: experimental. Compile with
+-- `quonc --include stdlib/oracles.qn <program>.qn`. See stdlib/README.md.
+--
+-- Limitations: these are concrete circuits, not higher-order classical
+-- functions. A secret string or marked basis state is baked into the gate
+-- list. Simon's GF(2) post-processing stays outside Quon. Callers supply
+-- the Hadamard sandwich; this file is only the oracle.
+
+fn bv_oracle_101(): Circuit<4, 4, 2, Clifford> = circuit {
+    CNOT @(0, 3) |> CNOT @(2, 3)
+}
+
+fn dj_balanced_oracle(): Circuit<4, 4, 3, Clifford> = circuit {
+    CNOT @(0, 3) |> CNOT @(1, 3) |> CNOT @(2, 3)
+}
+
+-- A constant oracle is the identity on the query+ancilla register: no
+-- query-ancilla interaction. Written as explicit `I` gates because a bare
+-- `identity(4)` body is a combinator call the lowerer does not inline.
+fn dj_constant_oracle(): Circuit<4, 4, 4, Clifford> = circuit {
+    I @0 |> I @1 |> I @2 |> I @3
+}
+
+fn grover_mark_11(): Circuit<2, 2, 1, Clifford> = circuit {
+    CZ @(0, 1)
+}

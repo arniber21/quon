@@ -1,0 +1,26 @@
+-- Experimental circuit stdlib: transverse-field Ising Trotter fragments (issue #195).
+--
+-- Stability: experimental. Compile with
+-- `quonc --include stdlib/ising.qn <program>.qn`. See stdlib/README.md.
+--
+-- One step is exp(-i H_ZZ tau) then exp(-i H_X tau) on an open chain
+-- (bonds (i, i+1) only). `ising_evolve` repeats that step with
+-- `repeat`, which elaboration supports. A circuit-valued `fold` is not
+-- used (same constraint as test/verify/ising.qn). A ring closing bond is
+-- the caller's responsibility.
+
+fn zz_layer(n: Nat, j: Float, tau: Float): Circuit<n, n, n - 1, Universal> = circuit {
+    for i in range(n - 1) { Rzz(-2.0 * j * tau) @(i, i + 1) }
+}
+
+fn x_layer(n: Nat, h: Float, tau: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(-2.0 * h * tau) q }
+}
+
+fn trotter_step(n: Nat, j: Float, h: Float, tau: Float): Circuit<n, n, n, Universal> = circuit {
+    zz_layer(n, j, tau) |> x_layer(n, h, tau)
+}
+
+fn ising_evolve(n: Nat, j: Float, h: Float, t: Float, n_steps: Int): Circuit<n, n, n_steps * n, Universal> =
+    let tau = t / float(n_steps)
+    in repeat(n_steps, trotter_step(n, j, h, tau))

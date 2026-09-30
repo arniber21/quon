@@ -1,0 +1,29 @@
+-- Experimental circuit stdlib: quantum Fourier transform (issue #195).
+--
+-- Stability: experimental. Compile with
+-- `quonc --include stdlib/qft.qn <program>.qn`. This is concatenation into
+-- one flat scope, not a module import. See stdlib/README.md.
+--
+-- `qft` is the value-dependent recursive form used by test/verify/qft.qn:
+-- Hadamards, controlled rotations at angle PI / 2^(i+1), `on_high` of the
+-- smaller transform, then `swap_reverse`. `qft_roundtrip` is qft followed
+-- by its adjoint.
+
+fn apply_hadamard(n: Nat): Circuit<n, n, 1, Clifford> = circuit { H @0 }
+
+fn controlled_rotations(n: Nat): Circuit<n, n, 2 * (n - 1), Universal> = circuit {
+    for i in range(n - 1) { controlled(Rz(PI / (2.0 ^ (i + 1)))) @(0, i + 1) }
+}
+
+fn qft(n: Nat): Circuit<n, n, 2 * n * n, Universal> =
+    match n {
+        0 => identity(0),
+        _ => apply_hadamard(n)
+             |> controlled_rotations(n)
+             |> (qft(n - 1) `on_high` n)
+             |> swap_reverse(n)
+    }
+
+fn qft_roundtrip(n: Nat): Circuit<n, n, 4 * n * n, Universal> = circuit {
+    qft(n) |> adjoint(qft(n))
+}

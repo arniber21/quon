@@ -28,6 +28,21 @@ quonc [OPTIONS] [SOURCE]
 `SOURCE` is the `.qn` file to compile. It may be omitted with `--print-target`
 or `--list-passes`.
 
+## Including other Quon files
+
+`--include PATH` (repeatable) prepends other `.qn` files before `SOURCE` and
+compiles them as one program. This is the experimental circuit-stdlib
+convention, not a module system: one flat scope, no nested includes, and
+duplicate `fn` names or duplicate `type` names are an error. A function and a
+type alias may share a name. See the
+[circuit stdlib](/reference/stdlib/).
+
+```bash
+quonc --include stdlib/qft.qn --emit-qasm samples/algorithms/stdlib_qft_roundtrip.qn
+```
+
+`--include` cannot be combined with OpenQASM input.
+
 ## Emission options
 
 ### `--emit-qasm`

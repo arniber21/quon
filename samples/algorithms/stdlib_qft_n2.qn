@@ -1,0 +1,9 @@
+-- Instantiate stdlib/qft.qn at n=2 and measure (issue #195).
+--
+-- A second call site from the n=3 round-trip sample, so the parametric
+-- `qft` is specialized at another width.
+
+fn main(): Q<List<Bit>> = run {
+    q <- qft(2) @ qreg(2)
+    measure_all(q)
+}

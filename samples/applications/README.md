@@ -23,6 +23,10 @@ the matching `test/verify/*.py` checker for the Quon-vs-classical split.
 | `applications/ising-ring` | [`ising_ring.qn`](./ising_ring.qn) | Transverse-field Ising on a ring (periodic boundary) | Aer: t=0 identity -> all zeros |
 | `applications/vqe-ansatz` | [`vqe_ansatz.qn`](./vqe_ansatz.qn) | VQE-shaped ansatz for a 2-qubit model Hamiltonian | statevector: <H> = ground energy -1.400 |
 | `applications/tsp-sketch` | [`tsp_sketch.qn`](./tsp_sketch.qn) | Toy TSP sketch: a QAOA-shaped cost circuit | structural: compiles + shaped/parseable QASM |
+| `applications/stdlib-qaoa-k3` | [`stdlib_qaoa_k3.qn`](./stdlib_qaoa_k3.qn) | Unweighted QAOA p=1 on K3 from experimental `stdlib/qaoa.qn` | compiles via `--include` |
+| `applications/stdlib-qaoa-n2` | [`stdlib_qaoa_n2.qn`](./stdlib_qaoa_n2.qn) | Same QAOA layer specialized at n=2 | compiles via `--include` |
+| `applications/stdlib-ising-chain` | [`stdlib_ising_chain.qn`](./stdlib_ising_chain.qn) | Open-chain Ising Trotter from `stdlib/ising.qn`, t=0 | compiles via `--include` |
+| `applications/stdlib-ising-one-step` | [`stdlib_ising_one_step.qn`](./stdlib_ising_one_step.qn) | One Trotter step at n=3 from `stdlib/ising.qn` | compiles via `--include` |
 
 ## Demos (#191)
 

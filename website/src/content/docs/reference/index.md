@@ -20,6 +20,8 @@ behavior against the docs. No tutorial context is assumed.
 - **quonc CLI** — every flag and subcommand the compiler driver accepts, with
   examples for the common emission paths (QASM, neutral-atom schedule, resource
   report, NAViz).
+- **Circuit stdlib** — experimental `.qn` modules (QFT, oracles, QAOA, Ising,
+  1-bit phase estimation) compiled with `--include`.
 - **Compiler pipeline** — the high-level stage list `quonc` runs (parse,
   typecheck, elaborate, lower to MLIR, optimize, emit), with the
   architecture pages going inside each stage.
@@ -30,4 +32,5 @@ For walkthroughs that use these flags in context, see the [guides](/guides/);
 for what each pipeline stage does internally, read the
 [architecture](/architecture/compiler-internals/) pages.
 
-→ Start with the [quonc CLI](./quonc/).
+→ Start with the [quonc CLI](./quonc/). For shared circuit modules, see the
+[circuit stdlib](./stdlib/).

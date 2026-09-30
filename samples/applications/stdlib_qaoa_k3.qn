@@ -1,0 +1,10 @@
+-- Unweighted QAOA p=1 on K3 using stdlib/qaoa.qn (issue #195).
+--
+-- Angles match test/verify/qaoa.qn. The cost and mixer definitions live in
+-- the stdlib; this sample is the n=3 instantiation.
+
+fn main(): Q<List<Bit>> = run {
+    q  <- hadamard_all(3) @ qreg(3)
+    q2 <- qaoa_layer(3, 0.5857, 2.5026) @ q
+    measure_all(q2)
+}

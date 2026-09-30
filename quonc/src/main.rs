@@ -34,6 +34,7 @@ const AFTER_HELP: &str = "\
 Examples:
   # Fixed / OpenQASM path
   quonc program.qn --emit-qasm
+  quonc --include stdlib/qft.qn program.qn --emit-qasm
   quonc program.qn --target targets/ibm/fake_manila.json --emit-qasm --metrics
 
   # Neutral-atom path (#112, #167): quantum.na MLIR is the primary artifact
@@ -124,6 +125,17 @@ struct Cli {
     /// for the neutral-atom ingestion path, #304). Optional with --print-target
     /// / --list-passes.
     source: Option<PathBuf>,
+
+    /// Prepend other `.qn` files before SOURCE (experimental stdlib include, #195).
+    /// Repeat for several files, in order. Concatenates sources into one program
+    /// with a flat scope; this is not a module system.
+    #[arg(
+        long,
+        value_name = "PATH",
+        action = ArgAction::Append,
+        help_heading = "Input"
+    )]
+    include: Vec<PathBuf>,
 
     /// Parse the source as OpenQASM 2/3 (#304) instead of Quon (forces the
     /// neutral-atom path; a `.qasm` extension already implies this).
@@ -1337,6 +1349,7 @@ fn run_watch(cli: &Cli) -> Result<ExitCode> {
 
     run_watch_loop(
         source,
+        &cli.include,
         target,
         debounce,
         || {
@@ -1383,17 +1396,26 @@ fn require_source(cli: &Cli) -> Result<PathBuf> {
 
 fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
     let source_path = require_source(cli)?;
-    let source = std::fs::read_to_string(&source_path)
-        .with_context(|| format!("reading {}", source_path.display()))?;
     let from_qasm = cli.from_qasm
         || source_path
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("qasm"));
+    if from_qasm && !cli.include.is_empty() {
+        bail!("--include applies to Quon sources; it cannot be combined with OpenQASM input");
+    }
+    let (source, source_chunks) = if from_qasm {
+        let source = std::fs::read_to_string(&source_path)
+            .with_context(|| format!("reading {}", source_path.display()))?;
+        (source, Vec::new())
+    } else {
+        quonc::include::load_quon_sources(&source_path, &cli.include)?
+    };
 
     Ok(CompileRequest {
         source_path,
         source,
+        source_chunks,
         target,
         target_descriptor_path: cli.target.clone(),
         dump_ir: cli.dump_ir,

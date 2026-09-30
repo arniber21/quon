@@ -1,0 +1,27 @@
+-- Experimental circuit stdlib: unweighted QAOA cost and mixer layers (issue #195).
+--
+-- Stability: experimental. Compile with
+-- `quonc --include stdlib/qaoa.qn <program>.qn`. See stdlib/README.md.
+--
+-- The cost layer is one Rzz(gamma) on every unordered pair from `pairs(n)`
+-- (`0 <= i < j < n`; unweighted MaxCut on the complete graph). A `Matrix`
+-- of edge weights and a circuit-valued `fold` over a parameter list are not
+-- used: elaboration does not support those forms (same constraint as
+-- test/verify/qaoa.qn).
+-- Stack layers in the caller for p > 1.
+
+fn hadamard_all(n: Nat): Circuit<n, n, 1, Clifford> = circuit {
+    for q in qubits(n) { H q }
+}
+
+fn cost_layer(n: Nat, gamma: Float): Circuit<n, n, n * n, Universal> = circuit {
+    for (i, j) in pairs(n) { Rzz(gamma) @(i, j) }
+}
+
+fn mixer_layer(n: Nat, beta: Float): Circuit<n, n, 1, Universal> = circuit {
+    for q in qubits(n) { Rx(beta) q }
+}
+
+fn qaoa_layer(n: Nat, gamma: Float, beta: Float): Circuit<n, n, n * n + 1, Universal> = circuit {
+    cost_layer(n, gamma) |> mixer_layer(n, beta)
+}

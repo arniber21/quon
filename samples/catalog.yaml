@@ -117,6 +117,54 @@ entries:
     artifacts: []
     ci: smoke
 
+  - id: algorithms/stdlib-qft-roundtrip
+    path: samples/algorithms/stdlib_qft_roundtrip.qn
+    tags: [algorithms, stdlib, qft, experimental]
+    difficulty: intermediate
+    quonc_args: ["--include", "stdlib/qft.qn", "--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: algorithms/stdlib-qft-n2
+    path: samples/algorithms/stdlib_qft_n2.qn
+    tags: [algorithms, stdlib, qft, experimental]
+    difficulty: intermediate
+    quonc_args: ["--include", "stdlib/qft.qn", "--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: algorithms/stdlib-bernstein-vazirani
+    path: samples/algorithms/stdlib_bernstein_vazirani.qn
+    tags: [algorithms, stdlib, oracle, bernstein-vazirani, experimental]
+    difficulty: intermediate
+    quonc_args: ["--include", "stdlib/oracles.qn", "--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: algorithms/stdlib-grover-mark
+    path: samples/algorithms/stdlib_grover_mark.qn
+    tags: [algorithms, stdlib, oracle, grover, experimental]
+    difficulty: intermediate
+    quonc_args: ["--include", "stdlib/oracles.qn", "--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: algorithms/stdlib-qpe-1bit
+    path: samples/algorithms/stdlib_qpe_1bit.qn
+    tags: [algorithms, stdlib, qpe, phase-estimation, experimental]
+    difficulty: intermediate
+    quonc_args: ["--include", "stdlib/phase_estimation.qn", "--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: algorithms/stdlib-phase-kickback
+    path: samples/algorithms/stdlib_phase_kickback.qn
+    tags: [algorithms, stdlib, qpe, phase-kickback, experimental]
+    difficulty: intermediate
+    quonc_args: ["--include", "stdlib/phase_estimation.qn", "--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
   - id: applications/quantum-coin-flip
     path: samples/applications/quantum_coin_flip.qn
     tags: [applications, randomness, superposition]
@@ -171,6 +219,38 @@ entries:
     tags: [applications, optimization, tsp, sketch, ising, qaoa]
     difficulty: intermediate
     quonc_args: ["--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/stdlib-qaoa-k3
+    path: samples/applications/stdlib_qaoa_k3.qn
+    tags: [applications, stdlib, qaoa, experimental]
+    difficulty: intermediate
+    quonc_args: ["--include", "stdlib/qaoa.qn", "--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/stdlib-qaoa-n2
+    path: samples/applications/stdlib_qaoa_n2.qn
+    tags: [applications, stdlib, qaoa, experimental]
+    difficulty: intermediate
+    quonc_args: ["--include", "stdlib/qaoa.qn", "--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/stdlib-ising-chain
+    path: samples/applications/stdlib_ising_chain.qn
+    tags: [applications, stdlib, ising, trotter, experimental]
+    difficulty: intermediate
+    quonc_args: ["--include", "stdlib/ising.qn", "--emit-qasm"]
+    artifacts: []
+    ci: smoke
+
+  - id: applications/stdlib-ising-one-step
+    path: samples/applications/stdlib_ising_one_step.qn
+    tags: [applications, stdlib, ising, trotter, experimental]
+    difficulty: intermediate
+    quonc_args: ["--include", "stdlib/ising.qn", "--emit-qasm"]
     artifacts: []
     ci: smoke
 

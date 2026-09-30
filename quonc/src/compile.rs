@@ -17,6 +17,7 @@ use quon_core::{
 };
 use sha2::{Digest, Sha256};
 
+use crate::include::SourceChunk;
 use backend::{BackendTarget, TargetKind};
 use mlir_bridge::collect_qec_workload;
 use mlir_bridge::emit::openqasm3;
@@ -72,6 +73,10 @@ pub struct CompileRequest {
     /// bypasses frontend lowering and enters the NA pipeline directly from
     /// the QASM-derived interaction graph + captured 1-qubit gates.
     pub from_qasm: bool,
+    /// Byte ranges of each file inside `source` when `--include` concatenated
+    /// several Quon sources (issue #195). Empty means `source` is exactly
+    /// `source_path` and diagnostics use that path.
+    pub source_chunks: Vec<SourceChunk>,
 }
 
 impl Default for CompileRequest {
@@ -94,6 +99,7 @@ impl Default for CompileRequest {
             na_state_prep: quon_na::pipeline::StatePrepMode::Heuristic,
             na_objective: quon_na::pipeline::NaObjective::default(),
             from_qasm: false,
+            source_chunks: Vec::new(),
         }
     }
 }
@@ -220,7 +226,12 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
     let context = melior::Context::new();
 
     let module = frontend::lower::lower_program(&context, &request.source).map_err(|diags| {
-        print_diagnostics(&request.source_path, &request.source, &diags);
+        print_mapped_diagnostics(
+            &request.source_path,
+            &request.source,
+            &request.source_chunks,
+            &diags,
+        );
         format!(
             "compilation failed with {} error{}",
             diags.len(),
@@ -530,20 +541,61 @@ pub fn print_diagnostics(
     source: &str,
     diags: &[frontend::diagnostics::Diagnostic],
 ) {
-    let id = source_path.display().to_string();
+    print_mapped_diagnostics(source_path, source, &[], diags);
+}
+
+/// Like [`print_diagnostics`], but attributes each span to the `--include`
+/// chunk that contains it when `chunks` is non-empty.
+pub fn print_mapped_diagnostics(
+    source_path: &Path,
+    source: &str,
+    chunks: &[SourceChunk],
+    diags: &[frontend::diagnostics::Diagnostic],
+) {
     for diag in diags {
-        let span = diag.span.start..diag.span.end;
-        let report =
-            ariadne::Report::build(ariadne::ReportKind::Error, id.clone(), diag.span.start)
-                .with_message(&diag.message)
-                .with_label(
-                    ariadne::Label::new((id.clone(), span))
-                        .with_message(&diag.message)
-                        .with_color(ariadne::Color::Red),
-                )
-                .finish();
-        let _ = report.eprint((id.clone(), ariadne::Source::from(source)));
+        let (id, local_source, start, end) =
+            map_diag_span(source_path, source, chunks, diag.span.start, diag.span.end);
+        let report = ariadne::Report::build(ariadne::ReportKind::Error, id.clone(), start)
+            .with_message(&diag.message)
+            .with_label(
+                ariadne::Label::new((id.clone(), start..end))
+                    .with_message(&diag.message)
+                    .with_color(ariadne::Color::Red),
+            )
+            .finish();
+        let _ = report.eprint((id, ariadne::Source::from(local_source)));
     }
+}
+
+fn map_diag_span(
+    source_path: &Path,
+    source: &str,
+    chunks: &[SourceChunk],
+    start: usize,
+    end: usize,
+) -> (String, String, usize, usize) {
+    if let Some(chunk) = crate::include::chunk_at(chunks, start) {
+        let local = source.get(chunk.start..chunk.end).unwrap_or("");
+        let rel_start = start.saturating_sub(chunk.start).min(local.len());
+        let rel_end = end
+            .clamp(chunk.start, chunk.end)
+            .saturating_sub(chunk.start);
+        let rel_end = rel_end.max(rel_start).min(local.len());
+        return (
+            chunk.path.display().to_string(),
+            local.to_string(),
+            rel_start,
+            rel_end,
+        );
+    }
+    let end = end.min(source.len()).max(start.min(source.len()));
+    let start = start.min(source.len());
+    (
+        source_path.display().to_string(),
+        source.to_string(),
+        start,
+        end,
+    )
 }
 
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
