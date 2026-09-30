@@ -27,6 +27,6 @@ expression: redact_timings(&json)
     "total_us": "<redacted_us>"
   },
   "version": {
-    "quon_na_version": "0.2.0"
+    "quon_na_version": "0.3.0"
   }
 }
