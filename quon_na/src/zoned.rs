@@ -258,6 +258,14 @@ pub enum PlacementCostModel {
         model: NeutralAtomErrorModel,
         speed_model: SpeedModel,
     },
+    /// architecture_model.md §9, using the target's `cost_model` weights.
+    /// Movement time is `t(d_max)` per group and each moving atom costs two
+    /// trap transfers. Rydberg stages are charged once per non-empty layer
+    /// when two full assignments are compared.
+    Weighted {
+        weights: backend::NeutralAtomCostModel,
+        speed_model: SpeedModel,
+    },
 }
 
 impl PlacementCostModel {
@@ -272,18 +280,27 @@ impl PlacementCostModel {
             Self::ErrorBudget { model, speed_model } => {
                 error_budget_gate_cost(model, speed_model, dist_a, dist_b)
             }
+            Self::Weighted {
+                weights,
+                speed_model,
+            } => crate::objective::orientation_cost(dist_a, dist_b, weights, speed_model),
         }
     }
 
     /// Per-gate d_max cost for the matching placer's cost matrix. Under
     /// `Time` this is `d_max`; under `ErrorBudget` it is the error-budget
     /// cost (which depends on `n_moves` and `d_max`, not just `d_max`).
+    /// Under `Weighted` it is the same orientation cost as [`Self::gate_cost`].
     fn d_max_cost(&self, d_max: f64, dist_a: f64, dist_b: f64) -> f64 {
         match self {
             Self::Time => d_max,
             Self::ErrorBudget { model, speed_model } => {
                 error_budget_gate_cost(model, speed_model, dist_a, dist_b)
             }
+            Self::Weighted {
+                weights,
+                speed_model,
+            } => crate::objective::orientation_cost(dist_a, dist_b, weights, speed_model),
         }
     }
 
@@ -306,6 +323,15 @@ impl PlacementCostModel {
                 // across assignments) so omitted from per-group cost.
                 model.movement + model.transfer * 2.0 * n_moves + model.idle_per_us * move_duration
             }
+            Self::Weighted {
+                weights,
+                speed_model,
+            } => crate::objective::group_weighted_cost(
+                group.moves.len(),
+                group.max_dist_um,
+                weights,
+                speed_model,
+            ),
         }
     }
 }
@@ -2279,6 +2305,48 @@ fn assignment_error_budget_cost(
         + model.rydberg * n_rydberg
 }
 
+/// §9 cost of one layer assignment: one Rydberg stage when any gate is
+/// placed, plus each AOD group's movement time and two transfers per move.
+fn assignment_weighted_cost(
+    assignment: &GateAssignment,
+    gates: &[(AtomId, AtomId)],
+    atom_pos: &BTreeMap<AtomId, Position>,
+    layout: &NeutralAtomLayout,
+    weights: &backend::NeutralAtomCostModel,
+    speed_model: &SpeedModel,
+    aod_min_sep_um: f64,
+) -> f64 {
+    let mut moves: Vec<PlannedMove> = Vec::new();
+    for &(gate_index, (pa, pb)) in &assignment.placed {
+        let (a, b) = gates[gate_index];
+        for (atom, target) in [(a, pa), (b, pb)] {
+            let cur = atom_pos.get(&atom).copied().unwrap_or(target);
+            let dist = euclidean_um(cur, target);
+            if dist < 1e-9 {
+                continue;
+            }
+            moves.push(PlannedMove {
+                atom,
+                from_site: nearest_site_id(layout, cur),
+                to_site: nearest_site_id(layout, target),
+                from: cur,
+                to: target,
+                distance_um: dist,
+            });
+        }
+    }
+    let groups = partition_aod_compatible(&moves, aod_min_sep_um);
+    let movement = groups
+        .iter()
+        .map(|group| {
+            let d_max = group.iter().fold(0.0_f64, |d, m| d.max(m.distance_um));
+            crate::objective::group_weighted_cost(group.len(), d_max, weights, speed_model)
+        })
+        .sum::<f64>();
+    let stages = u64::from(!assignment.placed.is_empty());
+    movement + weights.rydberg_stage_weight * stages as f64
+}
+
 /// Choose the routing-agnostic layer assignment: compute both the
 /// min-weight matching placer (assign_matching_legal) and the greedy
 /// placer (assign_greedy_legal), keep whichever yields fewer AOD movement
@@ -2298,7 +2366,7 @@ fn pick_agnostic_assignment(
 ) -> (GateAssignment, bool) {
     let greedy = assign_greedy_legal(gates, inputs);
     let (matching, _) = assign_matching_legal(gates, inputs);
-    match inputs.cost_model {
+    let matching_better = match inputs.cost_model {
         PlacementCostModel::Time => {
             let greedy_groups =
                 assignment_group_count(&greedy, gates, atom_pos, layout, aod_min_sep_um);
@@ -2307,11 +2375,7 @@ fn pick_agnostic_assignment(
             // Matching must place at least as many gates (≤ deferrals) AND
             // strictly fewer movement groups to be worth the swap;
             // otherwise the known-good greedy baseline is kept.
-            if matching.deferred.len() <= greedy.deferred.len() && matching_groups < greedy_groups {
-                (matching, true)
-            } else {
-                (greedy, false)
-            }
+            matching_groups < greedy_groups
         }
         PlacementCostModel::ErrorBudget { model, speed_model } => {
             // Issue #309: under ErrorBudget, compare on the actual analytic
@@ -2335,12 +2399,37 @@ fn pick_agnostic_assignment(
                 &speed_model,
                 aod_min_sep_um,
             );
-            if matching.deferred.len() <= greedy.deferred.len() && matching_cost < greedy_cost {
-                (matching, true)
-            } else {
-                (greedy, false)
-            }
+            matching_cost < greedy_cost
         }
+        PlacementCostModel::Weighted {
+            weights,
+            speed_model,
+        } => {
+            let greedy_cost = assignment_weighted_cost(
+                &greedy,
+                gates,
+                atom_pos,
+                layout,
+                &weights,
+                &speed_model,
+                aod_min_sep_um,
+            );
+            let matching_cost = assignment_weighted_cost(
+                &matching,
+                gates,
+                atom_pos,
+                layout,
+                &weights,
+                &speed_model,
+                aod_min_sep_um,
+            );
+            matching_cost < greedy_cost
+        }
+    };
+    if matching.deferred.len() <= greedy.deferred.len() && matching_better {
+        (matching, true)
+    } else {
+        (greedy, false)
     }
 }
 
@@ -2705,7 +2794,7 @@ fn heuristic_estimate(
                 max_dist_of_unplaced.sqrt() - max_dist_of_placed.sqrt()
             }
         }
-        PlacementCostModel::ErrorBudget { .. } => {
+        PlacementCostModel::ErrorBudget { .. } | PlacementCostModel::Weighted { .. } => {
             let max_cost_of_placed = node
                 .groups
                 .iter()

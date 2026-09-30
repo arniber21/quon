@@ -662,7 +662,7 @@ pub struct NeutralAtomLossModel {
     pub loss_coeff: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NeutralAtomCostModel {
     pub rydberg_stage_weight: f64,
     pub movement_time_weight: f64,
