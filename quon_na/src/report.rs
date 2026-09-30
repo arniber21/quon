@@ -287,24 +287,27 @@ pub struct ResourceReport {
     pub aware_search_completed_layers: Option<u64>,
     /// Companion to `aware_search_completed_layers`: number of layers where
     /// the aware search instead exhausted its budget or search space and
-    /// silently fell back to the routing-agnostic greedy assignment. A
-    /// nonzero value here on a `routing-aware` compile means any
-    /// aware == agnostic schedule match is **not** evidence of "no routing
-    /// contention" — it may just be the fallback reproducing the greedy
-    /// schedule. See `docs/neutral_atom/rap_table_i_methodology.md`.
+    /// fell back to the routing-agnostic dispatcher (matching or greedy,
+    /// whichever that seam keeps). A nonzero value here on a
+    /// `routing-aware` compile means any aware == agnostic schedule match
+    /// is **not** evidence of "no routing contention" — it may just be the
+    /// fallback reproducing the agnostic schedule. Which mechanism the
+    /// fallback kept is [`Self::agnostic_placer_mechanism`], reported
+    /// independently of this count. See
+    /// `docs/neutral_atom/rap_table_i_methodology.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aware_search_fell_back_layers: Option<u64>,
 
-    /// Zoned NA backend only (issue #300): which routing-agnostic placement
-    /// mechanism produced the schedule —
-    /// [`AgnosticPlacerMechanism::Matching`] (the #300 min-weight bipartite
-    /// matching default for normal-size layers) or
-    /// [`AgnosticPlacerMechanism::GreedyFallback`] (very-large layers above the
-    /// [`crate::zoned::MATCHING_FALLBACK_GATE_PAIR_PRODUCT`] threshold, or
-    /// matching's conflict-repair failure). `None` for non-zoned compiles and
-    /// for `routing-aware` (the agnostic concept does not apply); under
-    /// `routing-agnostic` it is always `Some`. Mirrors the
-    /// `aware_search_completed_layers` schema-evolution pattern.
+    /// Zoned NA backend only (issue #300 / #485): which routing-agnostic
+    /// placement mechanism produced the schedule —
+    /// [`AgnosticPlacerMechanism::Matching`],
+    /// [`AgnosticPlacerMechanism::GreedyFallback`], or
+    /// [`AgnosticPlacerMechanism::Mixed`] when some layers kept matching and
+    /// others kept greedy. `None` for non-zoned compiles and for a
+    /// `routing-aware` schedule whose search completed every layer. Under
+    /// `routing-agnostic` it is always `Some`. A routing-aware fallback
+    /// sets this to the seam result without changing
+    /// `aware_search_completed_layers` / `aware_search_fell_back_layers`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
 
@@ -1254,7 +1257,7 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
             "| Routing-aware search completed layers | {completed} |\n"
         ));
         out.push_str(&format!(
-            "| Routing-aware search fell back to greedy (layers) | {fell_back} |\n"
+            "| Routing-aware search fell back to routing-agnostic (layers) | {fell_back} |\n"
         ));
     }
     if let Some(mechanism) = report.agnostic_placer_mechanism {
@@ -1396,8 +1399,9 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
     );
     if report.aware_search_fell_back_layers.is_some_and(|n| n > 0) {
         out.push_str(
-            "- Routing-aware search fell back to the greedy assignment on at least one layer \
-             (budget exhaustion or no legal full assignment) — a byte-identical or \
+            "- Routing-aware search fell back to the routing-agnostic assignment on at least one layer \
+             (budget exhaustion or no legal full assignment). `agnostic_placer_mechanism` names \
+             whether that fallback kept matching, greedy, or a mix of the two — a byte-identical or \
              near-identical routing-aware/agnostic schedule here is not evidence of \
              \"no routing contention\"; see `docs/neutral_atom/rap_table_i_methodology.md`.\n",
         );
@@ -2477,12 +2481,14 @@ mod tests {
         let fell_back = ResourceReport::from_layers(&toy_layers()).with_aware_search_status(0, 4);
         let md = resource_report_to_markdown(&fell_back);
         assert!(md.contains("| Routing-aware search completed layers | 0 |"));
-        assert!(md.contains("| Routing-aware search fell back to greedy (layers) | 4 |"));
+        assert!(md.contains("| Routing-aware search fell back to routing-agnostic (layers) | 4 |"));
         assert!(md.contains("not evidence of"));
 
         let completed = ResourceReport::from_layers(&toy_layers()).with_aware_search_status(4, 0);
         let md_ok = resource_report_to_markdown(&completed);
-        assert!(md_ok.contains("| Routing-aware search fell back to greedy (layers) | 0 |"));
+        assert!(
+            md_ok.contains("| Routing-aware search fell back to routing-agnostic (layers) | 0 |")
+        );
         assert!(!md_ok.contains("not evidence of"));
     }
 
@@ -2521,6 +2527,16 @@ mod tests {
         assert!(md.contains("| Routing-agnostic placement mechanism | greedy_fallback |"));
         let md_match = resource_report_to_markdown(&report);
         assert!(md_match.contains("| Routing-agnostic placement mechanism | matching |"));
+
+        let mixed = ResourceReport::from_layers(&toy_layers())
+            .with_agnostic_placer_mechanism(Some(AgnosticPlacerMechanism::Mixed));
+        let md_mixed = resource_report_to_markdown(&mixed);
+        assert!(md_mixed.contains("| Routing-agnostic placement mechanism | mixed |"));
+        let mixed_value = match serde_json::to_value(&mixed) {
+            Ok(v) => v,
+            Err(e) => panic!("serialize mixed: {e}"),
+        };
+        assert_eq!(mixed_value["agnostic_placer_mechanism"], json!("mixed"));
     }
 
     #[test]

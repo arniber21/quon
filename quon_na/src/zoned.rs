@@ -375,6 +375,11 @@ pub enum AgnosticPlacerMechanism {
     /// the matching placer still ran (for normal-size layers); this records
     /// that its result was not the one emitted.
     GreedyFallback,
+    /// Some layers kept matching and others kept greedy. A schedule-level
+    /// label only — a single layer is never `Mixed`. Collapsing this case
+    /// into [`Self::GreedyFallback`] would claim every layer used greedy
+    /// (issue #485).
+    Mixed,
 }
 
 impl AgnosticPlacerMechanism {
@@ -383,7 +388,29 @@ impl AgnosticPlacerMechanism {
         match self {
             Self::Matching => "matching",
             Self::GreedyFallback => "greedy_fallback",
+            Self::Mixed => "mixed",
         }
+    }
+
+    /// Schedule-level label from per-layer counters.
+    ///
+    /// `None` when neither mechanism ran (a routing-aware schedule whose
+    /// search completed every layer). [`Self::Mixed`] when both did, so a
+    /// schedule that used matching on some layers and greedy on others is
+    /// not reported as if every layer were greedy.
+    pub fn from_layer_counts(matching_layers: u64, greedy_fallback_layers: u64) -> Option<Self> {
+        match (matching_layers > 0, greedy_fallback_layers > 0) {
+            (false, false) => None,
+            (true, false) => Some(Self::Matching),
+            (false, true) => Some(Self::GreedyFallback),
+            (true, true) => Some(Self::Mixed),
+        }
+    }
+
+    /// Combine two schedule-level labels. Differing mechanisms become
+    /// [`Self::Mixed`] rather than letting greedy erase a matching phase.
+    pub fn merge(self, other: Self) -> Self {
+        if self == other { self } else { Self::Mixed }
     }
 }
 
@@ -406,15 +433,16 @@ pub struct ZonedScheduleResult<V = LogicalQubitId> {
     /// [`PlacerMode::RoutingAgnostic`] (the concept doesn't apply).
     pub aware_search_completed_layers: u64,
     /// Per-layer calls where the aware search exhausted the expansion budget
-    /// before finding a full assignment and fell back to
-    /// assign_greedy_legal (issue #111 review finding: this makes a
-    /// budget-exhaustion fallback — which can silently reproduce the greedy
-    /// schedule byte-for-byte — visible instead of indistinguishable from "no
-    /// routing contention"). Always `0` under [`PlacerMode::RoutingAgnostic`].
+    /// before finding a full assignment and fell back to the current
+    /// routing-agnostic dispatcher ([`dispatch_agnostic_assignment`], issue
+    /// #485 — not [`assign_greedy_legal`] directly). Issue #111: a
+    /// budget-exhaustion fallback must stay visible instead of
+    /// indistinguishable from "no routing contention". Always `0` under
+    /// [`PlacerMode::RoutingAgnostic`].
     pub aware_search_budget_exceeded_layers: u64,
-    /// Per-layer calls where the aware search exhausted its entire search
-    /// space (no legal full assignment exists, e.g. spacing/occupancy
-    /// conflicts) and fell back to assign_greedy_legal. Always `0` under
+    /// Per-layer calls where the aware search exhausted its reachable space
+    /// (no full assignment inside the windowed/beamed frontier) and fell
+    /// back to [`dispatch_agnostic_assignment`]. Always `0` under
     /// [`PlacerMode::RoutingAgnostic`].
     pub aware_search_no_legal_assignment_layers: u64,
     /// Sum of best-first search node expansions across every
@@ -422,17 +450,17 @@ pub struct ZonedScheduleResult<V = LogicalQubitId> {
     /// search cost, not just its pass/fail outcome). Always `0` under
     /// [`PlacerMode::RoutingAgnostic`].
     pub aware_search_node_expansions: u64,
-    /// Per-layer routing-agnostic calls where assign_matching_legal (the
-    /// #300 min-weight bipartite matching placer) produced the layer's
-    /// assignment. Always `0` under [`PlacerMode::RoutingAware`].
+    /// Layers whose emitted assignment came from assign_matching_legal via
+    /// [`dispatch_agnostic_assignment`]: every routing-agnostic layer that
+    /// kept matching, plus routing-aware layers that fell back to matching.
+    /// Completed aware-search layers are not counted. See
+    /// [`AgnosticPlacerMechanism`].
     pub agnostic_matching_layers: u64,
-    /// Per-layer routing-agnostic calls where the agnostic path instead used
-    /// assign_greedy_legal — either because the layer exceeded the
-    /// [`MATCHING_FALLBACK_GATE_PAIR_PRODUCT`] threshold (very large layer,
-    /// where the O(n²·m) matching is skipped for speed) or because the
-    /// dispatch's group-count comparison (pick_agnostic_assignment) kept
-    /// greedy (matching's min-travel optimum grouped into ≥ as many AOD
-    /// movement stages). Always `0` under [`PlacerMode::RoutingAware`]. See
+    /// Layers whose emitted assignment came from assign_greedy_legal via
+    /// [`dispatch_agnostic_assignment`] — the layer exceeded
+    /// [`MATCHING_FALLBACK_GATE_PAIR_PRODUCT`], or the dispatch's comparison
+    /// kept greedy. Includes routing-aware fallbacks that kept greedy.
+    /// Completed aware-search layers are not counted. See
     /// [`AgnosticPlacerMechanism`].
     pub agnostic_greedy_fallback_layers: u64,
 }
@@ -772,27 +800,11 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
                 // RoutingAgnostic — the exact optimization is in the initial
                 // placement (handled by the flat-AOD path or the caller),
                 // not in per-layer gate-to-pair assignment. Issue #302.
-                let (a, used_matching) = if gate_atoms.len() * entangle_pairs.len()
-                    > MATCHING_FALLBACK_GATE_PAIR_PRODUCT
-                {
-                    (assign_greedy_legal(&gate_atoms, &inputs), false)
-                } else {
-                    pick_agnostic_assignment(
-                        &gate_atoms,
-                        &inputs,
-                        &layout,
-                        &atom_pos,
-                        arch.aod_min_separation_um,
-                    )
-                };
-                if used_matching {
-                    agnostic_matching_layers += 1;
-                } else {
-                    agnostic_greedy_fallback_layers += 1;
-                }
-                a
+                dispatch_agnostic_assignment(&gate_atoms, &inputs, &layout)
             }
-            PlacerMode::RoutingAware => assign_aware_legal(&gate_atoms, &inputs, &aware_search),
+            PlacerMode::RoutingAware => {
+                assign_aware_legal(&gate_atoms, &inputs, &aware_search, &layout)
+            }
         };
         aware_search_node_expansions += assignment.node_expansions as u64;
         match assignment.outcome {
@@ -800,6 +812,23 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
             AwareSearchOutcome::Completed => aware_search_completed_layers += 1,
             AwareSearchOutcome::BudgetExceeded => aware_search_budget_exceeded_layers += 1,
             AwareSearchOutcome::NoLegalAssignment => aware_search_no_legal_assignment_layers += 1,
+        }
+        // Count the agnostic seam on routing-agnostic layers and on aware
+        // fallbacks only. A completed aware search did not use the seam, so
+        // its mechanism stays unset and these counters stay unchanged.
+        let count_agnostic_seam = matches!(mode, PlacerMode::RoutingAgnostic | PlacerMode::Exact)
+            || matches!(
+                assignment.outcome,
+                AwareSearchOutcome::BudgetExceeded | AwareSearchOutcome::NoLegalAssignment
+            );
+        if count_agnostic_seam {
+            match assignment.fallback_mechanism {
+                Some(AgnosticPlacerMechanism::Matching) => agnostic_matching_layers += 1,
+                Some(AgnosticPlacerMechanism::GreedyFallback) => {
+                    agnostic_greedy_fallback_layers += 1
+                }
+                Some(AgnosticPlacerMechanism::Mixed) | None => {}
+            }
         }
         if assignment.placed.is_empty() {
             let (a, b) = gate_atoms[*assignment.deferred.first().unwrap_or(&0)];
@@ -1242,13 +1271,16 @@ struct AssignInputs<'a> {
 }
 
 /// Whether assign_aware_legal's A* search found a full legal assignment
-/// for a layer, or gave up and fell back to assign_greedy_legal (issue
-/// #111 review finding: a silent fallback here is indistinguishable from "no
-/// routing contention" unless it is surfaced).
+/// for a layer, or gave up and fell back to the routing-agnostic dispatcher
+/// (issue #111 review finding: a silent fallback here is indistinguishable
+/// from "no routing contention" unless it is surfaced). Which agnostic
+/// mechanism that fallback kept is a separate field
+/// ([`GateAssignment::fallback_mechanism`]); this enum does not collapse
+/// matching and greedy into one label (issue #485).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AwareSearchOutcome {
-    /// assign_greedy_legal was called directly (routing-agnostic mode);
-    /// the aware-search-completion concept doesn't apply.
+    /// The routing-agnostic dispatcher ran directly; the
+    /// aware-search-completion concept doesn't apply.
     NotApplicable,
     /// The search popped a full-assignment goal node within
     /// [`AwareSearchParams::node_budget`] expansions. As of #297 the search
@@ -1258,18 +1290,18 @@ pub enum AwareSearchOutcome {
     Completed,
     /// The search exhausted [`AwareSearchParams::node_budget`] expansions
     /// before popping a full-assignment goal node and fell back to
-    /// assign_greedy_legal.
+    /// [`dispatch_agnostic_assignment`].
     BudgetExceeded,
     /// The search exhausted its reachable space (heap emptied) within the
     /// current [`AwareSearchParams::pruning_window`]/[`AwareSearchParams::beam_width`]
     /// bounds without popping a full-assignment goal node, and fell back to
-    /// assign_greedy_legal. Pre-#297 (unwindowed, unbeamed uniform-cost
-    /// search) this proved no full legal assignment existed at all (e.g.
-    /// spacing/occupancy conflicts); as of #297 it does **not** prove that —
-    /// `pruning_window` can exclude the only choice a full assignment
-    /// requires for some gate (see the module doc), so this outcome can also
-    /// mean "no full assignment within the windowed/beamed search space,"
-    /// not "no full assignment exists."
+    /// [`dispatch_agnostic_assignment`]. Pre-#297 (unwindowed, unbeamed
+    /// uniform-cost search) this proved no full legal assignment existed at
+    /// all (e.g. spacing/occupancy conflicts); as of #297 it does **not**
+    /// prove that — `pruning_window` can exclude the only choice a full
+    /// assignment requires for some gate (see the module doc), so this
+    /// outcome can also mean "no full assignment within the windowed/beamed
+    /// search space," not "no full assignment exists."
     NoLegalAssignment,
 }
 
@@ -1278,16 +1310,21 @@ pub enum AwareSearchOutcome {
 struct GateAssignment {
     placed: Vec<(usize, (Position, Position))>,
     deferred: Vec<usize>,
-    /// See [`AwareSearchOutcome`]. assign_greedy_legal always reports
-    /// [`AwareSearchOutcome::NotApplicable`] unless it was called as a
-    /// fallback from assign_aware_legal, in which case the caller
-    /// overwrites this with the specific fallback reason.
+    /// See [`AwareSearchOutcome`]. assign_greedy_legal and
+    /// assign_matching_legal report [`AwareSearchOutcome::NotApplicable`].
+    /// An aware-search fallback overwrites this with the specific reason
+    /// after copying the agnostic dispatcher's assignment.
     outcome: AwareSearchOutcome,
     /// Best-first search node expansions this call performed (issue #307).
-    /// `0` from assign_greedy_legal unless it is a fallback from
+    /// `0` from the agnostic dispatcher unless it is a fallback from
     /// assign_aware_legal, in which case the caller overwrites this with
     /// the aware search's expansion count before falling back.
     node_expansions: usize,
+    /// Which agnostic mechanism produced `placed` when this assignment came
+    /// from [`dispatch_agnostic_assignment`]. `None` when the aware search
+    /// completed (the assignment is not an agnostic placement). Never
+    /// [`AgnosticPlacerMechanism::Mixed`] on a single layer.
+    fallback_mechanism: Option<AgnosticPlacerMechanism>,
 }
 
 fn atom_position_or_origin(atom_pos: &BTreeMap<AtomId, Position>, atom: AtomId) -> Position {
@@ -1383,6 +1420,7 @@ fn assign_greedy_legal(gates: &[(AtomId, AtomId)], inputs: &AssignInputs<'_>) ->
         deferred,
         outcome: AwareSearchOutcome::NotApplicable,
         node_expansions: 0,
+        fallback_mechanism: None,
     }
 }
 
@@ -1514,6 +1552,7 @@ fn assign_matching_legal(
                 deferred: immediate_deferred,
                 outcome: AwareSearchOutcome::NotApplicable,
                 node_expansions: 0,
+                fallback_mechanism: None,
             },
             true,
         );
@@ -1635,6 +1674,7 @@ fn assign_matching_legal(
             deferred,
             outcome: AwareSearchOutcome::NotApplicable,
             node_expansions: 0,
+            fallback_mechanism: None,
         },
         true,
     )
@@ -1797,6 +1837,44 @@ fn pick_agnostic_assignment(
     }
 }
 
+/// Current routing-agnostic assignment seam (issue #485).
+///
+/// Very large layers skip matching; every other layer keeps whichever of
+/// [`assign_matching_legal`] and [`assign_greedy_legal`]
+/// [`pick_agnostic_assignment`] selects for this cost model. Routing-agnostic
+/// mode and both routing-aware fallback paths (budget exhaustion and no full
+/// assignment) call this function, so a timed-out aware layer cannot emit
+/// more rearrangement steps than routing-agnostic would on the same state.
+/// The returned [`GateAssignment::fallback_mechanism`] is
+/// [`AgnosticPlacerMechanism::Matching`] or
+/// [`AgnosticPlacerMechanism::GreedyFallback`] — never `Mixed`, which is only
+/// a schedule-level aggregate of these per-layer choices.
+fn dispatch_agnostic_assignment(
+    gates: &[(AtomId, AtomId)],
+    inputs: &AssignInputs<'_>,
+    layout: &NeutralAtomLayout,
+) -> GateAssignment {
+    let n_pairs = inputs.pairs.len();
+    let (mut assignment, used_matching) =
+        if gates.len().saturating_mul(n_pairs) > MATCHING_FALLBACK_GATE_PAIR_PRODUCT {
+            (assign_greedy_legal(gates, inputs), false)
+        } else {
+            pick_agnostic_assignment(
+                gates,
+                inputs,
+                layout,
+                inputs.atom_pos,
+                inputs.aod_min_sep_um,
+            )
+        };
+    assignment.fallback_mechanism = Some(if used_matching {
+        AgnosticPlacerMechanism::Matching
+    } else {
+        AgnosticPlacerMechanism::GreedyFallback
+    });
+    assignment
+}
+
 /// Tunable parameters for assign_aware_legal's A* search (\[RAP\] Secs.
 /// IV-C / V-C / V-D, Eqs. (3)-(5)). Defaults are the paper's QASMBench
 /// parameter set (Sec. VI-A: α=0.2, β=0.2, γ=5, δ=0.6) restricted to the
@@ -1822,7 +1900,7 @@ pub struct AwareSearchParams {
     /// small nonzero penalty proportional to how many gates remain. qmap:
     /// `deepeningValue`.
     pub deepening_value: f64,
-    /// Expansion budget before falling back to assign_greedy_legal.
+    /// Expansion budget before falling back to [`dispatch_agnostic_assignment`].
     pub node_budget: usize,
     /// \[RAP\] Sec. V-D pruning: number of nearest *legal* entanglement pairs
     /// considered per gate at each node expansion (bounds branching factor
@@ -2172,11 +2250,13 @@ pub const MATCHING_FALLBACK_GATE_PAIR_PRODUCT: usize = 500_000;
 /// an engineering addition beyond the paper's Eqs., needed to reach full
 /// assignments within budget at real fixture scale). When no legal full
 /// assignment exists (or the node budget is exhausted) it falls back to
-/// assign_greedy_legal, which defers unplaceable gates.
+/// [`dispatch_agnostic_assignment`], which defers unplaceable gates and
+/// never calls [`assign_greedy_legal`] except as the seam itself selects it.
 fn assign_aware_legal(
     gates: &[(AtomId, AtomId)],
     inputs: &AssignInputs<'_>,
     params: &AwareSearchParams,
+    layout: &NeutralAtomLayout,
 ) -> GateAssignment {
     if gates.is_empty() {
         return GateAssignment {
@@ -2184,6 +2264,7 @@ fn assign_aware_legal(
             deferred: Vec::new(),
             outcome: AwareSearchOutcome::Completed,
             node_expansions: 0,
+            fallback_mechanism: None,
         };
     }
     let candidates: Vec<Vec<GateCandidate>> = gates
@@ -2208,14 +2289,18 @@ fn assign_aware_legal(
                 deferred: Vec::new(),
                 outcome: AwareSearchOutcome::Completed,
                 node_expansions: expansions,
+                fallback_mechanism: None,
             };
         }
         expansions += 1;
         if expansions > params.node_budget {
-            let mut fallback = assign_greedy_legal(gates, inputs);
-            fallback.outcome = AwareSearchOutcome::BudgetExceeded;
-            fallback.node_expansions = expansions;
-            return fallback;
+            return aware_agnostic_fallback(
+                gates,
+                inputs,
+                layout,
+                AwareSearchOutcome::BudgetExceeded,
+                expansions,
+            );
         }
         let gate = gates[g];
         let pa = atom_position_or_origin(inputs.atom_pos, gate.0);
@@ -2272,10 +2357,27 @@ fn assign_aware_legal(
             heap = kept;
         }
     }
-    // Search space exhausted: no legal assignment of every gate exists this
-    // stage. Place what greedy can and defer the rest.
-    let mut fallback = assign_greedy_legal(gates, inputs);
-    fallback.outcome = AwareSearchOutcome::NoLegalAssignment;
+    // Search space exhausted: no full assignment was found inside the
+    // windowed/beamed frontier. Place what the agnostic dispatcher can and
+    // defer the rest.
+    aware_agnostic_fallback(
+        gates,
+        inputs,
+        layout,
+        AwareSearchOutcome::NoLegalAssignment,
+        expansions,
+    )
+}
+
+fn aware_agnostic_fallback(
+    gates: &[(AtomId, AtomId)],
+    inputs: &AssignInputs<'_>,
+    layout: &NeutralAtomLayout,
+    outcome: AwareSearchOutcome,
+    expansions: usize,
+) -> GateAssignment {
+    let mut fallback = dispatch_agnostic_assignment(gates, inputs, layout);
+    fallback.outcome = outcome;
     fallback.node_expansions = expansions;
     fallback
 }
@@ -2336,6 +2438,7 @@ mod tests {
     };
     use crate::schedule::{MeasurementBasis, NeutralAtomAction, ScheduleLayer};
     use crate::schedule_entry::schedule_from_graph;
+    use proptest::prelude::*;
 
     fn matching_graph(n_pairs: u32) -> InteractionGraph {
         let n = n_pairs * 2;
@@ -2598,7 +2701,7 @@ mod tests {
     }
 
     /// Issue #111 review finding: a routing-aware layer that silently falls
-    /// back to assign_greedy_legal (budget exhaustion or no legal full
+    /// back to the agnostic dispatcher (budget exhaustion or no legal full
     /// assignment) is indistinguishable, by cost alone, from "no routing
     /// contention" — unless the outcome is instrumented. This is a small,
     /// genuinely contended two-gate/two-pair layout (no target/circuit
@@ -2686,7 +2789,12 @@ mod tests {
         assert_eq!(greedy.outcome, AwareSearchOutcome::NotApplicable);
         assert!(greedy.deferred.is_empty());
 
-        let aware = assign_aware_legal(&gates, &inputs, &AwareSearchParams::default());
+        let aware = assign_aware_legal(
+            &gates,
+            &inputs,
+            &AwareSearchParams::default(),
+            &NeutralAtomLayout::default(),
+        );
         assert_eq!(
             aware.outcome,
             AwareSearchOutcome::Completed,
@@ -2953,7 +3061,12 @@ mod tests {
         assert_eq!(greedy.outcome, AwareSearchOutcome::NotApplicable);
         assert!(greedy.deferred.is_empty());
 
-        let aware = assign_aware_legal(&gates, &inputs, &AwareSearchParams::default());
+        let aware = assign_aware_legal(
+            &gates,
+            &inputs,
+            &AwareSearchParams::default(),
+            &NeutralAtomLayout::default(),
+        );
         assert_eq!(
             aware.outcome,
             AwareSearchOutcome::Completed,
@@ -3547,7 +3660,12 @@ mod tests {
             PlacementCostModel::ErrorBudget { model, speed_model },
         );
 
-        let aware = assign_aware_legal(&gates, &inputs, &AwareSearchParams::default());
+        let aware = assign_aware_legal(
+            &gates,
+            &inputs,
+            &AwareSearchParams::default(),
+            &NeutralAtomLayout::default(),
+        );
         assert_eq!(aware.outcome, AwareSearchOutcome::Completed);
         assert_eq!(aware.placed.len(), 2);
         assert!(aware.deferred.is_empty());
@@ -3688,5 +3806,433 @@ mod tests {
             cost > 0.0 && cost.is_finite(),
             "error-budget assignment cost = {cost}, must be finite positive"
         );
+    }
+
+    fn pos(x_um: f64, y_um: f64) -> Position {
+        Position { x_um, y_um }
+    }
+
+    fn covering_layout(positions: &[Position]) -> NeutralAtomLayout {
+        NeutralAtomLayout {
+            sites: positions
+                .iter()
+                .enumerate()
+                .map(|(i, position)| AtomSite {
+                    id: SiteId(i as u32),
+                    position: *position,
+                })
+                .collect(),
+            initial_bindings: Vec::new(),
+        }
+    }
+
+    struct LayerFixture {
+        gates: Vec<(AtomId, AtomId)>,
+        atom_pos: BTreeMap<AtomId, Position>,
+        pairs: Vec<(Position, Position)>,
+        pair_sites: Vec<(SiteId, SiteId)>,
+        layout: NeutralAtomLayout,
+    }
+
+    fn zero_node_budget() -> AwareSearchParams {
+        AwareSearchParams {
+            node_budget: 0,
+            ..AwareSearchParams::default()
+        }
+    }
+
+    /// Crossing pairs where matching's joint assignment uses fewer AOD groups
+    /// than greedy's myopic pick (the #300 case the aware fallback used to miss).
+    fn crossing_pair_layer() -> LayerFixture {
+        let gates = vec![(AtomId(0), AtomId(1)), (AtomId(2), AtomId(3))];
+        let mut atom_pos = BTreeMap::new();
+        atom_pos.insert(AtomId(0), pos(499.0, 0.0));
+        atom_pos.insert(AtomId(1), pos(500.0, 0.0));
+        atom_pos.insert(AtomId(2), pos(0.4, 0.0));
+        atom_pos.insert(AtomId(3), pos(0.6, 0.0));
+        let pairs = vec![
+            (pos(0.0, 0.0), pos(1.0, 0.0)),
+            (pos(1000.0, 0.0), pos(1001.0, 0.0)),
+        ];
+        let pair_sites = vec![(SiteId(10), SiteId(11)), (SiteId(12), SiteId(13))];
+        let mut positions: Vec<Position> = atom_pos.values().copied().collect();
+        for (left, right) in &pairs {
+            positions.push(*left);
+            positions.push(*right);
+        }
+        let layout = covering_layout(&positions);
+        LayerFixture {
+            gates,
+            atom_pos,
+            pairs,
+            pair_sites,
+            layout,
+        }
+    }
+
+    fn layer_inputs<'a>(
+        atom_pos: &'a BTreeMap<AtomId, Position>,
+        pairs: &'a [(Position, Position)],
+        pair_sites: &'a [(SiteId, SiteId)],
+        site_occupant: &'a BTreeMap<SiteId, AtomId>,
+        cost_model: PlacementCostModel,
+    ) -> AssignInputs<'a> {
+        AssignInputs {
+            atom_pos,
+            pairs,
+            pair_sites,
+            site_occupant,
+            conflict_um: 0.0,
+            aod_min_sep_um: 0.0,
+            cost_model,
+        }
+    }
+
+    #[test]
+    fn aware_budget_fallback_uses_matching_not_direct_greedy() {
+        let LayerFixture {
+            gates,
+            atom_pos,
+            pairs,
+            pair_sites,
+            layout,
+        } = crossing_pair_layer();
+        let site_occupant = BTreeMap::new();
+        let inputs = layer_inputs(
+            &atom_pos,
+            &pairs,
+            &pair_sites,
+            &site_occupant,
+            PlacementCostModel::Time,
+        );
+        let greedy = assign_greedy_legal(&gates, &inputs);
+        let agnostic = dispatch_agnostic_assignment(&gates, &inputs, &layout);
+        assert_eq!(
+            agnostic.fallback_mechanism,
+            Some(AgnosticPlacerMechanism::Matching),
+            "this fixture is the matching-wins case; the seam must not keep greedy"
+        );
+        assert_ne!(agnostic.placed, greedy.placed);
+
+        let params = zero_node_budget();
+        let fallback = assign_aware_legal(&gates, &inputs, &params, &layout);
+        assert_eq!(fallback.outcome, AwareSearchOutcome::BudgetExceeded);
+        assert_eq!(fallback.fallback_mechanism, agnostic.fallback_mechanism);
+        assert_eq!(fallback.placed, agnostic.placed);
+        assert_eq!(fallback.deferred, agnostic.deferred);
+        assert!(fallback.node_expansions > 0);
+        let fallback_steps =
+            assignment_group_count(&fallback, &gates, &atom_pos, &layout, inputs.aod_min_sep_um);
+        let agnostic_steps =
+            assignment_group_count(&agnostic, &gates, &atom_pos, &layout, inputs.aod_min_sep_um);
+        let greedy_steps =
+            assignment_group_count(&greedy, &gates, &atom_pos, &layout, inputs.aod_min_sep_um);
+        assert_eq!(fallback_steps, agnostic_steps);
+        assert!(
+            fallback_steps < greedy_steps,
+            "fallback steps {fallback_steps} must be strictly under direct greedy {greedy_steps}"
+        );
+
+        let eb_inputs = layer_inputs(
+            &atom_pos,
+            &pairs,
+            &pair_sites,
+            &site_occupant,
+            PlacementCostModel::ErrorBudget {
+                model: test_error_model(),
+                speed_model: test_speed_model(),
+            },
+        );
+        let eb_agnostic = dispatch_agnostic_assignment(&gates, &eb_inputs, &layout);
+        let eb_fallback = assign_aware_legal(&gates, &eb_inputs, &params, &layout);
+        assert_eq!(eb_fallback.outcome, AwareSearchOutcome::BudgetExceeded);
+        assert_eq!(eb_fallback.placed, eb_agnostic.placed);
+        assert_eq!(eb_fallback.deferred, eb_agnostic.deferred);
+        assert_eq!(
+            eb_fallback.fallback_mechanism,
+            eb_agnostic.fallback_mechanism
+        );
+    }
+
+    #[test]
+    fn aware_no_legal_assignment_fallback_matches_agnostic_dispatcher() {
+        // Two gates and two pairs that spacing-conflict with each other, so
+        // no full assignment exists. Pair count still meets the matching
+        // solver's columns >= rows precondition (the scheduler rejects
+        // gates > pairs before it ever calls the seam).
+        let gates = vec![(AtomId(0), AtomId(1)), (AtomId(2), AtomId(3))];
+        let mut atom_pos = BTreeMap::new();
+        atom_pos.insert(AtomId(0), pos(0.0, 0.0));
+        atom_pos.insert(AtomId(1), pos(4.0, 0.0));
+        atom_pos.insert(AtomId(2), pos(0.0, 8.0));
+        atom_pos.insert(AtomId(3), pos(4.0, 8.0));
+        let pairs = vec![
+            (pos(0.0, 40.0), pos(4.0, 40.0)),
+            (pos(1.0, 42.0), pos(5.0, 42.0)),
+        ];
+        let pair_sites = vec![(SiteId(8), SiteId(9)), (SiteId(10), SiteId(11))];
+        let layout = covering_layout(&[
+            pos(0.0, 0.0),
+            pos(4.0, 0.0),
+            pos(0.0, 8.0),
+            pos(4.0, 8.0),
+            pos(0.0, 40.0),
+            pos(4.0, 40.0),
+            pos(1.0, 42.0),
+            pos(5.0, 42.0),
+        ]);
+        let site_occupant = BTreeMap::new();
+        let mut inputs = layer_inputs(
+            &atom_pos,
+            &pairs,
+            &pair_sites,
+            &site_occupant,
+            PlacementCostModel::Time,
+        );
+        inputs.conflict_um = 20.0;
+        let agnostic = dispatch_agnostic_assignment(&gates, &inputs, &layout);
+        let fallback = assign_aware_legal(&gates, &inputs, &AwareSearchParams::default(), &layout);
+        assert_eq!(fallback.outcome, AwareSearchOutcome::NoLegalAssignment);
+        assert_ne!(fallback.outcome, AwareSearchOutcome::BudgetExceeded);
+        assert_ne!(fallback.outcome, AwareSearchOutcome::Completed);
+        assert_eq!(fallback.placed, agnostic.placed);
+        assert_eq!(fallback.deferred, agnostic.deferred);
+        assert_eq!(fallback.fallback_mechanism, agnostic.fallback_mechanism);
+        assert!(fallback.fallback_mechanism.is_some());
+        assert!(
+            !fallback.placed.is_empty(),
+            "one gate still has a legal pair"
+        );
+        assert_eq!(fallback.deferred.len(), 1);
+    }
+
+    #[test]
+    fn aware_zero_budget_schedule_does_not_exceed_agnostic_steps() {
+        let graph = matching_graph(4);
+        let req = schedule_from_graph(graph).expect("stub");
+        let scheduled = schedule_entangling_layers(req, 340).expect("layers");
+        let arch = toy_zoned_architecture();
+        let agnostic = schedule_zoned(
+            scheduled.request.clone(),
+            &arch,
+            PlacerMode::RoutingAgnostic,
+        )
+        .expect("agnostic");
+        let params = zero_node_budget();
+        let aware = schedule_zoned_with_aware_params(
+            scheduled.request,
+            &arch,
+            PlacerMode::RoutingAware,
+            params,
+            PlacementCostModel::Time,
+        )
+        .expect("aware");
+        assert_eq!(aware.aware_search_completed_layers, 0);
+        assert!(aware.aware_search_budget_exceeded_layers >= 1);
+        assert_eq!(aware.aware_search_no_legal_assignment_layers, 0);
+        assert_eq!(
+            aware.agnostic_matching_layers + aware.agnostic_greedy_fallback_layers,
+            aware.aware_search_budget_exceeded_layers,
+            "every fallback layer records exactly one agnostic mechanism"
+        );
+        assert_eq!(aware.rearrangement_steps, agnostic.rearrangement_steps);
+        assert!(
+            (aware.routing_cost - agnostic.routing_cost).abs() < 1e-6,
+            "aware fallback cost {} vs agnostic {}",
+            aware.routing_cost,
+            agnostic.routing_cost
+        );
+        let mechanism = AgnosticPlacerMechanism::from_layer_counts(
+            aware.agnostic_matching_layers,
+            aware.agnostic_greedy_fallback_layers,
+        );
+        assert!(mechanism.is_some());
+    }
+
+    #[test]
+    fn completed_aware_search_does_not_report_an_agnostic_mechanism() {
+        let graph = matching_graph(2);
+        let req = schedule_from_graph(graph).expect("stub");
+        let scheduled = schedule_entangling_layers(req, 340).expect("layers");
+        let aware = schedule_zoned(
+            scheduled.request,
+            &toy_zoned_architecture(),
+            PlacerMode::RoutingAware,
+        )
+        .expect("aware");
+        assert!(aware.aware_search_completed_layers >= 1);
+        assert_eq!(aware.aware_search_budget_exceeded_layers, 0);
+        assert_eq!(aware.aware_search_no_legal_assignment_layers, 0);
+        assert_eq!(aware.agnostic_matching_layers, 0);
+        assert_eq!(aware.agnostic_greedy_fallback_layers, 0);
+        assert_eq!(AgnosticPlacerMechanism::from_layer_counts(0, 0), None);
+    }
+
+    #[test]
+    fn mixed_mechanism_label_is_not_collapsed_to_greedy() {
+        assert_eq!(
+            AgnosticPlacerMechanism::from_layer_counts(3, 0),
+            Some(AgnosticPlacerMechanism::Matching)
+        );
+        assert_eq!(
+            AgnosticPlacerMechanism::from_layer_counts(0, 4),
+            Some(AgnosticPlacerMechanism::GreedyFallback)
+        );
+        assert_eq!(
+            AgnosticPlacerMechanism::from_layer_counts(2, 2),
+            Some(AgnosticPlacerMechanism::Mixed)
+        );
+        assert_eq!(
+            AgnosticPlacerMechanism::Matching.merge(AgnosticPlacerMechanism::GreedyFallback),
+            AgnosticPlacerMechanism::Mixed
+        );
+        assert_eq!(AgnosticPlacerMechanism::Mixed.as_str(), "mixed");
+    }
+
+    #[cfg(feature = "mlir")]
+    #[test]
+    fn aware_fallback_schedule_passes_quantum_na_verifier() {
+        let graph = matching_graph(2);
+        let req = schedule_from_graph(graph).expect("stub");
+        let scheduled = schedule_entangling_layers(req, 340).expect("layers");
+        let arch = toy_zoned_architecture();
+        let params = zero_node_budget();
+        let aware = schedule_zoned_with_aware_params(
+            scheduled.request,
+            &arch,
+            PlacerMode::RoutingAware,
+            params,
+            PlacementCostModel::Time,
+        )
+        .expect("aware");
+        let layout = match aware.request.layout.as_ref() {
+            Some(layout) => layout,
+            None => panic!("zoned schedule must carry a layout"),
+        };
+        let spec = match crate::lower::lower_layers(
+            &aware.request.layers,
+            layout,
+            &crate::lower::ScheduleLowerParams {
+                target_id: "test_target".to_string(),
+                rydberg_range_um: arch.rydberg_range_um,
+                min_rydberg_spacing_um: arch.min_rydberg_spacing_um,
+                aod_min_separation_um: arch.aod_min_separation_um,
+            },
+        ) {
+            Ok(spec) => spec,
+            Err(error) => panic!("lowering aware fallback schedule failed: {error}"),
+        };
+        if let Err(error) = crate::dialect::verify_schedule_spec(&spec) {
+            panic!("quantum.na verifier rejected aware fallback schedule: {error}");
+        }
+    }
+
+    fn random_legal_layer(n_gates: usize, extra_pairs: usize, coords: Vec<i8>) -> LayerFixture {
+        let n_pairs = n_gates + extra_pairs;
+        let mut atom_pos = BTreeMap::new();
+        let mut gates = Vec::with_capacity(n_gates);
+        let mut positions = Vec::new();
+        for gate in 0..n_gates {
+            let a = AtomId((gate * 2) as u32);
+            let b = AtomId((gate * 2 + 1) as u32);
+            let base = gate * 4;
+            let pa = pos(
+                f64::from(coords[base]) * 8.0,
+                f64::from(coords[base + 1]) * 8.0,
+            );
+            let pb = pos(
+                f64::from(coords[base + 2]) * 8.0,
+                f64::from(coords[base + 3]) * 8.0,
+            );
+            atom_pos.insert(a, pa);
+            atom_pos.insert(b, pb);
+            positions.push(pa);
+            positions.push(pb);
+            gates.push((a, b));
+        }
+        let mut pairs = Vec::with_capacity(n_pairs);
+        let mut pair_sites = Vec::with_capacity(n_pairs);
+        let pair_base = n_gates * 4;
+        for pair in 0..n_pairs {
+            let base = pair_base + pair * 4;
+            let left = pos(
+                f64::from(coords[base]) * 8.0 + 200.0,
+                f64::from(coords[base + 1]) * 8.0,
+            );
+            let right = pos(
+                f64::from(coords[base + 2]) * 8.0 + 200.0,
+                f64::from(coords[base + 3]) * 8.0 + 6.0,
+            );
+            positions.push(left);
+            positions.push(right);
+            pairs.push((left, right));
+            let site = (1000 + pair * 2) as u32;
+            pair_sites.push((SiteId(site), SiteId(site + 1)));
+        }
+        let layout = covering_layout(&positions);
+        LayerFixture {
+            gates,
+            atom_pos,
+            pairs,
+            pair_sites,
+            layout,
+        }
+    }
+
+    fn generated_layer_coords() -> impl Strategy<Value = (usize, usize, Vec<i8>)> {
+        (1usize..=3, 0usize..=2).prop_flat_map(|(n_gates, extra_pairs)| {
+            let n_coords = n_gates * 4 + (n_gates + extra_pairs) * 4;
+            prop::collection::vec(-20i8..=20, n_coords)
+                .prop_map(move |coords| (n_gates, extra_pairs, coords))
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+        #[test]
+        fn aware_fallback_matches_agnostic_on_generated_layers(
+            (n_gates, extra_pairs, coords) in generated_layer_coords()
+        ) {
+            let LayerFixture {
+                gates,
+                atom_pos,
+                pairs,
+                pair_sites,
+                layout,
+            } = random_legal_layer(n_gates, extra_pairs, coords);
+            let site_occupant = BTreeMap::new();
+            let inputs = layer_inputs(
+                &atom_pos,
+                &pairs,
+                &pair_sites,
+                &site_occupant,
+                PlacementCostModel::Time,
+            );
+            let agnostic = dispatch_agnostic_assignment(&gates, &inputs, &layout);
+            let greedy = assign_greedy_legal(&gates, &inputs);
+            let params = zero_node_budget();
+            let fallback = assign_aware_legal(&gates, &inputs, &params, &layout);
+            prop_assert_eq!(fallback.outcome, AwareSearchOutcome::BudgetExceeded);
+            prop_assert_eq!(&fallback.placed, &agnostic.placed);
+            prop_assert_eq!(&fallback.deferred, &agnostic.deferred);
+            prop_assert_eq!(fallback.fallback_mechanism, agnostic.fallback_mechanism);
+            prop_assert!(matches!(
+                fallback.fallback_mechanism,
+                Some(
+                    AgnosticPlacerMechanism::Matching | AgnosticPlacerMechanism::GreedyFallback
+                )
+            ));
+            let sep = inputs.aod_min_sep_um;
+            let fallback_steps =
+                assignment_group_count(&fallback, &gates, &atom_pos, &layout, sep);
+            let agnostic_steps =
+                assignment_group_count(&agnostic, &gates, &atom_pos, &layout, sep);
+            let greedy_steps = assignment_group_count(&greedy, &gates, &atom_pos, &layout, sep);
+            prop_assert_eq!(fallback_steps, agnostic_steps);
+            prop_assert!(fallback_steps <= greedy_steps);
+            let fallback_cost = assignment_cost(&fallback, &gates, &atom_pos);
+            let agnostic_cost = assignment_cost(&agnostic, &gates, &atom_pos);
+            prop_assert!((fallback_cost - agnostic_cost).abs() < 1e-6);
+        }
     }
 }

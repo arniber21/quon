@@ -55,7 +55,7 @@ above; n98 stays dump-only local).
 | Rearrangement time | `ResourceReport.rearrangement_time_us` | Sum of √-law **move-only** durations ([`movement_duration_us`](../../quon_na/src/zoned.rs)) per movement group — see [Timing model](#timing-model) for why this is deliberately *not* `rearrangement_time_us + transfer_time_us` |
 | Two-qubit gate count (82) | `ResourceReport.entangle2_count` | Count of `Entangle2` schedule actions — one per circuit-level 2Q gate, placer-independent |
 | Entangling layers (4) | `ResourceReport.rydberg_stages` | Count of distinct schedule layers containing an entangling action |
-| *(not in the paper; #111 review instrumentation)* | `ResourceReport.aware_search_completed_layers` / `aware_search_fell_back_layers` | Per-layer count of whether [`assign_aware_legal`](../../quon_na/src/zoned.rs)'s best-first search found a full assignment within budget, or exhausted it and fell back to [`assign_greedy_legal`](../../quon_na/src/zoned.rs) — see [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair) |
+| *(not in the paper; #111 review instrumentation)* | `ResourceReport.aware_search_completed_layers` / `aware_search_fell_back_layers` | Per-layer count of whether [`assign_aware_legal`](../../quon_na/src/zoned.rs)'s best-first search found a full assignment within budget, or exhausted it and fell back to the routing-agnostic dispatcher (`dispatch_agnostic_assignment`, issue #485). Which of matching or greedy that fallback kept is `agnostic_placer_mechanism` (`matching`, `greedy_fallback`, or `mixed`), reported separately from the search outcome. The pre-#485 direct [`assign_greedy_legal`](../../quon_na/src/zoned.rs) fallback is the historical mechanism in [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair). |
 
 `entangle2_count` and (for this specific fixture/target pairing — see next
 section) `rydberg_stages` are **placer-independent pre-flight checks**: they
@@ -529,10 +529,20 @@ fixture):
 | Routing-agnostic | 48 | 8896 | 4 | 194 | n/a |
 | Routing-aware | 48 | 8896 | 4 | 194 | **0 of 4 layers completed; 4 of 4 fell back to greedy** |
 
-Both placers produce **identical** output here — this is the *same fallback
-mechanism* as the pre-#297 [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair)
-above, just now surfacing at n = 98's larger scale instead of n = 42's.
-`--emit-na-stats` (#307) shows why: `aware_search_node_expansions` reaches
+**Fallback seam (#485).** The table above is the pre-#300 measurement:
+both placers reported 48 steps because every aware layer exhausted the
+search budget and `assign_aware_legal` called `assign_greedy_legal`
+directly — the same direct-greedy fallback as the pre-#297
+[Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair),
+at n = 98's scale. After #300 the routing-agnostic dispatcher keeps
+min-weight matching when it uses fewer rearrangement steps than that greedy
+baseline (40 steps on this fixture). #485 sends both aware fallback paths
+through that dispatcher, so an all-fallback aware schedule cannot report
+more rearrangement steps than routing-agnostic on the same state. Search
+outcome (completed, budget-exceeded, no-legal-assignment) stays independent
+of the fallback mechanism label (`matching`, `greedy_fallback`, or `mixed`).
+
+`--emit-na-stats` (#307) shows why the search still does not finish: `aware_search_node_expansions` reaches
 `400004` against a `node_budget` of `100000` — the search hits its expansion
 cap on every layer. `ising_n98`'s layers have up to 49 simultaneous gates
 (vs. n42's 20-21) over the same 340-candidate-pair entanglement zone, so the
