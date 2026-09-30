@@ -152,8 +152,9 @@ find-references, and rename for top-level `fn` and `type` names:
   those roots. Open buffers override disk text until the buffer closes.
 - Files in the **same directory** share one namespace. A subdirectory is a
   different namespace. This is an interim convention, not a module system.
-- `didSave` and a `**/*.qn` file watcher refresh the index. Open buffers are
-  not replaced by a disk event.
+- `didSave` and a `**/*.qn` file watcher refresh the index. A save is indexed
+  only when that buffer version is still open; close drops an in-flight save.
+  Open buffers are not replaced by a disk event.
 - Several definitions of the same name in one directory are all returned.
   Rename refuses a new name that is already a top-level `fn` or `type` in that
   directory. Locals that shadow a name stay in-file and are not rewritten.

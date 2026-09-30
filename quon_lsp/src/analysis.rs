@@ -129,23 +129,35 @@ impl AnalysisScheduler {
                     }
                 };
 
+                // Hold the document lock across the index update. `cancel_analysis`
+                // only aborts at the next `.await` (`publish_diagnostics`), and
+                // `did_close` needs this lock before `note_closed`.
                 let should_publish = match documents.write() {
                     Ok(mut docs) => {
-                        docs.store_cached_analysis_if_current(&uri, version, analysis.clone())
+                        let current =
+                            docs.store_cached_analysis_if_current(&uri, version, analysis.clone());
+                        if current {
+                            match workspace.write() {
+                                Ok(mut index) => {
+                                    index.commit_open_analysis(
+                                        &docs,
+                                        uri.clone(),
+                                        version,
+                                        analysis.intelligence,
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::error!("workspace index write lock poisoned");
+                                }
+                            }
+                        }
+                        current
                     }
                     Err(_) => {
                         tracing::error!("document store write lock poisoned");
                         false
                     }
                 };
-
-                if should_publish {
-                    if let Ok(mut index) = workspace.write() {
-                        index.upsert_open(uri.clone(), analysis.intelligence);
-                    } else {
-                        tracing::error!("workspace index write lock poisoned");
-                    }
-                }
 
                 if !should_publish {
                     tracing::debug!(%uri, version, "discarding stale diagnostics");

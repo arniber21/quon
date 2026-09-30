@@ -1,5 +1,6 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use tower_lsp::jsonrpc::Result;
@@ -18,12 +19,21 @@ use crate::intel::{
 };
 use crate::workspace::{WorkspaceIndex, roots_from_initialize};
 
+struct SaveIndexTask {
+    generation: u64,
+    handle: tokio::task::JoinHandle<()>,
+}
+
 pub struct QuonLanguageServer {
     client: Client,
     documents: Arc<RwLock<DocumentStore>>,
     scheduler: AnalysisScheduler,
     workspace: Arc<RwLock<WorkspaceIndex>>,
     watch_dynamic: AtomicBool,
+    /// In-flight `didSave` index tasks. Close aborts them; a finished task
+    /// still re-checks the open version before `upsert_open`.
+    save_tasks: Arc<Mutex<HashMap<Url, SaveIndexTask>>>,
+    save_generation: Arc<AtomicU64>,
 }
 
 impl QuonLanguageServer {
@@ -46,6 +56,8 @@ impl QuonLanguageServer {
             scheduler,
             workspace,
             watch_dynamic: AtomicBool::new(false),
+            save_tasks: Arc::new(Mutex::new(HashMap::new())),
+            save_generation: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -83,20 +95,61 @@ impl QuonLanguageServer {
         });
     }
 
-    fn index_text(&self, uri: Url, text: String) {
+    fn index_text(&self, uri: Url, text: String, version: i32) {
         let workspace = Arc::clone(&self.workspace);
-        tokio::spawn(async move {
+        let documents = Arc::clone(&self.documents);
+        let save_tasks = Arc::clone(&self.save_tasks);
+        let generation = self.save_generation.fetch_add(1, Ordering::Relaxed);
+        let uri_for_task = uri.clone();
+        let handle = tokio::spawn(async move {
             let analyzed =
                 tokio::task::spawn_blocking(move || frontend::analyze(&text).intelligence).await;
             let Ok(analysis) = analyzed else {
+                return;
+            };
+            // Document lock is held until the index write finishes, so `did_close`
+            // cannot `note_closed` between the version check and `upsert_open`.
+            let Ok(docs) = documents.read() else {
+                tracing::error!("document store read lock poisoned");
                 return;
             };
             let Ok(mut index) = workspace.write() else {
                 tracing::error!("workspace index write lock poisoned");
                 return;
             };
-            index.upsert_open(uri, analysis);
+            index.commit_open_analysis(&docs, uri_for_task.clone(), version, analysis);
+            drop(index);
+            drop(docs);
+            if let Ok(mut tasks) = save_tasks.lock() {
+                if tasks
+                    .get(&uri_for_task)
+                    .is_some_and(|task| task.generation == generation)
+                {
+                    tasks.remove(&uri_for_task);
+                }
+            }
         });
+        match self.save_tasks.lock() {
+            Ok(mut tasks) => {
+                if let Some(previous) = tasks.insert(uri, SaveIndexTask { generation, handle }) {
+                    previous.handle.abort();
+                }
+            }
+            Err(_) => {
+                tracing::error!("save-index task mutex poisoned");
+                handle.abort();
+            }
+        }
+    }
+
+    fn cancel_save_index(&self, uri: &Url) {
+        let Ok(mut tasks) = self.save_tasks.lock() else {
+            tracing::error!("save-index task mutex poisoned");
+            return;
+        };
+        if let Some(task) = tasks.remove(uri) {
+            task.handle.abort();
+        }
     }
 }
 
@@ -221,6 +274,11 @@ impl LanguageServer for QuonLanguageServer {
     async fn shutdown(&self) -> Result<()> {
         // Abort outstanding analyses so no analysis work outlives the server.
         self.scheduler.shutdown();
+        if let Ok(mut tasks) = self.save_tasks.lock() {
+            for (_, task) in tasks.drain() {
+                task.handle.abort();
+            }
+        }
         Ok(())
     }
 
@@ -267,6 +325,7 @@ impl LanguageServer for QuonLanguageServer {
         // diagnostics for a document that is no longer open, and reclaim the
         // task handle.
         self.scheduler.cancel_analysis(&uri);
+        self.cancel_save_index(&uri);
         if let Ok(mut index) = self.workspace.write() {
             index.note_closed(&uri);
         } else {
@@ -278,7 +337,18 @@ impl LanguageServer for QuonLanguageServer {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
         if let Some(text) = params.text {
-            self.index_text(uri, text);
+            let version = {
+                let Ok(docs) = self.documents.read() else {
+                    tracing::error!("document store read lock poisoned");
+                    return;
+                };
+                match docs.get(&uri) {
+                    // Buffer moved on; the scheduler owns the newer text.
+                    Some(doc) if doc.text == text => doc.version,
+                    Some(_) | None => return,
+                }
+            };
+            self.index_text(uri, text, version);
             return;
         }
         if let Ok(mut index) = self.workspace.write() {

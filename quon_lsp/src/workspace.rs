@@ -64,6 +64,27 @@ impl WorkspaceIndex {
         self.insert_unit(uri, analysis, true);
     }
 
+    /// Index `analysis` as the open buffer only when `version` is still open.
+    ///
+    /// The caller holds the `DocumentStore` lock for this whole call. `did_close`
+    /// takes that same lock before `note_closed`, so a save or analysis that
+    /// finished for an older version, or after close, cannot set
+    /// `from_open_buffer`.
+    pub fn commit_open_analysis(
+        &mut self,
+        docs: &crate::document::DocumentStore,
+        uri: Url,
+        version: i32,
+        analysis: DocumentAnalysis,
+    ) -> bool {
+        let current = docs.get(&uri).is_some_and(|doc| doc.version == version);
+        if !current {
+            return false;
+        }
+        self.upsert_open(uri, analysis);
+        true
+    }
+
     fn insert_unit(&mut self, uri: Url, analysis: DocumentAnalysis, from_open_buffer: bool) {
         let Some(directory) = directory_key(&uri) else {
             return;

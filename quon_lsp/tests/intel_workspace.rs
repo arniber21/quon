@@ -244,6 +244,27 @@ fn rename_of_local_does_not_edit_sibling_export() {
 }
 
 #[test]
+fn stale_or_closed_version_does_not_become_the_open_buffer() {
+    let uri = url("proj", "defs");
+    let mut docs = quon_lsp::document::DocumentStore::default();
+    let mut index = WorkspaceIndex::default();
+    docs.open(uri.clone(), "fn live(): Int = 1\n".into(), 2);
+    let live = analyze("fn live(): Int = 1\n").intelligence;
+    assert!(index.commit_open_analysis(&docs, uri.clone(), 2, live));
+    assert!(index.is_open_buffer(&uri));
+
+    let stale = analyze("fn stale(): Int = 1\n").intelligence;
+    assert!(!index.commit_open_analysis(&docs, uri.clone(), 1, stale.clone()));
+    assert_eq!(index.definition_locations(&uri, "live").len(), 1);
+    assert!(index.definition_locations(&uri, "stale").is_empty());
+
+    docs.close(&uri);
+    index.note_closed(&uri);
+    assert!(!index.commit_open_analysis(&docs, uri.clone(), 2, stale));
+    assert!(!index.is_open_buffer(&uri));
+}
+
+#[test]
 fn open_buffer_wins_over_disk_rescan() {
     let live = url("proj", "defs");
     let mut index = WorkspaceIndex::default();
