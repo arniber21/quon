@@ -23,7 +23,8 @@ use quon_qec::{
     sibling_stim_path,
 };
 use quonc::compile::{
-    CompileRequest, build_na_schedule_view, compile, schedule_to_json, schedule_to_mlir,
+    CompileRequest, build_mapping_trace, build_na_schedule_view, compile, schedule_to_json,
+    schedule_to_mlir,
 };
 use quonc::na_target::{
     NaBackendKind, parse_na_backend, parse_na_objective, parse_placer_mode, parse_state_prep_mode,
@@ -36,6 +37,10 @@ Examples:
   quonc program.qn --emit-qasm
   quonc --include stdlib/qft.qn program.qn --emit-qasm
   quonc program.qn --target targets/ibm/fake_manila.json --emit-qasm --metrics
+
+  # Fixed-target mapping trace (#135): layout, SWAP insertions, stage metrics
+  quonc program.qn --target targets/ibm/fake_manila_v2.json \\
+    --emit-mapping-json mapping.json
 
   # Neutral-atom path (#112, #167): quantum.na MLIR is the primary artifact
   quonc program.qn --target targets/neutral_atom/generic_rna_v0.json \\
@@ -84,6 +89,8 @@ Examples:
 
 Notes:
   Fixed targets run SABRE routing and emit OpenQASM 3.0.
+  --emit-mapping-json writes a mapping_trace v1 document (layout, SWAP
+  events, per-stage summaries) for python/visualize_mapping.py.
   Neutral-atom targets extract an interaction graph, schedule entangling
   layers, run zoned RAP (default) or flat AOD movement, optionally compact,
   then lower to quantum.na MLIR (--emit-na-mlir, the canonical schedule IR).
@@ -146,6 +153,16 @@ struct Cli {
     /// Emit OpenQASM 3.0 (fixed targets only)
     #[arg(long, help_heading = "Emit", action = ArgAction::SetTrue)]
     emit_qasm: bool,
+
+    /// Emit the fixed-target mapping trace (`mapping_trace` v1 JSON; `-` = stdout)
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = "-",
+        help_heading = "Emit"
+    )]
+    emit_mapping_json: Option<String>,
 
     /// Emit quantum.na MLIR, the primary neutral-atom artifact (`-` = stdout)
     #[arg(
@@ -682,6 +699,12 @@ fn validate_emit_flags(cli: &Cli, target: &BackendTarget) -> Result<()> {
              --emit-resource-report / --emit-qec-experiment) for neutral-atom targets"
         );
     }
+    if cli.emit_mapping_json.is_some() && is_na {
+        bail!(
+            "--emit-mapping-json requires a fixed target \
+             (neutral-atom schedules use --emit-na-schedule)"
+        );
+    }
     if (cli.emit_na_mlir.is_some()
         || cli.emit_na_schedule.is_some()
         || cli.emit_na_graph.is_some()
@@ -747,6 +770,15 @@ fn emit_artifacts(
         } else {
             bail!("OpenQASM emission produced no output (is the target fixed?)");
         }
+    }
+
+    if let Some(path) = &cli.emit_mapping_json {
+        let trace = build_mapping_trace(report, request)?;
+        let json = trace
+            .to_json_string_pretty()
+            .context("serializing mapping trace")?;
+        write_output(path, &json, qasm_owns_stdout && path == "-")?;
+        emitted = true;
     }
 
     // quantum.na MLIR is the primary NA artifact (ADR-0011): it takes stdout
@@ -906,7 +938,8 @@ fn emit_artifacts(
             }
             id => {
                 eprintln!(
-                    "{dim}(compiled successfully for `{id}`; pass --emit-qasm to print OpenQASM 3.0){dim:#}"
+                    "{dim}(compiled successfully for `{id}`; pass --emit-qasm to print OpenQASM 3.0, \
+                     or --emit-mapping-json for the routing trace){dim:#}"
                 );
             }
         }
@@ -1446,6 +1479,7 @@ fn build_request(cli: &Cli, target: BackendTarget) -> Result<CompileRequest> {
         na_state_prep: cli.na_state_prep,
         na_objective: cli.na_objective,
         from_qasm,
+        record_mapping: cli.emit_mapping_json.is_some(),
     })
 }
 

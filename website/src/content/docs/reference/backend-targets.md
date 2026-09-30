@@ -181,6 +181,7 @@ schema, consumer, evidence kind, and explicit non-claims.
 | Artifact | Producer flag | Canonical? | Schema / version | Evidence kind |
 | --- | --- | --- | --- | --- |
 | [OpenQASM 3](#openqasm-3) | `--emit-qasm` | yes (fixed path) | OpenQASM 3.0 text | n/a (target input) |
+| [Mapping trace](#mapping-trace) | `--emit-mapping-json` | no — view | `mapping_trace`, v1 | structure |
 | [Canonical NA MLIR](#canonical-na-mlir-quantumna) | `--emit-na-mlir` | **yes** (NA path) | `quantum.na` MLIR text | structure |
 | [Schedule JSON](#schedule-json) | `--emit-na-schedule` | no — view | `na_schedule_view`, v1 | analytic (embedded metrics) |
 | [Interaction graph](#interaction-graph) | `--emit-na-graph` | no — view | Graphviz DOT | structure |
@@ -209,6 +210,27 @@ fused validation); these require a filesystem path, never `-`/stdout.
   scheduling/metrics, not an injected Aer noise model.
 - **Target constraint:** fixed targets only. Passing `--emit-qasm` with a
   neutral-atom target is a hard error.
+
+### Mapping trace
+
+- **Producer:** `quonc program.qn --target <fixed.json> --emit-mapping-json [PATH]`.
+- **Schema / version:** `kind: "mapping_trace"`, `schema_version: 1`. Fields:
+  `summary`, `meta` (target id), `topology.edges`, `initial_layout`,
+  `final_layout`, `events` (`swap` or `interaction`, each with a compile-time
+  `summary`), and `stages` (`layout`, `routing`, `native_decomp`) carrying
+  gate count, depth, SWAP count, and T count plus a metric-delta sentence.
+  Unknown fields are rejected.
+- **Canonical status:** a debug view of SABRE's layout and SWAP insertions.
+  OpenQASM remains the fixed-target program artifact. The trace is recorded
+  before post-SWAP native decomposition, so it can list SWAPs that the final
+  metrics counter no longer sees.
+- **Consumer:** `python/visualize_mapping.py` (ASCII timeline or self-contained
+  HTML). Not an editor webview.
+- **Evidence kind:** structure — what the router did, not a fidelity estimate.
+- **Non-claims:** the trace does not claim a layout is optimal, and
+  `native_decomp.swap_count` is not the number of routing insertions.
+- **Target constraint:** fixed targets only. Neutral-atom compiles use
+  `--emit-na-schedule`.
 
 ### Canonical NA MLIR (`quantum.na`)
 

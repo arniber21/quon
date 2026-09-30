@@ -41,7 +41,9 @@ use crate::passes::{
 // The Fixed physical pipeline (decomp → route → decomp → schedule) and its
 // result type live in [`crate::fixed_physical`] — the one deep module owning
 // Fixed physical layout (ADR-0034). Re-exported here for call-site stability.
-pub use crate::fixed_physical::{FixedPhysicalResult, run_fixed_physical};
+pub use crate::fixed_physical::{
+    FixedPhysicalResult, MappingCapture, run_fixed_physical, run_fixed_physical_with_mapping,
+};
 
 /// Passes applied on every circ-fixpoint round, in order.
 const CIRC_FIXPOINT_PASSES: &[&str] = &[

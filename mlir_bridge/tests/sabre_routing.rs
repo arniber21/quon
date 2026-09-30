@@ -6,6 +6,7 @@ use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike, Value};
 
 use mlir_bridge::dialect::quantum_circ as qc;
 use mlir_bridge::passes::sabre_routing::{self, SabreCost};
+use quon_core::RawMappingEvent;
 
 use support::context;
 
@@ -102,6 +103,38 @@ fn assigns_phys_qubit_to_all_gates() {
     sabre_routing::run_on_module(&context, &linear_5q(), SabreCost::default(), &module);
     let text = module.as_operation().to_string();
     assert!(text.contains("phys_qubit"));
+}
+
+#[test]
+fn mapping_log_records_swap_for_non_adjacent_cnot_and_none_for_bell() {
+    let context = context();
+    let line = linear_5q();
+
+    let bell = bell_module(&context);
+    let (bell_diag, bell_log) =
+        sabre_routing::run_on_module_logged(&context, &line, SabreCost::default(), &bell);
+    assert!(bell_diag.is_empty(), "bell routing diagnostics");
+    assert_eq!(bell_log.swap_count(), 0);
+    assert!(
+        bell_log
+            .events
+            .iter()
+            .any(|event| matches!(event, RawMappingEvent::Interaction { .. }))
+    );
+
+    let span = non_adjacent_cnot_module(&context);
+    let (span_diag, span_log) =
+        sabre_routing::run_on_module_logged(&context, &line, SabreCost::default(), &span);
+    assert!(span_diag.is_empty(), "span routing diagnostics");
+    assert!(
+        span_log.swap_count() >= 1,
+        "expected a SWAP to route CNOT(0, 2) on a line, log={span_log:?}"
+    );
+    assert!(
+        span_log.initial.iter().any(|(logical, _)| *logical <= 2),
+        "logical ids should be block-argument indices, got {:?}",
+        span_log.initial
+    );
 }
 
 #[test]

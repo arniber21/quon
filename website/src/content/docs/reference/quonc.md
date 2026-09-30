@@ -54,6 +54,32 @@ gate-model output path.
 quonc program.qn --emit-qasm > program.qasm
 ```
 
+### `--emit-mapping-json [PATH]`
+
+Emit the fixed-target **mapping trace** (issue #135): a versioned JSON
+document (`kind: mapping_trace`, `schema_version: 1`) of SABRE layout and
+routing. Fields are `summary`, `meta.target_id`, `topology.edges`,
+`initial_layout`, `final_layout`, `events` (`swap` or `interaction`, each with
+a compile-time `summary`), and `stages` (`layout`, `routing`,
+`native_decomp`) with `#48`-shaped metrics and a metric-delta sentence.
+Unknown fields are rejected. SWAP events are recorded before native
+decomposition, so `routing.swap_count` can be non-zero when the final
+`native_decomp` stage (and `--metrics-json`) reports `swap_count: 0` because
+each SWAP has become three `cx` gates. With no path, or with `-`, the JSON is
+written to standard output. Neutral-atom targets are rejected; use
+`--emit-na-schedule` for those.
+
+```bash
+quonc program.qn \
+  --target targets/ibm/fake_manila_v2.json \
+  --emit-mapping-json mapping.json
+
+python python/visualize_mapping.py mapping.json --ascii
+```
+
+`python/visualize_mapping.py` is a standalone viewer (ASCII timeline or
+self-contained HTML via `--html`). It does not embed in an editor.
+
 ### `--emit-na-mlir [PATH]`
 
 Emit `quantum.na` MLIR — **the canonical neutral-atom schedule IR**

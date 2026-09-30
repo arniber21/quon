@@ -1,0 +1,17 @@
+mapping_trace v1  target=line3
+summary: Sabre inserted 1 SWAP on physical edges (1, 2).
+initial layout: 0→0 1→1 2→2
+final layout: 0→0 1→2 2→1
+stages:
+  layout  gate_count=4 depth=0 swap_count=0 t_count=0
+    Initial layout places 3 logical qubits in first-use order: 0→0, 1→1, 2→2.
+  routing  gate_count=5 depth=0 swap_count=1 t_count=0
+    Sabre inserted 1 SWAP on physical edges (1, 2). gate_count: 4 → 5 (+1), depth: 0 → 0 (+0), swap_count: 0 → 1 (+1), t_count: 0 → 0 (+0).
+  native_decomp  gate_count=7 depth=5 swap_count=0 t_count=0
+    Native decomposition rewrote 1 literal SWAP gate(s) into CX triples before final metrics, so swap_count dropped from 1 to 0. Trust the event list (1 SWAP insertion(s)), not the final counter.
+events:
+  000 swap logical=[1, 2] physical=[1, 2]
+      Sabre inserted a SWAP on physical edge (1, 2), exchanging logical qubits 1 and 2.
+  001 interaction cx logical=[0, 2] physical=[0, 1]
+      cx on logical qubits (0, 2) executes on physical qubits (0, 1).
+swap insertions: 1
