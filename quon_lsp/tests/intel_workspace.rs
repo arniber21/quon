@@ -224,6 +224,46 @@ fn call(): Int = n2()
 }
 
 #[test]
+fn borrow_annotation_is_shadowed() {
+    let def_url = url("proj", "defs");
+    let use_url = url("proj", "uses");
+    let def_marked = "fn /*cursor*/n(): Int = 1\n";
+    let def_src = src_without_marker(def_marked);
+    let use_src = "\
+fn f(): Q<Int> = run {
+  borrow n: QReg<n>, m: QReg<n> in {
+    return 0
+  }
+}
+fn call(): Int = n()
+";
+    let index = index_of(&[(&def_url, &def_src), (&use_url, use_src)]);
+    let analysis = analyze(&def_src).intelligence;
+    let edit = rename_in_workspace(
+        &analysis,
+        &def_url,
+        position_after_marker(def_marked),
+        "n2",
+        &index,
+    )
+    .expect("rename ok")
+    .expect("workspace edit");
+    let changes = edit.changes.expect("changes");
+    let rewritten = edited_text(use_src, &changes[&use_url]);
+    assert_eq!(
+        rewritten,
+        "\
+fn f(): Q<Int> = run {
+  borrow n: QReg<n>, m: QReg<n> in {
+    return 0
+  }
+}
+fn call(): Int = n2()
+"
+    );
+}
+
+#[test]
 fn circuit_call_before_let_is_renamed() {
     let def_url = url("proj", "defs");
     let use_url = url("proj", "uses");

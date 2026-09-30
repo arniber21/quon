@@ -410,12 +410,15 @@ fn expr_shadows(expr: &(Expr, SimpleSpan), name: &str, offset: usize, inherited:
             }
             false
         }
-        Expr::Borrow { bindings, body } => stmts_shadows(
-            body,
-            name,
-            offset,
-            inherited || bindings.iter().any(|(bound, _)| bound.0 == name),
-        ),
+        Expr::Borrow { bindings, body } => {
+            // A borrow binding covers its type annotations and the body, the
+            // same way a lambda parameter covers the whole lambda. Later
+            // bindings in the list sit in that span too.
+            if bindings.iter().any(|(bound, _)| bound.0 == name) {
+                return true;
+            }
+            stmts_shadows(body, name, offset, false)
+        }
         Expr::CircuitBlock(stmts) | Expr::RunBlock(stmts) => {
             stmts_shadows(stmts, name, offset, inherited)
         }
