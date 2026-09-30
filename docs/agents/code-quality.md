@@ -37,7 +37,7 @@ Treat correctness as something you **evaluate constantly**, not only at integrat
 | **cargo-fuzz** | Unbounded byte streams, panic-freedom | `quon_core/fuzz/fuzz_targets/fuzz_depth_parse.rs` — parse never panics |
 | **Type checker** | Language invariants on real programs | `frontend/src/typecheck/mod.rs` — linear context `Δ`, circuit qubit counts, `Circuit<n,m,d,C>` |
 | **IR verifiers** | Structural invariants on MLIR | `mlir_bridge/src/dialect/quantum_circ.rs` — `verify()` on every builder |
-| **Static rules** | Repo-specific antipatterns | `.taskless/rules/` — unwrap/expect, anyhow in libs, etc. |
+| **Static rules** | Repo-specific antipatterns | `.taskless/rules/` — unwrap/expect, anyhow in libs, `allow(unsafe_code)` outside `mlir_bridge/src/ffi.rs`, `panic!` / `todo!` / `unimplemented!` in library `src/`, etc. |
 | **Flux** | Refinement proofs on small Rust kernels | `flux_verify/src/lib.rs` — specs like `{v: x < v}` |
 
 **Patterns to follow:**

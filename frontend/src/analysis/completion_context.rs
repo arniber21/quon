@@ -179,7 +179,7 @@ mod tests {
     use crate::analysis::{analyze_program, cursor_at};
 
     fn ctx(src: &str) -> CompletionContext {
-        let offset = cursor_at(src, "/*cursor*/");
+        let offset = cursor_at(src, "/*cursor*/").expect("cursor marker");
         let clean = src.replace("/*cursor*/", "");
         // Adjust offset: marker removed, so offset in clean == offset in src (marker at end of prefix).
         let a = analyze_program(&clean);

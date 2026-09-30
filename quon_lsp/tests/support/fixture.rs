@@ -22,7 +22,7 @@ fn analyze_fixture(src: &str) -> frontend::AnalysisResult {
 
 #[allow(dead_code)] // shared test helper — not every integration test uses every helper
 pub fn position_after_marker(src: &str) -> Position {
-    let offset = cursor_at(src, "/*cursor*/");
+    let offset = cursor_at(src, "/*cursor*/").expect("cursor marker");
     let before = src[..offset].replace("/*cursor*/", "");
     let line = before.matches('\n').count() as u32;
     let col = before

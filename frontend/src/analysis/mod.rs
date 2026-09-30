@@ -349,7 +349,7 @@ mod tests {
     fn call_site_resolves_to_fn() {
         let src = "fn g(): Int = 1\nfn f(): Int = /*cursor*/g()\n";
         let clean = src.replace("/*cursor*/", "");
-        let offset = cursor_at(src, "/*cursor*/");
+        let offset = cursor_at(src, "/*cursor*/").expect("cursor marker");
         let a = analyze_program(&clean);
         let q = resolve_at(&a, offset).expect("resolve call");
         assert_eq!(q.name, "g");
@@ -367,7 +367,7 @@ mod tests {
     fn type_alias_use_resolves() {
         let src = "type MyInt = Int\nfn f(): /*cursor*/MyInt = 1\n";
         let clean = src.replace("/*cursor*/", "");
-        let offset = cursor_at(src, "/*cursor*/");
+        let offset = cursor_at(src, "/*cursor*/").expect("cursor marker");
         let a = analyze_program(&clean);
         let q = resolve_at(&a, offset).expect("resolve alias");
         assert_eq!(q.name, "MyInt");
@@ -378,7 +378,7 @@ mod tests {
     fn param_def_site_resolves() {
         let src = "fn f(/*cursor*/x: Int): Int = x\n";
         let clean = src.replace("/*cursor*/", "");
-        let offset = cursor_at(src, "/*cursor*/");
+        let offset = cursor_at(src, "/*cursor*/").expect("cursor marker");
         let a = analyze_program(&clean);
         let q = resolve_at(&a, offset).expect("resolve param");
         assert_eq!(q.name, "x");

@@ -1,0 +1,17 @@
+id: no-allow-unsafe-code-outside-ffi
+language: Rust
+severity: error
+message: Do not allow unsafe_code outside mlir_bridge/src/ffi.rs
+note: |
+  The workspace denies unsafe_code. The only module permitted to opt back in
+  is mlir_bridge/src/ffi.rs, the MLIR FFI boundary. A new #[allow(unsafe_code)]
+  anywhere else — including inner attributes and multi-lint allow lists — is a
+  new unsafe pierce.
+ignores:
+  - "mlir_bridge/src/ffi.rs"
+rule:
+  any:
+    - kind: attribute_item
+      regex: 'allow\s*\([\s\S]*unsafe_code'
+    - kind: inner_attribute_item
+      regex: 'allow\s*\([\s\S]*unsafe_code'

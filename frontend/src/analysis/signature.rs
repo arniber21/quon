@@ -308,7 +308,7 @@ mod tests {
     use crate::analysis::{analyze_program, cursor_at};
 
     fn site(src: &str) -> Option<SignatureSite> {
-        let offset = cursor_at(src, "/*cursor*/");
+        let offset = cursor_at(src, "/*cursor*/").expect("cursor marker");
         let clean = src.replace("/*cursor*/", "");
         let a = analyze_program(&clean);
         signature_site_at(&a, offset)
