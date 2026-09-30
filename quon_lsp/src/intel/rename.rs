@@ -1,8 +1,7 @@
-//! In-file `textDocument/prepareRename` + `textDocument/rename`.
+//! `textDocument/prepareRename` + `textDocument/rename`.
 //!
-//! # Safety rules
-//!
-//! Workspace-wide rename is out of scope (single document only).
+//! Locals stay in-file. Top-level `fn` and `type` names rename across every
+//! `.qn` file in the same directory (see `crate::workspace`).
 //!
 //! **Allowed targets:** user symbols — function, type alias, type param, parameter,
 //! local binding (including linear resources tracked as locals).
@@ -14,8 +13,6 @@
 //!   `id` → `new_name`, any occurrence site would resolve to a *different* binding,
 //!   we refuse. That covers same-scope collisions and intervening shadows — including
 //!   cases that would mis-bind linear resources (clone / drop / wrong consumer).
-//!
-//! Occurrences come from [`frontend::analysis::occurrences_of`] (same as references).
 
 use std::collections::HashMap;
 
@@ -28,9 +25,46 @@ use tower_lsp::jsonrpc::{Error, Result as LspResult};
 use tower_lsp::lsp_types::{Position, PrepareRenameResponse, TextEdit, Url, WorkspaceEdit};
 
 use crate::convert::{position_to_offset, span_to_range};
+use crate::intel::definition::name_at;
+use crate::workspace::{
+    WorkspaceIndex, cross_file_occurrences, export_ids, export_target, is_workspace_export,
+};
 
 /// Prepare rename at `position`: renameable range + placeholder, or an error reason.
 pub fn prepare_rename_at(
+    analysis: &DocumentAnalysis,
+    position: Position,
+) -> LspResult<Option<PrepareRenameResponse>> {
+    prepare_in_file(analysis, position)
+}
+
+/// Prepare rename, also accepting an unresolved name defined in a sibling file.
+pub fn prepare_rename_in_workspace(
+    analysis: &DocumentAnalysis,
+    uri: &Url,
+    position: Position,
+    index: &WorkspaceIndex,
+) -> LspResult<Option<PrepareRenameResponse>> {
+    match prepare_in_file(analysis, position) {
+        Ok(None) => {}
+        other => return other,
+    }
+    let Some(offset) = position_to_offset(&analysis.src, position) else {
+        return Ok(None);
+    };
+    let Some((name, span)) = name_at(analysis, offset) else {
+        return Ok(None);
+    };
+    if index.definition_locations(uri, &name).is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+        range: span_to_range(&analysis.src, span),
+        placeholder: name,
+    }))
+}
+
+fn prepare_in_file(
     analysis: &DocumentAnalysis,
     position: Position,
 ) -> LspResult<Option<PrepareRenameResponse>> {
@@ -60,8 +94,60 @@ pub fn prepare_rename_at(
     }
 }
 
-/// Rename all in-file occurrences of the symbol under `position` to `new_name`.
+/// Rename occurrences of the symbol under `position` to `new_name`.
 pub fn rename_at(
+    analysis: &DocumentAnalysis,
+    uri: &Url,
+    position: Position,
+    new_name: &str,
+) -> LspResult<Option<WorkspaceEdit>> {
+    rename_in_workspace(
+        analysis,
+        uri,
+        position,
+        new_name,
+        &WorkspaceIndex::default(),
+    )
+}
+
+/// Rename, including same-directory top-level `fn` / `type` names.
+pub fn rename_in_workspace(
+    analysis: &DocumentAnalysis,
+    uri: &Url,
+    position: Position,
+    new_name: &str,
+    index: &WorkspaceIndex,
+) -> LspResult<Option<WorkspaceEdit>> {
+    let Some(offset) = position_to_offset(&analysis.src, position) else {
+        return Ok(None);
+    };
+    let query = resolve_at(analysis, offset);
+    let export_name = query.as_ref().and_then(|query| {
+        let id = renameable_symbol(analysis, &query.target).ok()?;
+        let sym = analysis.symbols.get(id)?;
+        if is_workspace_export(&analysis.symbols, sym) {
+            Some(sym.name.clone())
+        } else {
+            None
+        }
+    });
+    if export_name.is_none() {
+        if query.is_some() {
+            return rename_in_file(analysis, uri, position, new_name);
+        }
+        let Some((name, _)) = name_at(analysis, offset) else {
+            return Ok(None);
+        };
+        if index.definition_locations(uri, &name).is_empty() {
+            return Ok(None);
+        }
+        return rename_workspace_name(analysis, uri, &name, new_name, index);
+    }
+    let name = export_name.ok_or_else(|| Error::invalid_params("symbol missing from index"))?;
+    rename_workspace_name(analysis, uri, &name, new_name, index)
+}
+
+fn rename_in_file(
     analysis: &DocumentAnalysis,
     uri: &Url,
     position: Position,
@@ -83,10 +169,7 @@ pub fn rename_at(
         .ok_or_else(|| Error::invalid_params("symbol missing from index"))?;
 
     if new_name == sym.name {
-        return Ok(Some(WorkspaceEdit {
-            changes: Some(HashMap::new()),
-            ..Default::default()
-        }));
+        return Ok(Some(empty_edit()));
     }
 
     validate_new_name(new_name)?;
@@ -100,20 +183,117 @@ pub fn rename_at(
         return Err(Error::invalid_params(reason));
     }
 
-    let edits: Vec<TextEdit> = occs
-        .into_iter()
-        .map(|(span, _)| TextEdit {
-            range: span_to_range(&analysis.src, span),
-            new_text: new_name.to_string(),
-        })
-        .collect();
-
     let mut changes = HashMap::new();
-    changes.insert(uri.clone(), edits);
+    changes.insert(uri.clone(), edits_for(analysis, &occs, new_name));
     Ok(Some(WorkspaceEdit {
         changes: Some(changes),
         ..Default::default()
     }))
+}
+
+fn rename_workspace_name(
+    analysis: &DocumentAnalysis,
+    uri: &Url,
+    name: &str,
+    new_name: &str,
+    index: &WorkspaceIndex,
+) -> LspResult<Option<WorkspaceEdit>> {
+    if new_name == name {
+        return Ok(Some(empty_edit()));
+    }
+    validate_new_name(new_name)?;
+    if !index.definition_locations(uri, new_name).is_empty() {
+        return Err(Error::invalid_params(format!(
+            "rename to `{new_name}` would shadow or collide with another binding"
+        )));
+    }
+
+    let mut changes = HashMap::new();
+    push_file_edits(&mut changes, uri, analysis, name, new_name)?;
+    for (other_uri, other) in index.other_files(uri) {
+        push_file_edits(&mut changes, other_uri, other, name, new_name)?;
+    }
+    if changes.is_empty() {
+        return Err(Error::invalid_params("cannot rename: no occurrences found"));
+    }
+    Ok(Some(WorkspaceEdit {
+        changes: Some(changes),
+        ..Default::default()
+    }))
+}
+
+fn push_file_edits(
+    changes: &mut HashMap<Url, Vec<TextEdit>>,
+    uri: &Url,
+    analysis: &DocumentAnalysis,
+    name: &str,
+    new_name: &str,
+) -> LspResult<()> {
+    let ids = export_ids(analysis, name);
+    let occs = if ids.is_empty() {
+        cross_file_occurrences(analysis, name)
+    } else {
+        let mut occs = Vec::new();
+        for id in &ids {
+            occs.extend(occurrences_of(analysis, &export_target(analysis, *id)));
+        }
+        occs
+    };
+    if occs.is_empty() {
+        return Ok(());
+    }
+    if ids.is_empty() {
+        if let Some(reason) = capture_conflict(analysis, new_name, &occs) {
+            return Err(Error::invalid_params(reason));
+        }
+    } else {
+        for id in ids {
+            if let Some(reason) = shadow_conflict(analysis, id, new_name, &occs) {
+                return Err(Error::invalid_params(reason));
+            }
+        }
+    }
+    changes.insert(uri.clone(), edits_for(analysis, &occs, new_name));
+    Ok(())
+}
+
+fn edits_for(
+    analysis: &DocumentAnalysis,
+    occs: &[(SimpleSpan, OccurrenceKind)],
+    new_name: &str,
+) -> Vec<TextEdit> {
+    occs.iter()
+        .map(|(span, _)| TextEdit {
+            range: span_to_range(&analysis.src, *span),
+            new_text: new_name.to_string(),
+        })
+        .collect()
+}
+
+fn empty_edit() -> WorkspaceEdit {
+    WorkspaceEdit {
+        changes: Some(HashMap::new()),
+        ..Default::default()
+    }
+}
+
+fn capture_conflict(
+    analysis: &DocumentAnalysis,
+    new_name: &str,
+    occs: &[(SimpleSpan, OccurrenceKind)],
+) -> Option<String> {
+    for (span, _) in occs {
+        if analysis
+            .symbols
+            .resolve_name_at(new_name, span.start)
+            .is_some()
+        {
+            return Some(format!(
+                "rename to `{new_name}` would shadow or collide with another binding"
+            ));
+        }
+    }
+    None
 }
 
 fn renameable_symbol(

@@ -10,6 +10,7 @@ use tower_lsp::lsp_types::Url;
 use crate::diagnostics::analysis_to_lsp_diags;
 use crate::document::DocumentStore;
 use crate::span::LineIndex;
+use crate::workspace::WorkspaceIndex;
 
 /// A pending analysis task paired with the generation it was spawned for.
 ///
@@ -34,10 +35,16 @@ pub struct AnalysisScheduler {
     state: Arc<Mutex<SchedulerState>>,
     client: Client,
     documents: Arc<RwLock<DocumentStore>>,
+    workspace: Arc<RwLock<WorkspaceIndex>>,
 }
 
 impl AnalysisScheduler {
-    pub fn new(client: Client, documents: Arc<RwLock<DocumentStore>>, debounce: Duration) -> Self {
+    pub fn new(
+        client: Client,
+        documents: Arc<RwLock<DocumentStore>>,
+        workspace: Arc<RwLock<WorkspaceIndex>>,
+        debounce: Duration,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(SchedulerState {
                 debounce,
@@ -46,6 +53,7 @@ impl AnalysisScheduler {
             })),
             client,
             documents,
+            workspace,
         }
     }
 
@@ -53,6 +61,7 @@ impl AnalysisScheduler {
     pub fn request_analysis(&self, uri: Url) {
         let client = self.client.clone();
         let documents = Arc::clone(&self.documents);
+        let workspace = Arc::clone(&self.workspace);
         let state = Arc::clone(&self.state);
 
         let Ok(mut guard) = self.state.lock() else {
@@ -120,8 +129,30 @@ impl AnalysisScheduler {
                     }
                 };
 
+                // Hold the document lock across the index update. `cancel_analysis`
+                // only aborts at the next `.await` (`publish_diagnostics`), and
+                // `did_close` needs this lock before `note_closed`.
                 let should_publish = match documents.write() {
-                    Ok(mut docs) => docs.store_cached_analysis_if_current(&uri, version, analysis),
+                    Ok(mut docs) => {
+                        let current =
+                            docs.store_cached_analysis_if_current(&uri, version, analysis.clone());
+                        if current {
+                            match workspace.write() {
+                                Ok(mut index) => {
+                                    index.commit_open_analysis(
+                                        &docs,
+                                        uri.clone(),
+                                        version,
+                                        analysis.intelligence,
+                                    );
+                                }
+                                Err(_) => {
+                                    tracing::error!("workspace index write lock poisoned");
+                                }
+                            }
+                        }
+                        current
+                    }
                     Err(_) => {
                         tracing::error!("document store write lock poisoned");
                         false

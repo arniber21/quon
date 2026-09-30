@@ -33,6 +33,7 @@ pub mod format;
 pub mod intel;
 pub mod server;
 pub mod span;
+pub mod workspace;
 
 pub use analysis::AnalysisScheduler;
 pub use diagnostics::{
