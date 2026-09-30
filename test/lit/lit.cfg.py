@@ -12,7 +12,9 @@ import lit.formats
 import os
 
 config.name = "quon"
-config.test_format = lit.formats.ShTest(True)
+# LLVM 23 rejects execute_external=True (ShTest(True)). The suite's RUN lines
+# are pipes, redirects, `not`, and `diff`, which lit's internal shell runs.
+config.test_format = lit.formats.ShTest(False)
 config.suffixes = [".qn", ".mlir"]
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(os.environ.get("QUON_BUILD_DIR", "."), "test")
