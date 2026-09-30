@@ -22,11 +22,13 @@ domain glossary lives in [CONTEXT.md](../CONTEXT.md).
 
 ## Boundary tensions
 
-1. **No shared AST traversal.** `quonfmt`, `quonlint`, and `quon_lsp` each
-   hand-roll exhaustive `Expr`/`Decl` matches, so every AST addition breaks
-   all three independently — the QEC AST additions (ADR-0014) did exactly
-   that (#276). A visitor/walker in `frontend` would turn future additions
-   into one compile error in one place.
+1. **AST traversal is centralized, with one holdout.** `frontend::visitor`
+   (#399) is the exhaustive walk. `quonlint` (`LintWalker`) and `quon_lsp`
+   (folding ranges) already use it, so a new AST node fails in that one
+   module instead of in every tool. `quonfmt` still matches `Expr`/`Decl`
+   exhaustively because a pretty-printer has to build a document per node;
+   that match is not a visitor candidate. The remaining duplicated walk is
+   `frontend/src/analysis/symbols.rs` (`walk_expr`, #470).
 2. **`frontend` optionally depends on `mlir_bridge`** (feature `full`) so
    lowering entrypoints live behind the parser/typechecker. It works, but
    inverts the expected layering; #206 (Melior-free `SpecializedCircuit`
@@ -36,9 +38,11 @@ domain glossary lives in [CONTEXT.md](../CONTEXT.md).
    is re-exported/aliased by `backend`). Further consolidation belongs to
    #216 (quon_core packing) and #215 (NA monolith carving) — don't grow new
    snapshot types ad hoc.
-4. **CLI verification glue** (`quonc/src/compile.rs` linearity /
-   `quantum.na` verify gates) is thin and acceptable; growth should move
-   behind a library seam per #201/#206.
+4. **The CLI driver is no longer thin.** `quonc/src/main.rs` is about 1500
+   lines of argument parsing, emit routing, and report plumbing (#465).
+   Verification glue in `quonc/src/compile.rs` (linearity / `quantum.na`
+   gates) is the library seam that further driver growth should move behind
+   (#201), rather than accumulating in `main.rs`.
 5. **AST leakage: none.** `quon_na`, `quon_qec`, and `mlir_bridge` do not
    import `frontend::ast`; IR crates consume lowered forms only. Keep it
    that way.
