@@ -30,7 +30,7 @@ use melior::ir::{BlockLike, OperationRef, RegionLike, Value};
 
 use thiserror::Error;
 
-use quon_core::gates;
+use quon_core::gates::{self, GateId};
 
 use crate::dialect::quantum_circ::{self, attr};
 use crate::passes::qubit_wiring::WireTracker;
@@ -40,8 +40,8 @@ use crate::passes::qubit_wiring::WireTracker;
 /// A single gate application in the extracted circuit IR.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CircGate {
-    /// Canonical registry id (from `quon_core::gates`).
-    pub name: String,
+    /// Canonical registry id. Aliases are resolved at extraction.
+    pub name: GateId,
     /// Logical wire indices in operand order.
     pub qubits: Vec<usize>,
     /// Rotation angle in radians, if the gate is parametric.
@@ -211,7 +211,7 @@ pub fn extract<'c, 'a>(func: OperationRef<'c, 'a>) -> Result<CircIr, SeamError> 
             .ok_or(SeamError::MissingAttr(attr::CLIFFORD))?;
 
         gates.push(CircGate {
-            name: info.id.to_string(),
+            name: GateId::from_info(info),
             qubits,
             angle,
             depth_contribution,
@@ -261,7 +261,9 @@ pub fn rebuild<'c, 'a>(
             }
         }
         if gate.angle.is_some() && gate.qubits.len() != 1 {
-            return Err(SeamError::MultiQubitRotation(gate.name.clone()));
+            return Err(SeamError::MultiQubitRotation(
+                gate.name.as_str().to_string(),
+            ));
         }
     }
 
@@ -293,7 +295,7 @@ pub fn rebuild<'c, 'a>(
         let built = if let Some(angle) = gate.angle {
             quantum_circ::rotation_gate(
                 context,
-                &gate.name,
+                gate.name.as_str(),
                 angle,
                 gate.depth_contribution,
                 gate.clifford,
@@ -303,7 +305,7 @@ pub fn rebuild<'c, 'a>(
         } else {
             quantum_circ::gate(
                 context,
-                &gate.name,
+                gate.name.as_str(),
                 gate.depth_contribution,
                 gate.clifford,
                 &operands,
@@ -343,7 +345,7 @@ pub fn rebuild<'c, 'a>(
 /// into the ZX graph kernel.
 pub fn circ_gate_to_gate_ref(gate: &CircGate) -> zx::GateRef {
     zx::GateRef {
-        name: gate.name.clone(),
+        name: gate.name.as_str().to_string(),
         qubits: gate.qubits.clone(),
         angle: gate.angle,
     }
@@ -351,17 +353,17 @@ pub fn circ_gate_to_gate_ref(gate: &CircGate) -> zx::GateRef {
 
 /// Converts a `zx` crate [`zx::GateRef`] back to a [`CircGate`] for rebuilding.
 ///
-/// Looks up the registry for the Clifford classification and defaults
-/// `depth_contribution` to 1 (one gate per step). Used by the ZX
-/// simplification pass to feed ZX results back through [`rebuild`].
-pub fn gate_ref_to_circ_gate(gate: &zx::GateRef) -> CircGate {
-    let clifford =
-        gates::lookup(&gate.name).is_some_and(|info| info.class == gates::GateClass::Clifford);
-    CircGate {
-        name: gate.name.clone(),
+/// The ZX kernel stores a raw name. An unknown name is [`SeamError::UnknownGate`]
+/// — the caller declines the rewrite. Clifford classification comes from the
+/// registry row. `depth_contribution` defaults to 1 (one gate per step).
+pub fn gate_ref_to_circ_gate(gate: &zx::GateRef) -> Result<CircGate, SeamError> {
+    let name = GateId::parse(&gate.name).map_err(|_| SeamError::UnknownGate(gate.name.clone()))?;
+    let clifford = name.info().class == gates::GateClass::Clifford;
+    Ok(CircGate {
+        name,
         qubits: gate.qubits.clone(),
         angle: gate.angle,
         depth_contribution: 1,
         clifford,
-    }
+    })
 }

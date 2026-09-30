@@ -30,6 +30,8 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use thiserror::Error;
 
+use quon_core::gates::GateId;
+
 use crate::diagnostics::Diagnostics;
 use crate::dialect::{quantum_circ, quantum_dynamic};
 use crate::ffi::PassContext;
@@ -39,6 +41,9 @@ use crate::passes::qubit_wiring::{self, WireTracker};
 pub enum FusionError {
     #[error("failed to build `{op}`: {message}")]
     Build { op: &'static str, message: String },
+    /// A branch gate name is missing or not in the gate registry.
+    #[error("unknown gate `{name}`")]
+    UnknownGate { name: String },
 }
 
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
@@ -74,7 +79,7 @@ fn read_bool_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str
 
 #[derive(Clone, Debug)]
 struct GateStep {
-    name: String,
+    name: GateId,
     targets: Vec<usize>,
     depth_contribution: i64,
     clifford: bool,
@@ -82,10 +87,10 @@ struct GateStep {
 
 fn extract_gates_from_region<'c, 'a>(
     region: melior::ir::RegionRef<'c, 'a>,
-) -> Option<Vec<GateStep>> {
+) -> Result<Vec<GateStep>, FusionError> {
     let mut gates = Vec::new();
     let Some(block) = region.first_block() else {
-        return Some(gates);
+        return Ok(gates);
     };
     let mut tracker = WireTracker::new();
     tracker.seed_block_args(&block);
@@ -93,21 +98,30 @@ fn extract_gates_from_region<'c, 'a>(
     while let Some(inner) = op {
         let name = op_name(&inner);
         if name == quantum_circ::op::GATE {
+            let raw = read_string_attr(&inner, quantum_circ::attr::GATE_NAME).ok_or_else(|| {
+                FusionError::UnknownGate {
+                    name: quantum_circ::attr::GATE_NAME.to_string(),
+                }
+            })?;
+            let gate_name =
+                GateId::parse(&raw).map_err(|err| FusionError::UnknownGate { name: err.name })?;
             gates.push(GateStep {
-                name: read_string_attr(&inner, quantum_circ::attr::GATE_NAME)
-                    .unwrap_or_else(|| "?".to_string()),
+                name: gate_name,
                 targets: tracker.roots_for_operands(inner),
                 depth_contribution: read_i64_attr(&inner, quantum_circ::attr::DEPTH_CONTRIBUTION)
                     .unwrap_or(1),
                 clifford: read_bool_attr(&inner, quantum_circ::attr::CLIFFORD).unwrap_or(false),
             });
         } else if name != quantum_dynamic::op::YIELD {
-            return None;
+            return Err(FusionError::Build {
+                op: quantum_dynamic::op::IF,
+                message: "unsupported non-gate op in branch".to_string(),
+            });
         }
         tracker.observe_operation(inner);
         op = inner.next_in_block();
     }
-    Some(gates)
+    Ok(gates)
 }
 
 fn qubit_operands<'c, 'a>(operation: OperationRef<'c, 'a>) -> Vec<Value<'c, 'a>> {
@@ -378,40 +392,26 @@ fn fuse_pair_same<'c, 'a>(
     let left_count = left_qubits.len();
     let right_count = right_qubits.len();
 
-    let then_left = extract_gates_from_region(first.region(0).map_err(|_| FusionError::Build {
-        op: quantum_dynamic::op::IF,
-        message: "missing then region".to_string(),
-    })?)
-    .ok_or_else(|| FusionError::Build {
-        op: quantum_dynamic::op::IF,
-        message: "unsupported non-gate op in branch".to_string(),
-    })?;
-    let else_left = extract_gates_from_region(first.region(1).map_err(|_| FusionError::Build {
-        op: quantum_dynamic::op::IF,
-        message: "missing else region".to_string(),
-    })?)
-    .ok_or_else(|| FusionError::Build {
-        op: quantum_dynamic::op::IF,
-        message: "unsupported non-gate op in branch".to_string(),
-    })?;
+    let then_left =
+        extract_gates_from_region(first.region(0).map_err(|_| FusionError::Build {
+            op: quantum_dynamic::op::IF,
+            message: "missing then region".to_string(),
+        })?)?;
+    let else_left =
+        extract_gates_from_region(first.region(1).map_err(|_| FusionError::Build {
+            op: quantum_dynamic::op::IF,
+            message: "missing else region".to_string(),
+        })?)?;
     let then_right =
         extract_gates_from_region(second.region(0).map_err(|_| FusionError::Build {
             op: quantum_dynamic::op::IF,
             message: "missing then region".to_string(),
-        })?)
-        .ok_or_else(|| FusionError::Build {
-            op: quantum_dynamic::op::IF,
-            message: "unsupported non-gate op in branch".to_string(),
-        })?;
+        })?)?;
     let else_right =
         extract_gates_from_region(second.region(1).map_err(|_| FusionError::Build {
             op: quantum_dynamic::op::IF,
             message: "missing else region".to_string(),
-        })?)
-        .ok_or_else(|| FusionError::Build {
-            op: quantum_dynamic::op::IF,
-            message: "unsupported non-gate op in branch".to_string(),
-        })?;
+        })?)?;
 
     let then_region = build_branch_region(
         context,
@@ -485,40 +485,26 @@ fn fuse_pair_independent<'c, 'a>(
     let left_count = left_qubits.len();
     let right_count = right_qubits.len();
 
-    let then_left = extract_gates_from_region(first.region(0).map_err(|_| FusionError::Build {
-        op: quantum_dynamic::op::IF,
-        message: "missing then region".to_string(),
-    })?)
-    .ok_or_else(|| FusionError::Build {
-        op: quantum_dynamic::op::IF,
-        message: "unsupported non-gate op in branch".to_string(),
-    })?;
-    let else_left = extract_gates_from_region(first.region(1).map_err(|_| FusionError::Build {
-        op: quantum_dynamic::op::IF,
-        message: "missing else region".to_string(),
-    })?)
-    .ok_or_else(|| FusionError::Build {
-        op: quantum_dynamic::op::IF,
-        message: "unsupported non-gate op in branch".to_string(),
-    })?;
+    let then_left =
+        extract_gates_from_region(first.region(0).map_err(|_| FusionError::Build {
+            op: quantum_dynamic::op::IF,
+            message: "missing then region".to_string(),
+        })?)?;
+    let else_left =
+        extract_gates_from_region(first.region(1).map_err(|_| FusionError::Build {
+            op: quantum_dynamic::op::IF,
+            message: "missing else region".to_string(),
+        })?)?;
     let then_right =
         extract_gates_from_region(second.region(0).map_err(|_| FusionError::Build {
             op: quantum_dynamic::op::IF,
             message: "missing then region".to_string(),
-        })?)
-        .ok_or_else(|| FusionError::Build {
-            op: quantum_dynamic::op::IF,
-            message: "unsupported non-gate op in branch".to_string(),
-        })?;
+        })?)?;
     let else_right =
         extract_gates_from_region(second.region(1).map_err(|_| FusionError::Build {
             op: quantum_dynamic::op::IF,
             message: "missing else region".to_string(),
-        })?)
-        .ok_or_else(|| FusionError::Build {
-            op: quantum_dynamic::op::IF,
-            message: "unsupported non-gate op in branch".to_string(),
-        })?;
+        })?)?;
 
     let then_region = build_nested_branch_region(
         context,

@@ -42,6 +42,11 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use quon_core::gates::GateId;
+
+/// One gate application: canonical id plus operand wire indices.
+pub type GateApp = (GateId, Vec<usize>);
+
 // ---------------------------------------------------------------------------
 // PhasePolynomial
 // ---------------------------------------------------------------------------
@@ -174,19 +179,21 @@ impl PhasePolynomial {
 }
 
 /// Returns `true` if `name` is a CNOT+T block gate (CNOT, T, or T†).
+///
+/// Unknown names are not block gates. Aliases resolve through [`GateId::parse`].
 pub fn is_block_gate(name: &str) -> bool {
-    let canonical = quon_core::gates::canonical_id(name).unwrap_or(name);
-    matches!(canonical, "CNOT" | "T" | "T_dag")
+    GateId::parse(name).is_ok_and(|id| matches!(id.as_str(), "CNOT" | "T" | "T_dag"))
 }
 
 /// Returns `true` if `name` is T or T† (non-Clifford, contributes to T-count).
+///
+/// Unknown names are not T gates.
 pub fn is_t_gate(name: &str) -> bool {
-    let canonical = quon_core::gates::canonical_id(name).unwrap_or(name);
-    matches!(canonical, "T" | "T_dag")
+    GateId::parse(name).is_ok_and(|id| matches!(id.as_str(), "T" | "T_dag"))
 }
 
 /// Count T/T† gates in a sequence.
-pub fn count_t_gates(gates: &[(String, Vec<usize>)]) -> usize {
+pub fn count_t_gates(gates: &[GateApp]) -> usize {
     gates.iter().filter(|(name, _)| is_t_gate(name)).count()
 }
 
@@ -201,14 +208,13 @@ pub fn count_t_gates(gates: &[(String, Vec<usize>)]) -> usize {
 /// function of the input bits if CNOTs have acted on `q`.
 ///
 /// Returns the phase polynomial.
-pub fn extract(n: usize, gates: &[(String, Vec<usize>)]) -> PhasePolynomial {
+pub fn extract(n: usize, gates: &[GateApp]) -> PhasePolynomial {
     let mut poly = PhasePolynomial::new(n);
     // p[i] = current parity of qubit i, as a bitvector over input bits.
     let mut parity: Vec<Parity> = (0..n).map(|i| Parity::basis(n, i)).collect();
 
     for (name, qubits) in gates {
-        let canonical = quon_core::gates::canonical_id(name).unwrap_or(name);
-        match canonical {
+        match name.as_str() {
             "CNOT" => {
                 let c = qubits[0];
                 let t = qubits[1];
@@ -238,18 +244,19 @@ pub fn extract(n: usize, gates: &[(String, Vec<usize>)]) -> PhasePolynomial {
 ///
 /// Clifford gates (S, S†, Z) are emitted *before* the T/T† so the T gate
 /// sits at the point where the parity is available.
-fn coeff_to_gates(c: u8) -> Vec<&'static str> {
-    match c {
-        0 => vec![],
-        1 => vec!["T"],
-        2 => vec!["S"],
-        3 => vec!["S", "T"],
-        4 => vec!["Z"],
-        5 => vec!["Z", "T"],
-        6 => vec!["S_dag"],
-        7 => vec!["T_dag"],
-        _ => vec![],
-    }
+fn coeff_to_gates(c: u8) -> Result<Vec<GateId>, quon_core::gates::UnknownGate> {
+    let names: &[&str] = match c {
+        0 => return Ok(Vec::new()),
+        1 => &["T"],
+        2 => &["S"],
+        3 => &["S", "T"],
+        4 => &["Z"],
+        5 => &["Z", "T"],
+        6 => &["S_dag"],
+        7 => &["T_dag"],
+        _ => return Ok(Vec::new()),
+    };
+    names.iter().copied().map(GateId::parse).collect()
 }
 
 /// Re-synthesize a `{CNOT, T, T†}` circuit from the merged phase polynomial.
@@ -260,18 +267,17 @@ fn coeff_to_gates(c: u8) -> Vec<&'static str> {
 /// are elided (already accounted for). CNOTs are preserved verbatim.
 pub fn synthesize(
     poly: &PhasePolynomial,
-    original: &[(String, Vec<usize>)],
+    original: &[GateApp],
     n: usize,
-) -> Vec<(String, Vec<usize>)> {
+) -> Result<Vec<GateApp>, quon_core::gates::UnknownGate> {
     let mut result = Vec::new();
     let mut parity: Vec<Parity> = (0..n).map(|i| Parity::basis(n, i)).collect();
     let mut emitted: HashSet<Parity> = HashSet::new();
 
     for (name, qubits) in original {
-        let canonical = quon_core::gates::canonical_id(name).unwrap_or(name);
-        match canonical {
+        match name.as_str() {
             "CNOT" => {
-                result.push((name.clone(), qubits.clone()));
+                result.push((*name, qubits.clone()));
                 let c = qubits[0];
                 let t = qubits[1];
                 let pc = parity[c].clone();
@@ -283,17 +289,17 @@ pub fn synthesize(
                 if !emitted.contains(p) {
                     emitted.insert(p.clone());
                     let coeff = poly.coeff(p);
-                    for gate_name in coeff_to_gates(coeff) {
-                        result.push((gate_name.to_string(), vec![q]));
+                    for gate_name in coeff_to_gates(coeff)? {
+                        result.push((gate_name, vec![q]));
                     }
                 }
             }
             _ => {
-                result.push((name.clone(), qubits.clone()));
+                result.push((*name, qubits.clone()));
             }
         }
     }
-    result
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -305,24 +311,24 @@ pub fn synthesize(
 #[derive(Debug)]
 enum Segment {
     /// A maximal run of CNOT+T gates.
-    Block(Vec<(String, Vec<usize>)>),
+    Block(Vec<GateApp>),
     /// A single gate that is not part of any CNOT+T block.
-    Other(String, Vec<usize>),
+    Other(GateId, Vec<usize>),
 }
 
 /// Split a gate sequence into maximal `{CNOT, T, T†}` blocks and other gates.
-fn split_into_blocks(gates: &[(String, Vec<usize>)]) -> Vec<Segment> {
+fn split_into_blocks(gates: &[GateApp]) -> Vec<Segment> {
     let mut segments = Vec::new();
-    let mut current_block: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut current_block: Vec<GateApp> = Vec::new();
 
     for (name, qubits) in gates {
         if is_block_gate(name) {
-            current_block.push((name.clone(), qubits.clone()));
+            current_block.push((*name, qubits.clone()));
         } else {
             if !current_block.is_empty() {
                 segments.push(Segment::Block(std::mem::take(&mut current_block)));
             }
-            segments.push(Segment::Other(name.clone(), qubits.clone()));
+            segments.push(Segment::Other(*name, qubits.clone()));
         }
     }
     if !current_block.is_empty() {
@@ -344,17 +350,13 @@ fn split_into_blocks(gates: &[(String, Vec<usize>)]) -> Vec<Segment> {
 ///
 /// Returns `Some(new_gates)` if any T-count reduction was achieved, or
 /// `None` if no improvement was possible.
-pub fn optimize_t_count(
-    gates: &[(String, Vec<usize>)],
-    n: usize,
-) -> Option<Vec<(String, Vec<usize>)>> {
+pub fn optimize_t_count(gates: &[GateApp], n: usize) -> Option<Vec<GateApp>> {
     // Validate operands before any indexing into parity state: every qubit
     // operand must be within the declared width `n`, and CNOT/T/T† gates must
     // carry their expected arity. Malformed inputs decline optimization
     // (return `None`) rather than risk a panic deep in extraction/synthesis.
     for (name, qubits) in gates {
-        let canonical = quon_core::gates::canonical_id(name).unwrap_or(name);
-        let expected_arity = match canonical {
+        let expected_arity = match name.as_str() {
             "CNOT" => Some(2),
             "T" | "T_dag" => Some(1),
             _ => None,
@@ -381,8 +383,13 @@ pub fn optimize_t_count(
                 let poly = extract(n, &block_gates);
                 let new_t = poly.t_count();
                 if new_t < original_t {
-                    changed = true;
-                    result.extend(synthesize(&poly, &block_gates, n));
+                    match synthesize(&poly, &block_gates, n) {
+                        Ok(synthesized) => {
+                            changed = true;
+                            result.extend(synthesized);
+                        }
+                        Err(_) => result.extend(block_gates),
+                    }
                 } else {
                     result.extend(block_gates);
                 }
@@ -403,6 +410,10 @@ pub fn optimize_t_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn g(name: &str) -> GateId {
+        GateId::parse(name).expect(name)
+    }
 
     /// Build a `Parity` from a small bit pattern (low 128 bits) for `n` qubits.
     fn p(n: usize, v: u128) -> Parity {
@@ -449,7 +460,7 @@ mod tests {
 
     #[test]
     fn extract_single_t() {
-        let gates = vec![("T".to_string(), vec![0usize])];
+        let gates = vec![(g("T"), vec![0usize])];
         let poly = extract(1, &gates);
         assert_eq!(poly.num_terms(), 1);
         assert_eq!(poly.coeff(&p(1, 1)), 1);
@@ -460,9 +471,9 @@ mod tests {
     fn extract_t_t_same_parity() {
         // T(0), CNOT(0,1), T(0) — both T on same parity {0}
         let gates = vec![
-            ("T".to_string(), vec![0usize]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![0]),
+            (g("T"), vec![0usize]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![0]),
         ];
         let poly = extract(2, &gates);
         assert_eq!(poly.num_terms(), 1); // merged
@@ -474,9 +485,9 @@ mod tests {
     fn extract_t_t_different_parity() {
         // T(1), CNOT(0,1), T(1) — second T has parity {0,1}
         let gates = vec![
-            ("T".to_string(), vec![1usize]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![1]),
+            (g("T"), vec![1usize]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![1]),
         ];
         let poly = extract(2, &gates);
         assert_eq!(poly.num_terms(), 2); // not merged
@@ -487,10 +498,7 @@ mod tests {
 
     #[test]
     fn extract_t_dag_cancels_t() {
-        let gates = vec![
-            ("T".to_string(), vec![0usize]),
-            ("T_dag".to_string(), vec![0]),
-        ];
+        let gates = vec![(g("T"), vec![0usize]), (g("T_dag"), vec![0])];
         let poly = extract(1, &gates);
         assert_eq!(poly.num_terms(), 0); // cancelled
         assert_eq!(poly.t_count(), 0);
@@ -500,10 +508,10 @@ mod tests {
     fn extract_non_adjacent_cnot_cancellation() {
         // T(0), CNOT(0,1), CNOT(0,1), T(0) — CNOTs cancel, both T on {0}
         let gates = vec![
-            ("T".to_string(), vec![0usize]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![0]),
+            (g("T"), vec![0usize]),
+            (g("CNOT"), vec![0, 1]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![0]),
         ];
         let poly = extract(2, &gates);
         assert_eq!(poly.num_terms(), 1);
@@ -516,12 +524,12 @@ mod tests {
     #[test]
     fn synthesize_merges_t_pair_to_s() {
         let original = vec![
-            ("T".to_string(), vec![0usize]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![0]),
+            (g("T"), vec![0usize]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![0]),
         ];
         let poly = extract(2, &original);
-        let result = synthesize(&poly, &original, 2);
+        let result = synthesize(&poly, &original, 2).expect("synthesize");
         // Should emit S(0), CNOT(0,1) — T-count 0
         assert_eq!(count_t_gates(&result), 0);
         assert!(result.iter().any(|(name, _)| name == "S"));
@@ -531,12 +539,12 @@ mod tests {
     #[test]
     fn synthesize_preserves_different_parities() {
         let original = vec![
-            ("T".to_string(), vec![1usize]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![1]),
+            (g("T"), vec![1usize]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![1]),
         ];
         let poly = extract(2, &original);
-        let result = synthesize(&poly, &original, 2);
+        let result = synthesize(&poly, &original, 2).expect("synthesize");
         // Two different parities — no merging
         assert_eq!(count_t_gates(&result), 2);
     }
@@ -545,15 +553,15 @@ mod tests {
     fn synthesize_three_t_becomes_one() {
         // T(0), CNOT(0,1), T(0), CNOT(0,1), T(0) — all on parity {0}
         let original = vec![
-            ("T".to_string(), vec![0usize]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![0]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![0]),
+            (g("T"), vec![0usize]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![0]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![0]),
         ];
         let poly = extract(2, &original);
         assert_eq!(poly.coeff(&p(2, 1)), 3); // T³
-        let result = synthesize(&poly, &original, 2);
+        let result = synthesize(&poly, &original, 2).expect("synthesize");
         assert_eq!(count_t_gates(&result), 1); // reduced from 3 to 1
     }
 
@@ -561,21 +569,14 @@ mod tests {
 
     #[test]
     fn split_single_block() {
-        let gates = vec![
-            ("T".to_string(), vec![0usize]),
-            ("CNOT".to_string(), vec![0, 1]),
-        ];
+        let gates = vec![(g("T"), vec![0usize]), (g("CNOT"), vec![0, 1])];
         let segs = split_into_blocks(&gates);
         assert_eq!(segs.len(), 1);
     }
 
     #[test]
     fn split_with_h_delimiter() {
-        let gates = vec![
-            ("T".to_string(), vec![0usize]),
-            ("H".to_string(), vec![0]),
-            ("T".to_string(), vec![0]),
-        ];
+        let gates = vec![(g("T"), vec![0usize]), (g("H"), vec![0]), (g("T"), vec![0])];
         let segs = split_into_blocks(&gates);
         assert_eq!(segs.len(), 3); // block, other, block
     }
@@ -586,9 +587,9 @@ mod tests {
     fn optimize_reduces_non_adjacent_t() {
         // T(0), CNOT(0,1), T(0) → T-count 2 → 0
         let gates = vec![
-            ("T".to_string(), vec![0usize]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![0]),
+            (g("T"), vec![0usize]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![0]),
         ];
         let result = optimize_t_count(&gates, 2);
         assert!(result.is_some());
@@ -599,11 +600,7 @@ mod tests {
     #[test]
     fn optimize_does_not_reduce_t_h_t() {
         // T(0), H(0), T(0) — H splits blocks, no merging possible
-        let gates = vec![
-            ("T".to_string(), vec![0usize]),
-            ("H".to_string(), vec![0]),
-            ("T".to_string(), vec![0]),
-        ];
+        let gates = vec![(g("T"), vec![0usize]), (g("H"), vec![0]), (g("T"), vec![0])];
         let result = optimize_t_count(&gates, 1);
         assert!(result.is_none()); // no improvement
     }
@@ -611,11 +608,11 @@ mod tests {
     #[test]
     fn optimize_reduces_three_t_to_one() {
         let gates = vec![
-            ("T".to_string(), vec![0usize]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![0]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![0]),
+            (g("T"), vec![0usize]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![0]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![0]),
         ];
         let result = optimize_t_count(&gates, 2);
         assert!(result.is_some());
@@ -625,10 +622,10 @@ mod tests {
     #[test]
     fn optimize_preserves_non_block_gates() {
         let gates = vec![
-            ("T".to_string(), vec![0usize]),
-            ("CNOT".to_string(), vec![0, 1]),
-            ("T".to_string(), vec![0]),
-            ("H".to_string(), vec![1]),
+            (g("T"), vec![0usize]),
+            (g("CNOT"), vec![0, 1]),
+            (g("T"), vec![0]),
+            (g("H"), vec![1]),
         ];
         let result = optimize_t_count(&gates, 2);
         assert!(result.is_some());
@@ -640,14 +637,14 @@ mod tests {
 
     #[test]
     fn optimize_empty_circuit() {
-        let gates: Vec<(String, Vec<usize>)> = vec![];
+        let gates: Vec<(GateId, Vec<usize>)> = vec![];
         let result = optimize_t_count(&gates, 1);
         assert!(result.is_none());
     }
 
     #[test]
     fn optimize_no_t_gates() {
-        let gates = vec![("CNOT".to_string(), vec![0usize, 1])];
+        let gates = vec![(g("CNOT"), vec![0usize, 1])];
         let result = optimize_t_count(&gates, 2);
         assert!(result.is_none());
     }
@@ -656,14 +653,14 @@ mod tests {
 
     #[test]
     fn optimize_width_zero_empty() {
-        let gates: Vec<(String, Vec<usize>)> = vec![];
+        let gates: Vec<(GateId, Vec<usize>)> = vec![];
         assert!(optimize_t_count(&gates, 0).is_none());
     }
 
     #[test]
     fn optimize_width_one_single_t() {
         // Single T on a 1-qubit circuit: no merging possible → no improvement.
-        let gates = vec![("T".to_string(), vec![0usize])];
+        let gates = vec![(g("T"), vec![0usize])];
         assert!(optimize_t_count(&gates, 1).is_none());
     }
 
@@ -672,7 +669,7 @@ mod tests {
         // Bit 127 is the top bit of a u128; under the old representation
         // `1u128 << 127` worked but left no headroom. Verify extraction still
         // produces a single term at the basis parity for qubit 127.
-        let gates = vec![("T".to_string(), vec![127usize])];
+        let gates = vec![(g("T"), vec![127usize])];
         let poly = extract(128, &gates);
         assert_eq!(poly.num_terms(), 1);
         assert_eq!(poly.coeff(&Parity::basis(128, 127)), 1);
@@ -681,7 +678,7 @@ mod tests {
 
     #[test]
     fn optimize_width_128_single_t() {
-        let gates = vec![("T".to_string(), vec![127usize])];
+        let gates = vec![(g("T"), vec![127usize])];
         assert!(optimize_t_count(&gates, 128).is_none()); // single T, no reduction
     }
 
@@ -689,7 +686,7 @@ mod tests {
     fn extract_width_129_no_panic() {
         // 129 qubits overflows the old u128 basis (`1u128 << 128 == 0`).
         // The dynamic Parity bitset must handle qubit 128 without panic.
-        let gates = vec![("T".to_string(), vec![128usize])];
+        let gates = vec![(g("T"), vec![128usize])];
         let poly = extract(129, &gates);
         assert_eq!(poly.num_terms(), 1);
         assert_eq!(poly.coeff(&Parity::basis(129, 128)), 1);
@@ -701,9 +698,9 @@ mod tests {
         // T(128), CNOT(128,0), T(128) — both T on parity {128}; merges to S.
         // Proves optimization still reduces T-count beyond 128 qubits.
         let gates = vec![
-            ("T".to_string(), vec![128usize]),
-            ("CNOT".to_string(), vec![128, 0]),
-            ("T".to_string(), vec![128]),
+            (g("T"), vec![128usize]),
+            (g("CNOT"), vec![128, 0]),
+            (g("T"), vec![128]),
         ];
         let result = optimize_t_count(&gates, 129);
         assert!(result.is_some());
@@ -713,17 +710,14 @@ mod tests {
     #[test]
     fn optimize_out_of_range_t_operand() {
         // T on qubit 130 in a 129-qubit circuit → decline optimization.
-        let gates = vec![("T".to_string(), vec![130usize])];
+        let gates = vec![(g("T"), vec![130usize])];
         assert!(optimize_t_count(&gates, 129).is_none());
     }
 
     #[test]
     fn optimize_out_of_range_cnot_operand() {
         // CNOT targeting qubit 130 in a 129-qubit circuit → decline.
-        let gates = vec![
-            ("T".to_string(), vec![0usize]),
-            ("CNOT".to_string(), vec![0, 130]),
-        ];
+        let gates = vec![(g("T"), vec![0usize]), (g("CNOT"), vec![0, 130])];
         assert!(optimize_t_count(&gates, 129).is_none());
     }
 
@@ -731,7 +725,7 @@ mod tests {
     fn optimize_malformed_cnot_arity() {
         // CNOT with a single operand would index out of bounds in extraction;
         // the entry-point validation must decline instead of panicking.
-        let gates = vec![("CNOT".to_string(), vec![0usize])];
+        let gates = vec![(g("CNOT"), vec![0usize])];
         assert!(optimize_t_count(&gates, 2).is_none());
     }
 
@@ -740,7 +734,7 @@ mod tests {
     #[test]
     fn coeff_to_gates_t_count() {
         for c in 0u8..8 {
-            let gates = coeff_to_gates(c);
+            let gates = coeff_to_gates(c).expect("registry gates");
             let t_count = gates
                 .iter()
                 .filter(|g| **g == "T" || **g == "T_dag")

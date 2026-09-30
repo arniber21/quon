@@ -363,6 +363,89 @@ pub fn lookup(name: &str) -> Option<&'static GateInfo> {
     alias_index().get(&fold_key(name)).copied()
 }
 
+/// Canonical registry id. Unknown names are not representable.
+///
+/// Construct only through [`GateId::parse`] (or [`GateId::from_info`] when the
+/// row already came from [`lookup`] / [`REGISTRY`]). Aliases such as `CX`
+/// resolve to the canonical id (`CNOT`).
+#[derive(Clone, Copy, Debug)]
+pub struct GateId(&'static GateInfo);
+
+/// A gate name that is not in [`REGISTRY`].
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("unknown gate `{name}`")]
+pub struct UnknownGate {
+    pub name: String,
+}
+
+impl GateId {
+    /// Fallible boundary constructor. Resolves aliases to the canonical id.
+    pub fn parse(name: &str) -> Result<Self, UnknownGate> {
+        lookup(name).map(GateId).ok_or_else(|| UnknownGate {
+            name: name.to_string(),
+        })
+    }
+
+    /// Wrap a row that already came from the registry.
+    pub fn from_info(info: &'static GateInfo) -> Self {
+        GateId(info)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        self.0.id
+    }
+
+    pub fn info(self) -> &'static GateInfo {
+        self.0
+    }
+}
+
+impl PartialEq for GateId {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+}
+
+impl Eq for GateId {}
+
+impl std::hash::Hash for GateId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.id.hash(state);
+    }
+}
+
+impl PartialEq<str> for GateId {
+    fn eq(&self, other: &str) -> bool {
+        self.0.id == other
+    }
+}
+
+impl PartialEq<&str> for GateId {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.id == *other
+    }
+}
+
+impl std::fmt::Display for GateId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0.id)
+    }
+}
+
+impl AsRef<str> for GateId {
+    fn as_ref(&self) -> &str {
+        self.0.id
+    }
+}
+
+impl std::ops::Deref for GateId {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.0.id
+    }
+}
+
 /// Canonical id for `name`, or `None` if unknown.
 pub fn canonical_id(name: &str) -> Option<&'static str> {
     lookup(name).map(|g| g.id)
@@ -446,6 +529,15 @@ pub fn std_gates_slice() -> &'static [(&'static str, usize)] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gate_id_resolves_aliases_and_rejects_unknown() {
+        let cnot = GateId::parse("CX").expect("CX");
+        assert_eq!(cnot.as_str(), "CNOT");
+        assert_eq!(cnot, GateId::parse("CNOT").expect("CNOT"));
+        assert_eq!(cnot, "CNOT");
+        assert!(GateId::parse("not-a-gate").is_err());
+    }
 
     #[test]
     fn cnot_aliases_resolve() {

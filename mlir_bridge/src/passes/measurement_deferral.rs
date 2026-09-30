@@ -12,6 +12,7 @@ use melior::ir::{Block, BlockLike, Location, OperationRef, Region, RegionLike, V
 use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use quon_core::DepthExpr;
+use quon_core::gates::GateId;
 use thiserror::Error;
 
 use crate::ffi::PassContext;
@@ -24,6 +25,9 @@ use crate::passes::qubit_wiring::{self, WireTracker};
 pub enum DeferError {
     #[error("failed to build `{op}`: {message}")]
     Build { op: &'static str, message: String },
+    /// A branch gate name is missing or not in the gate registry.
+    #[error("unknown gate `{name}`")]
+    UnknownGate { name: String },
 }
 
 fn op_name<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> String {
@@ -59,7 +63,7 @@ fn read_bool_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct GateStep {
-    name: String,
+    name: GateId,
     targets: Vec<usize>,
     depth_contribution: i64,
     clifford: bool,
@@ -68,10 +72,10 @@ struct GateStep {
 fn extract_gates_from_region<'c, 'a>(
     region: melior::ir::RegionRef<'c, 'a>,
     target_offset: usize,
-) -> Vec<GateStep> {
+) -> Result<Vec<GateStep>, DeferError> {
     let mut gates = Vec::new();
     let Some(block) = region.first_block() else {
-        return gates;
+        return Ok(gates);
     };
     let mut tracker = WireTracker::new();
     tracker.seed_block_args(&block);
@@ -79,8 +83,13 @@ fn extract_gates_from_region<'c, 'a>(
     while let Some(inner) = op {
         let name = op_name(&inner);
         if name == quantum_circ::op::GATE {
-            let gate_name = read_string_attr(&inner, quantum_circ::attr::GATE_NAME)
-                .unwrap_or_else(|| "?".to_string());
+            let raw = read_string_attr(&inner, quantum_circ::attr::GATE_NAME).ok_or_else(|| {
+                DeferError::UnknownGate {
+                    name: quantum_circ::attr::GATE_NAME.to_string(),
+                }
+            })?;
+            let gate_name =
+                GateId::parse(&raw).map_err(|err| DeferError::UnknownGate { name: err.name })?;
             let depth_contribution =
                 read_i64_attr(&inner, quantum_circ::attr::DEPTH_CONTRIBUTION).unwrap_or(1);
             let clifford = read_bool_attr(&inner, quantum_circ::attr::CLIFFORD).unwrap_or(true);
@@ -99,15 +108,15 @@ fn extract_gates_from_region<'c, 'a>(
         tracker.observe_operation(inner);
         op = inner.next_in_block();
     }
-    gates
+    Ok(gates)
 }
 
-fn invert_clifford_gate(name: &str) -> Option<String> {
-    let info = quon_core::gates::lookup(name)?;
+fn invert_clifford_gate(id: GateId) -> Option<GateId> {
+    let info = id.info();
     if info.parametric {
         return None;
     }
-    Some(info.inverse.to_string())
+    GateId::parse(info.inverse).ok()
 }
 
 /// Builds the gate list whose composite operator is `U · V†` (then = `U`,
@@ -122,7 +131,7 @@ fn invert_clifford_gate(name: &str) -> Option<String> {
 fn compose_u_v_dagger(then_gates: &[GateStep], else_gates: &[GateStep]) -> Vec<GateStep> {
     let mut composed = Vec::with_capacity(then_gates.len() + else_gates.len());
     for gate in else_gates.iter().rev() {
-        if let Some(inv) = invert_clifford_gate(&gate.name) {
+        if let Some(inv) = invert_clifford_gate(gate.name) {
             composed.push(GateStep {
                 name: inv,
                 targets: gate.targets.clone(),
@@ -138,7 +147,7 @@ fn compose_u_v_dagger(then_gates: &[GateStep], else_gates: &[GateStep]) -> Vec<G
 fn controlled_clifford_gate(
     control_index: usize,
     gate: &GateStep,
-) -> Result<(String, Vec<usize>), DeferError> {
+) -> Result<(GateId, Vec<usize>), DeferError> {
     if gate.targets.len() != 1 {
         return Err(DeferError::Build {
             op: quantum_dynamic::op::UNITARY_REGION,
@@ -152,18 +161,25 @@ fn controlled_clifford_gate(
             message: "branch gate cannot act on the measured control qubit".to_string(),
         });
     }
-    match gate.name.as_str() {
-        "X" => Ok(("CNOT".to_string(), vec![control_index, target])),
-        "Z" => Ok(("CZ".to_string(), vec![control_index, target])),
-        "I" | "identity" => Err(DeferError::Build {
-            op: quantum_dynamic::op::UNITARY_REGION,
-            message: "identity controlled gate".to_string(),
-        }),
-        other => Err(DeferError::Build {
-            op: quantum_dynamic::op::UNITARY_REGION,
-            message: format!("unsupported controlled branch gate `{other}`"),
-        }),
-    }
+    let controlled = match gate.name.as_str() {
+        "X" => "CNOT",
+        "Z" => "CZ",
+        "I" => {
+            return Err(DeferError::Build {
+                op: quantum_dynamic::op::UNITARY_REGION,
+                message: "identity controlled gate".to_string(),
+            });
+        }
+        other => {
+            return Err(DeferError::Build {
+                op: quantum_dynamic::op::UNITARY_REGION,
+                message: format!("unsupported controlled branch gate `{other}`"),
+            });
+        }
+    };
+    let name =
+        GateId::parse(controlled).map_err(|err| DeferError::UnknownGate { name: err.name })?;
+    Ok((name, vec![control_index, target]))
 }
 
 fn build_deferred_region<'c>(
@@ -203,18 +219,18 @@ fn build_deferred_region<'c>(
         }
     }
     for gate in u_v_dagger {
-        if gate.name == "I" || gate.name == "identity" {
+        if gate.name.as_str() == "I" {
             continue;
         }
         let (name, targets) = controlled_clifford_gate(control_index, gate)?;
         let operands: Vec<Value<'c, '_>> = targets.iter().map(|index| wires[*index]).collect();
         let op = block.append_operation(
-            quantum_circ::gate(context, &name, 1, true, &operands, location).map_err(|error| {
-                DeferError::Build {
+            quantum_circ::gate(context, name.as_str(), 1, true, &operands, location).map_err(
+                |error| DeferError::Build {
                     op: quantum_circ::op::GATE,
                     message: error.to_string(),
-                }
-            })?,
+                },
+            )?,
         );
         for (index, target) in targets.iter().enumerate() {
             wires[*target] = Value::from(op.result(index).map_err(|_| DeferError::Build {
@@ -302,8 +318,8 @@ fn defer_one<'c, 'a>(
         message: "missing else region".to_string(),
     })?;
     let target_offset = 1usize;
-    let then_gates = extract_gates_from_region(then_region, target_offset);
-    let else_gates = extract_gates_from_region(else_region, target_offset);
+    let then_gates = extract_gates_from_region(then_region, target_offset)?;
+    let else_gates = extract_gates_from_region(else_region, target_offset)?;
     let u_v_dagger = compose_u_v_dagger(&then_gates, &else_gates);
 
     let mut operands = vec![q_measured];

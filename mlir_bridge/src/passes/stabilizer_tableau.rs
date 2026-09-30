@@ -28,6 +28,11 @@
 //! If the tableau is diagonal (no inter-qubit mixing) but has non-trivial
 //! phase bits, the sequence is a single Pauli operator.
 
+use quon_core::gates::GateId;
+
+/// One gate application: canonical id plus operand wire indices.
+pub type GateApp = (GateId, Vec<usize>);
+
 // ---------------------------------------------------------------------------
 // Tableau
 // ---------------------------------------------------------------------------
@@ -170,7 +175,7 @@ impl Tableau {
     /// | 0      | 1        | X    |
     /// | 1      | 1        | Y    |
     /// | 1      | 0        | Z    |
-    pub fn as_single_pauli(&self) -> Option<Vec<(String, Vec<usize>)>> {
+    pub fn as_single_pauli(&self) -> Option<Vec<GateApp>> {
         for i in 0..self.n {
             // Destabilizer row i: must be ±X_i (diagonal, no Z component)
             for j in 0..self.n {
@@ -191,9 +196,9 @@ impl Tableau {
             let rz = self.r[i + self.n];
             match (rx, rz) {
                 (false, false) => {} // I
-                (false, true) => gates.push(("X".to_string(), vec![i])),
-                (true, true) => gates.push(("Y".to_string(), vec![i])),
-                (true, false) => gates.push(("Z".to_string(), vec![i])),
+                (false, true) => gates.push((GateId::parse("X").ok()?, vec![i])),
+                (true, true) => gates.push((GateId::parse("Y").ok()?, vec![i])),
+                (true, false) => gates.push((GateId::parse("Z").ok()?, vec![i])),
             }
         }
         Some(gates)
@@ -201,11 +206,17 @@ impl Tableau {
 
     // --- Gate dispatch -----------------------------------------------------
 
-    /// Apply a Clifford gate by canonical name. Returns `false` if the gate
-    /// is not a supported Clifford.
+    /// Apply a Clifford gate by name. Aliases resolve through [`GateId::parse`].
+    /// Returns `false` if the name is unknown or not a supported Clifford.
     pub fn apply_gate(&mut self, name: &str, qubits: &[usize]) -> bool {
-        let canonical = quon_core::gates::canonical_id(name);
-        match canonical.unwrap_or(name) {
+        match GateId::parse(name) {
+            Ok(id) => self.apply_id(id, qubits),
+            Err(_) => false,
+        }
+    }
+
+    fn apply_id(&mut self, id: GateId, qubits: &[usize]) -> bool {
+        match id.as_str() {
             "I" => {}
             "H" => self.h(qubits[0]),
             "S" => self.s(qubits[0]),
@@ -222,9 +233,9 @@ impl Tableau {
 
     /// Apply a sequence of Clifford gates. Returns `false` if any gate is
     /// not a supported Clifford (the tableau is left in a partial state).
-    pub fn apply_sequence(&mut self, gates: &[(String, Vec<usize>)]) -> bool {
-        for (name, qubits) in gates {
-            if !self.apply_gate(name, qubits) {
+    pub fn apply_sequence(&mut self, gates: &[GateApp]) -> bool {
+        for (id, qubits) in gates {
+            if !self.apply_id(*id, qubits) {
                 return false;
             }
         }
@@ -247,10 +258,7 @@ impl Tableau {
 ///
 /// Returns `None` if any gate is not a supported Clifford, or if no
 /// simplification is possible.
-pub fn optimize_clifford(
-    gates: &[(String, Vec<usize>)],
-    n: usize,
-) -> Option<Vec<(String, Vec<usize>)>> {
+pub fn optimize_clifford(gates: &[GateApp], n: usize) -> Option<Vec<GateApp>> {
     let mut tableau = Tableau::identity(n);
     if !tableau.apply_sequence(gates) {
         return None;
@@ -271,16 +279,20 @@ pub fn optimize_clifford(
 }
 
 /// Returns `true` if `name` is a Clifford gate supported by the tableau.
+///
+/// Unknown names are not tableau gates. Aliases such as `CX` and `Sdag` resolve
+/// through [`GateId::parse`].
 pub fn is_tableau_gate(name: &str) -> bool {
-    let canonical = quon_core::gates::canonical_id(name).unwrap_or(name);
-    matches!(
-        canonical,
-        "I" | "H" | "S" | "S_dag" | "X" | "Y" | "Z" | "CNOT" | "SWAP"
-    )
+    GateId::parse(name).is_ok_and(|id| {
+        matches!(
+            id.as_str(),
+            "I" | "H" | "S" | "S_dag" | "X" | "Y" | "Z" | "CNOT" | "SWAP"
+        )
+    })
 }
 
 /// Returns `true` if every gate in the sequence is supported by the tableau.
-pub fn is_all_tableau(gates: &[(String, Vec<usize>)]) -> bool {
+pub fn is_all_tableau(gates: &[GateApp]) -> bool {
     gates.iter().all(|(name, _)| is_tableau_gate(name))
 }
 
@@ -291,6 +303,10 @@ pub fn is_all_tableau(gates: &[(String, Vec<usize>)]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn g(name: &str) -> GateId {
+        GateId::parse(name).expect(name)
+    }
 
     // --- Tableau gate updates ----------------------------------------------
 
@@ -316,7 +332,7 @@ mod tests {
         // S² = Z: X → -X, Z → Z
         assert!(!t.is_identity());
         let pauli = t.as_single_pauli().expect("S² should be a Pauli");
-        assert_eq!(pauli, vec![("Z".to_string(), vec![0])]);
+        assert_eq!(pauli, vec![(g("Z"), vec![0])]);
     }
 
     #[test]
@@ -398,7 +414,7 @@ mod tests {
         t.h(0);
         assert!(!t.is_identity());
         let pauli = t.as_single_pauli().expect("should be single Pauli");
-        assert_eq!(pauli, vec![("X".to_string(), vec![0])]);
+        assert_eq!(pauli, vec![(g("X"), vec![0])]);
     }
 
     #[test]
@@ -468,12 +484,12 @@ mod tests {
     #[test]
     fn optimize_identity_sequence_h_s4_h() {
         let gates = vec![
-            ("H".to_string(), vec![0usize]),
-            ("S".to_string(), vec![0]),
-            ("S".to_string(), vec![0]),
-            ("S".to_string(), vec![0]),
-            ("S".to_string(), vec![0]),
-            ("H".to_string(), vec![0]),
+            (g("H"), vec![0usize]),
+            (g("S"), vec![0]),
+            (g("S"), vec![0]),
+            (g("S"), vec![0]),
+            (g("S"), vec![0]),
+            (g("H"), vec![0]),
         ];
         let result = optimize_clifford(&gates, 1);
         assert_eq!(result, Some(Vec::new()));
@@ -482,21 +498,21 @@ mod tests {
     #[test]
     fn optimize_single_pauli_s_squared() {
         // S · S = Z
-        let gates = vec![("S".to_string(), vec![0usize]), ("S".to_string(), vec![0])];
+        let gates = vec![(g("S"), vec![0usize]), (g("S"), vec![0])];
         let result = optimize_clifford(&gates, 1);
-        assert_eq!(result, Some(vec![("Z".to_string(), vec![0])]));
+        assert_eq!(result, Some(vec![(g("Z"), vec![0])]));
     }
 
     #[test]
     fn optimize_non_identity_h() {
-        let gates = vec![("H".to_string(), vec![0usize])];
+        let gates = vec![(g("H"), vec![0usize])];
         let result = optimize_clifford(&gates, 1);
         assert!(result.is_none()); // H is not identity or a single Pauli
     }
 
     #[test]
     fn optimize_unsupported_gate_returns_none() {
-        let gates = vec![("T".to_string(), vec![0usize])];
+        let gates = vec![(g("T"), vec![0usize])];
         let result = optimize_clifford(&gates, 1);
         assert!(result.is_none());
     }
@@ -511,10 +527,10 @@ mod tests {
         // Better: H(0)·H(0) = I, but that's caught by gate_cancellation.
         // S(0)·S(0)·S(0)·S(0) = I (non-adjacent S gates, not caught by gate_cancellation)
         let gates = vec![
-            ("S".to_string(), vec![0usize]),
-            ("S".to_string(), vec![0]),
-            ("S".to_string(), vec![0]),
-            ("S".to_string(), vec![0]),
+            (g("S"), vec![0usize]),
+            (g("S"), vec![0]),
+            (g("S"), vec![0]),
+            (g("S"), vec![0]),
         ];
         let result = optimize_clifford(&gates, 1);
         assert_eq!(result, Some(Vec::new()));
@@ -524,13 +540,13 @@ mod tests {
     fn optimize_multi_qubit_identity() {
         // CNOT(0,1) · CNOT(1,0) · CNOT(0,1) · CNOT(0,1) · CNOT(1,0) · CNOT(0,1)
         // = SWAP · SWAP = I
-        let gates: Vec<(String, Vec<usize>)> = vec![
-            ("CNOT".into(), vec![0, 1]),
-            ("CNOT".into(), vec![1, 0]),
-            ("CNOT".into(), vec![0, 1]),
-            ("CNOT".into(), vec![0, 1]),
-            ("CNOT".into(), vec![1, 0]),
-            ("CNOT".into(), vec![0, 1]),
+        let gates: Vec<(GateId, Vec<usize>)> = vec![
+            (g("CNOT"), vec![0, 1]),
+            (g("CNOT"), vec![1, 0]),
+            (g("CNOT"), vec![0, 1]),
+            (g("CNOT"), vec![0, 1]),
+            (g("CNOT"), vec![1, 0]),
+            (g("CNOT"), vec![0, 1]),
         ];
         let result = optimize_clifford(&gates, 2);
         assert_eq!(result, Some(Vec::new()));

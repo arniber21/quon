@@ -61,7 +61,11 @@ pub fn simplify_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) -
         return false;
     }
     // Gate names are canonical (from the registry); check ZX-encodability.
-    if circ.gates.iter().any(|gate| !zx_encodable(&gate.name)) {
+    if circ
+        .gates
+        .iter()
+        .any(|gate| !zx_encodable(gate.name.as_str()))
+    {
         return false;
     }
     // Convert to ZX kernel format and simplify.
@@ -80,12 +84,16 @@ pub fn simplify_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) -
         return false;
     }
     // Convert back to CircIr and rebuild through the shared seam.
+    let Ok(gates) = simplified
+        .iter()
+        .map(circ_extract::gate_ref_to_circ_gate)
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
     let new_circ = circ_extract::CircIr {
         n_qubits: circ.n_qubits,
-        gates: simplified
-            .iter()
-            .map(circ_extract::gate_ref_to_circ_gate)
-            .collect(),
+        gates,
     };
     circ_extract::rebuild(context, func, &new_circ).is_ok()
 }

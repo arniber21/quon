@@ -107,8 +107,9 @@ pub mod neg_flux_fixtures;
 
 pub use depth::{DepthExpr, DepthParseError};
 pub use gates::{
-    GateClass, GateInfo, REGISTRY, canonical_id, inverse, inverse_or_self, is_inverse_pair,
-    is_self_inverse, lookup, openqasm_name, std_gates, std_gates_slice, surface_gate,
+    GateClass, GateId, GateInfo, REGISTRY, UnknownGate, canonical_id, inverse, inverse_or_self,
+    is_inverse_pair, is_self_inverse, lookup, openqasm_name, std_gates, std_gates_slice,
+    surface_gate,
 };
 pub use linearity::{
     LINEAR_USE_COUNT, UseCountViolation, barrier_identity_ok, classify_use_count,
