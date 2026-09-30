@@ -275,18 +275,16 @@ fn require_depth<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
     op: &'static str,
 ) -> Result<(), VerifyError> {
+    // Shared with `quantum.circ` (#469): a string that is not a DepthExpr
+    // S-expression is rejected here rather than surviving to a later pass.
     let value = require_attr(operation, op, attr::DEPTH)?;
-    let wrong = || VerifyError::WrongAttributeType {
-        op,
-        attr: attr::DEPTH,
-        expected: "depth s-expression",
-    };
-    // `depth` is a serialized `DepthExpr` (ADR-0002). Require not just *a* string
-    // but a *parseable* one, so a malformed hand-written module is rejected here
-    // rather than silently surviving to a downstream pass.
-    let string = StringAttribute::try_from(value).map_err(|_| wrong())?;
-    DepthExpr::parse(string.value()).map_err(|_| wrong())?;
-    Ok(())
+    super::depth_attr::parse_depth_attr(value)
+        .map(|_| ())
+        .map_err(|_| VerifyError::WrongAttributeType {
+            op,
+            attr: attr::DEPTH,
+            expected: "depth s-expression",
+        })
 }
 
 fn verify_optional_i32<'c: 'a, 'a, O: OperationLike<'c, 'a>>(

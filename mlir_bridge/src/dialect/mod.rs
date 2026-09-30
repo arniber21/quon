@@ -1,3 +1,4 @@
+mod depth_attr;
 pub mod qec_dynamic;
 pub mod quantum_circ;
 pub mod quantum_dynamic;

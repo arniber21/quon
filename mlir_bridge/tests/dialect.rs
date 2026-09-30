@@ -494,6 +494,38 @@ fn func_verifier_rejections() {
 }
 
 #[test]
+fn circ_func_rejects_unparseable_depth() {
+    let context = support::context();
+    let location = Location::unknown(&context);
+    let qubit = qc::qubit_type(&context);
+    let region = Region::new();
+    region.append_block(Block::new(&[(qubit, location)]));
+    let op = generic_op(
+        &context,
+        qc::op::FUNC,
+        &[],
+        &[],
+        &[
+            ("sym_name", str_attr(&context, "main")),
+            ("in_qubits", i64_attr(&context, 1)),
+            ("out_qubits", i64_attr(&context, 1)),
+            ("depth", str_attr(&context, "(((")),
+            ("clifford", bool_attr(&context, true)),
+        ],
+        vec![region],
+        location,
+    );
+    assert!(matches!(
+        qc::verify(&op),
+        Err(qc::VerifyError::WrongAttributeType {
+            attr: "depth",
+            expected: "depth s-expression",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn binary_circuit_verifier_rejections() {
     let context = support::context();
     let location = Location::unknown(&context);

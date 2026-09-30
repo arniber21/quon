@@ -316,8 +316,16 @@ fn require_depth<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     operation: &O,
     op: &'static str,
 ) -> Result<(), VerifyError> {
-    // The depth S-expression is carried as a string attribute (ADR-0002).
-    require_string(operation, op, attr::DEPTH)
+    // Same parse as `quantum.dynamic`: a string that is not a DepthExpr
+    // S-expression is rejected here (#469).
+    let value = require_attr(operation, op, attr::DEPTH)?;
+    super::depth_attr::parse_depth_attr(value)
+        .map(|_| ())
+        .map_err(|_| VerifyError::WrongAttributeType {
+            op,
+            attr: attr::DEPTH,
+            expected: "depth s-expression",
+        })
 }
 
 fn expect_counts<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
