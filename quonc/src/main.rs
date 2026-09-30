@@ -483,6 +483,7 @@ fn snapshot_from_parts(parts: &[String]) -> Result<(SnapshotAction, PathBuf)> {
 }
 
 fn main() -> ExitCode {
+    init_compiler_diagnostics();
     match run() {
         Ok(code) => code,
         Err(err) => {
@@ -491,6 +492,20 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Prints compiler warnings, including a circ-pass fixpoint cap (#472), to stderr.
+///
+/// `RUST_LOG` replaces the default `warn` filter when it is set.
+fn init_compiler_diagnostics() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(io::stderr().is_terminal())
+        .with_target(true)
+        .try_init();
 }
 
 fn error_style() -> Style {

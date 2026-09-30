@@ -1158,6 +1158,7 @@ dependencies = [
  "quon_core",
  "quon_qec",
  "thiserror 1.0.69",
+ "tracing",
  "zx",
 ]
 
@@ -1537,6 +1538,8 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

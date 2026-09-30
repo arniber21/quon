@@ -7,7 +7,8 @@
 //!
 //! 1. **Circ fixpoint** ([`run_circ_passes_to_fixpoint`]) — `gate_cancellation`,
 //!    `rotation_merging`, `clifford_t_opt`, `compiler_uncomputation`,
-//!    `zx_simplification` to fixpoint (ADR-0013 / #96).
+//!    `zx_simplification` to fixpoint (ADR-0013 / #96). Hitting the round cap
+//!    emits a warning instead of returning a silently under-optimized module.
 //! 2. **Dynamic passes** ([`run_dynamic_passes`]) — `measurement_deferral`,
 //!    `classical_region_fusion`. (`frontend::lower` already emits
 //!    `quantum.dynamic` IR directly — the staging dialect / lowering pass was
@@ -42,15 +43,42 @@ use crate::passes::{
 // Fixed physical layout (ADR-0034). Re-exported here for call-site stability.
 pub use crate::fixed_physical::{FixedPhysicalResult, run_fixed_physical};
 
+/// Passes applied on every circ-fixpoint round, in order.
+const CIRC_FIXPOINT_PASSES: &[&str] = &[
+    "gate_cancellation",
+    "rotation_merging",
+    "clifford_t_opt",
+    "compiler_uncomputation",
+    "zx_simplification",
+];
+
+/// Round cap for [`run_circ_passes_to_fixpoint`].
+const MAX_ROUNDS: usize = 10;
+
 /// Runs `quantum.circ` optimization passes to fixpoint (SPEC §7.1, ADR-0013).
 ///
 /// Fixpoint order: `gate_cancellation` → `rotation_merging` → `clifford_t_opt`
 /// → `compiler_uncomputation` → `zx_simplification`. The `clifford_t_opt` pass
 /// performs non-adjacent Clifford simplification (stabilizer tableau) and
 /// T-count reduction (phase polynomial) — see ADR-0013 / #96.
-pub fn run_circ_passes_to_fixpoint(context: &Context, module: &Module<'_>) {
-    const MAX_ROUNDS: usize = 10;
-    for _ in 0..MAX_ROUNDS {
+///
+/// Returns `true` when a round leaves the module unchanged. Returns `false`
+/// after 10 rounds that each still changed the module, and emits a `tracing`
+/// warning naming those passes and the round count (#472).
+pub fn run_circ_passes_to_fixpoint(context: &Context, module: &Module<'_>) -> bool {
+    run_circ_passes_to_fixpoint_bounded(context, module, MAX_ROUNDS)
+}
+
+/// Same loop as [`run_circ_passes_to_fixpoint`] with an explicit round cap.
+///
+/// `false` means `max_rounds` was exhausted while the IR was still changing.
+/// That path emits a warning; it does not fail the module.
+pub fn run_circ_passes_to_fixpoint_bounded(
+    context: &Context,
+    module: &Module<'_>,
+    max_rounds: usize,
+) -> bool {
+    for _ in 0..max_rounds {
         let before = module.as_operation().to_string();
         gate_cancellation::run_on_module(context, module);
         rotation_merging::run_on_module(context, module);
@@ -59,9 +87,16 @@ pub fn run_circ_passes_to_fixpoint(context: &Context, module: &Module<'_>) {
         zx_simplification::run_on_module(context, module);
         let after = module.as_operation().to_string();
         if before == after {
-            break;
+            return true;
         }
     }
+    let passes = CIRC_FIXPOINT_PASSES.join(", ");
+    tracing::warn!(
+        rounds = max_rounds,
+        passes = %passes,
+        "quantum.circ optimization fixpoint was not reached"
+    );
+    false
 }
 
 /// Runs `quantum.dynamic` passes after lowering (SPEC §7.1 passes 6–7).
