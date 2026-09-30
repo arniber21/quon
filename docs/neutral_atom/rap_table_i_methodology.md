@@ -51,8 +51,8 @@ above; n98 stays dump-only local).
 
 | [RAP] Table I column | `quon_na` field | Where it comes from |
 | --- | --- | --- |
-| Rearrangement steps | `ResourceReport.rearrangement_steps` | Count of AOD-compatible movement groups emitted by [`schedule_zoned`](../../quon_na/src/zoned.rs) |
-| Rearrangement time | `ResourceReport.rearrangement_time_us` | Sum of √-law **move-only** durations ([`movement_duration_us`](../../quon_na/src/zoned.rs)) per movement group — see [Timing model](#timing-model) for why this is deliberately *not* `rearrangement_time_us + transfer_time_us` |
+| Rearrangement steps | `ResourceReport.rearrangement_steps`, routing groups only | Count of AOD-compatible movement groups emitted by [`schedule_zoned`](../../quon_na/src/zoned.rs) whose destinations are **not** in the readout zone. Groups that land entirely in the readout zone are the measure/reset shuttle and are not this column — see [Readout shuttle](#readout-shuttle). |
+| Rearrangement time | `ResourceReport.rearrangement_time_us`, routing groups only | Sum of √-law **move-only** durations ([`movement_duration_us`](../../quon_na/src/zoned.rs)) per routing movement group — readout-shuttle moves are excluded the same way as their steps. See [Timing model](#timing-model) for why this is deliberately *not* `rearrangement_time_us + transfer_time_us` |
 | Two-qubit gate count (82) | `ResourceReport.entangle2_count` | Count of `Entangle2` schedule actions — one per circuit-level 2Q gate, placer-independent |
 | Entangling layers (4) | `ResourceReport.rydberg_stages` | Count of distinct schedule layers containing an entangling action |
 | *(not in the paper; #111 review instrumentation)* | `ResourceReport.aware_search_completed_layers` / `aware_search_fell_back_layers` | Per-layer count of whether [`assign_aware_legal`](../../quon_na/src/zoned.rs)'s best-first search found a full assignment within budget, or exhausted it and fell back to the routing-agnostic dispatcher (`dispatch_agnostic_assignment`, issue #485). Which of matching or greedy that fallback kept is `agnostic_placer_mechanism` (`matching`, `greedy_fallback`, or `mixed`), reported separately from the search outcome. The pre-#485 direct [`assign_greedy_legal`](../../quon_na/src/zoned.rs) fallback is the historical mechanism in [Phase 1 finding](#phase-1-finding-routing-aware-falls-back-to-greedy-on-this-targetcircuit-pair). |
@@ -66,6 +66,37 @@ pre-flight test fails first and separately from the metric dump. The dump
 test additionally hard-asserts both of these on **both** placers (not just
 routing-agnostic), since a routing-aware-only circuit regression would
 otherwise slip past the (agnostic-only, deliberately fast) pre-flight test.
+
+## Readout shuttle
+
+`rap_table_i.json` declares a readout zone (it is a freeze of
+`generic_rna_v0`, which does too). `ising_n42.qn` ends in `measure_all`, so
+the zoned scheduler keeps the residency shuttle: those atoms move into the
+readout zone before the measure. That shuttle is real schedule content. It
+is not the [RAP] routing row.
+
+`ResourceReport.rearrangement_steps` / `rearrangement_time_us` count every
+`Move` group, shuttle included. The paper comparison does not. A `Move`
+whose every destination lies in the readout zone is the shuttle; every other
+`Move` is routing. On the current n = 42 schedules that split is:
+
+| Placer | Routing steps | Routing time (µs) | Shuttle steps | Shuttle time (µs) |
+| --- | ---: | ---: | ---: | ---: |
+| Routing-agnostic | 23 | 3049 | 18 | 4436 |
+| Routing-aware | 18 | 2999 | 21 | 4880 |
+
+The enforced agnostic check is still ±2 steps / ±10% time of the published
+22 / 3100, applied to the **routing** columns (23 / 3049).
+`PUBLISHED_AGNOSTIC_STEPS` and the ±2 tolerance are unchanged. The
+improvement floor uses those routing step counts (18 ≤ 0.85 × 23). The
+shuttle columns are printed and, while the target declares a readout zone,
+must be non-zero on both placers. If the zone is removed from the pinned
+target, there is no shuttle to subtract: the full rearrangement count is the
+routing result and must still land on the 22-step row. Extra steps in that
+case are a regression, not a documentation update.
+
+The Phase 2a table (23 / 3049 and 18 / 2999) is this routing subset.
+The resource-report totals (41 / 7485 and 39 / 7879) are routing plus shuttle.
 
 ## Timing model
 
@@ -169,8 +200,10 @@ anchor's numbers. See
     as of #111):** hard-asserts the mechanism-legitimacy invariants — see
     [Tolerances (Phase-2b enforcement)](#tolerances-phase-2b-enforcement--live-in-ci-as-of-111).
     Hard: `aware_search_fell_back_layers == 0` (search completes), agnostic
-    within ±2 steps / ±10% time of the paper (22 / 3100), and
-    `aware_steps ≤ 0.85 × agnostic_steps` (meaningful-improvement floor).
+    routing rearrangements within ±2 steps / ±10% time of the paper (22 / 3100),
+    and `aware_steps ≤ 0.85 × agnostic_steps` on those routing counts
+    (meaningful-improvement floor). The readout shuttle is printed separately
+    and is not added into the paper row — see [Readout shuttle](#readout-shuttle).
   - **Soft (never asserted, even under the flag):** the aware-vs-published
     *absolute* comparison (18/2999 vs 9/1600) — prints a SOFT WARNING citing
     the documented mechanism divergence, but never fails the test. The aware
@@ -453,9 +486,10 @@ so it is deliberately **not** hard-asserted against the paper.
   byte-for-byte indistinguishable from the routing-agnostic baseline — the
   exact regression this gate exists to catch.
 - **Agnostic baseline matches the paper** (the faithful,
-  mechanism-complete baseline): `rearrangement_steps` within **±2** of
-  `PUBLISHED_AGNOSTIC_STEPS` (22); `rearrangement_time_us` within **±10%** of
-  `PUBLISHED_AGNOSTIC_TIME_US` (3100). (23 / 3049 passes.)
+  mechanism-complete baseline): routing `rearrangement_steps` within **±2** of
+  `PUBLISHED_AGNOSTIC_STEPS` (22); routing `rearrangement_time_us` within **±10%** of
+  `PUBLISHED_AGNOSTIC_TIME_US` (3100). (23 / 3049 passes.) The readout shuttle
+  is not part of this comparison — see [Readout shuttle](#readout-shuttle).
 - **Meaningful aware improvement floor**: `aware_steps ≤ 0.85 ×
   agnostic_steps` (aware must beat agnostic by ≥15%). Locked at Phase-2b
   sign-off — [RAP] reports −59%, this crate lands at 18/23 = −22%, which

@@ -29,8 +29,10 @@
 //! `just na-rap-sweep` / `python/na_rap_table_i_sweep.py`, not `just ci-rust`.
 //! See `docs/neutral_atom/rap_table_i_methodology.md`'s "n = 98" section.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde_json::Value;
 
@@ -117,6 +119,131 @@ fn resource_report_for(src: &std::path::Path, placer: &str) -> Value {
 /// n42-fixture-specific convenience wrapper over [`resource_report_for`].
 fn resource_report(placer: &str) -> Value {
     resource_report_for(&source(), placer)
+}
+
+/// Full schedule, including layers. The resource report's
+/// `rearrangement_steps` counts every AOD move group; the [RAP] row is the
+/// routing subset, so the dump test needs destinations.
+fn na_schedule(src: &std::path::Path, placer: &str) -> Value {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "quon-rap-table-i-{placer}-{}-{}.json",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_file(&path);
+    let output = quonc()
+        .arg(src)
+        .arg("--target")
+        .arg(na_target())
+        .arg("--na-placer")
+        .arg(placer)
+        .arg("--emit-na-schedule")
+        .arg(&path)
+        .arg("--quiet")
+        .output()
+        .expect("spawn quonc");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "read schedule {} for {placer}: {e}; stderr: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        output.status.success(),
+        "quonc failed for --na-placer {placer}; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse schedule JSON for {placer}: {e}"))
+}
+
+/// `rap_table_i.json` zone list. A declared readout zone is what turns on the
+/// terminal-measure shuttle; the paper row is not that shuttle.
+fn target_declares_readout_zone() -> bool {
+    let target_json: Value = serde_json::from_str(
+        &std::fs::read_to_string(na_target()).expect("read pinned target JSON"),
+    )
+    .expect("parse pinned target JSON");
+    target_json["zones"]
+        .as_array()
+        .expect("pinned target zones")
+        .iter()
+        .any(|zone| zone["kind"].as_str() == Some("readout"))
+}
+
+struct RearrangementSplit {
+    routing_steps: u64,
+    routing_time_us: u64,
+    shuttle_steps: u64,
+    shuttle_time_us: u64,
+}
+
+/// Split `Move` groups by destination. A group whose every destination sits
+/// in the readout zone is the readout shuttle (`place_readout_layers`).
+/// Every other group is routing: the [RAP] rearrangement the paper row
+/// counts. The two sums equal `ResourceReport.rearrangement_steps` /
+/// `rearrangement_time_us`.
+fn split_rearrangements(schedule: &Value) -> RearrangementSplit {
+    let zones = schedule["zones"].as_array().expect("schedule zones");
+    let mut sites: HashMap<u64, (f64, f64)> = HashMap::new();
+    for site in schedule["layout"]["sites"]
+        .as_array()
+        .expect("schedule sites")
+    {
+        let id = site["id"].as_u64().expect("site id");
+        let pos = &site["position"];
+        sites.insert(
+            id,
+            (
+                pos["x_um"].as_f64().expect("site x"),
+                pos["y_um"].as_f64().expect("site y"),
+            ),
+        );
+    }
+    let mut split = RearrangementSplit {
+        routing_steps: 0,
+        routing_time_us: 0,
+        shuttle_steps: 0,
+        shuttle_time_us: 0,
+    };
+    for layer in schedule["layers"].as_array().expect("schedule layers") {
+        for action in layer["actions"].as_array().expect("layer actions") {
+            let Some(group) = action.get("Move") else {
+                continue;
+            };
+            let duration = group["duration_us"].as_u64().expect("move duration");
+            let moves = group["moves"].as_array().expect("move list");
+            let readout = !moves.is_empty()
+                && moves.iter().all(|mv| {
+                    let to = mv["to"].as_u64().expect("move destination");
+                    let (x, y) = sites.get(&to).unwrap_or_else(|| {
+                        panic!("move destination site {to} missing from layout")
+                    });
+                    zones.iter().any(|zone| {
+                        zone["kind"].as_str() == Some("readout") && point_in_zone(zone, *x, *y)
+                    })
+                });
+            if readout {
+                split.shuttle_steps += 1;
+                split.shuttle_time_us += duration;
+            } else {
+                split.routing_steps += 1;
+                split.routing_time_us += duration;
+            }
+        }
+    }
+    split
+}
+
+fn point_in_zone(zone: &Value, x: f64, y: f64) -> bool {
+    let origin = zone["origin_um"].as_array().expect("zone origin");
+    let x0 = origin[0].as_f64().expect("zone origin x");
+    let y0 = origin[1].as_f64().expect("zone origin y");
+    let x1 = x0 + zone["width_um"].as_f64().expect("zone width");
+    let y1 = y0 + zone["height_um"].as_f64().expect("zone height");
+    x >= x0 && x < x1 && y >= y0 && y < y1
 }
 
 fn u64_field(report: &Value, field: &str) -> u64 {
@@ -208,14 +335,16 @@ fn ising_n42_preflight_gate_and_layer_counts() {
             --release --include-ignored) or locally with \
             `cargo test --release -p quonc --test rap_table_i ising_n42 -- --include-ignored --nocapture`"]
 fn ising_n42_dumps_both_placer_rearrangement_metrics() {
-    let agnostic = resource_report("routing-agnostic");
-    let aware = resource_report("routing-aware");
+    let agnostic_schedule = na_schedule(&source(), "routing-agnostic");
+    let aware_schedule = na_schedule(&source(), "routing-aware");
+    let agnostic = &agnostic_schedule["metrics"];
+    let aware = &aware_schedule["metrics"];
 
     // Hard, structural: both placers must see the identical 82-gate/4-layer
     // circuit (#111 review finding #5) — a wrong circuit invalidates the
     // whole comparison before it starts, for *either* placer, not just
     // agnostic (which is all the fast preflight test above can check).
-    for (label, report) in [("routing-agnostic", &agnostic), ("routing-aware", &aware)] {
+    for (label, report) in [("routing-agnostic", agnostic), ("routing-aware", aware)] {
         assert_eq!(
             u64_field(report, "entangle2_count"),
             EXPECTED_ENTANGLE2_COUNT,
@@ -228,17 +357,72 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
         );
     }
 
-    let agnostic_steps = u64_field(&agnostic, "rearrangement_steps");
-    let aware_steps = u64_field(&aware, "rearrangement_steps");
+    let agnostic_total_steps = u64_field(agnostic, "rearrangement_steps");
+    let aware_total_steps = u64_field(aware, "rearrangement_steps");
     // Move-only √-law time (see docs/neutral_atom/rap_table_i_methodology.md
     // "Timing model"): this is what Phase 1 compares to the published
     // "Rearrangement time" column. `transfer_time_us` (load+store trap
     // transfers) is a separate per-atom-instance aggregate, printed for
     // transparency but deliberately *not* folded into the comparison.
-    let agnostic_time_us = u64_field(&agnostic, "rearrangement_time_us");
-    let aware_time_us = u64_field(&aware, "rearrangement_time_us");
-    let agnostic_transfer_us = u64_field(&agnostic, "transfer_time_us");
-    let aware_transfer_us = u64_field(&aware, "transfer_time_us");
+    let agnostic_total_time_us = u64_field(agnostic, "rearrangement_time_us");
+    let aware_total_time_us = u64_field(aware, "rearrangement_time_us");
+    let agnostic_transfer_us = u64_field(agnostic, "transfer_time_us");
+    let aware_transfer_us = u64_field(aware, "transfer_time_us");
+    let agnostic_moves = split_rearrangements(&agnostic_schedule);
+    let aware_moves = split_rearrangements(&aware_schedule);
+    assert_eq!(
+        agnostic_moves.routing_steps + agnostic_moves.shuttle_steps,
+        agnostic_total_steps,
+        "agnostic routing + readout shuttle must account for every rearrangement step"
+    );
+    assert_eq!(
+        aware_moves.routing_steps + aware_moves.shuttle_steps,
+        aware_total_steps,
+        "aware routing + readout shuttle must account for every rearrangement step"
+    );
+    assert_eq!(
+        agnostic_moves.routing_time_us + agnostic_moves.shuttle_time_us,
+        agnostic_total_time_us,
+        "agnostic routing + readout shuttle must account for every move-only microsecond"
+    );
+    assert_eq!(
+        aware_moves.routing_time_us + aware_moves.shuttle_time_us,
+        aware_total_time_us,
+        "aware routing + readout shuttle must account for every move-only microsecond"
+    );
+    // The paper's 22-step row is the routing result. A declared readout zone
+    // keeps the terminal-measure shuttle, and that shuttle is reported beside
+    // the row rather than added into it. No readout zone: the full
+    // rearrangement count is the routing result, and it must hold as-is.
+    let declares_readout = target_declares_readout_zone();
+    let (agnostic_steps, agnostic_time_us, aware_steps, aware_time_us) = if declares_readout {
+        assert!(
+            agnostic_moves.shuttle_steps >= 1 && aware_moves.shuttle_steps >= 1,
+            "rap_table_i.json declares a readout zone, so measure_all must shuttle \
+             (agnostic shuttle steps {}, aware {}); dropping it would make the paper \
+             row compare a different schedule",
+            agnostic_moves.shuttle_steps,
+            aware_moves.shuttle_steps
+        );
+        (
+            agnostic_moves.routing_steps,
+            agnostic_moves.routing_time_us,
+            aware_moves.routing_steps,
+            aware_moves.routing_time_us,
+        )
+    } else {
+        assert_eq!(
+            (agnostic_moves.shuttle_steps, aware_moves.shuttle_steps),
+            (0, 0),
+            "no readout zone, so no readout-destination move groups"
+        );
+        (
+            agnostic_total_steps,
+            agnostic_total_time_us,
+            aware_total_steps,
+            aware_total_time_us,
+        )
+    };
 
     // Hard, structural: the routing-aware search's completed-vs-fell-back
     // status must be present (#111 review finding #1/#6) — this is the
@@ -246,10 +430,10 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
     // claim. Not soft: a missing field here means the diagnostic silently
     // regressed out of the resource report, which is exactly the kind of
     // silent mischaracterization the review flagged.
-    let aware_completed = required_u64_field(&aware, "aware_search_completed_layers");
-    let aware_fell_back = required_u64_field(&aware, "aware_search_fell_back_layers");
-    let agnostic_completed = required_u64_field(&agnostic, "aware_search_completed_layers");
-    let agnostic_fell_back = required_u64_field(&agnostic, "aware_search_fell_back_layers");
+    let aware_completed = required_u64_field(aware, "aware_search_completed_layers");
+    let aware_fell_back = required_u64_field(aware, "aware_search_fell_back_layers");
+    let agnostic_completed = required_u64_field(agnostic, "aware_search_completed_layers");
+    let agnostic_fell_back = required_u64_field(agnostic, "aware_search_fell_back_layers");
     assert_eq!(
         (agnostic_completed, agnostic_fell_back),
         (0, 0),
@@ -280,34 +464,44 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
 
     println!("--- RAP Table I (#111) — ising n=42 ---");
     println!(
-        "{:<18} {:>8} {:>8} {:>14} {:>10} {:>16} {:>18} {:>16}",
+        "paper row compares routing rearrangements only; readout shuttle is separate \
+         (target declares readout zone: {declares_readout})"
+    );
+    println!(
+        "{:<18} {:>8} {:>8} {:>8} {:>14} {:>10} {:>12} {:>16} {:>18} {:>16}",
         "placer",
-        "steps",
+        "routing",
         "(paper)",
+        "shuttle",
         "time_us(move)",
         "(paper)",
+        "shuttle_us",
         "transfer_us",
         "aware search",
         "agnostic mech"
     );
     println!(
-        "{:<18} {:>8} {:>8} {:>14} {:>10} {:>16} {:>18} {:>16}",
+        "{:<18} {:>8} {:>8} {:>8} {:>14} {:>10} {:>12} {:>16} {:>18} {:>16}",
         "routing-agnostic",
         agnostic_steps,
         PUBLISHED_AGNOSTIC_STEPS,
+        agnostic_moves.shuttle_steps,
         agnostic_time_us,
         PUBLISHED_AGNOSTIC_TIME_US,
+        agnostic_moves.shuttle_time_us,
         agnostic_transfer_us,
         "n/a",
         agnostic_mechanism
     );
     println!(
-        "{:<18} {:>8} {:>8} {:>14} {:>10} {:>16} {:>18} {:>16}",
+        "{:<18} {:>8} {:>8} {:>8} {:>14} {:>10} {:>12} {:>16} {:>18} {:>16}",
         "routing-aware",
         aware_steps,
         PUBLISHED_AWARE_STEPS,
+        aware_moves.shuttle_steps,
         aware_time_us,
         PUBLISHED_AWARE_TIME_US,
+        aware_moves.shuttle_time_us,
         aware_transfer_us,
         format!("{aware_completed} ok / {aware_fell_back} fell back"),
         "n/a"
@@ -362,6 +556,10 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
     //   (c) the routing-agnostic baseline matches the paper's published
     //       22-step / 3.1 ms row — agnostic is the faithful,
     //       mechanism-complete baseline, so drift there is a real regression.
+    //       When the pinned target declares a readout zone, this is the
+    //       routing subset only; the shuttle is accounted for above and is
+    //       not part of the row. `PUBLISHED_AGNOSTIC_STEPS` and
+    //       `STEP_TOLERANCE` stay 22 and ±2.
     // The routing-aware *absolute* (18 steps / 2999 µs vs published 9 / 1600)
     // is a documented mechanism divergence accepted under Phase-2b sign-off —
     // this crate's search reassigns entanglement-zone placement only, not
@@ -378,7 +576,7 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
     );
     assert!(
         (agnostic_steps as i64 - PUBLISHED_AGNOSTIC_STEPS as i64).abs() <= STEP_TOLERANCE,
-        "routing-agnostic steps {agnostic_steps} outside ±{STEP_TOLERANCE} of published \
+        "routing-agnostic routing steps {agnostic_steps} outside ±{STEP_TOLERANCE} of published \
          {PUBLISHED_AGNOSTIC_STEPS}"
     );
     assert_time_within_tolerance(
@@ -473,10 +671,12 @@ const PUBLISHED_N98_AWARE_STEPS: u64 = 12;
             `cargo test --release -p quonc --test rap_table_i -- --ignored ising_n98 --nocapture`"]
 fn ising_n98_preflight_and_dump_metrics() {
     let src = source_n98();
-    let agnostic = resource_report_for(&src, "routing-agnostic");
-    let aware = resource_report_for(&src, "routing-aware");
+    let agnostic_schedule = na_schedule(&src, "routing-agnostic");
+    let aware_schedule = na_schedule(&src, "routing-aware");
+    let agnostic = &agnostic_schedule["metrics"];
+    let aware = &aware_schedule["metrics"];
 
-    for (label, report) in [("routing-agnostic", &agnostic), ("routing-aware", &aware)] {
+    for (label, report) in [("routing-agnostic", agnostic), ("routing-aware", aware)] {
         assert_eq!(
             u64_field(report, "entangle2_count"),
             EXPECTED_N98_ENTANGLE2_COUNT,
@@ -488,19 +688,40 @@ fn ising_n98_preflight_and_dump_metrics() {
             "{label}: ising_n98.qn pre-flight layer count regressed"
         );
     }
-    assert_eq!(u64_field(&agnostic, "logical_qubits"), 98);
+    assert_eq!(u64_field(agnostic, "logical_qubits"), 98);
 
-    let agnostic_steps = u64_field(&agnostic, "rearrangement_steps");
-    let aware_steps = u64_field(&aware, "rearrangement_steps");
-    let agnostic_time_us = u64_field(&agnostic, "rearrangement_time_us");
-    let aware_time_us = u64_field(&aware, "rearrangement_time_us");
-    let agnostic_transfer_us = u64_field(&agnostic, "transfer_time_us");
-    let aware_transfer_us = u64_field(&aware, "transfer_time_us");
+    let agnostic_moves = split_rearrangements(&agnostic_schedule);
+    let aware_moves = split_rearrangements(&aware_schedule);
+    // Same split as n42: the printed paper column is routing rearrangements.
+    // n98 is dump-only, so this does not hard-assert the published 23/12 row.
+    let declares_readout = target_declares_readout_zone();
+    let agnostic_steps = if declares_readout {
+        agnostic_moves.routing_steps
+    } else {
+        u64_field(agnostic, "rearrangement_steps")
+    };
+    let aware_steps = if declares_readout {
+        aware_moves.routing_steps
+    } else {
+        u64_field(aware, "rearrangement_steps")
+    };
+    let agnostic_time_us = if declares_readout {
+        agnostic_moves.routing_time_us
+    } else {
+        u64_field(agnostic, "rearrangement_time_us")
+    };
+    let aware_time_us = if declares_readout {
+        aware_moves.routing_time_us
+    } else {
+        u64_field(aware, "rearrangement_time_us")
+    };
+    let agnostic_transfer_us = u64_field(agnostic, "transfer_time_us");
+    let aware_transfer_us = u64_field(aware, "transfer_time_us");
 
-    let aware_completed = required_u64_field(&aware, "aware_search_completed_layers");
-    let aware_fell_back = required_u64_field(&aware, "aware_search_fell_back_layers");
-    let agnostic_completed = required_u64_field(&agnostic, "aware_search_completed_layers");
-    let agnostic_fell_back = required_u64_field(&agnostic, "aware_search_fell_back_layers");
+    let aware_completed = required_u64_field(aware, "aware_search_completed_layers");
+    let aware_fell_back = required_u64_field(aware, "aware_search_fell_back_layers");
+    let agnostic_completed = required_u64_field(agnostic, "aware_search_completed_layers");
+    let agnostic_fell_back = required_u64_field(agnostic, "aware_search_fell_back_layers");
     assert_eq!(
         (agnostic_completed, agnostic_fell_back),
         (0, 0),
@@ -513,6 +734,11 @@ fn ising_n98_preflight_and_dump_metrics() {
     );
 
     println!("--- RAP Table I (#111/#306) — ising n=98 (local-only) ---");
+    println!(
+        "paper column is routing rearrangements; shuttle steps are separate \
+         (target declares readout zone: {declares_readout}; agnostic shuttle {}, aware shuttle {})",
+        agnostic_moves.shuttle_steps, aware_moves.shuttle_steps
+    );
     println!(
         "{:<18} {:>10} {:>10} {:>14} {:>18} {:>18}",
         "placer", "steps", "(paper)", "time_us(move)", "transfer_us", "aware search"
