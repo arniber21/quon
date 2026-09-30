@@ -62,9 +62,11 @@ pub enum RawMappingEvent {
     },
     /// Events for one arm of a measurement branch. The sibling arm is a
     /// separate alternative; the two lists are not one execution.
+    /// `layout` is that arm's logical → physical map after the arm finishes.
     Branch {
         arm: BranchArm,
         events: Vec<RawMappingEvent>,
+        layout: Vec<(u64, u64)>,
     },
 }
 
@@ -102,11 +104,21 @@ impl MappingLog {
         self.final_layout = pairs;
     }
 
-    /// Appends one measurement-branch arm. An empty arm is still recorded so
-    /// the trace shows the alternative instead of implying the other arm
-    /// always runs.
-    pub fn note_branch(&mut self, arm: BranchArm, events: Vec<RawMappingEvent>) {
-        self.events.push(RawMappingEvent::Branch { arm, events });
+    /// Appends one measurement-branch arm and the layout that arm finished on.
+    ///
+    /// An empty arm is still recorded so the trace shows the alternative
+    /// instead of implying the other arm always runs.
+    pub fn note_branch(
+        &mut self,
+        arm: BranchArm,
+        events: Vec<RawMappingEvent>,
+        layout: Vec<(u64, u64)>,
+    ) {
+        self.events.push(RawMappingEvent::Branch {
+            arm,
+            events,
+            layout,
+        });
     }
 
     /// Number of recorded SWAP insertions, including those inside branch arms.
@@ -186,11 +198,13 @@ pub enum MappingEvent {
         summary: String,
     },
     /// One arm of a `quantum.dynamic.if`. The sibling arm is a separate event,
-    /// not the next step of this one.
+    /// not the next step of this one. `layout` is the permutation that arm
+    /// finished on.
     Branch {
         arm: BranchArm,
         summary: String,
         events: Vec<MappingEvent>,
+        layout: Vec<QubitAssignment>,
     },
 }
 
@@ -325,10 +339,15 @@ fn narrate_events(events: &[RawMappingEvent]) -> Vec<MappingEvent> {
                     logical[0], logical[1], physical[0], physical[1]
                 ),
             },
-            RawMappingEvent::Branch { arm, events } => MappingEvent::Branch {
+            RawMappingEvent::Branch {
+                arm,
+                events,
+                layout,
+            } => MappingEvent::Branch {
                 arm: *arm,
                 summary: branch_summary(*arm, events),
                 events: narrate_events(events),
+                layout: assignments(layout),
             },
         })
         .collect()
@@ -356,12 +375,55 @@ fn routing_summary(log: &MappingLog) -> String {
         swap_sentence(&log.events, swaps)
     };
     if has_branch(&log.events) {
-        format!(
-            "{sentence} Each measurement branch lists its then and else arms separately; exactly one arm runs."
-        )
+        let arms = "Each measurement branch lists its then and else arms separately; exactly one arm runs.";
+        if arm_layouts_disagree(&log.events) {
+            format!(
+                "{sentence} {arms} The arms finish on different permutations, so there is no single post-branch layout and later gates are not routed against the pre-branch map."
+            )
+        } else {
+            format!("{sentence} {arms}")
+        }
     } else {
         sentence
     }
+}
+
+/// True when a then/else pair finished on different permutations.
+fn arm_layouts_disagree(events: &[RawMappingEvent]) -> bool {
+    let mut index = 0;
+    while index < events.len() {
+        match &events[index] {
+            RawMappingEvent::Branch {
+                arm: BranchArm::Then,
+                events: then_events,
+                layout: then_layout,
+            } => {
+                if arm_layouts_disagree(then_events) {
+                    return true;
+                }
+                if let Some(RawMappingEvent::Branch {
+                    arm: BranchArm::Else,
+                    events: else_events,
+                    layout: else_layout,
+                }) = events.get(index + 1)
+                {
+                    if then_layout != else_layout || arm_layouts_disagree(else_events) {
+                        return true;
+                    }
+                    index += 2;
+                    continue;
+                }
+            }
+            RawMappingEvent::Branch { events: nested, .. } => {
+                if arm_layouts_disagree(nested) {
+                    return true;
+                }
+            }
+            RawMappingEvent::Swap { .. } | RawMappingEvent::Interaction { .. } => {}
+        }
+        index += 1;
+    }
+    false
 }
 
 fn has_branch(events: &[RawMappingEvent]) -> bool {
@@ -549,14 +611,16 @@ mod tests {
     #[test]
     fn branch_arms_are_alternatives_not_one_sequence() {
         let mut log = MappingLog::default();
+        let shared = vec![(0, 0), (2, 2)];
         log.note_branch(
             BranchArm::Then,
             vec![RawMappingEvent::Swap {
                 logical: [0, 2],
                 physical: [0, 1],
             }],
+            shared.clone(),
         );
-        log.note_branch(BranchArm::Else, Vec::new());
+        log.note_branch(BranchArm::Else, Vec::new(), shared);
         let trace = assemble_mapping_trace(MappingTraceParts {
             target_id: "line".to_string(),
             edges: vec![(0, 1)],
@@ -566,6 +630,7 @@ mod tests {
             final_metrics: MappingStageMetrics::default(),
         });
         assert!(trace.summary.contains("exactly one arm runs"));
+        assert!(!trace.summary.contains("different permutations"));
         assert!(!trace.summary.contains("inserted 1 SWAP"));
         assert_eq!(trace.events.len(), 2);
         match &trace.events[0] {
@@ -573,10 +638,13 @@ mod tests {
                 arm,
                 summary,
                 events,
+                layout,
             } => {
                 assert_eq!(*arm, BranchArm::Then);
                 assert!(summary.contains("does not also run"));
                 assert_eq!(events.len(), 1);
+                assert_eq!(layout.len(), 2);
+                assert_eq!(layout[0].physical, 0);
             }
             other => panic!("expected then branch, got {other:?}"),
         }
@@ -587,6 +655,47 @@ mod tests {
             }
             other => panic!("expected else branch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn disagreed_branch_layouts_are_on_the_event() {
+        let mut log = MappingLog::default();
+        log.note_branch(
+            BranchArm::Then,
+            vec![RawMappingEvent::Swap {
+                logical: [0, 2],
+                physical: [0, 1],
+            }],
+            vec![(0, 1), (2, 0)],
+        );
+        log.note_branch(BranchArm::Else, Vec::new(), vec![(0, 0), (2, 2)]);
+        let trace = assemble_mapping_trace(MappingTraceParts {
+            target_id: "line".to_string(),
+            edges: vec![(0, 1)],
+            log,
+            before_routing: MappingStageMetrics::default(),
+            after_routing: MappingStageMetrics::default(),
+            final_metrics: MappingStageMetrics::default(),
+        });
+        assert!(trace.summary.contains("exactly one arm runs"));
+        assert!(trace.summary.contains("no single post-branch layout"));
+        assert!(trace.summary.contains("pre-branch map"));
+        match &trace.events[0] {
+            MappingEvent::Branch { layout, .. } => {
+                assert_eq!(layout[0].logical, 0);
+                assert_eq!(layout[0].physical, 1);
+            }
+            other => panic!("expected then branch, got {other:?}"),
+        }
+        match &trace.events[1] {
+            MappingEvent::Branch { layout, .. } => {
+                assert_eq!(layout[1].physical, 2);
+            }
+            other => panic!("expected else branch, got {other:?}"),
+        }
+        let json = trace.to_json_string_pretty().expect("json");
+        let back: MappingTrace = serde_json::from_str(&json).expect("parse");
+        assert_eq!(back, trace);
     }
 
     #[test]

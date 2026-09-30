@@ -222,8 +222,11 @@ fused validation); these require a filesystem path, never `-`/stdout.
   metric-delta sentence. `layout` and `routing` depth are the gate-dependence
   depth of those snapshots (taken before `depth_scheduling` writes
   `schedule_time`). A `branch` event is one arm of a `quantum.dynamic.if`;
-  the other arm is a separate event, and exactly one arm runs. Unknown fields
-  are rejected.
+  the other arm is a separate event, and exactly one arm runs. Each branch
+  event carries that arm's layout. When the arms finish on different
+  permutations there is no single post-branch layout, `final_layout` is
+  empty, and later gates are not routed against the pre-branch map. Unknown
+  fields are rejected.
 - **Canonical status:** a debug view of SABRE's layout and SWAP insertions.
   OpenQASM remains the fixed-target program artifact. The trace is recorded
   before post-SWAP native decomposition, so it can list SWAPs that the final

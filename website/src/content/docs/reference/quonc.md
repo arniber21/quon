@@ -63,8 +63,10 @@ routing. Fields are `summary`, `meta.target_id`, `topology.edges`,
 `branch`, each with a compile-time `summary`), and `stages` (`layout`,
 `routing`, `native_decomp`) with `#48`-shaped metrics and a metric-delta
 sentence. Layout and routing depth are the gate-dependence depth of those
-pre-schedule snapshots. A `branch` event is one arm of a measurement `if`;
-exactly one arm runs.
+pre-schedule snapshots. A `branch` event is one arm of a measurement `if`
+and carries that arm's layout; exactly one arm runs. When the arms finish
+on different permutations there is no single post-branch layout, and later
+gates are not routed against the pre-branch map.
 Unknown fields are rejected. SWAP events are recorded before native
 decomposition, so `routing.swap_count` can be non-zero when the final
 `native_decomp` stage (and `--metrics-json`) reports `swap_count: 0` because

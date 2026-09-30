@@ -186,6 +186,119 @@ fn if_arms_are_alternatives_on_a_line() {
     );
     let summary = trace["summary"].as_str().expect("summary");
     assert!(summary.contains("exactly one arm runs"), "{summary}");
+    assert!(
+        branches[0]["layout"].is_array(),
+        "then arm records its layout: {events:?}"
+    );
+    assert!(
+        branches[1]["layout"].is_array(),
+        "else arm records its layout: {events:?}"
+    );
+}
+
+const BRANCH_THEN_FOLLOW: &str = "\
+fn place(): Circuit<3, 3, 3, Clifford> = circuit { I @0 |> I @1 |> I @2 }
+fn far_cx(): Circuit<2, 2, 2, Clifford> = circuit { CNOT @(0, 1) }
+fn idle2(): Circuit<2, 2, 2, Clifford> = circuit { I @0 |> I @1 }
+fn follow(): Circuit<2, 2, 2, Clifford> = circuit { CNOT @(0, 1) }
+
+fn main(): Q<Bit> = run {
+    (q0, q1, q2) <- place() @ qreg(3)
+    bit          <- measure(q1)
+    (a, c)       <- (if bit then far_cx() else idle2()) @ (q0, q2)
+    (a2, c2)     <- follow() @ (a, c)
+    _ba          <- measure(a2)
+    bc           <- measure(c2)
+    return bc
+}
+";
+
+fn assignment_pairs(rows: &Value) -> Vec<(u64, u64)> {
+    rows.as_array()
+        .expect("layout array")
+        .iter()
+        .map(|row| {
+            (
+                row["logical"].as_u64().expect("logical"),
+                row["physical"].as_u64().expect("physical"),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn two_qubit_after_diverging_branch_is_not_routed_on_pre_branch_map() {
+    let source =
+        std::env::temp_dir().join(format!("quon-mapping-follow-{}.qn", std::process::id()));
+    std::fs::write(&source, BRANCH_THEN_FOLLOW).expect("write follow source");
+    let target = workspace_path("../targets/ibm/fake_manila_v2.json");
+    let output = emit_mapping(&source, Some(&target));
+    assert!(
+        output.status.success(),
+        "quonc failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace: Value = serde_json::from_slice(&output.stdout).expect("json");
+    let events = trace["events"].as_array().expect("events");
+    let branches: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["kind"] == "branch")
+        .collect();
+    assert_eq!(branches.len(), 2, "trace events: {events:?}");
+    let then_layout = assignment_pairs(&branches[0]["layout"]);
+    let else_layout = assignment_pairs(&branches[1]["layout"]);
+    assert!(
+        !then_layout.is_empty() && !else_layout.is_empty(),
+        "each arm records the permutation it finished on: then={then_layout:?} else={else_layout:?}"
+    );
+    assert_ne!(
+        then_layout, else_layout,
+        "then swaps and else does not: then={then_layout:?} else={else_layout:?}"
+    );
+    let then_swaps = branches[0]["events"]
+        .as_array()
+        .expect("then events")
+        .iter()
+        .filter(|event| event["kind"] == "swap")
+        .count();
+    assert!(then_swaps >= 1, "then arm swaps: {events:?}");
+    let top_routed = events
+        .iter()
+        .filter(|event| event["kind"] == "swap" || event["kind"] == "interaction")
+        .count();
+    assert_eq!(
+        top_routed, 0,
+        "the follow-up CNOT must not be routed on the pre-branch map: {events:?}"
+    );
+    let final_layout = trace["final_layout"].as_array().expect("final");
+    assert!(
+        final_layout.is_empty(),
+        "diverging arms leave no single post-branch layout: {final_layout:?}"
+    );
+    let summary = trace["summary"].as_str().expect("summary");
+    assert!(
+        summary.contains("no single post-branch layout"),
+        "{summary}"
+    );
+
+    let json_path =
+        std::env::temp_dir().join(format!("quon-mapping-follow-{}.json", std::process::id()));
+    std::fs::write(&json_path, &output.stdout).expect("write trace");
+    let script = workspace_path("../python/visualize_mapping.py");
+    let rendered = Command::new("python3")
+        .arg(&script)
+        .arg(&json_path)
+        .arg("--ascii")
+        .output()
+        .expect("python3");
+    assert!(
+        rendered.status.success(),
+        "viewer failed: {}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+    let ascii = String::from_utf8_lossy(&rendered.stdout);
+    assert!(ascii.contains("branch then"), "{ascii}");
+    assert!(ascii.contains("layout:"), "{ascii}");
 }
 
 #[test]

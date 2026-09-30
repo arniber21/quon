@@ -43,7 +43,7 @@ STAGE_KEYS = {"id", "summary", "metrics"}
 METRICS_KEYS = {"gate_count", "depth", "swap_count", "t_count"}
 SWAP_KEYS = {"kind", "logical", "physical", "summary"}
 INTERACTION_KEYS = {"kind", "gate", "logical", "physical", "summary"}
-BRANCH_KEYS = {"kind", "arm", "summary", "events"}
+BRANCH_KEYS = {"kind", "arm", "summary", "events", "layout"}
 
 
 def _die(msg: str, code: int = 1) -> None:
@@ -122,15 +122,7 @@ def load_trace(data: Any) -> dict[str, Any]:
         _pair(edge, f"topology.edges[{index}]")
 
     for name in ("initial_layout", "final_layout"):
-        rows = trace[name]
-        if not isinstance(rows, list):
-            raise ValueError(f"{name} must be an array")
-        for index, row in enumerate(rows):
-            assignment = _require_object(row, f"{name}[{index}]")
-            _reject_unknown(assignment, ASSIGNMENT_KEYS, f"{name}[{index}]")
-            _require_fields(assignment, ASSIGNMENT_KEYS, f"{name}[{index}]")
-            _int_field(assignment, "logical", f"{name}[{index}]")
-            _int_field(assignment, "physical", f"{name}[{index}]")
+        _validate_layout(trace[name], name)
 
     events = trace["events"]
     if not isinstance(events, list):
@@ -180,12 +172,24 @@ def _validate_events(events: list[Any], where: str) -> None:
             if arm not in ("then", "else"):
                 raise ValueError(f"{at}.arm must be 'then' or 'else'")
             _str_field(obj, "summary", at)
+            _validate_layout(obj["layout"], f"{at}.layout")
             nested = obj["events"]
             if not isinstance(nested, list):
                 raise ValueError(f"{at}.events must be an array")
             _validate_events(nested, f"{at}.events")
         else:
             raise ValueError(f"{at}.kind must be 'swap', 'interaction', or 'branch'")
+
+
+def _validate_layout(rows: Any, where: str) -> None:
+    if not isinstance(rows, list):
+        raise ValueError(f"{where} must be an array")
+    for index, row in enumerate(rows):
+        assignment = _require_object(row, f"{where}[{index}]")
+        _reject_unknown(assignment, ASSIGNMENT_KEYS, f"{where}[{index}]")
+        _require_fields(assignment, ASSIGNMENT_KEYS, f"{where}[{index}]")
+        _int_field(assignment, "logical", f"{where}[{index}]")
+        _int_field(assignment, "physical", f"{where}[{index}]")
 
 
 def _layout_line(rows: list[dict[str, Any]]) -> str:
@@ -199,6 +203,7 @@ def _event_line(index: int, event: dict[str, Any], indent: str = "  ") -> str:
         lines = [
             f"{indent}{index:03d} branch {event['arm']}",
             f"{indent}    {event['summary']}",
+            f"{indent}    layout: {_layout_line(event['layout'])}",
         ]
         nested = event["events"]
         if not nested:
@@ -329,9 +334,10 @@ def _html_event_rows(events: list[dict[str, Any]], prefix: str = "") -> list[str
         if event["kind"] == "branch":
             arm = html.escape(event["arm"])
             summary = html.escape(event["summary"])
+            layout = html.escape(_layout_line(event["layout"]))
             rows.append(
                 '<tr class="branch"><td colspan="6">'
-                f"branch {label} {arm}: {summary}"
+                f"branch {label} {arm}: {summary} layout: {layout}"
                 "</td></tr>"
             )
             rows.extend(_html_event_rows(event["events"], prefix=f"{label}."))
