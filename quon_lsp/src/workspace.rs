@@ -312,8 +312,9 @@ fn classify_ident(
             ResolvedTarget::Symbol(_) | ResolvedTarget::TypeAlias(_) => {}
         }
     }
-    // Scope spans cover a `let` RHS and statements before the binding.
-    // A local shadows this ident only in the region the typechecker would see.
+    // A local shadows this ident only where the typechecker would see that binding.
+    // Type parameters cover the whole `fn` or `type`. Value parameters cover the
+    // signature and body. `let` and circuit bindings stay statement-scoped.
     if local_shadows(analysis, name, span.start) {
         return None;
     }
@@ -336,20 +337,33 @@ fn decl_shadows(decl: &(Decl, SimpleSpan), name: &str, offset: usize) -> bool {
         return false;
     }
     match &decl.0 {
-        Decl::Fn { params, body, .. } => {
-            if !span_contains(body.1, offset) {
-                return false;
+        Decl::Fn {
+            type_params,
+            params,
+            body,
+            ..
+        } => {
+            // A type parameter covers the whole declaration. A value parameter
+            // covers the signature and the body, including type annotations.
+            if type_params.iter().any(|param| param.name.0 == name)
+                || params.iter().any(|(param, _)| param.0 == name)
+            {
+                return true;
             }
-            let inherited = params.iter().any(|(param, _)| param.0 == name);
-            expr_shadows(body, name, offset, inherited)
+            expr_shadows(body, name, offset, false)
         }
-        Decl::TypeAlias { .. } => false,
+        Decl::TypeAlias { params, .. } => params.iter().any(|param| param.name.0 == name),
     }
 }
 
 fn expr_shadows(expr: &(Expr, SimpleSpan), name: &str, offset: usize, inherited: bool) -> bool {
     if !span_contains(expr.1, offset) {
         return false;
+    }
+    // An outer binding covers type arguments and ascriptions in this expression.
+    // `let` still passes `false` into its RHS so that RHS is not its own shadow.
+    if inherited {
+        return true;
     }
     match &expr.0 {
         Expr::Let { pat, rhs, body } => {
@@ -371,11 +385,10 @@ fn expr_shadows(expr: &(Expr, SimpleSpan), name: &str, offset: usize, inherited:
             false
         }
         Expr::Lam { params, body } => {
-            if !span_contains(body.1, offset) {
-                return false;
+            if params.iter().any(|(pat, _)| pat_binds(pat, name)) {
+                return true;
             }
-            let inherited = inherited || params.iter().any(|(pat, _)| pat_binds(pat, name));
-            expr_shadows(body, name, offset, inherited)
+            expr_shadows(body, name, offset, false)
         }
         Expr::Match { scrutinee, arms } => {
             if span_contains(scrutinee.1, offset) {
