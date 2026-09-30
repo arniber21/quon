@@ -134,10 +134,8 @@ fn viewer_rejects_unknown_field_and_matches_golden() {
     let expected = std::fs::read_to_string(&golden).expect("golden");
     assert_eq!(String::from_utf8_lossy(&rendered.stdout), expected);
 
-    let html_out = std::env::temp_dir().join(format!(
-        "quon-mapping-html-{}.html",
-        std::process::id()
-    ));
+    let html_out =
+        std::env::temp_dir().join(format!("quon-mapping-html-{}.html", std::process::id()));
     let html = Command::new("python3")
         .arg(&script)
         .arg(&fixture)
