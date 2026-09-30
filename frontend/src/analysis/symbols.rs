@@ -1,5 +1,6 @@
 use crate::ast::{Decl, Expr, Pat, Stmt};
 use crate::lexer::{SimpleSpan, Sp};
+use crate::visitor::{Traversal, Visitor};
 
 use super::docs::extract_leading_docs;
 use super::prelude_names::{classical_builtins, gates, quantum_builtins};
@@ -46,6 +47,10 @@ struct Builder<'a> {
     index: SymbolIndex,
     stack: ScopeStack,
     next_id: u32,
+    /// Nested `Expr::Lam` frames. Lambda parameters are the only patterns the
+    /// canonical walker visits while this is non-zero; other binders are
+    /// indexed explicitly because their scope starts after the rhs.
+    lam_depth: u32,
 }
 
 impl<'a> Builder<'a> {
@@ -61,6 +66,7 @@ impl<'a> Builder<'a> {
             },
             stack: ScopeStack::new(root_span),
             next_id: 0,
+            lam_depth: 0,
         }
     }
 
@@ -180,160 +186,158 @@ pub fn build_symbol_index(decls: &[Sp<Decl>], src: &str) -> SymbolIndex {
         b.insert_plain(name.to_string(), SymbolKind::QuantumBuiltin, empty);
     }
 
-    for (decl, decl_span) in decls {
-        match decl {
+    crate::visitor::walk_program(&mut b, decls);
+    b.finish()
+}
+
+impl Visitor for Builder<'_> {
+    fn visit_decl_pre(&mut self, decl: &Sp<Decl>) -> Traversal {
+        match &decl.0 {
             Decl::Fn {
                 name,
                 type_params,
                 params,
-                ret: _,
-                body,
+                ..
             } => {
                 // Top-level functions live in the parent (file) scope so call sites
                 // in other decls can resolve them. Params/body stay in a child scope.
-                let docs = extract_leading_docs(b.src, decl_span.start);
-                b.insert(name.0.clone(), SymbolKind::Function, name.1, docs);
-                b.stack.push(*decl_span);
+                let docs = extract_leading_docs(self.src, decl.1.start);
+                self.insert(name.0.clone(), SymbolKind::Function, name.1, docs);
+                self.stack.push(decl.1);
                 for p in type_params {
-                    b.insert_plain(p.name.0.clone(), SymbolKind::TypeParam, p.name.1);
+                    self.insert_plain(p.name.0.clone(), SymbolKind::TypeParam, p.name.1);
                 }
                 for (p, _) in params {
-                    b.insert_plain(p.0.clone(), SymbolKind::Parameter, p.1);
+                    self.insert_plain(p.0.clone(), SymbolKind::Parameter, p.1);
                 }
-                walk_expr(body, &mut b);
-                b.stack.pop();
+                Traversal::Recurse
             }
-            Decl::TypeAlias {
-                name,
-                params,
-                ty: _,
-            } => {
-                // Same as functions: alias names are file-scoped.
-                let docs = extract_leading_docs(b.src, decl_span.start);
-                b.insert(name.0.clone(), SymbolKind::TypeAlias, name.1, docs);
-                b.stack.push(*decl_span);
+            Decl::TypeAlias { name, params, .. } => {
+                // Same as functions: alias names are file-scoped. The alias body
+                // is a type, not a binding, so it is not indexed.
+                let docs = extract_leading_docs(self.src, decl.1.start);
+                self.insert(name.0.clone(), SymbolKind::TypeAlias, name.1, docs);
+                self.stack.push(decl.1);
                 for p in params {
-                    b.insert_plain(p.name.0.clone(), SymbolKind::TypeParam, p.name.1);
+                    self.insert_plain(p.name.0.clone(), SymbolKind::TypeParam, p.name.1);
                 }
-                b.stack.pop();
+                Traversal::Skip
             }
         }
     }
-    b.finish()
-}
 
-fn walk_expr(expr: &Sp<Expr>, b: &mut Builder<'_>) {
-    let (e, span) = expr;
-    match e {
-        Expr::Lam { params, body } => {
-            b.stack.push(*span);
-            for (pat, _) in params {
-                bind_pat(pat, SymbolKind::Parameter, b);
+    fn visit_decl_post(&mut self, _decl: &Sp<Decl>) {
+        self.stack.pop();
+    }
+
+    fn visit_expr_pre(&mut self, expr: &Sp<Expr>) -> Traversal {
+        use crate::visitor::walk_expr;
+        let span = expr.1;
+        match &expr.0 {
+            Expr::Lam { .. } => {
+                self.stack.push(span);
+                self.lam_depth += 1;
+                Traversal::Recurse
             }
-            walk_expr(body, b);
-            b.stack.pop();
-        }
-        Expr::Let { pat, rhs, body } => {
-            walk_expr(rhs, b);
-            b.stack.push(*span);
-            bind_pat(pat, SymbolKind::LocalBinding, b);
-            walk_expr(body, b);
-            b.stack.pop();
-        }
-        Expr::Bind { rhs, param, body } => {
-            walk_expr(rhs, b);
-            b.stack.push(*span);
-            b.insert_plain(param.0.clone(), SymbolKind::LocalBinding, param.1);
-            walk_expr(body, b);
-            b.stack.pop();
-        }
-        Expr::If { cond, then, else_ } => {
-            walk_expr(cond, b);
-            walk_expr(then, b);
-            walk_expr(else_, b);
-        }
-        Expr::Match { scrutinee, arms } => {
-            walk_expr(scrutinee, b);
-            for (pat, arm) in arms {
-                let arm_span = pat.1.start..arm.1.end;
-                b.stack.push(SimpleSpan::from(arm_span));
-                bind_pat(pat, SymbolKind::LocalBinding, b);
-                walk_expr(arm, b);
-                b.stack.pop();
+            // Binders whose scope starts after the rhs. The canonical walker
+            // visits the pattern first, which would shadow the rhs.
+            Expr::Let { pat, rhs, body } => {
+                walk_expr(self, rhs);
+                self.stack.push(span);
+                bind_pat(pat, SymbolKind::LocalBinding, self);
+                walk_expr(self, body);
+                self.stack.pop();
+                Traversal::Skip
             }
-        }
-        Expr::For { pat, iter, body } => {
-            walk_expr(iter, b);
-            b.stack.push(*span);
-            bind_pat(pat, SymbolKind::Parameter, b);
-            walk_expr(body, b);
-            b.stack.pop();
-        }
-        Expr::Borrow { bindings, body } => {
-            b.stack.push(*span);
-            for (name, _) in bindings {
-                b.insert_plain(name.0.clone(), SymbolKind::Parameter, name.1);
+            Expr::Bind { rhs, param, body } => {
+                walk_expr(self, rhs);
+                self.stack.push(span);
+                self.insert_plain(param.0.clone(), SymbolKind::LocalBinding, param.1);
+                walk_expr(self, body);
+                self.stack.pop();
+                Traversal::Skip
             }
-            walk_stmts(body, b);
-            b.stack.pop();
-        }
-        Expr::CircuitBlock(stmts) | Expr::RunBlock(stmts) => {
-            b.stack.push(*span);
-            walk_stmts(stmts, b);
-            b.stack.pop();
-        }
-        Expr::App(a, br)
-        | Expr::Compose(a, br)
-        | Expr::Par(a, br)
-        | Expr::GateApp {
-            gate: a,
-            qubits: br,
-            ..
-        } => {
-            walk_expr(a, b);
-            walk_expr(br, b);
-        }
-        Expr::ParN(elems) => {
-            for e in elems {
-                walk_expr(e, b);
+            Expr::Match { scrutinee, arms } => {
+                walk_expr(self, scrutinee);
+                for (pat, arm) in arms {
+                    let arm_span = pat.1.start..arm.1.end;
+                    self.stack.push(SimpleSpan::from(arm_span));
+                    bind_pat(pat, SymbolKind::LocalBinding, self);
+                    walk_expr(self, arm);
+                    self.stack.pop();
+                }
+                Traversal::Skip
             }
-        }
-        Expr::TypeApp { callee, .. } => walk_expr(callee, b),
-        Expr::BinOp { lhs, rhs, .. } => {
-            walk_expr(lhs, b);
-            walk_expr(rhs, b);
-        }
-        Expr::Neg(inner)
-        | Expr::Adjoint(inner)
-        | Expr::Controlled(inner)
-        | Expr::Return(inner)
-        | Expr::Ascribe(inner, _) => walk_expr(inner, b),
-        Expr::Tuple(es) | Expr::List(es) => {
-            for e in es {
-                walk_expr(e, b);
+            Expr::For { pat, iter, body } => {
+                walk_expr(self, iter);
+                self.stack.push(span);
+                bind_pat(pat, SymbolKind::Parameter, self);
+                walk_expr(self, body);
+                self.stack.pop();
+                Traversal::Skip
             }
+            Expr::Borrow { bindings, body } => {
+                self.stack.push(span);
+                for (name, _) in bindings {
+                    self.insert_plain(name.0.clone(), SymbolKind::Parameter, name.1);
+                }
+                self.index_stmt_block(body);
+                self.stack.pop();
+                Traversal::Skip
+            }
+            Expr::CircuitBlock(stmts) | Expr::RunBlock(stmts) => {
+                self.stack.push(span);
+                self.index_stmt_block(stmts);
+                self.stack.pop();
+                Traversal::Skip
+            }
+            // Remaining expressions, including variants added later, are
+            // reached by `visitor::walk_expr`. A new node fails to compile
+            // in that one match.
+            _ => Traversal::Recurse,
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(_) => {}
+    }
+
+    fn visit_expr_post(&mut self, expr: &Sp<Expr>) {
+        if matches!(expr.0, Expr::Lam { .. }) {
+            self.lam_depth -= 1;
+            self.stack.pop();
+        }
+    }
+
+    fn visit_pat_pre(&mut self, pat: &Sp<Pat>) -> Traversal {
+        if self.lam_depth > 0 {
+            bind_pat(pat, SymbolKind::Parameter, self);
+            // `bind_pat` already walks tuple patterns.
+            Traversal::Skip
+        } else {
+            Traversal::Recurse
+        }
     }
 }
 
-fn walk_stmts(stmts: &[Sp<Stmt>], b: &mut Builder<'_>) {
-    if stmts.is_empty() {
-        return;
-    }
-    let block_start = stmts.first().map(|(_, s)| s.start).unwrap_or(0);
-    let block_end = stmts.last().map(|(_, s)| s.end).unwrap_or(0);
-    b.stack.push(SimpleSpan::from(block_start..block_end));
-    for (stmt, _) in stmts {
-        match stmt {
-            Stmt::Bind { pat, rhs } | Stmt::Let { pat, rhs } => {
-                walk_expr(rhs, b);
-                bind_pat(pat, SymbolKind::LocalBinding, b);
-            }
-            Stmt::Expr(e) => walk_expr(e, b),
+impl Builder<'_> {
+    /// Statement lists introduce one scope for the block, then bind each
+    /// `let`/`<-` only after its rhs. The canonical statement walker visits
+    /// the pattern first, so this order stays local.
+    fn index_stmt_block(&mut self, stmts: &[Sp<Stmt>]) {
+        if stmts.is_empty() {
+            return;
         }
+        let block_start = stmts.first().map(|(_, s)| s.start).unwrap_or(0);
+        let block_end = stmts.last().map(|(_, s)| s.end).unwrap_or(0);
+        self.stack.push(SimpleSpan::from(block_start..block_end));
+        for (stmt, _) in stmts {
+            match stmt {
+                Stmt::Bind { pat, rhs } | Stmt::Let { pat, rhs } => {
+                    crate::visitor::walk_expr(self, rhs);
+                    bind_pat(pat, SymbolKind::LocalBinding, self);
+                }
+                Stmt::Expr(e) => crate::visitor::walk_expr(self, e),
+            }
+        }
+        self.stack.pop();
     }
-    b.stack.pop();
 }
 
 fn bind_pat(pat: &Sp<Pat>, kind: SymbolKind, b: &mut Builder<'_>) {
@@ -413,5 +417,30 @@ fn f(): Circuit<1, 1, 1, Clifford> = circuit {
             .find(|s| s.name == "g" && s.kind == SymbolKind::Function)
             .map(|s| s.id);
         assert_eq!(index.resolve_name_at("g", call), g);
+    }
+
+    #[test]
+    fn nested_let_on_rhs_stays_outside_the_binder_scope() {
+        // The rhs is indexed before the `let` scope is pushed, so the inner
+        // binding's parent is the function — not the `let x` scope. A walker
+        // that pushed first would resolve this `x` to the local.
+        let src = "fn f(x: Int): Int = let x = (let y = x in y) in x\n";
+        let decls = crate::desugar_program(src).expect("parse");
+        let index = build_symbol_index(&decls, src);
+        let rhs = src.find("= x").expect("rhs") + 2;
+        let body = src.rfind("in x").expect("body") + 3;
+        let param = index
+            .symbols
+            .iter()
+            .find(|s| s.name == "x" && s.kind == SymbolKind::Parameter)
+            .map(|s| s.id);
+        let local = index
+            .symbols
+            .iter()
+            .find(|s| s.name == "x" && s.kind == SymbolKind::LocalBinding)
+            .map(|s| s.id);
+        assert_ne!(param, local);
+        assert_eq!(index.resolve_name_at("x", rhs), param);
+        assert_eq!(index.resolve_name_at("x", body), local);
     }
 }
