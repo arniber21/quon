@@ -2652,11 +2652,7 @@ fn add_move_to_groups(groups: &mut Vec<SearchGroup>, mv: (Position, Position), m
     }
 }
 
-fn groups_cost(
-    groups: &[SearchGroup],
-    layer_atoms: usize,
-    cost_model: PlacementCostModel,
-) -> f64 {
+fn groups_cost(groups: &[SearchGroup], layer_atoms: usize, cost_model: PlacementCostModel) -> f64 {
     groups
         .iter()
         .map(|g| cost_model.group_cost(g, layer_atoms))
@@ -2841,9 +2837,10 @@ fn heuristic_estimate(
         }
         PlacementCostModel::ErrorBudget { .. } | PlacementCostModel::Weighted { .. } => {
             let layer_atoms = node.assigned.len().saturating_mul(2);
-            let max_cost_of_placed = node.groups.iter().fold(0.0_f64, |m, g| {
-                m.max(cost_model.group_cost(g, layer_atoms))
-            });
+            let max_cost_of_placed = node
+                .groups
+                .iter()
+                .fold(0.0_f64, |m, g| m.max(cost_model.group_cost(g, layer_atoms)));
             let mut max_cost_of_unplaced = 0.0_f64;
             for gate_candidates in &candidates[level..] {
                 let best = gate_candidates
