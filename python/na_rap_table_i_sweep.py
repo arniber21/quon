@@ -15,14 +15,13 @@ Scope: #304 (QASM ingestion)
 -----------------------------
 [RAP] Table I (Stade, Lin, Cong, Wille, ICCAD 2025, arXiv:2505.22715) reports
 several QASMBench/MQT Bench benchmark circuits at multiple qubit counts (see
-docs/neutral_atom/literature_notes.md's "[RAP]" section). Quon has no QASM
-*ingestion* path (only OpenQASM *emission* for fixed targets) — issue #304
-tracks that gap and is **not implemented**. This script therefore sweeps only
-the `ising` rows, which are hand-authored Quon fixtures
-(`test/na/ising_n42.qn`, `test/na/ising_n98.qn`) rather than vendored QASM.
-Do **not** add non-`ising` Table I rows here without #304 landing first — see
-docs/neutral_atom/rap_table_i_methodology.md's "#304 scope gap" section for
-the full rationale.
+docs/neutral_atom/literature_notes.md's "[RAP]" section). Issue #304 landed
+the neutral-atom ingestion path (`test/na/ising_n42.qasm` compiles through
+`quonc`). This sweep still runs the hand-authored `.qn` ising rows
+(`test/na/ising_n42.qn`, `test/na/ising_n98.qn`). The paper's other
+benchmark circuits are not vendored here. Do **not** add non-`ising` Table I
+rows without a checked-in QASM fixture and the same pre-flight comparison
+the ising twin uses — see docs/neutral_atom/rap_table_i_methodology.md.
 
 CI status
 ---------
@@ -482,7 +481,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description=(
             "RAP Table I full sweep (issue #306): both --na-placer modes over "
             "every checked-in ising row, emitting one qmap-comparable CSV. "
-            "See this file's module docstring for the #304 scope-gap rationale."
+            "See this file's module docstring for why non-ising rows are not swept."
         ),
         epilog="""
 Examples

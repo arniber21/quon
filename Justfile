@@ -203,10 +203,11 @@ rap-table-i:
 # qmap-comparable CSV. Local-only — `ising_n98`'s routing-aware cell alone is
 # a double-digit-second run, too slow for the hosted-runner gate (unlike n42,
 # which ci-rust now enforces per #111 Phase-2b). Needs a release quonc
-# (`cargo build --release -p quonc`) for reasonable wall time. #304 (QASM
-# ingestion) is not implemented, so only the `ising` rows are swept — see
-# python/na_rap_table_i_sweep.py's module docstring and
-# docs/neutral_atom/rap_table_i_methodology.md for the full scope rationale.
+# (`cargo build --release -p quonc`) for reasonable wall time. #304 landed
+# OpenQASM ingestion; this recipe still sweeps the hand-authored `.qn` ising
+# rows. Non-ising Table I circuits are not vendored — see
+# python/na_rap_table_i_sweep.py and
+# docs/neutral_atom/rap_table_i_methodology.md.
 na-rap-sweep:
     #!/usr/bin/env bash
     set -euo pipefail

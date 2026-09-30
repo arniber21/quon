@@ -8,7 +8,8 @@ expected outcome distribution -> pass/fail. Four adapters sit behind that
 seam, in the order data flows through them:
 
     1. Compile          `compile_to_qasm`      resolve QUONC, invoke quonc
-    2. Dialect normalize `load_circuit`         quonc QASM -> Qiskit circuit
+    2. Dialect normalize `to_qiskit_circuit`   quonc QASM -> Qiskit circuit
+       (`load_circuit` is the same function)
     3. Simulate          `run_on_aer`           Aer (shots, seed, noise)
     4. Oracle            `verify_distribution`  compare counts to a reference
 
@@ -216,15 +217,17 @@ def normalize_bit_int_conditions(qasm_src: str) -> str:
     return _BIT_INT_CONDITION.sub(replace, qasm_src)
 
 
-def load_circuit(qasm_src: str):
-    """The only supported bridge from quonc's OpenQASM 3 to a Qiskit circuit.
+def to_qiskit_circuit(qasm_src: str):
+    """Load quonc OpenQASM 3 as a Qiskit `QuantumCircuit` (issue #197).
 
-    Applies `normalize_bit_int_conditions` before handing the source to
-    `qiskit.qasm3.loads`; raw `qasm3.loads(qasm_src)` without that step is
-    unsupported (see module docstring). Falls back to `measure_all()` only
-    for a purely unitary circuit with no classical bits, since quonc emits
-    explicit `measure` statements into a `bit[m] c;` register whenever the
-    source measures anything.
+    This is the export helper for hybrid workflows. It applies
+    `normalize_bit_int_conditions` before `qiskit.qasm3.loads`. Raw
+    `qasm3.loads` without that step is unsupported: quonc emits spec-valid
+    `c[i] == 1` integer conditions that Qiskit's indexed-bit grammar rejects.
+
+    Falls back to `measure_all()` only for a purely unitary circuit with no
+    classical bits. When the Quon program measures, quonc already emits
+    `c[i] = measure q[j]` into a `bit[m] c;` register.
     """
     try:
         from qiskit import qasm3
@@ -243,6 +246,14 @@ def load_circuit(qasm_src: str):
     if circuit.num_clbits == 0:
         circuit.measure_all()
     return circuit
+
+
+def load_circuit(qasm_src: str):
+    """Same bridge as [`to_qiskit_circuit`].
+
+    Kept for callers and tests that already use this name (issue #204).
+    """
+    return to_qiskit_circuit(qasm_src)
 
 
 # ---------------------------------------------------------------------------
