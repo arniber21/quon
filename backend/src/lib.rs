@@ -16,11 +16,13 @@ pub mod gates;
 pub mod generic_openqasm;
 pub mod json;
 pub mod keys;
+pub mod qasm_hardware;
 pub mod target;
 pub mod unitary;
 
 pub use descriptor::TargetDescriptor;
 pub use error::BackendError;
+pub use qasm_hardware::{HardwareQasmError, validate_hardware_qasm};
 pub use target::{
     AodMovement, AodMovementModel, AodSpeedModel, AodSpeedModelKind, BackendTarget,
     ConnectivityGraph, FixedTarget, GateOp, NativeGate, NeutralAtomCostModel,

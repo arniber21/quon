@@ -13,8 +13,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use backend::BackendTarget;
-use melior::ir::attribute::{FloatAttribute, StringAttribute};
+use backend::{BackendTarget, HardwareQasmError, validate_hardware_qasm};
+use melior::ir::attribute::{BoolAttribute, FloatAttribute, StringAttribute};
 use melior::ir::operation::OperationLike;
 use melior::ir::{BlockLike, BlockRef, Module, OperationRef, RegionLike, Value, ValueLike};
 use quon_core::qasm::{self, BitId, Program, QasmGate, QubitId, Stmt};
@@ -54,6 +54,10 @@ pub enum EmitError {
     /// The typed QASM builder rejected an invalid statement.
     #[error("invalid QASM program: {0}")]
     InvalidProgram(#[from] qasm::QasmError),
+    /// The reified program violates the fixed target's coupling map, native
+    /// gate set, or dynamic-circuit capability flags (issue #499).
+    #[error("{0}")]
+    HardwareInvalid(#[from] HardwareQasmError),
 }
 
 // ─── Melior helpers (mirror lowering.rs) ─────────────────────────────
@@ -79,6 +83,11 @@ fn read_string_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(
     StringAttribute::try_from(value)
         .ok()
         .map(|s| s.value().to_string())
+}
+
+fn read_bool_attr<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O, key: &str) -> Option<bool> {
+    let value = operation.attribute(key).ok()?;
+    BoolAttribute::try_from(value).ok().map(|attr| attr.value())
 }
 
 fn read_angle<'c: 'a, 'a, O: OperationLike<'c, 'a>>(operation: &O) -> f64 {
@@ -248,6 +257,11 @@ impl Reifier<'_> {
                 quantum_circ::op::GATE => {
                     let gate_name = read_string_attr(&current, quantum_circ::attr::GATE_NAME)
                         .unwrap_or_default();
+                    // Decomposition sets `native_gate=true` on gates it keeps.
+                    // An explicit false means a non-native op survived (issue #499).
+                    if read_bool_attr(&current, quantum_dynamic::attr::NATIVE_GATE) == Some(false) {
+                        return Err(self.unsupported(&gate_name));
+                    }
                     let operands = qubit_operands(current);
                     let qs = operands
                         .iter()
@@ -436,6 +450,15 @@ pub fn reify(module: &Module, target: &BackendTarget) -> Result<Program, EmitErr
 }
 
 /// Emit OpenQASM 3.0 text for a lowered module on `target`.
+///
+/// Fixed targets are checked against the coupling map, native gate set, and
+/// dynamic-circuit flags before any text is returned (issue #499). Neutral-atom
+/// targets do not emit OpenQASM; this function still renders a reified program
+/// for them and skips the fixed-target check.
 pub fn emit(module: &Module, target: &BackendTarget) -> Result<String, EmitError> {
-    Ok(qasm::render(&reify(module, target)?))
+    let program = reify(module, target)?;
+    if let Some(fixed) = target.fixed_target() {
+        validate_hardware_qasm(&program, fixed)?;
+    }
+    Ok(qasm::render(&program))
 }
