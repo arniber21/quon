@@ -1,0 +1,24 @@
+-- Experimental circuit stdlib: 1-bit phase-estimation building blocks (issue #195).
+--
+-- Stability: experimental. Compile with
+-- `quonc --include stdlib/phase_estimation.qn <program>.qn`. See stdlib/README.md.
+--
+-- `qpe_1bit` estimates the phase of U = CZ on eigenstate |1> (phi = 1/2)
+-- with one counting qubit. The inverse QFT on that qubit is a single H.
+--
+-- Multi-bit QPE is not in this module. `stdlib/qft.qn` uses a controlled-Rz
+-- half-angle convention that does not match standard QPE phase kickback, and
+-- bare `Rz` inside a `circuit` block does not accept a literal expression.
+-- Iterative QPE's dynamic `if` is also outside this file.
+
+fn prep_eigenstate_1(): Circuit<2, 2, 1, Clifford> = circuit { X @0 }
+
+fn counting_hadamard(): Circuit<2, 2, 1, Clifford> = circuit { H @1 }
+
+fn phase_kickback_cz(): Circuit<2, 2, 1, Clifford> = circuit { CZ @(1, 0) }
+
+fn qpe_1bit(): Circuit<2, 2, 4, Clifford> =
+    prep_eigenstate_1()
+    |> counting_hadamard()
+    |> phase_kickback_cz()
+    |> counting_hadamard()

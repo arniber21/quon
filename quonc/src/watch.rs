@@ -63,6 +63,7 @@ pub fn is_relevant_event(event: &notify::Event) -> bool {
 /// Run the watch loop until interrupted or a fatal watcher error occurs.
 pub fn run_watch_loop(
     source: PathBuf,
+    extra_paths: &[PathBuf],
     target_path: Option<PathBuf>,
     debounce_ms: u64,
     make_request: impl Fn() -> Result<CompileRequest>,
@@ -70,6 +71,7 @@ pub fn run_watch_loop(
     mut on_success: impl FnMut(&CompileReport, Option<&MetricsSnapshot>, Option<&ComparisonReport>),
 ) -> Result<()> {
     let watch_paths: Vec<PathBuf> = std::iter::once(source.clone())
+        .chain(extra_paths.iter().cloned())
         .chain(target_path.clone())
         .collect();
 
@@ -87,6 +89,11 @@ pub fn run_watch_loop(
         .with_context(|| format!("watching {}", source.display()))?;
     if let Some(parent) = source.parent() {
         let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
+    }
+    for path in extra_paths {
+        watcher
+            .watch(path, RecursiveMode::NonRecursive)
+            .with_context(|| format!("watching {}", path.display()))?;
     }
     if let Some(ref target) = target_path {
         let _ = watcher.watch(target, RecursiveMode::NonRecursive);

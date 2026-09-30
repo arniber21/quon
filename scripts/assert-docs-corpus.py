@@ -174,7 +174,7 @@ KNOWN_TOP_DIRS = {
     "test", "samples", "scripts", "docs", "website", "frontend", "mlir_bridge",
     "backend", "quonc", "quon_core", "quon_lsp", "quonfmt", "quonlint",
     "quon_qec", "quon_na", "flux_verify", "examples", "targets", "python",
-    ".github", ".taskless", "bench", "extensions", "nix", "packaging",
+    ".github", ".taskless", "bench", "extensions", "nix", "packaging", "stdlib",
 }
 
 

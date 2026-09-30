@@ -1,0 +1,11 @@
+-- 1-bit phase estimation from stdlib/phase_estimation.qn (issue #195).
+--
+-- `qpe_1bit` prepares |1>, kicks CZ's phase onto the counting qubit, and
+-- closes with H. Expected bits: counting = 1 (phi = 1/2), eigenstate = 1.
+
+fn main(): Q<(Bit, Bit)> = run {
+    (eigen, counting) <- qpe_1bit() @ qreg(2)
+    b0 <- measure(eigen)
+    b1 <- measure(counting)
+    return (b1, b0)
+}

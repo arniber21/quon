@@ -1,0 +1,19 @@
+-- Bernstein–Vazirani for secret 101, oracle from stdlib/oracles.qn (issue #195).
+--
+-- The stdlib oracle is the CNOT ladder for bits 0 and 2. This sample is the
+-- Hadamard sandwich around it. Expected query bits: 1,0,1.
+
+fn prep(): Circuit<4, 4, 5, Clifford> = circuit {
+    X @3 |> H @0 |> H @1 |> H @2 |> H @3
+}
+
+fn uncompute_query(): Circuit<4, 4, 3, Clifford> = circuit {
+    H @0 |> H @1 |> H @2
+}
+
+fn bv_101(): Circuit<4, 4, 10, Clifford> = prep() |> bv_oracle_101() |> uncompute_query()
+
+fn main(): Q<List<Bit>> = run {
+    q <- bv_101() @ qreg(4)
+    measure_all(q)
+}

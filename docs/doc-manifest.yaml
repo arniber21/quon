@@ -244,6 +244,9 @@ pages:
   - page: website/src/content/docs/reference/quonc.md
     checks: [commands, links]
     examples: []
+  - page: website/src/content/docs/reference/stdlib.md
+    checks: [commands, links]
+    examples: []
   - page: website/src/content/docs/why-quon/philosophy.md
     checks: [commands, links]
     examples: []

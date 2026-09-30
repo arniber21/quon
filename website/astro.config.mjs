@@ -105,6 +105,7 @@ export default defineConfig({
 						{ label: 'Feature support matrix', slug: 'reference/support-matrix' },
 						{ label: 'Language reference', slug: 'reference/language' },
 						{ label: 'quonc CLI', slug: 'reference/quonc' },
+						{ label: 'Circuit stdlib', slug: 'reference/stdlib' },
 						{ label: 'Compiler pipeline', slug: 'reference/compiler' },
 						{ label: 'Diagnostic catalog', slug: 'reference/diagnostics' },
 						{ label: 'Backend targets and artifacts', slug: 'reference/backend-targets' },

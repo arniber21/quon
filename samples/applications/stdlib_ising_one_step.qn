@@ -1,0 +1,8 @@
+-- One Trotter step of stdlib/ising.qn on a 3-qubit open chain (issue #195).
+--
+-- A second instantiation (n=3, n_steps=1, t=0) beside the n=4, 3-step sample.
+
+fn main(): Q<List<Bit>> = run {
+    q <- ising_evolve(3, 0.5, 0.2, 0.0, 1) @ qreg(3)
+    measure_all(q)
+}

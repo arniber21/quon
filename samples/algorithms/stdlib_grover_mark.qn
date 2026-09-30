@@ -1,0 +1,15 @@
+-- Apply stdlib/oracles.qn's |11> phase mark after a Hadamard layer (issue #195).
+--
+-- This is the oracle piece of Grover, not a full diffusion iterate. The mark
+-- is the fixed circuit `grover_mark_11`.
+
+fn hadamards(): Circuit<2, 2, 2, Clifford> = circuit {
+    H @0 |> H @1
+}
+
+fn mark_from_plus(): Circuit<2, 2, 3, Clifford> = hadamards() |> grover_mark_11()
+
+fn main(): Q<List<Bit>> = run {
+    q <- mark_from_plus() @ qreg(2)
+    measure_all(q)
+}

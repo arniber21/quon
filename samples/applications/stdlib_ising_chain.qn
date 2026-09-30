@@ -1,0 +1,10 @@
+-- Open-chain Ising evolution from stdlib/ising.qn at n=4, t=0 (issue #195).
+--
+-- t=0 makes every rotation angle 0, so the Trotter circuit is the identity
+-- and the measurement is all zeros. Same boundary as test/verify/ising.qn;
+-- the fragments live in the stdlib.
+
+fn main(): Q<List<Bit>> = run {
+    q <- ising_evolve(4, 1.0, 1.0, 0.0, 3) @ qreg(4)
+    measure_all(q)
+}

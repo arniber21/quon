@@ -1,0 +1,13 @@
+-- Phase-kickback block from stdlib/phase_estimation.qn, without the full QPE (issue #195).
+--
+-- Shows the counting-qubit Hadamard composed with `phase_kickback_cz` on
+-- its own, which is the piece multi-bit QPE would repeat at each bit.
+
+fn kick(): Circuit<2, 2, 2, Clifford> = counting_hadamard() |> phase_kickback_cz()
+
+fn main(): Q<(Bit, Bit)> = run {
+    (eigen, counting) <- kick() @ qreg(2)
+    b0 <- measure(eigen)
+    b1 <- measure(counting)
+    return (b0, b1)
+}

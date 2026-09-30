@@ -1,0 +1,15 @@
+-- QFT round trip at n=3 using stdlib/qft.qn (issue #195).
+--
+-- The transform itself lives in the experimental stdlib. This sample only
+-- prepares |101> and applies qft then its adjoint. At a correct inverse the
+-- measurement is 1,0,1 with probability 1.
+
+fn prep_101(): Circuit<3, 3, 2, Clifford> = circuit {
+    X @0 |> X @2
+}
+
+fn main(): Q<List<Bit>> = run {
+    q  <- prep_101() @ qreg(3)
+    q2 <- qft_roundtrip(3) @ q
+    measure_all(q2)
+}

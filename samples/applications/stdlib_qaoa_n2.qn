@@ -1,0 +1,10 @@
+-- Unweighted QAOA p=1 at n=2 using stdlib/qaoa.qn (issue #195).
+--
+-- A second width from the K3 sample, so `qaoa_layer` is specialized at n=2
+-- (one unordered pair of ordered pairs from `pairs(2)`).
+
+fn main(): Q<List<Bit>> = run {
+    q  <- hadamard_all(2) @ qreg(2)
+    q2 <- qaoa_layer(2, 0.5, 0.8) @ q
+    measure_all(q2)
+}
