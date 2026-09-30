@@ -39,6 +39,7 @@ use melior::pass::{ExternalPass, Pass, RunExternalPass, create_external};
 use melior::{Context, ContextRef, IrRewriter};
 use quon_core::DepthExpr;
 
+use crate::circ_extract::SeamError;
 use crate::dialect::quantum_circ::{self, attr};
 use crate::ffi::{self, PassContext};
 use crate::passes::{phase_polynomial, stabilizer_tableau};
@@ -156,12 +157,15 @@ fn extract_gate_list<'c, 'a>(
 ///
 /// Inserts new `quantum.circ.gate` ops before the return, rewires the
 /// return's operands, then erases all old gate ops in reverse order.
+///
+/// Returns `Err` without leaving a half-built body when a wire index, block
+/// argument, or gate builder is invalid. The caller declines the rewrite.
 fn rebuild_block<'c, 'a>(
     context: &'c Context,
     block: melior::ir::BlockRef<'c, 'a>,
     new_gates: &[(String, Vec<usize>)],
     n_qubits: usize,
-) {
+) -> Result<(), SeamError> {
     let rewriter = IrRewriter::new(context);
     let base = rewriter.as_rewriter_base();
 
@@ -182,35 +186,50 @@ fn rebuild_block<'c, 'a>(
         op = next;
     }
     let Some(return_op) = return_op else {
-        return;
+        return Err(SeamError::NoTerminator);
     };
+
+    for (_, targets) in new_gates {
+        for &index in targets {
+            if index >= n_qubits {
+                return Err(SeamError::WireOutOfRange { index, n_qubits });
+            }
+        }
+    }
 
     // Build new gates, inserting before the return op.
     let location = return_op.location();
-    let mut wires: Vec<Value<'c, 'a>> = (0..n_qubits)
-        .map(|i| {
-            Value::from(
-                block
-                    .argument(i)
-                    .unwrap_or_else(|_| unreachable!("block {i} has argument {i}")),
-            )
-        })
-        .collect();
+    let mut wires: Vec<Value<'c, 'a>> = Vec::with_capacity(n_qubits);
+    for index in 0..n_qubits {
+        let argument = block
+            .argument(index)
+            .map_err(|error| SeamError::Build(error.to_string()))?;
+        wires.push(Value::from(argument));
+    }
 
+    let mut inserted: Vec<OperationRef<'c, 'a>> = Vec::new();
     for (gate_name, targets) in new_gates {
         let operands: Vec<Value<'c, 'a>> = targets.iter().map(|&i| wires[i]).collect();
         let is_clifford = gate_is_clifford(gate_name);
-        let new_op = block.insert_operation_before(
-            return_op,
-            quantum_circ::gate(context, gate_name, 1, is_clifford, &operands, location)
-                .unwrap_or_else(|_| unreachable!("rebuilt gate builds")),
-        );
+        let built = quantum_circ::gate(context, gate_name, 1, is_clifford, &operands, location)
+            .map_err(|error| SeamError::Build(error.to_string()));
+        let built = match built {
+            Ok(operation) => operation,
+            Err(error) => {
+                erase_inserted(&base, &inserted);
+                return Err(error);
+            }
+        };
+        let new_op = block.insert_operation_before(return_op, built);
+        inserted.push(new_op);
         for (i, &target) in targets.iter().enumerate() {
-            wires[target] = Value::from(
-                new_op
-                    .result(i)
-                    .unwrap_or_else(|_| unreachable!("rebuilt result {i}")),
-            );
+            match new_op.result(i) {
+                Ok(result) => wires[target] = Value::from(result),
+                Err(error) => {
+                    erase_inserted(&base, &inserted);
+                    return Err(SeamError::Build(error.to_string()));
+                }
+            }
         }
     }
 
@@ -228,6 +247,13 @@ fn rebuild_block<'c, 'a>(
     // Erase old gate ops in reverse order (last gate first).
     for op in old_ops.into_iter().rev() {
         base.erase_op(op);
+    }
+    Ok(())
+}
+
+fn erase_inserted<'c, 'a>(base: &melior::RewriterBase<'c, '_>, inserted: &[OperationRef<'c, 'a>]) {
+    for op in inserted.iter().rev() {
+        base.erase_op(*op);
     }
 }
 
@@ -270,8 +296,12 @@ fn optimize_func<'c, 'a>(context: &'c Context, func: OperationRef<'c, 'a>) {
         return; // no improvement
     };
 
-    // Rebuild the block with the optimized gate list.
-    rebuild_block(context, block, &new_gates, n_qubits);
+    // Rebuild the block with the optimized gate list. A builder failure
+    // declines the rewrite and leaves the original body in place.
+    if let Err(error) = rebuild_block(context, block, &new_gates, n_qubits) {
+        eprintln!("warning: clifford_t_opt declined a rewrite: {error}");
+        return;
+    }
 
     // Recompute depth (ADR-0013: depth may change).
     if let DepthExpr::Nat(_) = read_depth_attr(&func) {
@@ -352,4 +382,68 @@ pub fn create_pass() -> Pass {
         "",
         &[],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rebuild_block;
+    use crate::circ_extract::SeamError;
+    use crate::dialect::quantum_circ as qc;
+
+    use melior::ir::operation::OperationLike;
+    use melior::ir::{Block, BlockLike, Location, Module, Region, RegionLike};
+
+    #[test]
+    fn rebuild_declines_out_of_range_wire_without_rewriting() {
+        let context = melior::Context::new();
+        qc::register_dialect(&context);
+        let location = Location::unknown(&context);
+        let qubit = qc::qubit_type(&context);
+        let block = Block::new(&[(qubit, location)]);
+        let wire = melior::ir::Value::from(block.argument(0).expect("arg"));
+        let gate = block
+            .append_operation(qc::gate(&context, "H", 1, true, &[wire], location).expect("gate"));
+        let out = melior::ir::Value::from(gate.result(0).expect("result"));
+        block.append_operation(qc::r#return(&[out], location).expect("return"));
+        let region = Region::new();
+        region.append_block(block);
+        let func = qc::func(
+            &context,
+            "main",
+            1,
+            1,
+            &quon_core::DepthExpr::Nat(1),
+            true,
+            region,
+            location,
+        )
+        .expect("func");
+        let module = Module::new(location);
+        module.body().append_operation(func);
+        let before = module.as_operation().to_string();
+
+        let body = module
+            .body()
+            .first_operation()
+            .expect("func")
+            .region(0)
+            .expect("region")
+            .first_block()
+            .expect("block");
+        let error = rebuild_block(&context, body, &[("X".to_string(), vec![5])], 1)
+            .expect_err("out-of-range wire");
+
+        assert_eq!(
+            error,
+            SeamError::WireOutOfRange {
+                index: 5,
+                n_qubits: 1
+            }
+        );
+        assert_eq!(
+            module.as_operation().to_string(),
+            before,
+            "a declined rebuild must leave the original gates in place"
+        );
+    }
 }
