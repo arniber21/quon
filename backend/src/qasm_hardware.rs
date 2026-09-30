@@ -14,6 +14,8 @@
 //! only. Coupling is a two-qubit constraint; a native three-qubit gate is not
 //! rewritten into edges here.
 
+#[cfg(feature = "flux")]
+use flux_rs::attrs::*;
 use quon_core::qasm::{Program, QasmGate, Stmt};
 use thiserror::Error;
 
@@ -66,6 +68,11 @@ pub fn validate_hardware_qasm(
     check_stmts(program.body(), target, false)
 }
 
+// `#[trusted]` under Flux: `match` on `quon_core::qasm::Stmt` makes flux-infer
+// panic (`invalid downcast Stmt` in `fold_unfold`). These functions carry no
+// refinement spec, so skipping the body loses no proof. Same workaround class
+// as ADR-0027.
+#[cfg_attr(feature = "flux", trusted)]
 fn check_stmts(
     stmts: &[Stmt],
     target: &FixedTarget,
@@ -108,6 +115,7 @@ fn check_stmts(
 }
 
 /// Index of the first statement in the trailing top-level measure run.
+#[cfg_attr(feature = "flux", trusted)]
 fn trailing_measure_start(stmts: &[Stmt]) -> usize {
     let mut index = stmts.len();
     while index > 0 && matches!(stmts[index - 1], Stmt::Measure { .. }) {
@@ -116,6 +124,7 @@ fn trailing_measure_start(stmts: &[Stmt]) -> usize {
     index
 }
 
+#[cfg_attr(feature = "flux", trusted)]
 fn check_gate(gate: QasmGate, target: &FixedTarget) -> Result<(), HardwareQasmError> {
     let keyword = gate.keyword();
     if !target.is_native(keyword) {
@@ -152,6 +161,7 @@ fn check_qubit(index: usize, target: &FixedTarget) -> Result<(), HardwareQasmErr
     }
 }
 
+#[cfg_attr(feature = "flux", trusted)]
 fn gate_qubits(gate: QasmGate) -> Vec<quon_core::qasm::QubitId> {
     match gate {
         QasmGate::One(_, q)
