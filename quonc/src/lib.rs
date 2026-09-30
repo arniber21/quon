@@ -9,6 +9,7 @@ pub mod emit;
 pub mod include;
 pub mod na_target;
 pub mod qasm;
+pub mod qec_emit;
 pub mod validation;
 pub mod watch;
 
