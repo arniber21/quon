@@ -72,7 +72,7 @@ LSP smoke tests are intentionally skipped by `cargo test --workspace` (they use 
 
 ## Taskless (ast-grep rules)
 
-[Taskless](https://github.com/taskless/skills) ships project-specific validation rules under `.taskless/rules/`. Rules are checked with ast-grep via the `@taskless/cli` package — no API auth required for `check`.
+[Taskless](https://github.com/taskless/skills) ships project-specific validation rules under `.taskless/rules/`. Rules are checked with ast-grep via the `@taskless/cli` package — no API auth required for `check`. CI and these commands pin `@taskless/cli@0.9.0`, the schema 3 CLI recorded in `.taskless/taskless.json`. `@latest` currently expects schema 7 and exits before checking.
 
 ### Prerequisites
 
@@ -82,13 +82,13 @@ LSP smoke tests are intentionally skipped by `cargo test --workspace` (they use 
 
 ```bash
 # Full workspace scan
-npx @taskless/cli@latest check
+npx @taskless/cli@0.9.0 check
 
 # Changed files only (e.g. before opening a PR)
-npx @taskless/cli@latest check $(git diff --name-only main...HEAD)
+npx @taskless/cli@0.9.0 check $(git diff --name-only main...HEAD)
 
 # JSON output (for agents / scripts)
-npx @taskless/cli@latest check --json
+npx @taskless/cli@0.9.0 check --json
 ```
 
 ### Add or change rules
@@ -98,7 +98,7 @@ npx @taskless/cli@latest check --json
 3. Verify a rule before committing:
 
    ```bash
-   npx @taskless/cli@latest rule verify <rule-id> --json
+   npx @taskless/cli@0.9.0 rule verify <rule-id> --json
    ```
 
 4. Re-run `check` against the codebase.
@@ -112,7 +112,7 @@ npx @taskless/cli@latest check --json
 Cursor and Claude Code hold thin stubs (`.cursor/skills/taskless/`, `.claude/skills/taskless/`) that delegate to `.taskless/skills/taskless/SKILL.md`. Re-install after upgrading the CLI:
 
 ```bash
-npx @taskless/cli@latest init --no-interactive
+npx @taskless/cli@0.9.0 init --no-interactive
 ```
 
 ### Rules in this repo
@@ -126,7 +126,7 @@ npx @taskless/cli@latest init --no-interactive
 
 Authoring conventions and error-handling rationale: [code-quality.md](./code-quality.md).
 
-When adding a rule, always add matching tests under `.taskless/rule-tests/` and run `npx @taskless/cli@latest rule verify <id> --json` before committing.
+When adding a rule, always add matching tests under `.taskless/rule-tests/` and run `npx @taskless/cli@0.9.0 rule verify <id> --json` before committing.
 
 ## Flux (refinement types)
 

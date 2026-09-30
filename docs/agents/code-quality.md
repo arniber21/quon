@@ -15,7 +15,7 @@ devbox run -- just test-ci
 That runs `ci-rust` (fmt, clippy, build, examples, tests with `QUON_REQUIRE_LIT`, Aer verify list), `ci-tooling`, and `ci-docs-assert`. Also run Taskless on your diff, and Flux when needed:
 
 1. **`just test-ci`** — CI-parity rust + tooling + validation-doc assert
-2. **Taskless** — `npx @taskless/cli@latest check $(git diff --name-only main...HEAD)` (or full scan)
+2. **Taskless** — `npx @taskless/cli@0.9.0 check $(git diff --name-only main...HEAD)` (or full scan)
 3. **Flux (if needed)** — `cargo flux -p flux_verify` when you touch refinement specs or the `flux` feature (see below)
 
 Day-to-day: `just doctor` then `just test-fast` (lit soft-skips without tools; no Aer).
