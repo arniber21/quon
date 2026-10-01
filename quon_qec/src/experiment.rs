@@ -486,9 +486,7 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
         measure_basis.as_str(),
     );
 
-    for (atom, &(x, y)) in block.atoms.iter().zip(block.coords.iter()) {
-        out.push_str(&format!("QUBIT_COORDS({x}, {y}) {}\n", atom.0));
-    }
+    stim_emit::emit_qubit_coords(&mut out, &block.atoms, &block.coords);
 
     // Prepare |0…0⟩ then optional data H for X-init / X-memory (|+⟩^n).
     let mut reset_ids = Vec::with_capacity(block.atoms.len());
@@ -647,9 +645,7 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
     stim_emit::emit_lattice_surgery_header(&mut out, distance, expanded.blocks.len());
 
     for block in &expanded.blocks {
-        for (atom, &(x, y)) in block.atoms.iter().zip(block.coords.iter()) {
-            out.push_str(&format!("QUBIT_COORDS({x}, {y}) {}\n", atom.0));
-        }
+        stim_emit::emit_qubit_coords(&mut out, &block.atoms, &block.coords);
     }
 
     let mut all_atoms: Vec<u32> = expanded
