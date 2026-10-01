@@ -478,15 +478,13 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
     }
 
     let mut out = String::new();
-    out.push_str(&format!(
-        "# Quon QEC experiment — structure only (no noise; ADR-0024)\n\
-         # family={} distance={} memory_rounds={} measure_basis={}\n\
-         # Note: surface uses serial Z-then-X expand (not Stim 4-layer FT schedule).\n",
+    stim_emit::emit_single_block_header(
+        &mut out,
         block.family.as_str(),
         block.distance,
         memory_rounds.len(),
         measure_basis.as_str(),
-    ));
+    );
 
     for (atom, &(x, y)) in block.atoms.iter().zip(block.coords.iter()) {
         out.push_str(&format!("QUBIT_COORDS({x}, {y}) {}\n", atom.0));
@@ -646,15 +644,7 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
     )?;
 
     let mut out = String::new();
-    out.push_str(&format!(
-        "# Quon QEC experiment — lattice-surgery CX structure (no noise; ADR-0019/0024)\n\
-         # family=surface distance={} blocks={} (L-shaped: control|ancilla / target)\n\
-         # Merge/ancilla outcomes → OBSERVABLE_INCLUDE via frame; not bare DETECTORs.\n\
-         # Stim merges use logical MPP (Horsman); NA schedules geometric seam CXs.\n\
-         # Note: simplified merge/split model; not Stim FT-distance claim.\n",
-        distance,
-        expanded.blocks.len(),
-    ));
+    stim_emit::emit_lattice_surgery_header(&mut out, distance, expanded.blocks.len());
 
     for block in &expanded.blocks {
         for (atom, &(x, y)) in block.atoms.iter().zip(block.coords.iter()) {

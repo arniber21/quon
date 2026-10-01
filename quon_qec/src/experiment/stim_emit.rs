@@ -9,10 +9,11 @@
 //! [`StimRoundEmitter::emit_single_block`] on the same registry. A new round
 //! kind is a new impl plus one arm in [`lattice_round_emitter`].
 //!
-//! Both builders share [`emit_reset_tick`] for the prepare-`R` / `TICK` line
-//! and [`emit_observable_include`] for `OBSERVABLE_INCLUDE` record offsets.
-//! Headers stay in the builders. Lattice surgery still appends frame-byproduct
-//! records after the shared observable line.
+//! Both builders share [`emit_reset_tick`] for the prepare-`R` / `TICK` line,
+//! [`emit_single_block_header`] / [`emit_lattice_surgery_header`] for the
+//! comment preamble, and [`emit_observable_include`] for `OBSERVABLE_INCLUDE`
+//! record offsets. `QUBIT_COORDS` stay in the builders. Lattice surgery still
+//! appends frame-byproduct records after the shared observable line.
 
 use std::collections::HashMap;
 
@@ -66,6 +67,35 @@ pub(crate) fn emit_observable_include(
     Ok(())
 }
 
+/// Write the single-block memory comment preamble.
+///
+/// The three lines match the checked-in Stim gold, including the surface
+/// schedule note on repetition circuits.
+pub(crate) fn emit_single_block_header(
+    out: &mut String,
+    family: &str,
+    distance: u32,
+    memory_rounds: usize,
+    measure_basis: &str,
+) {
+    out.push_str(&format!(
+        "# Quon QEC experiment — structure only (no noise; ADR-0024)\n\
+         # family={family} distance={distance} memory_rounds={memory_rounds} measure_basis={measure_basis}\n\
+         # Note: surface uses serial Z-then-X expand (not Stim 4-layer FT schedule).\n",
+    ));
+}
+
+/// Write the lattice-surgery CX comment preamble.
+pub(crate) fn emit_lattice_surgery_header(out: &mut String, distance: u32, blocks: usize) {
+    out.push_str(&format!(
+        "# Quon QEC experiment — lattice-surgery CX structure (no noise; ADR-0019/0024)\n\
+         # family=surface distance={distance} blocks={blocks} (L-shaped: control|ancilla / target)\n\
+         # Merge/ancilla outcomes → OBSERVABLE_INCLUDE via frame; not bare DETECTORs.\n\
+         # Stim merges use logical MPP (Horsman); NA schedules geometric seam CXs.\n\
+         # Note: simplified merge/split model; not Stim FT-distance claim.\n",
+    ));
+}
+
 /// Shared Stim state for one lattice-surgery circuit.
 ///
 /// Round impls append instructions and record byproduct handles. Measure
@@ -109,9 +139,10 @@ impl<'a> LatticeSurgeryCtx<'a> {
 
 /// Stim state for one single-block memory circuit.
 ///
-/// The builder still writes the header, the final measure line, and closing
-/// detectors. Round impls append construct locals, memory rounds, and the
-/// measure-logical record. [`emit_observable_include`] writes the observable.
+/// The builder still writes the final measure line and closing detectors.
+/// [`emit_single_block_header`] writes the comment preamble before this
+/// context exists. Round impls append construct locals, memory rounds, and
+/// the measure-logical record. [`emit_observable_include`] writes the observable.
 pub(crate) struct SingleBlockCtx<'a> {
     pub(crate) out: String,
     pub(crate) n_checks: usize,
@@ -749,5 +780,31 @@ mod tests {
             err,
             ExperimentError::MissingDataMeasurement { atom: 99 }
         ));
+    }
+
+    #[test]
+    fn single_block_header_matches_gold_preamble() {
+        let mut out = String::new();
+        emit_single_block_header(&mut out, "repetition", 3, 2, "z");
+        assert_eq!(
+            out,
+            "# Quon QEC experiment — structure only (no noise; ADR-0024)\n\
+             # family=repetition distance=3 memory_rounds=2 measure_basis=z\n\
+             # Note: surface uses serial Z-then-X expand (not Stim 4-layer FT schedule).\n"
+        );
+    }
+
+    #[test]
+    fn lattice_surgery_header_matches_gold_preamble() {
+        let mut out = String::new();
+        emit_lattice_surgery_header(&mut out, 3, 3);
+        assert_eq!(
+            out,
+            "# Quon QEC experiment — lattice-surgery CX structure (no noise; ADR-0019/0024)\n\
+             # family=surface distance=3 blocks=3 (L-shaped: control|ancilla / target)\n\
+             # Merge/ancilla outcomes → OBSERVABLE_INCLUDE via frame; not bare DETECTORs.\n\
+             # Stim merges use logical MPP (Horsman); NA schedules geometric seam CXs.\n\
+             # Note: simplified merge/split model; not Stim FT-distance claim.\n"
+        );
     }
 }
