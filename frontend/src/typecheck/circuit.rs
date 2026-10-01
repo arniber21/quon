@@ -124,6 +124,80 @@ pub fn is_specialisable_rotation(name: &str) -> bool {
 // generic `synth`/`check`/`expr_to_depth`/`depth_of` helpers (child-module access). Only the
 // methods the facade dispatches into are `pub(super)`; intra-circuit helpers stay private.
 
+/// Wires named by a `controlled(c) @ …` placement, plus the last index implied
+/// by the contiguous-start shorthand (when the body is `par` and only
+/// `(control, start)` was written).
+struct ControlledPlacement<'a> {
+    indices: Vec<&'a Sp<Expr>>,
+    implied_last: Option<u64>,
+}
+
+/// Reinterpret a controlled gate's `@` operand (issue #369).
+///
+/// Returns `None` when `gate` is not `controlled(...)` applied to a tuple, so
+/// the caller keeps the flat "one slot per qubit" rule. `Some(Err)` is a
+/// target-count mismatch under the controlled spelling.
+fn controlled_placement<'a>(
+    gate: &'a Expr,
+    qubits: &'a Sp<Expr>,
+    arity: u64,
+) -> Option<Result<ControlledPlacement<'a>, TypeError>> {
+    let Expr::Controlled(inner) = gate else {
+        return None;
+    };
+    let Expr::Tuple(items) = &qubits.0 else {
+        return None;
+    };
+    if items.is_empty() {
+        return None;
+    }
+    // `(control, target)` — `target` is one index, or a tuple of body wires.
+    // A longer tuple is the flat spelling `@(c, t1, t2, …)`.
+    let (indices, body_is_single_index) = if items.len() == 2 {
+        match &items[1].0 {
+            Expr::Tuple(body) => {
+                let mut indices = Vec::with_capacity(1 + body.len());
+                indices.push(&items[0]);
+                indices.extend(body.iter());
+                (indices, false)
+            }
+            _ => (vec![&items[0], &items[1]], true),
+        }
+    } else {
+        (items.iter().collect(), false)
+    };
+    if indices.len() as u64 == arity {
+        return Some(Ok(ControlledPlacement {
+            indices,
+            implied_last: None,
+        }));
+    }
+    // `controlled(par …) @(control, start)` occupies `start .. start + k`
+    // contiguously. The two written indices are control and that start.
+    // `start` must be a non-negative literal. Otherwise `implied_last` would
+    // stay unset (so `start + i` is never compared to the register width) and
+    // elaboration, which only rewrites `Expr::Int`, would leave every arm on
+    // `start`.
+    let par_body = matches!(inner.0, Expr::Par(_, _) | Expr::ParN(_));
+    if par_body && body_is_single_index && items.len() == 2 && arity > 2 && indices.len() == 2 {
+        let Some(start) = literal_index(indices[1]) else {
+            return Some(Err(TypeError::NonLiteralControlledStart {
+                span: indices[1].1,
+            }));
+        };
+        let implied_last = start.saturating_add(arity - 2);
+        return Some(Ok(ControlledPlacement {
+            indices,
+            implied_last: Some(implied_last),
+        }));
+    }
+    Some(Err(TypeError::GateTargetArity {
+        expected: arity,
+        found: indices.len(),
+        span: qubits.1,
+    }))
+}
+
 impl super::TypeChecker {
     /// View `ty` as a circuit, returning its four indices.
     fn as_circuit(
@@ -152,28 +226,49 @@ impl super::TypeChecker {
     /// Place a gate (`gate_ty : Circuit<g,g,d,C>`) onto qubit targets within the ambient
     /// register, yielding `Circuit<w,w,d,C>` (SPEC §5.6). The number of targets must equal
     /// the gate's arity, and each literal index must lie in `0..w`.
+    ///
+    /// `controlled(c) @ …` is the exception (issue #369). Its surface form is the pair
+    /// `(control, target)`, and `target` may itself be the body's wire tuple
+    /// (`@(0, (1, 2))`) or, for `par`, a single start index that occupies the next
+    /// `arity - 1` contiguous wires. Those spellings name `arity` qubits — the
+    /// controlled circuit's width — rather than `arity` flat tuple slots.
     pub(super) fn place_gate(
         &mut self,
         env: &Env,
         delta: &mut Delta,
+        gate: &Sp<Expr>,
         gate_ty: Ty,
         qubits: &Sp<Expr>,
     ) -> Result<Ty, TypeError> {
         let (gn, _, gd, gc) = self.as_circuit(&gate_ty, qubits.1)?;
         let arity = gn.as_const().unwrap_or(1);
-        let targets: Vec<&Sp<Expr>> = match &qubits.0 {
-            Expr::Tuple(es) => es.iter().collect(),
-            _ => vec![qubits],
+        let (targets, implied_last) = match controlled_placement(&gate.0, qubits, arity) {
+            Some(placed) => {
+                let placed = placed?;
+                (placed.indices, placed.implied_last)
+            }
+            None => {
+                let targets: Vec<&Sp<Expr>> = match &qubits.0 {
+                    Expr::Tuple(es) => es.iter().collect(),
+                    _ => vec![qubits],
+                };
+                if targets.len() as u64 != arity {
+                    return Err(TypeError::GateTargetArity {
+                        expected: arity,
+                        found: targets.len(),
+                        span: qubits.1,
+                    });
+                }
+                (targets, None)
+            }
         };
-        if targets.len() as u64 != arity {
-            return Err(TypeError::GateTargetArity {
-                expected: arity,
-                found: targets.len(),
-                span: qubits.1,
-            });
-        }
         let width = self.ambient_width(qubits.1)?;
-        let placement = self.placement_width(&width, &targets)?;
+        let mut placement = self.placement_width(&width, &targets)?;
+        if let Some(last) = implied_last
+            && let Some(p) = placement.as_const()
+        {
+            placement = DepthExpr::Nat(p.max(last.saturating_add(1)));
+        }
         for t in &targets {
             self.check(env, delta, t, &Ty::Int)?;
             if let (Some(w), Some(idx)) = (placement.as_const(), literal_index(t))
@@ -190,12 +285,15 @@ impl super::TypeChecker {
             && let (Some(p), Some(m)) = (placement.as_const(), cap.as_const())
             && p > m
         {
+            let written = targets.iter().filter_map(|t| literal_index(t)).max();
+            let index = match (written, implied_last) {
+                (Some(idx), Some(last)) => idx.max(last),
+                (Some(idx), None) => idx,
+                (None, Some(last)) => last,
+                (None, None) => 0,
+            };
             return Err(TypeError::IndexOutOfBounds {
-                index: targets
-                    .iter()
-                    .filter_map(|t| literal_index(t))
-                    .max()
-                    .unwrap_or(0),
+                index,
                 width: m,
                 span: qubits.1,
             });

@@ -33,6 +33,7 @@ use std::sync::Arc;
 
 use chumsky::span::SimpleSpan;
 use quon_core::DepthExpr;
+use quon_core::gates::surface_gate;
 use thiserror::Error;
 
 use crate::ast::{BinOp, Expr, LitPat, Pat, Stmt};
@@ -539,7 +540,8 @@ pub fn elaborate_circuit_body(
                 }
             }
             if let Expr::Controlled(inner) = &gate.0 {
-                let (control, target) = tuple2(&qubits)?;
+                let (control, target) = split_control_target(&qubits)?;
+                let target = singleton_target(target);
                 return decompose_controlled(
                     inner,
                     &control,
@@ -1178,6 +1180,145 @@ fn tuple2(qubits: &Sp<Expr>) -> Result<(Sp<Expr>, Sp<Expr>), ElabError> {
     }
 }
 
+/// Split `controlled(c) @ qubits` into the control wire and the body target.
+///
+/// `(control, target)` keeps `target` as written (an index or a nested tuple).
+/// A longer flat tuple `@(control, t1, t2, …)` is the same body wires without
+/// the inner parentheses.
+fn split_control_target(qubits: &Sp<Expr>) -> Result<(Sp<Expr>, Sp<Expr>), ElabError> {
+    match &qubits.0 {
+        Expr::Tuple(items) if items.len() == 2 => Ok((items[0].clone(), items[1].clone())),
+        Expr::Tuple(items) if items.len() > 2 => {
+            let body = (Expr::Tuple(items[1..].to_vec()), qubits.1);
+            Ok((items[0].clone(), body))
+        }
+        _ => Err(ElabError::unsupported(
+            "expected controlled placement `(control, target)`",
+            qubits.1,
+        )),
+    }
+}
+
+/// A one-element target tuple is just that element.
+fn singleton_target(target: Sp<Expr>) -> Sp<Expr> {
+    match &target.0 {
+        Expr::Tuple(items) if items.len() == 1 => items[0].clone(),
+        _ => target,
+    }
+}
+
+/// Body wires of a controlled placement: an explicit list, or one start index
+/// that expands contiguously.
+struct BodyWires {
+    explicit: Option<Vec<Sp<Expr>>>,
+    start: Option<Sp<Expr>>,
+}
+
+fn body_wires(target: &Sp<Expr>) -> BodyWires {
+    match &target.0 {
+        Expr::Tuple(items) if !items.is_empty() => BodyWires {
+            explicit: Some(items.clone()),
+            start: None,
+        },
+        _ => BodyWires {
+            explicit: None,
+            start: Some(target.clone()),
+        },
+    }
+}
+
+/// The `width` body wires beginning at `offset`.
+///
+/// Explicit tuples are sliced. A start index `s` yields `s+offset`, …,
+/// `s+offset+width-1` (a single index when `width` is 1).
+fn wire_slice(
+    wires: &BodyWires,
+    offset: i64,
+    width: i64,
+    span: SimpleSpan,
+) -> Result<Sp<Expr>, ElabError> {
+    if width <= 0 || offset < 0 {
+        return Err(ElabError::unsupported(
+            "controlled(par) arm with no wires",
+            span,
+        ));
+    }
+    if let Some(explicit) = &wires.explicit {
+        let start = offset as usize;
+        let end = start.saturating_add(width as usize);
+        if end > explicit.len() {
+            return Err(ElabError::unsupported(
+                "controlled(par) target tuple does not cover the body",
+                span,
+            ));
+        }
+        let slice = &explicit[start..end];
+        if slice.len() == 1 {
+            Ok(slice[0].clone())
+        } else {
+            Ok((Expr::Tuple(slice.to_vec()), span))
+        }
+    } else if let Some(start) = &wires.start {
+        // Shifting or expanding a non-literal leaves every arm on `start`
+        // (`shift_qubit_targets` only rewrites `Expr::Int`). Fail closed.
+        if (offset != 0 || width != 1) && !matches!(start.0, Expr::Int(n) if n >= 0) {
+            return Err(ElabError::unsupported(
+                "controlled(par) start index must be a non-negative literal",
+                start.1,
+            ));
+        }
+        if width == 1 {
+            return Ok(shift_qubit_targets(start, offset));
+        }
+        let mut items = Vec::with_capacity(width as usize);
+        for i in 0..width {
+            items.push(shift_qubit_targets(start, offset.saturating_add(i)));
+        }
+        Ok((Expr::Tuple(items), span))
+    } else {
+        Err(ElabError::unsupported(
+            "controlled(par) is missing its target",
+            span,
+        ))
+    }
+}
+
+/// How many body wires `elem` occupies. Named gates use their registry arity;
+/// anything else is the elaborated tree's highest index plus one (arms are
+/// indexed from 0).
+fn arm_wire_width(
+    elem: &Sp<Expr>,
+    classical_env: &ClassicalEnv,
+    ctx: &ElabCtx,
+    fuel: &mut u32,
+) -> Result<i64, ElabError> {
+    if let Some(width) = primitive_wire_count(&elem.0) {
+        return Ok(width);
+    }
+    let elaborated = elaborate_circuit_body(elem, classical_env, ctx, fuel)?;
+    Ok(max_qubit_index(&elaborated)
+        .map(|m| m as i64 + 1)
+        .unwrap_or(1))
+}
+
+fn primitive_wire_count(expr: &Expr) -> Option<i64> {
+    let name = match expr {
+        Expr::Var(name) => name.as_str(),
+        Expr::App(f, x) => {
+            let (head, args) = flatten_app(f, x);
+            if args.len() != 1 {
+                return None;
+            }
+            let Expr::Var(name) = &head.0 else {
+                return None;
+            };
+            name.as_str()
+        }
+        _ => return None,
+    };
+    surface_gate(name).map(|info| info.arity as i64)
+}
+
 fn gate_app(name: &str, qubit: &Sp<Expr>, span: chumsky::span::SimpleSpan) -> Sp<Expr> {
     (
         Expr::GateApp {
@@ -1289,19 +1430,20 @@ fn elaborate_named_callee(
     Ok(None)
 }
 
-/// `controlled(c) @ (control, target)` (SPEC §4.4 / issue #182).
+/// `controlled(c) @ (control, target)` (SPEC §4.4 / issue #182, #369).
 ///
 /// Control distributes over sequential composition and circuit blocks:
 /// `controlled(A |> B) = controlled(A) |> controlled(B)` on the same wires.
-/// `par { body } * k` expands to `k` controlled copies on contiguous targets
-/// `target, target+1, …` when `body` is width-1 (the only shape this path
-/// places with a 2-tuple `(control, target)` start). Clifford+T single-qubit
-/// generators and `Rx`/`Ry`/`Rz` use known decompositions into `CNOT`/`CZ`/
-/// `CY`/`Rz`/local singles. A controlled call to a *named parametric circuit*
-/// or a zero-arg circuit function (issue #374) is elaborated first — its
-/// `for`/`repeat`/`let`/nested-call structure unrolled into a concrete gate
-/// tree — then control distributes over the result. Anything else is a
-/// span-accurate [`ElabError::Unsupported`].
+/// `target` is either one start index — `par` then occupies the contiguous
+/// wires `target, target+1, …` — or an explicit tuple of body wires
+/// (`@(control, (t1, t2))`, or the flat `@(control, t1, t2)`). Each `par` arm
+/// consumes a slice of that tuple whose length is the arm's width.
+/// Clifford+T single-qubit generators and `Rx`/`Ry`/`Rz` use known
+/// decompositions into `CNOT`/`CZ`/`CY`/`Rz`/local singles. A controlled call
+/// to a *named parametric circuit* or a zero-arg circuit function (issue #374)
+/// is elaborated first — its `for`/`repeat`/`let`/nested-call structure
+/// unrolled into a concrete gate tree — then control distributes over the
+/// result. Anything else is a span-accurate [`ElabError::Unsupported`].
 fn decompose_controlled(
     inner: &Sp<Expr>,
     control: &Sp<Expr>,
@@ -1340,29 +1482,46 @@ fn decompose_controlled(
             if k == 0 {
                 return Ok(empty_circuit(span));
             }
-            // Width-1 body copies land on contiguous targets starting at `target`.
+            let width = arm_wire_width(body, classical_env, ctx, fuel)?;
+            let wires = body_wires(target);
+            if let Some(explicit) = &wires.explicit {
+                let need = k.saturating_mul(width);
+                if explicit.len() as i64 != need {
+                    return Err(fail(
+                        "controlled(par) target tuple does not match the body width",
+                    ));
+                }
+            }
             let mut composed = empty_circuit(span);
             for i in 0..k {
-                let t = shift_qubit_targets(target, i);
+                let t = wire_slice(&wires, i.saturating_mul(width), width, span)?;
                 let step = decompose_controlled(body, control, &t, classical_env, ctx, fuel, span)?;
                 composed = compose_nonempty(composed, step, span);
             }
             Ok(composed)
         }
         Expr::ParN(elems) => {
-            // `controlled(par { c₁, …, cₖ })` distributes control over each arm,
-            // each on a contiguous target slice. The arm's width (read from its
-            // elaborated gate tree) offsets the next arm's targets, mirroring the
-            // `Par` repeat arm. Falls back to the generic "unsupported" error if
-            // an arm is not a decomposable width-1 body.
+            // `controlled(par { c₁, …, cₖ })` distributes control over each arm.
+            // An explicit target tuple is sliced by each arm's width; a single
+            // start index lays the arms on contiguous wires. The width is the
+            // *body's* width (not the controlled decomposition, which also
+            // touches the control wire).
+            let wires = body_wires(target);
             let mut composed = empty_circuit(span);
             let mut offset = 0i64;
             for elem in elems {
-                let t = shift_qubit_targets(target, offset);
+                let w = arm_wire_width(elem, classical_env, ctx, fuel)?;
+                let t = wire_slice(&wires, offset, w, span)?;
                 let step = decompose_controlled(elem, control, &t, classical_env, ctx, fuel, span)?;
-                let w = max_qubit_index(&step).map(|m| m as i64 + 1).unwrap_or(1);
-                offset += w;
+                offset = offset.saturating_add(w);
                 composed = compose_nonempty(composed, step, span);
+            }
+            if let Some(explicit) = &wires.explicit
+                && offset != explicit.len() as i64
+            {
+                return Err(fail(
+                    "controlled(par) target tuple does not match the body width",
+                ));
             }
             Ok(composed)
         }
@@ -1488,6 +1647,16 @@ fn controlled_named_gate(
     _classical_env: &ClassicalEnv,
     span: SimpleSpan,
 ) -> Result<Sp<Expr>, ElabError> {
+    // Every decomposition below is a single-qubit generator on `target`. A
+    // tuple here would nest the control pair and silently drop body wires.
+    if matches!(&target.0, Expr::Tuple(items) if items.len() != 1) {
+        return Err(ElabError::unsupported(
+            "controlled() of a multi-qubit gate",
+            target.1,
+        ));
+    }
+    let target_owned = singleton_target(target.clone());
+    let target = &target_owned;
     let ct = control_target_tuple(control, target, span);
     let cnot = || cnot_app(ct.clone(), span);
     match (name, angle) {
@@ -1883,6 +2052,227 @@ mod controlled_tests {
         assert!(
             targets.iter().any(|t| t == &[0, 1]) && targets.iter().any(|t| t == &[0, 2]),
             "expected CNOT/CY-style pairs on (0,1) and (0,2), got {targets:?}"
+        );
+    }
+
+    fn placement_targets(expr: &Sp<Expr>) -> Vec<Vec<i64>> {
+        let placements = collect_gate_placements(expr).expect("placements");
+        placements
+            .iter()
+            .map(|(_, q)| match &q.0 {
+                Expr::Int(n) => vec![*n],
+                Expr::Tuple(items) => items
+                    .iter()
+                    .map(|i| match i.0 {
+                        Expr::Int(n) => n,
+                        _ => panic!("non-literal qubit"),
+                    })
+                    .collect(),
+                _ => panic!("bad qubit expr"),
+            })
+            .collect()
+    }
+
+    fn controlled_at(inner: Sp<Expr>, target: Sp<Expr>) -> Result<Sp<Expr>, ElabError> {
+        let ctx = empty_ctx();
+        let mut fuel = 10_000u32;
+        decompose_controlled(
+            &inner,
+            &lit_int(0),
+            &target,
+            &HashMap::new(),
+            &ctx,
+            &mut fuel,
+            no_span(),
+        )
+    }
+
+    fn cnot_operand_pairs(expr: &Sp<Expr>) -> Vec<Vec<i64>> {
+        let placements = collect_gate_placements(expr).expect("placements");
+        placements
+            .iter()
+            .filter(|(gate, _)| matches!(&gate.0, Expr::Var(name) if name == "CNOT"))
+            .map(|(_, qubits)| match &qubits.0 {
+                Expr::Tuple(items) => items
+                    .iter()
+                    .map(|item| match item.0 {
+                        Expr::Int(n) => n,
+                        _ => panic!("non-literal CNOT operand"),
+                    })
+                    .collect(),
+                _ => panic!("CNOT target is not a pair"),
+            })
+            .collect()
+    }
+
+    /// The surface spelling `@(0, (1, 2))` goes through `split_control_target`
+    /// (nested body tuple), not a target that was already split.
+    #[test]
+    fn controlled_parn_surface_nested_tuple_cnot_pairs() {
+        let h = (
+            Expr::GateApp {
+                gate: Box::new(var("H")),
+                qubits: Box::new(lit_int(0)),
+            },
+            no_span(),
+        );
+        let body = (Expr::ParN(vec![h.clone(), h]), no_span());
+        let qubits = (
+            Expr::Tuple(vec![
+                lit_int(0),
+                (Expr::Tuple(vec![lit_int(1), lit_int(2)]), no_span()),
+            ]),
+            no_span(),
+        );
+        let app = (
+            Expr::GateApp {
+                gate: Box::new((Expr::Controlled(Box::new(body)), no_span())),
+                qubits: Box::new(qubits),
+            },
+            no_span(),
+        );
+        let ctx = empty_ctx();
+        let mut fuel = 10_000u32;
+        let elaborated =
+            elaborate_circuit_body(&app, &HashMap::new(), &ctx, &mut fuel).expect("elaborate");
+        assert_eq!(
+            cnot_operand_pairs(&elaborated),
+            vec![vec![0, 1], vec![0, 2]]
+        );
+    }
+
+    /// Flat `@(0, 1, 2)` is the same wires without the inner parentheses.
+    #[test]
+    fn controlled_parn_surface_flat_tuple_cnot_pairs() {
+        let h = (
+            Expr::GateApp {
+                gate: Box::new(var("H")),
+                qubits: Box::new(lit_int(0)),
+            },
+            no_span(),
+        );
+        let body = (Expr::ParN(vec![h.clone(), h]), no_span());
+        let app = (
+            Expr::GateApp {
+                gate: Box::new((Expr::Controlled(Box::new(body)), no_span())),
+                qubits: Box::new((
+                    Expr::Tuple(vec![lit_int(0), lit_int(1), lit_int(2)]),
+                    no_span(),
+                )),
+            },
+            no_span(),
+        );
+        let ctx = empty_ctx();
+        let mut fuel = 10_000u32;
+        let elaborated =
+            elaborate_circuit_body(&app, &HashMap::new(), &ctx, &mut fuel).expect("elaborate");
+        assert_eq!(
+            cnot_operand_pairs(&elaborated),
+            vec![vec![0, 1], vec![0, 2]]
+        );
+    }
+
+    /// Contiguous `@(control, start)` with a literal start.
+    #[test]
+    fn controlled_par_surface_literal_start_cnot_pairs() {
+        let body = (
+            Expr::Par(Box::new(var("H")), Box::new(lit_int(2))),
+            no_span(),
+        );
+        let app = (
+            Expr::GateApp {
+                gate: Box::new((Expr::Controlled(Box::new(body)), no_span())),
+                qubits: Box::new((Expr::Tuple(vec![lit_int(0), lit_int(1)]), no_span())),
+            },
+            no_span(),
+        );
+        let ctx = empty_ctx();
+        let mut fuel = 10_000u32;
+        let elaborated =
+            elaborate_circuit_body(&app, &HashMap::new(), &ctx, &mut fuel).expect("elaborate");
+        assert_eq!(
+            cnot_operand_pairs(&elaborated),
+            vec![vec![0, 1], vec![0, 2]]
+        );
+    }
+
+    #[test]
+    fn controlled_par_non_literal_start_fails_closed() {
+        let body = (
+            Expr::Par(Box::new(var("H")), Box::new(lit_int(2))),
+            no_span(),
+        );
+        let err = controlled_at(body, var("s")).expect_err("symbolic start");
+        match err {
+            ElabError::Unsupported { construct, .. } => {
+                assert!(
+                    construct.contains("literal"),
+                    "expected a literal-start rejection, got {construct}"
+                );
+            }
+            other => panic!("unexpected {other}"),
+        }
+    }
+
+    /// Issue #369: `par { H @0, H @0 }` under `@(0, (1, 2))` places CH on
+    /// (0, 1) and (0, 2), not on a shifted copy of the whole tuple.
+    #[test]
+    fn controlled_parn_explicit_target_tuple() {
+        let h = (
+            Expr::GateApp {
+                gate: Box::new(var("H")),
+                qubits: Box::new(lit_int(0)),
+            },
+            no_span(),
+        );
+        let body = (Expr::ParN(vec![h.clone(), h]), no_span());
+        let target = (Expr::Tuple(vec![lit_int(1), lit_int(2)]), no_span());
+        let elaborated = controlled_at(body, target).expect("decompose parn");
+        let targets = placement_targets(&elaborated);
+        assert!(
+            targets.iter().any(|t| t == &[0, 1]) && targets.iter().any(|t| t == &[0, 2]),
+            "expected pairs on (0,1) and (0,2), got {targets:?}"
+        );
+        assert!(
+            !targets.iter().any(|t| t.contains(&3)),
+            "control wire must not inflate the arm offset, got {targets:?}"
+        );
+    }
+
+    /// A start index lays repeat-copies on contiguous wires, including when
+    /// the targets are not a prefix of `1, 2` (explicit tuple, non-contiguous).
+    #[test]
+    fn controlled_par_repeat_explicit_targets_need_not_be_contiguous() {
+        let body = (
+            Expr::Par(Box::new(var("H")), Box::new(lit_int(2))),
+            no_span(),
+        );
+        let target = (Expr::Tuple(vec![lit_int(1), lit_int(3)]), no_span());
+        let elaborated = controlled_at(body, target).expect("decompose par");
+        let targets = placement_targets(&elaborated);
+        assert!(
+            targets.iter().any(|t| t == &[0, 1]) && targets.iter().any(|t| t == &[0, 3]),
+            "expected pairs on (0,1) and (0,3), got {targets:?}"
+        );
+    }
+
+    /// ParN start-index layout offsets by the body's width, not by the
+    /// controlled step's max index (which includes the control wire).
+    #[test]
+    fn controlled_parn_start_index_is_contiguous() {
+        let h = (
+            Expr::GateApp {
+                gate: Box::new(var("H")),
+                qubits: Box::new(lit_int(0)),
+            },
+            no_span(),
+        );
+        let body = (Expr::ParN(vec![h.clone(), h]), no_span());
+        let elaborated = controlled_at(body, lit_int(1)).expect("decompose parn");
+        let targets = placement_targets(&elaborated);
+        assert!(
+            targets.iter().any(|t| t == &[0, 1]) && targets.iter().any(|t| t == &[0, 2]),
+            "expected pairs on (0,1) and (0,2), got {targets:?}"
         );
     }
 

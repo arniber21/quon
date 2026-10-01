@@ -201,6 +201,11 @@ pub enum TypeError {
     },
     /// QEC constructor distance is not a literal `Nat` (deferred specialization unsupported).
     NonLiteralQecDistance { span: SimpleSpan },
+    /// `controlled(par …) @(control, start)` names a contiguous run of body wires.
+    /// `start` has to be a non-negative integer literal: each implied index
+    /// `start + i` is bounds-checked, and elaboration only shifts `Expr::Int`.
+    /// A symbolic start would leave every arm on `start` and skip the width check.
+    NonLiteralControlledStart { span: SimpleSpan },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -250,6 +255,7 @@ impl TypeError {
             | TypeError::NonCliffordDistanceMismatch { span, .. }
             | TypeError::QecCtorRequiresDistance { span, .. }
             | TypeError::NonLiteralQecDistance { span }
+            | TypeError::NonLiteralControlledStart { span }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -296,6 +302,7 @@ impl TypeError {
             }
             TypeError::QecCtorRequiresDistance { .. } => DiagnosticCode::QEC_CTOR_REQUIRES_DISTANCE,
             TypeError::NonLiteralQecDistance { .. } => DiagnosticCode::QEC_NON_LITERAL_DISTANCE,
+            TypeError::NonLiteralControlledStart { .. } => DiagnosticCode::CIRCUIT_GATE_TARGET,
             TypeError::Unsupported { .. } => DiagnosticCode::UNSUPPORTED_QUANTUM,
         }
     }
@@ -522,6 +529,10 @@ impl fmt::Display for TypeError {
             TypeError::NonLiteralQecDistance { .. } => write!(
                 f,
                 "QEC constructor distance must be a literal Nat (e.g. `repetition_code<3>()`)"
+            ),
+            TypeError::NonLiteralControlledStart { .. } => write!(
+                f,
+                "controlled(par) @(control, start) requires a non-negative literal start index"
             ),
             TypeError::Unsupported { construct, .. } => write!(
                 f,

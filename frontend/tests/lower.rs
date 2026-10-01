@@ -87,6 +87,154 @@ fn bell_state_fixture_passes_linearity_verifier() {
     );
 }
 
+/// CNOT operand pairs in a lowered module, as qubit indices.
+///
+/// Each `quantum.circ.gate` is wire-preserving, so an SSA value stays on the
+/// block argument it was derived from. A second arm dropped, or both arms
+/// left on the same wire, changes this list.
+fn cnot_qubit_pairs(mlir: &str) -> Vec<(usize, usize)> {
+    let mut qubits: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut pairs = Vec::new();
+    for line in mlir.lines() {
+        let line = line.trim();
+        if let Some(args) = line.strip_prefix("^bb0(") {
+            qubits.clear();
+            let mut index = 0usize;
+            for part in args.split(',') {
+                let name = part
+                    .split(':')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_end_matches(')');
+                if let Some(rest) = name.strip_prefix("%arg") {
+                    let arg_index: usize = rest
+                        .parse()
+                        .unwrap_or_else(|_| panic!("bad block arg {name} in {line}"));
+                    assert_eq!(arg_index, index, "block args are not dense: {line}");
+                    qubits.insert(name.to_string(), index);
+                    index += 1;
+                }
+            }
+            continue;
+        }
+        if !line.contains("\"quantum.circ.gate\"") {
+            continue;
+        }
+        let (result, rest) = line
+            .split_once('=')
+            .unwrap_or_else(|| panic!("gate has no result: {line}"));
+        let open = rest
+            .find('(')
+            .unwrap_or_else(|| panic!("gate has no operands: {line}"));
+        let close = rest
+            .find(')')
+            .unwrap_or_else(|| panic!("gate operands are unclosed: {line}"));
+        let operands: Vec<&str> = rest[open + 1..close]
+            .split(',')
+            .map(str::trim)
+            .filter(|operand| !operand.is_empty())
+            .collect();
+        let gate_name = rest
+            .split("gate_name = \"")
+            .nth(1)
+            .and_then(|tail| tail.split('"').next())
+            .unwrap_or_else(|| panic!("gate has no name: {line}"));
+        let operand_qubits: Vec<usize> = operands
+            .iter()
+            .map(|operand| {
+                *qubits
+                    .get(*operand)
+                    .unwrap_or_else(|| panic!("unknown SSA {operand} in {line}\n{mlir}"))
+            })
+            .collect();
+        if gate_name == "CNOT" {
+            assert_eq!(operand_qubits.len(), 2, "CNOT arity in {line}");
+            pairs.push((operand_qubits[0], operand_qubits[1]));
+        }
+        let result_names = expand_gate_results(result.trim());
+        assert_eq!(
+            result_names.len(),
+            operand_qubits.len(),
+            "result/operand arity in {line}"
+        );
+        for (name, qubit) in result_names.into_iter().zip(operand_qubits) {
+            qubits.insert(name, qubit);
+        }
+    }
+    pairs
+}
+
+/// `%0` is one result; `%1:2` is `%1#0` and `%1#1`.
+fn expand_gate_results(result: &str) -> Vec<String> {
+    let Some((name, count)) = result.split_once(':') else {
+        return vec![result.to_string()];
+    };
+    let count: usize = count
+        .parse()
+        .unwrap_or_else(|_| panic!("bad result count in {result}"));
+    (0..count).map(|i| format!("{name}#{i}")).collect()
+}
+
+#[test]
+fn controlled_par_nested_targets_lower() {
+    // Surface spellings from the typechecker contract. Each controlled-H
+    // contributes one CNOT; the pairs are (control, arm target).
+    let programs = [
+        (
+            "nested",
+            "fn ctrl_layer(): Circuit<3, 3, 2, Clifford> = circuit {\n    \
+             (controlled(par { H @0, H @0 })) @(0, (1, 2))\n}",
+        ),
+        (
+            "flat",
+            "fn ctrl_layer(): Circuit<3, 3, 2, Clifford> = circuit {\n    \
+             controlled(par { H @0, H @0 }) @(0, 1, 2)\n}",
+        ),
+        (
+            "start",
+            "fn ctrl_layer(): Circuit<3, 3, 2, Clifford> = circuit {\n    \
+             controlled(par { H @0 } * 2) @(0, 1)\n}",
+        ),
+    ];
+    for (label, src) in programs {
+        let text = lower_text(src);
+        assert!(
+            text.contains(r#"sym_name = "ctrl_layer""#),
+            "{label} missing ctrl_layer: {text}"
+        );
+        assert!(
+            text.contains("in_qubits = 3") && text.contains("out_qubits = 3"),
+            "{label} expected a 3-qubit controlled par: {text}"
+        );
+        assert_eq!(
+            cnot_qubit_pairs(&text),
+            vec![(0, 1), (0, 2)],
+            "{label} CNOT pairs drifted: {text}"
+        );
+    }
+}
+
+#[test]
+fn controlled_par_multiqubit_arm_does_not_lower() {
+    let src = "\
+fn f(): Circuit<3, 3, 2, Clifford> = circuit {
+    controlled(par { CNOT @(0, 1) }) @(0, (1, 2))
+}
+";
+    let context = Context::new();
+    let err = lower_program(&context, src).expect_err("multi-qubit arm should not lower");
+    let text = err
+        .iter()
+        .map(|diag| diag.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("multi-qubit"),
+        "expected a multi-qubit elaboration failure, got {text}"
+    );
+}
+
 #[test]
 fn controlled_h_and_compose_lower() {
     // Issue #182: controlled(H) and controlled(H |> T) must elaborate under a
