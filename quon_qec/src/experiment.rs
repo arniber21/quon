@@ -493,11 +493,11 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
     }
 
     // Prepare |0…0⟩ then optional data H for X-init / X-memory (|+⟩^n).
-    out.push('R');
+    let mut reset_ids = Vec::with_capacity(block.atoms.len());
     for atom in &block.atoms {
-        out.push_str(&format!(" {}", atom.0));
+        reset_ids.push(atom.0);
     }
-    out.push_str("\nTICK\n");
+    stim_emit::emit_reset_tick(&mut out, &reset_ids);
 
     let z_check_indices: Vec<usize> = block
         .stabilizers
@@ -673,11 +673,7 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
         .collect();
     all_atoms.sort_unstable();
     all_atoms.dedup();
-    out.push('R');
-    for id in &all_atoms {
-        out.push_str(&format!(" {id}"));
-    }
-    out.push_str("\nTICK\n");
+    stim_emit::emit_reset_tick(&mut out, &all_atoms);
 
     // Round kinds append through [`stim_emit::StimRoundEmitter`]. Byproduct
     // handles and deferred measure-logical rounds come back out for observable
