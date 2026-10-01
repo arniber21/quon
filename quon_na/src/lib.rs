@@ -52,6 +52,7 @@ pub mod movement;
 #[cfg(feature = "mlir")]
 pub mod native_gate_decomp;
 pub mod naviz;
+pub mod objective;
 pub mod pipeline;
 pub mod placement;
 pub mod plan;
@@ -93,6 +94,12 @@ pub use movement::{
     MovementPlanError, MovementPlanResult, atom_moves_to_move_specs, check_entangling_geometry,
     ensure_interaction_pairs, legs_conflict, plan_aod_movement, try_transfer_into_occupied,
     verify_aod_legality, verify_entangling_geometry_predicates,
+};
+#[cfg(feature = "mlir")]
+pub use objective::objective_from_verified_schedule;
+pub use objective::{
+    ObjectiveError, PLACEHOLDER_COST_WEIGHTS, ScheduleObjective, group_weighted_cost,
+    orientation_cost, weighted_total,
 };
 pub use placement::{
     PlacementError, PlacementResult, PlacementStrategy, SITE_PITCH_UM, grid_dims, place,

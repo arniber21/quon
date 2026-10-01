@@ -437,6 +437,11 @@ pub struct ResourceReport {
     /// overlay was not applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub atom_loss_budget: Option<AtomLossBudget>,
+
+    /// §9 objective recomputed from the verified `quantum.na` schedule.
+    /// `None` until verification has run and the overlay is applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_objective: Option<crate::objective::ScheduleObjective>,
 }
 
 impl Default for ResourceReport {
@@ -482,6 +487,7 @@ impl Default for ResourceReport {
             gate_fidelity_product: None,
             estimated_fidelity: None,
             atom_loss_budget: None,
+            schedule_objective: None,
         }
     }
 }
@@ -1085,6 +1091,15 @@ impl ResourceReport {
         self.schedule_optimality = Some(optimality);
         self
     }
+
+    /// Attach the §9 objective computed from a verified `quantum.na` schedule.
+    pub fn with_schedule_objective(
+        mut self,
+        objective: crate::objective::ScheduleObjective,
+    ) -> Self {
+        self.schedule_objective = Some(objective);
+        self
+    }
 }
 
 /// Build a report from layers with optional QEC or physical-atom sizing.
@@ -1383,6 +1398,36 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
             }
             out.push('\n');
         }
+    }
+
+    if let Some(objective) = &report.schedule_objective {
+        out.push_str("## Schedule objective (verified quantum.na)\n");
+        out.push_str("| Component | Count | Weight |\n");
+        out.push_str("| --- | ---: | ---: |\n");
+        out.push_str(&format!(
+            "| Rydberg stages | {} | {} |\n",
+            objective.rydberg_stages,
+            format_contribution(objective.rydberg_stage_weight)
+        ));
+        out.push_str(&format!(
+            "| Movement time (µs) | {} | {} |\n",
+            objective.movement_time_us,
+            format_contribution(objective.movement_time_weight)
+        ));
+        out.push_str(&format!(
+            "| Trap transfers | {} | {} |\n",
+            objective.trap_transfers,
+            format_contribution(objective.trap_transfer_weight)
+        ));
+        out.push_str(&format!(
+            "| Idle time (µs) | {} | {} |\n",
+            objective.idle_time_us,
+            format_contribution(objective.idle_time_weight)
+        ));
+        out.push_str(&format!(
+            "| Total | | {} |\n\n",
+            format_contribution(objective.total)
+        ));
     }
 
     out.push_str("## Notes\n");

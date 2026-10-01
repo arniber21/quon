@@ -35,8 +35,8 @@ use quon_na::{
     DeclaredArchitecture, GraphScheduleRequest, InteractionGraph, NaBackendKind, NaScheduleOptions,
     NaScheduleView, NaScheduleViewMeta, NaStats, NeutralAtomLayout, PlacementStrategy, PlacerMode,
     ResourceReport, ScheduleLayer, ScheduleLowerParams, ScheduleSpec, ScheduleViewZone,
-    dump_schedule_text, lower_schedule, run_from_graph, run_from_module, run_from_qec_workload,
-    verify_emitted_schedule,
+    dump_schedule_text, lower_schedule, objective_from_verified_schedule, run_from_graph,
+    run_from_module, run_from_qec_workload, verify_emitted_schedule,
 };
 
 /// Inputs for one compile invocation.
@@ -328,11 +328,15 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 request.verify_na,
                 qec_backed,
             )?;
+            let mut resource_report = artifacts.resource_report;
+            if should_verify_na(request.verify_na, qec_backed) {
+                resource_report =
+                    verified_schedule_objective(resource_report, &schedule_spec, &na.cost_model)?;
+            }
             let circuit_metrics = CircuitMetrics {
-                depth: artifacts.resource_report.estimated_cycles,
-                depth_bound: Some(artifacts.resource_report.estimated_cycles.to_string()),
-                gate_count: artifacts.resource_report.entangle2_count
-                    + artifacts.resource_report.entangle_n_count,
+                depth: resource_report.estimated_cycles,
+                depth_bound: Some(resource_report.estimated_cycles.to_string()),
+                gate_count: resource_report.entangle2_count + resource_report.entangle_n_count,
                 t_count: 0,
                 qubit_count: artifacts.logical_qubits,
                 swap_count: 0,
@@ -343,7 +347,7 @@ fn compile_inner(request: &CompileRequest) -> Result<CompileArtifacts, String> {
                 na_layout: artifacts.request.layout.clone(),
                 na_graph: Some(artifacts.request.graph.clone()),
                 na_schedule_spec: Some(schedule_spec),
-                resource_report: Some(artifacts.resource_report),
+                resource_report: Some(resource_report),
                 na_stats,
                 na_logical_qubits: Some(artifacts.logical_qubits),
                 qec_backed,
@@ -421,11 +425,15 @@ fn compile_qasm(request: &CompileRequest) -> Result<CompileArtifacts, String> {
     let declared =
         declared_architecture(na, artifacts.request.layout.as_ref(), request.na_backend)?;
     maybe_verify_na_schedule(&schedule_spec, Some(&declared), request.verify_na, false)?;
+    let mut resource_report = artifacts.resource_report;
+    if should_verify_na(request.verify_na, false) {
+        resource_report =
+            verified_schedule_objective(resource_report, &schedule_spec, &na.cost_model)?;
+    }
     let circuit_metrics = CircuitMetrics {
-        depth: artifacts.resource_report.estimated_cycles,
-        depth_bound: Some(artifacts.resource_report.estimated_cycles.to_string()),
-        gate_count: artifacts.resource_report.entangle2_count
-            + artifacts.resource_report.entangle_n_count,
+        depth: resource_report.estimated_cycles,
+        depth_bound: Some(resource_report.estimated_cycles.to_string()),
+        gate_count: resource_report.entangle2_count + resource_report.entangle_n_count,
         t_count: 0,
         qubit_count: artifacts.logical_qubits,
         swap_count: 0,
@@ -436,7 +444,7 @@ fn compile_qasm(request: &CompileRequest) -> Result<CompileArtifacts, String> {
         na_layout: artifacts.request.layout.clone(),
         na_graph: Some(artifacts.request.graph.clone()),
         na_schedule_spec: Some(schedule_spec),
-        resource_report: Some(artifacts.resource_report),
+        resource_report: Some(resource_report),
         na_stats,
         na_logical_qubits: Some(artifacts.logical_qubits),
         qec_backed: false,
@@ -655,6 +663,17 @@ pub fn maybe_verify_na_schedule(
     })?;
     verify_emitted_schedule(spec, declared)
         .map_err(|error| format!("quantum.na verification failed: {error}"))
+}
+
+/// Recompute the §9 objective from a schedule that just passed verification.
+fn verified_schedule_objective(
+    report: ResourceReport,
+    spec: &ScheduleSpec,
+    weights: &backend::NeutralAtomCostModel,
+) -> Result<ResourceReport, String> {
+    let objective = objective_from_verified_schedule(spec, weights)
+        .map_err(|error| format!("quantum.na schedule objective: {error}"))?;
+    Ok(report.with_schedule_objective(objective))
 }
 
 /// Renders frontend diagnostics with a caret at the offending source span.

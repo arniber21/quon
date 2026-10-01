@@ -56,5 +56,16 @@
   "global_ry_count": 2,
   "global_ry_time_us": 2,
   "gate_fidelity_product": 0.9855880907376257,
-  "estimated_fidelity": 0.9855861195623202
+  "estimated_fidelity": 0.9855861195623202,
+  "schedule_objective": {
+    "rydberg_stages": 1,
+    "movement_time_us": 545,
+    "trap_transfers": 8,
+    "idle_time_us": 3,
+    "rydberg_stage_weight": 1.0,
+    "movement_time_weight": 1.0,
+    "trap_transfer_weight": 1.0,
+    "idle_time_weight": 1e-6,
+    "total": 554.000003
+  }
 }
