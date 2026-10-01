@@ -62,7 +62,7 @@ issue's original framing.
 | `adjoint(c)` | ✓ | ✓ | ✓ | ✓ | — | `qc::adjoint` of zero-arg callees |
 | `repeat(k, c)` (concrete & symbolic count) | ✓ | ✓ | ✓ | ✓ | — | Grover/QFT fixtures |
 | `controlled(named_gate)` / `controlled(Rz(θ))` | ✓ | ✓ | ✓ | ✓ | — | Distributed via `decompose_controlled` |
-| `controlled(par { … })` / `controlled(par { c } * k)` | ✓ | ◐ | ◐ | ◐ | — | Width-1 arms with a literal start lower to MLIR only; no lit or neutral-atom fixture. Multi-qubit arms typecheck, then fail elaboration. See [#369](#known-limitations) |
+| `controlled(par { … })` / `controlled(par { c } * k)` | ✓ | ◐ | ◐ | ◐ | — | Width-1 arms with a literal start lower to MLIR only; no lit or neutral-atom fixture. A multi-qubit arm is a type error (`controlled() of a multi-qubit gate`). See [#369](#known-limitations) |
 | `controlled(user_parametric_circuit)` | ✓ | ✓ | ✗ | ✗ | — | Elaboration not implemented; see [#374](#known-limitations) |
 | Parametric circuits (`Nat` params, `for`, `match`) | ✓ | ✓ | ✓ | ✓ | — | Specialized at call sites |
 
@@ -460,8 +460,9 @@ the only documentation — the row above states the current behavior.
   Those lower to `quantum.circ` (`frontend/tests/lower.rs`). There is no
   `test/lit` OpenQASM fixture and no neutral-atom fixture, so QASM and NA stay
   partial. A multi-qubit arm such as
-  `controlled(par { CNOT @(0, 1) }) @(0, (1, 2))` typechecks and then fails
-  elaboration (`controlled() of a multi-qubit gate`). A non-literal start is
+  `controlled(par { CNOT @(0, 1) }) @(0, (1, 2))` is rejected at typecheck
+  with the same diagnostic as `controlled_named_gate`:
+  `controlled() of a multi-qubit gate`. A non-literal start is
   rejected: implied wires would not be bounds-checked, and elaboration only
   shifts integer literals.
 

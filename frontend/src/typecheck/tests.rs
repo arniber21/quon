@@ -833,13 +833,32 @@ fn controlled_par_start_past_register_is_out_of_bounds() {
 }
 
 #[test]
-fn controlled_par_multiqubit_arm_typechecks() {
-    // Width matches (control + the CNOT's two wires), so the checker accepts
-    // it. Elaboration still rejects the multi-qubit arm; see lower.rs.
-    accepts(
+fn controlled_par_multiqubit_arm_is_rejected() {
+    // Same diagnostic `controlled_named_gate` raises for a tuple target.
+    // The wire count matches, so this used to typecheck and fail in elaboration.
+    let err = reject_err(
         "fn f(): Circuit<3, 3, 2, Clifford> = circuit {\n\
              controlled(par { CNOT @(0, 1) }) @(0, (1, 2))\n\
          }",
+    );
+    assert!(
+        matches!(err, TypeError::ControlledMultiQubitGate { .. }),
+        "got {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("controlled() of a multi-qubit gate"), "{msg}");
+}
+
+#[test]
+fn controlled_par_repeat_multiqubit_arm_is_rejected() {
+    let err = reject_err(
+        "fn f(): Circuit<5, 5, 2, Clifford> = circuit {\n\
+             controlled(par { CNOT @(0, 1) } * 2) @(0, (1, 2, 3, 4))\n\
+         }",
+    );
+    assert!(
+        matches!(err, TypeError::ControlledMultiQubitGate { .. }),
+        "got {err:?}"
     );
 }
 
