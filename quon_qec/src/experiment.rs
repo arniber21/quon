@@ -15,6 +15,8 @@ use crate::expand::{
 use crate::family::SourceFamily;
 use crate::workload::LogicalBasis;
 
+mod stim_emit;
+
 /// Wire schema version for `*.qec.json`.
 pub const QEC_EXPERIMENT_SCHEMA_VERSION: u32 = 1;
 
@@ -695,124 +697,21 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
     }
     out.push_str("\nTICK\n");
 
-    // Absolute record index for logical byproduct handles (synthetic keys).
-    let mut byproduct_rec: std::collections::HashMap<&'static str, i32> =
-        std::collections::HashMap::new();
-    let mut rec_count: i32 = 0;
-    let mut frame_updates: Vec<&crate::expand::PauliFrameUpdate> = Vec::new();
-    let mut measure_logical_rounds = Vec::new();
-    let mut memory_detector_i = 0u32;
-
+    // Round kinds append through [`stim_emit::StimRoundEmitter`]. Byproduct
+    // handles and deferred measure-logical rounds come back out for observable
+    // assembly below.
+    let mut ctx = stim_emit::LatticeSurgeryCtx::new(expanded, control, target, ancilla, out);
     for round in &expanded.rounds {
-        match round.kind {
-            RoundKind::Construct => {
-                emit_local_ops(&mut out, &round.local_before);
-            }
-            RoundKind::Merge(crate::expand::MergeBoundary::Rough) => {
-                // Logical ZZ(control, ancilla) — one record for the joint parity.
-                let mut ops = Vec::new();
-                for a in logical_observable_atoms(control, LogicalBasis::Z) {
-                    ops.push(format!("Z{a}"));
-                }
-                for a in logical_observable_atoms(ancilla, LogicalBasis::Z) {
-                    ops.push(format!("Z{a}"));
-                }
-                out.push_str("MPP ");
-                out.push_str(&ops.join("*"));
-                out.push('\n');
-                byproduct_rec.insert("rough_merge", rec_count);
-                rec_count += 1;
-                out.push_str("TICK\n");
-            }
-            RoundKind::Merge(crate::expand::MergeBoundary::Smooth) => {
-                // Logical XX(ancilla, target).
-                let mut ops = Vec::new();
-                for a in logical_observable_atoms(ancilla, LogicalBasis::X) {
-                    ops.push(format!("X{a}"));
-                }
-                for a in logical_observable_atoms(target, LogicalBasis::X) {
-                    ops.push(format!("X{a}"));
-                }
-                out.push_str("MPP ");
-                out.push_str(&ops.join("*"));
-                out.push('\n');
-                byproduct_rec.insert("smooth_merge", rec_count);
-                rec_count += 1;
-                out.push_str("TICK\n");
-            }
-            RoundKind::Split(_) => {
-                // NA schedules full stabilizer restore on split; Stim uses logical
-                // MPP merges and must not scramble data with mid-protocol MR.
-                out.push_str("# split_restore (NA-scheduled; omitted from Stim MPP path)\n");
-            }
-            RoundKind::MemoryRound => {
-                emit_round_body(&mut out, round)?;
-                let measured: Vec<u32> = round
-                    .terminal
-                    .iter()
-                    .filter_map(|t| match t {
-                        RoundTerminal::Measure { atom, .. } => Some(atom.0),
-                        _ => None,
-                    })
-                    .collect();
-                if measured.is_empty() {
-                    continue;
-                }
-                out.push_str("MR");
-                for id in &measured {
-                    out.push_str(&format!(" {id}"));
-                    rec_count += 1;
-                }
-                out.push('\n');
-                if let Some(block) = expanded
-                    .blocks
-                    .iter()
-                    .find(|b| b.logical_id == round.logical_id)
-                {
-                    let n = measured.len() as i32;
-                    for stab in &block.stabilizers {
-                        if stab.basis != LogicalBasis::Z {
-                            continue;
-                        }
-                        let Some(pos) = measured.iter().position(|a| *a == stab.check.0) else {
-                            continue;
-                        };
-                        let cur = -(n - pos as i32);
-                        out.push_str(&format!("DETECTOR({memory_detector_i}, 0) rec[{cur}]\n"));
-                        memory_detector_i += 1;
-                    }
-                }
-                out.push_str("TICK\n");
-            }
-            RoundKind::MeasureAncilla => {
-                // Logical Z of ancilla (top-row product) as one MPP record.
-                let ops: Vec<String> = logical_observable_atoms(ancilla, LogicalBasis::Z)
-                    .into_iter()
-                    .map(|a| format!("Z{a}"))
-                    .collect();
-                out.push_str("MPP ");
-                out.push_str(&ops.join("*"));
-                out.push('\n');
-                byproduct_rec.insert("ancilla_mz", rec_count);
-                rec_count += 1;
-                out.push_str("TICK\n");
-            }
-            RoundKind::FrameUpdate => {
-                frame_updates.extend(round.frame_updates.iter());
-            }
-            RoundKind::MeasureLogical => {
-                measure_logical_rounds.push(round);
-            }
-            RoundKind::MagicT | RoundKind::MagicTdag | RoundKind::MagicCcz => {
-                // Magic-state-consuming ops are compiler model only (issue #283).
-                // No physical Stim gates — record as a comment for traceability.
-                out.push_str(&format!(
-                    "# {} (magic-state consumption; compiler model, no Stim gate)\n",
-                    round.kind.as_experiment_str()
-                ));
-            }
-        }
+        stim_emit::lattice_round_emitter(round.kind).emit(&mut ctx, round)?;
     }
+    let stim_emit::LatticeSurgeryCtx {
+        mut out,
+        byproduct_rec,
+        mut rec_count,
+        frame_updates,
+        measure_logical_rounds,
+        ..
+    } = ctx;
 
     let mut obs_id = 0u32;
     for round in measure_logical_rounds {
@@ -1922,6 +1821,51 @@ print(f"ok dets={{c.num_detectors}} obs={{c.num_observables}}")
                 }
             }
             Err(e) => eprintln!("skip stim correctness: python unavailable ({e})"),
+        }
+    }
+
+    #[test]
+    fn stim_structure_matches_checked_in_gold() {
+        let surface_z = {
+            let mut b = WorkloadBuilder::new();
+            b.construct(SourceFamily::Surface, 3, LogicalBasis::Z, LogicalQubitId(0))
+                .expect("construct");
+            b.memory_round(LogicalQubitId(0)).expect("r1");
+            b.memory_round(LogicalQubitId(0)).expect("r2");
+            b.measure_logical(LogicalQubitId(0), LogicalBasis::Z)
+                .expect("mz");
+            expand_workload(&b.finish()).expect("expand")
+        };
+        let surface_x = {
+            let mut b = WorkloadBuilder::new();
+            b.construct(SourceFamily::Surface, 3, LogicalBasis::X, LogicalQubitId(0))
+                .expect("construct");
+            b.memory_round(LogicalQubitId(0)).expect("r1");
+            b.memory_round(LogicalQubitId(0)).expect("r2");
+            b.measure_logical(LogicalQubitId(0), LogicalBasis::X)
+                .expect("mx");
+            expand_workload(&b.finish()).expect("expand")
+        };
+        let cases = [
+            (
+                repetition_d3_two_rounds(),
+                include_str!("../testdata/stim/repetition_d3_z.stim"),
+            ),
+            (
+                surface_z,
+                include_str!("../testdata/stim/surface_d3_z.stim"),
+            ),
+            (
+                surface_x,
+                include_str!("../testdata/stim/surface_d3_x.stim"),
+            ),
+            (
+                surface_d3_cx_expanded(),
+                include_str!("../testdata/stim/lattice_surgery_cx_d3.stim"),
+            ),
+        ];
+        for (expanded, gold) in cases {
+            assert_eq!(emit_stim_structure(&expanded).expect("stim"), gold);
         }
     }
 }
