@@ -261,9 +261,10 @@ pub enum PlacementCostModel {
     /// architecture_model.md §9, using the target's `cost_model` weights.
     /// Movement time is `t(d_max)` per group and each moving atom costs two
     /// trap transfers. An atom that misses a group's load, move, and store
-    /// layers is idle for `t(d_max) + 2 · trap_transfer_us`. Rydberg stages
-    /// are charged once per non-empty layer when two full assignments are
-    /// compared.
+    /// layers is idle for `t(d_max) + 2 · trap_transfer_us`. A non-empty
+    /// layer costs one Rydberg stage. When that weight makes a later stage
+    /// strictly cheaper, the schedule defers the expensive gate instead of
+    /// keeping every placed gate in this layer.
     Weighted {
         weights: backend::NeutralAtomCostModel,
         speed_model: SpeedModel,
@@ -1074,6 +1075,11 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
                 assign_aware_legal(&gate_atoms, &inputs, &aware_search, &layout)
             }
         };
+        // Stage weight cannot change a choice inside one layer: every
+        // non-empty assignment pays for exactly one Rydberg stage. Spend a
+        // later stage when that is strictly cheaper than the simultaneous move.
+        let assignment =
+            split_weighted_layer_on_stage_cost(assignment, &gate_atoms, &inputs, &layout);
         aware_search_node_expansions += assignment.node_expansions as u64;
         match assignment.outcome {
             AwareSearchOutcome::NotApplicable => {}
@@ -1864,6 +1870,7 @@ pub enum AwareSearchOutcome {
 
 /// Result of a layer's pair assignment: gates placed this stage (with their
 /// oriented pair positions) and gates deferred to a follow-up stage.
+#[derive(Clone)]
 struct GateAssignment {
     placed: Vec<(usize, (Position, Position))>,
     deferred: Vec<usize>,
@@ -2380,6 +2387,164 @@ fn assignment_weighted_cost(
         .sum::<f64>();
     let stages = u64::from(!assignment.placed.is_empty());
     movement + weights.rydberg_stage_weight * stages as f64
+}
+
+/// Defer a placed gate when a later Rydberg stage is strictly cheaper.
+///
+/// `assignment_weighted_cost` charges one stage whenever `placed` is
+/// non-empty, so the stage weight never separates two assignments that both
+/// entangle this layer. This pass keeps the assignment unless moving one
+/// gate into the follow-up layer lowers the §9 cost. `Time` and
+/// `ErrorBudget` are unchanged. Equal costs keep the original schedule.
+fn split_weighted_layer_on_stage_cost(
+    mut assignment: GateAssignment,
+    gates: &[(AtomId, AtomId)],
+    inputs: &AssignInputs<'_>,
+    layout: &NeutralAtomLayout,
+) -> GateAssignment {
+    if !matches!(inputs.cost_model, PlacementCostModel::Weighted { .. }) {
+        return assignment;
+    }
+    loop {
+        if assignment.placed.len() < 2 {
+            break;
+        }
+        let Some(full_follow) = followup_layer_cost(
+            &assignment.deferred,
+            &assignment.placed,
+            gates,
+            inputs,
+            layout,
+        ) else {
+            break;
+        };
+        let full = layer_weighted_cost(&assignment, gates, inputs, layout) + full_follow;
+        let mut best: Option<(f64, GateAssignment)> = None;
+        for drop_at in 0..assignment.placed.len() {
+            let mut kept = assignment.clone();
+            let (gate_index, _) = kept.placed.remove(drop_at);
+            let mut later = kept.deferred.clone();
+            later.push(gate_index);
+            let Some(later_cost) = followup_layer_cost(&later, &kept.placed, gates, inputs, layout)
+            else {
+                continue;
+            };
+            let split = layer_weighted_cost(&kept, gates, inputs, layout) + later_cost;
+            if split < full && best.as_ref().is_none_or(|(cost, _)| split < *cost) {
+                kept.deferred.push(gate_index);
+                best = Some((split, kept));
+            }
+        }
+        match best {
+            Some((_, next)) => assignment = next,
+            None => break,
+        }
+    }
+    assignment
+}
+
+fn layer_weighted_cost(
+    assignment: &GateAssignment,
+    gates: &[(AtomId, AtomId)],
+    inputs: &AssignInputs<'_>,
+    layout: &NeutralAtomLayout,
+) -> f64 {
+    let PlacementCostModel::Weighted {
+        weights,
+        speed_model,
+        trap_transfer_us,
+    } = inputs.cost_model
+    else {
+        return 0.0;
+    };
+    assignment_weighted_cost(
+        assignment,
+        gates,
+        inputs.atom_pos,
+        layout,
+        &weights,
+        &speed_model,
+        trap_transfer_us,
+        inputs.aod_min_sep_um,
+    )
+}
+
+/// Cost of scheduling `gate_indices` as one later layer, after `placed` has
+/// moved. `None` when that layer cannot place every gate (the follow-up
+/// would itself defer, so this pass will not pretend it is one stage).
+fn followup_layer_cost(
+    gate_indices: &[usize],
+    placed: &[(usize, (Position, Position))],
+    gates: &[(AtomId, AtomId)],
+    inputs: &AssignInputs<'_>,
+    layout: &NeutralAtomLayout,
+) -> Option<f64> {
+    if gate_indices.is_empty() {
+        return Some(0.0);
+    }
+    let PlacementCostModel::Weighted {
+        weights,
+        speed_model,
+        trap_transfer_us,
+    } = inputs.cost_model
+    else {
+        return None;
+    };
+    let later_gates: Vec<(AtomId, AtomId)> =
+        gate_indices.iter().map(|&index| gates[index]).collect();
+    let (atom_pos, site_occupant) =
+        positions_after_placed(placed, gates, inputs.atom_pos, inputs.site_occupant, layout);
+    let later_inputs = AssignInputs {
+        atom_pos: &atom_pos,
+        pairs: inputs.pairs,
+        pair_sites: inputs.pair_sites,
+        site_occupant: &site_occupant,
+        conflict_um: inputs.conflict_um,
+        aod_min_sep_um: inputs.aod_min_sep_um,
+        cost_model: inputs.cost_model,
+    };
+    let later = assign_greedy_legal(&later_gates, &later_inputs);
+    if later.placed.len() != later_gates.len() || !later.deferred.is_empty() {
+        return None;
+    }
+    Some(assignment_weighted_cost(
+        &later,
+        &later_gates,
+        &atom_pos,
+        layout,
+        &weights,
+        &speed_model,
+        trap_transfer_us,
+        inputs.aod_min_sep_um,
+    ))
+}
+
+fn positions_after_placed(
+    placed: &[(usize, (Position, Position))],
+    gates: &[(AtomId, AtomId)],
+    atom_pos: &BTreeMap<AtomId, Position>,
+    site_occupant: &BTreeMap<SiteId, AtomId>,
+    layout: &NeutralAtomLayout,
+) -> (BTreeMap<AtomId, Position>, BTreeMap<SiteId, AtomId>) {
+    let mut atom_pos = atom_pos.clone();
+    let mut site_occupant = site_occupant.clone();
+    for &(gate_index, (pa, pb)) in placed {
+        let (a, b) = gates[gate_index];
+        for (atom, target) in [(a, pa), (b, pb)] {
+            let cur = atom_pos.get(&atom).copied().unwrap_or(target);
+            if euclidean_um(cur, target) < 1e-9 {
+                continue;
+            }
+            let from_site = nearest_site_id(layout, cur);
+            let to_site = nearest_site_id(layout, target);
+            atom_pos.insert(atom, target);
+            if site_occupant.get(&from_site) == Some(&atom) {
+                site_occupant.remove(&from_site);
+            }
+            site_occupant.insert(to_site, atom);
+        }
+    }
+    (atom_pos, site_occupant)
 }
 
 /// Choose the routing-agnostic layer assignment: compute both the
