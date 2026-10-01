@@ -699,6 +699,166 @@ fn controlled_increments_widths_and_depth() {
     accepts("fn f(c: Circuit<2,2,2,Clifford>): Circuit<3,3,3,Clifford> = controlled(c)");
 }
 
+/// Issue #369: `@(control, (t1, t2))` names the control plus the body's wires,
+/// which is the controlled circuit's width — not two flat target slots.
+#[test]
+fn controlled_parn_nested_target_tuple_is_accepted() {
+    accepts(
+        "fn ctrl_layer(): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             (controlled(par { H @0, H @0 })) @(0, (1, 2))\n\
+         }",
+    );
+}
+
+#[test]
+fn controlled_parn_flat_targets_are_accepted() {
+    accepts(
+        "fn ctrl_layer(): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             controlled(par { H @0, H @0 }) @(0, 1, 2)\n\
+         }",
+    );
+}
+
+#[test]
+fn controlled_par_repeat_explicit_and_start_targets_are_accepted() {
+    accepts(
+        "fn explicit(): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             controlled(par { H @0 } * 2) @(0, (1, 2))\n\
+         }\n\
+         fn start(): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             controlled(par { H @0 } * 2) @(0, 1)\n\
+         }",
+    );
+}
+
+#[test]
+fn controlled_parn_target_count_mismatch_is_rejected() {
+    let err = reject_err(
+        "fn ctrl_layer(): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             controlled(par { H @0, H @0 }) @(0, (1, 2, 3))\n\
+         }",
+    );
+    assert!(
+        matches!(
+            err,
+            TypeError::GateTargetArity {
+                expected: 3,
+                found: 4,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn controlled_of_wide_circuit_rejects_a_bare_start_index() {
+    // The contiguous-start shorthand is only for `par`. A black-box body must
+    // name every wire: `@(control, (t1, t2))`.
+    let err = reject_err(
+        "fn f(c: Circuit<2, 2, 1, Clifford>): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             controlled(c) @(0, 1)\n\
+         }",
+    );
+    assert!(
+        matches!(
+            err,
+            TypeError::GateTargetArity {
+                expected: 3,
+                found: 2,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn controlled_of_wide_circuit_accepts_nested_targets() {
+    accepts(
+        "fn f(c: Circuit<2, 2, 1, Clifford>): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             controlled(c) @(0, (1, 2))\n\
+         }",
+    );
+}
+
+#[test]
+fn controlled_par_non_literal_start_is_rejected() {
+    // A symbolic start would leave `implied_last` unset, so `s + 1` is never
+    // compared to the register, and both arms would elaborate onto `s`.
+    let err = reject_err(
+        "fn f(s: Int): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             controlled(par { H @0 } * 2) @(0, s)\n\
+         }",
+    );
+    assert!(
+        matches!(err, TypeError::NonLiteralControlledStart { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn controlled_parn_non_literal_start_is_rejected() {
+    let err = reject_err(
+        "fn f(s: Int): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             controlled(par { H @0, H @0 }) @(0, s)\n\
+         }",
+    );
+    assert!(
+        matches!(err, TypeError::NonLiteralControlledStart { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn controlled_par_start_past_register_is_out_of_bounds() {
+    // `@(0, 2)` on a width-3 register implies body wires 2 and 3. Wire 3 is
+    // past the register even though the written start index is in range.
+    let err = reject_err(
+        "fn f(): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             controlled(par { H @0 } * 2) @(0, 2)\n\
+         }",
+    );
+    assert!(
+        matches!(
+            err,
+            TypeError::IndexOutOfBounds {
+                index: 3,
+                width: 3,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn controlled_par_multiqubit_arm_typechecks() {
+    // Width matches (control + the CNOT's two wires), so the checker accepts
+    // it. Elaboration still rejects the multi-qubit arm; see lower.rs.
+    accepts(
+        "fn f(): Circuit<3, 3, 2, Clifford> = circuit {\n\
+             controlled(par { CNOT @(0, 1) }) @(0, (1, 2))\n\
+         }",
+    );
+}
+
+#[test]
+fn controlled_h_still_rejects_a_single_target() {
+    let err = reject_err("fn f(): Circuit<2, 2, 2, Clifford> = circuit { controlled(H) @0 }");
+    assert!(
+        matches!(
+            err,
+            TypeError::GateTargetArity {
+                expected: 2,
+                found: 1,
+                ..
+            }
+        ),
+        "got {err:?}"
+    );
+}
+
 #[test]
 fn repeat_multiplies_depth_by_the_count() {
     // Acceptance criterion: `repeat(k, c)` with `k: Int`, `c: Circuit<n,n,d,_>` is `k*d`.

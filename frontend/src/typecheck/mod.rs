@@ -612,7 +612,7 @@ impl TypeChecker {
                 if self.circuit_width.is_empty() {
                     self.apply_circuit(env, delta, g, qubits)
                 } else {
-                    self.place_gate(env, delta, g, qubits)
+                    self.place_gate(env, delta, gate, g, qubits)
                 }
             }
             Expr::Compose(l, r) => self.synth_compose(env, delta, l, r, span),
@@ -1049,7 +1049,7 @@ impl TypeChecker {
             return if self.circuit_width.is_empty() {
                 self.apply_circuit(env, delta, f_ty, x)
             } else {
-                self.place_gate(env, delta, f_ty, x)
+                self.place_gate(env, delta, f, f_ty, x)
             };
         }
         let (dom, cod) = self.as_function(&f_ty, f.1)?;

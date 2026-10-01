@@ -62,7 +62,7 @@ issue's original framing.
 | `adjoint(c)` | ✓ | ✓ | ✓ | ✓ | — | `qc::adjoint` of zero-arg callees |
 | `repeat(k, c)` (concrete & symbolic count) | ✓ | ✓ | ✓ | ✓ | — | Grover/QFT fixtures |
 | `controlled(named_gate)` / `controlled(Rz(θ))` | ✓ | ✓ | ✓ | ✓ | — | Distributed via `decompose_controlled` |
-| `controlled(par { … })` / `controlled(par { c } * k)` | ✓ | ✗ | ✗ | ✗ | — | Typechecker rejects multi-target tuple; see [#369](#known-limitations) |
+| `controlled(par { … })` / `controlled(par { c } * k)` | ✓ | ◐ | ◐ | ◐ | — | Width-1 arms with a literal start lower to MLIR only; no lit or neutral-atom fixture. Multi-qubit arms typecheck, then fail elaboration. See [#369](#known-limitations) |
 | `controlled(user_parametric_circuit)` | ✓ | ✓ | ✗ | ✗ | — | Elaboration not implemented; see [#374](#known-limitations) |
 | Parametric circuits (`Nat` params, `for`, `match`) | ✓ | ✓ | ✓ | ✓ | — | Specialized at call sites |
 
@@ -454,14 +454,16 @@ the only documentation — the row above states the current behavior.
   pipeline (#397); until that lands, treat the prep gates as the stable surface
   and the exact-prep scheduling as in progress.
 
-- **[#369](https://github.com/arniber21/quon/issues/369) — `controlled(par { … })` target-count mismatch.**
-  `controlled(c)` is typed `Circuit<k+1, k+1, …>` (one control wire), so a
-  `par` body under control expects `k+1` targets, but the surface
-  `@(control, target)` syntax cannot spell the nested target tuple. The
-  typechecker rejects it with `GateTargetArity`; the elaborator's
-  `decompose_controlled` *can* distribute control over `Par`/`ParN`, so this
-  is a surface-syntax/typechecker design decision, not a lowering gap. Use
-  `controlled(named_gate)` / `controlled(Rz(θ))` until resolved.
+- **[#369](https://github.com/arniber21/quon/issues/369) — `controlled(par { … })` past width-1 arms.**
+  Width-1 arms accept `@(ctrl, (t₁, …))`, the flat `@(ctrl, t₁, …)`, and a
+  contiguous `@(ctrl, start)` when `start` is a non-negative integer literal.
+  Those lower to `quantum.circ` (`frontend/tests/lower.rs`). There is no
+  `test/lit` OpenQASM fixture and no neutral-atom fixture, so QASM and NA stay
+  partial. A multi-qubit arm such as
+  `controlled(par { CNOT @(0, 1) }) @(0, (1, 2))` typechecks and then fails
+  elaboration (`controlled() of a multi-qubit gate`). A non-literal start is
+  rejected: implied wires would not be bounds-checked, and elaboration only
+  shifts integer literals.
 
 - **[#372](https://github.com/arniber21/quon/issues/372) — `//` comment diagnostic.**
   `//` is not a Quon comment; the lexer rejects it with a generic parse error
