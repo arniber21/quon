@@ -53,10 +53,16 @@
 //!
 //! Position-aware R2/R3 runs **iff** `request.layout` **and**
 //! [`CompactionOptions::legality`] are both set (MLIR-free). Without `legality`,
-//! geometry is **unchecked** even when a layout is present (AC2 / default opts
+//! that static check is off even when a layout is present (AC2 / default opts
 //! may accept physically illegal E0 merges). Do **not** claim R2/R3 runs
 //! “whenever layout is present.” Zone re-validate is best-effort on static
 //! bindings for entangle-only merges.
+//!
+//! [`CompactionOptions::entangle_isolation_um`] is separate. When it is set,
+//! an entangle merge is refused if replaying moves from the declared start
+//! puts non-partner atoms inside that distance at the entangle cycle. Order-only
+//! compaction sets it so a weighted stage split is not merged back into one
+//! illegal entangle cycle.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -64,7 +70,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::graph::{InteractionId, LogicalQubitId, VertexId};
-use crate::layout::{AodTrapRef, AtomId, NeutralAtomLayout, Position, TrapBinding};
+use crate::layout::{AodTrapRef, AtomId, NeutralAtomLayout, Position, SiteId, TrapBinding};
 use crate::schedule::{NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::GraphScheduleRequest;
 use crate::zoned::{ZonedArchitecture, validate_zone_constraints};
@@ -167,6 +173,26 @@ pub struct CompactionOptions {
     pub legality: Option<LegalityLimits>,
     /// If true, run greedy compaction after ASAP; if false, ASAP-only baseline.
     pub greedy: bool,
+    /// When set, refuse an entangle merge that puts non-partner atoms within
+    /// this distance (µm) at the entangle cycle. Positions are replayed from
+    /// the declared start through earlier moves, not read from final occupancy.
+    /// `None` leaves the check off. Order-only compaction sets the target's
+    /// isolation spacing here without enabling static [`Self::legality`].
+    pub entangle_isolation_um: Option<f64>,
+}
+
+/// Greedy compaction with static final-layout R2/R3 left off.
+///
+/// `min_rydberg_spacing_um` is checked at the entangle cycle after replaying
+/// moves. A merge that would put non-partner atoms inside that spacing is
+/// refused and the layers stay split.
+pub fn order_only_compaction_options(min_rydberg_spacing_um: f64) -> CompactionOptions {
+    CompactionOptions {
+        arch: None,
+        legality: None,
+        greedy: true,
+        entangle_isolation_um: Some(min_rydberg_spacing_um),
+    }
 }
 
 /// Placeholder AOD ref emitted by #107 `schedule_zoned` (all zeros).
@@ -856,6 +882,132 @@ fn distance_um(a: &Position, b: &Position) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+fn binding_site(binding: &crate::layout::AtomBinding) -> SiteId {
+    match binding.trap {
+        TrapBinding::Slm { site } | TrapBinding::Aod { site, .. } => site,
+    }
+}
+
+fn site_position(layout: &NeutralAtomLayout, site: SiteId) -> Option<Position> {
+    layout
+        .sites
+        .iter()
+        .find(|s| s.id == site)
+        .map(|s| s.position)
+}
+
+/// Positions after every move in a cycle strictly before `cycle`.
+///
+/// Starts from `declared_initial_bindings` when the planner saved them.
+/// Otherwise the layout's `initial_bindings` are the only positions available
+/// (tests with no moves, and schedules that never rewrote occupancy).
+fn positions_before_cycle(
+    layers: &[ScheduleLayer],
+    layout: &NeutralAtomLayout,
+    cycle: u32,
+) -> BTreeMap<AtomId, Position> {
+    let start = if layout.declared_initial_bindings.is_empty() {
+        layout.initial_bindings.as_slice()
+    } else {
+        layout.declared_initial_bindings.as_slice()
+    };
+    let mut pos = BTreeMap::new();
+    for binding in start {
+        if let Some(position) = site_position(layout, binding_site(binding)) {
+            pos.insert(binding.atom, position);
+        }
+    }
+    let mut earlier: Vec<&ScheduleLayer> =
+        layers.iter().filter(|layer| layer.cycle < cycle).collect();
+    earlier.sort_by_key(|layer| layer.cycle);
+    for layer in earlier {
+        for action in &layer.actions {
+            let NeutralAtomAction::Move(group) = action else {
+                continue;
+            };
+            for atom_move in &group.moves {
+                if let Some(position) = site_position(layout, atom_move.to) {
+                    pos.insert(atom_move.atom, position);
+                }
+            }
+        }
+    }
+    pos
+}
+
+fn entangle_partner_keys(layer: &ScheduleLayer) -> BTreeSet<(AtomId, AtomId)> {
+    let mut keys = BTreeSet::new();
+    for action in &layer.actions {
+        match action {
+            NeutralAtomAction::Entangle2 { atoms, .. } => {
+                keys.insert(atom_pair_key(atoms[0], atoms[1]));
+            }
+            NeutralAtomAction::EntangleN { atoms, .. } => {
+                for i in 0..atoms.len() {
+                    for j in (i + 1)..atoms.len() {
+                        keys.insert(atom_pair_key(atoms[i], atoms[j]));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    keys
+}
+
+fn entangle_atoms(layer: &ScheduleLayer) -> Vec<AtomId> {
+    let mut atoms = Vec::new();
+    for action in &layer.actions {
+        match action {
+            NeutralAtomAction::Entangle2 { atoms: pair, .. } => atoms.extend(pair),
+            NeutralAtomAction::EntangleN { atoms: group, .. } => {
+                atoms.extend(group.iter().copied())
+            }
+            _ => {}
+        }
+    }
+    atoms
+}
+
+/// True when the merged entangle layer puts non-partners inside `isolation_um`.
+fn entangle_cycle_breaks_isolation(
+    sim_layers: &[ScheduleLayer],
+    union: &ScheduleLayer,
+    layout: &NeutralAtomLayout,
+    isolation_um: f64,
+) -> bool {
+    let wanted = entangle_partner_keys(union);
+    if wanted.is_empty() {
+        return false;
+    }
+    let Some(layer) = sim_layers.iter().find(|layer| {
+        let keys = entangle_partner_keys(layer);
+        wanted.iter().all(|key| keys.contains(key))
+    }) else {
+        return true;
+    };
+    let positions = positions_before_cycle(sim_layers, layout, layer.cycle);
+    let partners = entangle_partner_keys(layer);
+    let atoms = entangle_atoms(layer);
+    for i in 0..atoms.len() {
+        for j in (i + 1)..atoms.len() {
+            let left = atoms[i];
+            let right = atoms[j];
+            if left == right || partners.contains(&atom_pair_key(left, right)) {
+                continue;
+            }
+            let (Some(left_pos), Some(right_pos)) = (positions.get(&left), positions.get(&right))
+            else {
+                return true;
+            };
+            if distance_um(left_pos, right_pos) <= isolation_um {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn atom_pair_key(a: AtomId, b: AtomId) -> (AtomId, AtomId) {
     if a <= b { (a, b) } else { (b, a) }
 }
@@ -1119,6 +1271,18 @@ fn try_merge_pair(
     renumber_dense(&mut sim_layers);
     if !hard_dep_cycle_order_ok(&sim_layers, &sim_lineage, deps) {
         return Ok(MergeAttempt::HardFail(CompactionError::DependencyViolation));
+    }
+
+    if let Some(isolation_um) = opts.entangle_isolation_um {
+        if isolation_um.is_finite() && isolation_um > 0.0 {
+            if let Some(layout) = layout.as_ref() {
+                if layer_has_entangle(&union)
+                    && entangle_cycle_breaks_isolation(&sim_layers, &union, layout, isolation_um)
+                {
+                    return Ok(MergeAttempt::Skip);
+                }
+            }
+        }
     }
 
     Ok(MergeAttempt::Ok)

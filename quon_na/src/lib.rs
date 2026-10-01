@@ -72,6 +72,7 @@ pub use compaction::{
     CompactionError, CompactionOptions, CompactionResult, CriticalPathReport, LegalityLimits,
     ScheduleDependency, ScheduleDependencyKind, asap_schedule_layers, compact_schedule,
     feed_forward_dependencies, force_merge_layers, infer_atom_dependencies,
+    order_only_compaction_options,
 };
 pub use entangling_schedule::{
     CapacityLayerError, EntanglingScheduleError, EntanglingScheduleResult, LayerUtilization,
