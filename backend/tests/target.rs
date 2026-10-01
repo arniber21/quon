@@ -659,6 +659,44 @@ fn neutral_atom_error_model_rejects_out_of_range_probability() {
     assert!(err.to_string().contains("error_model.rydberg"));
 }
 
+fn with_cost_model(stage: f64, movement: f64, transfer: f64, idle: f64) -> String {
+    let mut value = neutral_sample_value();
+    let model = value
+        .get_mut("cost_model")
+        .and_then(|v| v.as_object_mut())
+        .expect("cost_model object");
+    model.insert("rydberg_stage_weight".into(), serde_json::json!(stage));
+    model.insert("movement_time_weight".into(), serde_json::json!(movement));
+    model.insert("trap_transfer_weight".into(), serde_json::json!(transfer));
+    model.insert("idle_time_weight".into(), serde_json::json!(idle));
+    value.to_string()
+}
+
+#[test]
+fn neutral_atom_all_zero_cost_weights_are_rejected() {
+    let err = json::from_str(&with_cost_model(0.0, 0.0, 0.0, 0.0)).unwrap_err();
+    assert!(
+        matches!(err, BackendError::InvalidTargetConfig(_)),
+        "got {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("all zero"), "{msg}");
+    assert!(msg.contains("rydberg_stage_weight"), "{msg}");
+    assert!(msg.contains("movement_time_weight"), "{msg}");
+    assert!(msg.contains("trap_transfer_weight"), "{msg}");
+    assert!(msg.contains("idle_time_weight"), "{msg}");
+    assert!(msg.contains("at least one must be positive"), "{msg}");
+
+    let loaded = json::from_str(&with_cost_model(1.0, 0.0, 0.0, 0.0))
+        .expect("one positive weight still loads");
+    let na = loaded
+        .neutral_atom_target()
+        .expect("neutral atom")
+        .cost_model;
+    assert_eq!(na.rydberg_stage_weight, 1.0);
+    assert_eq!(na.movement_time_weight, 0.0);
+}
+
 #[test]
 fn neutral_atom_error_model_rejects_negative_probability() {
     let src = with_error_model_mutated(|m| {
