@@ -17,8 +17,8 @@ use quon_qec::{
 };
 
 use crate::compaction::{
-    CompactionError, CompactionOptions, ScheduleDependency, ScheduleDependencyKind,
-    compact_schedule, feed_forward_dependencies, infer_atom_dependencies,
+    CompactionError, ScheduleDependency, ScheduleDependencyKind, compact_schedule,
+    feed_forward_dependencies, infer_atom_dependencies,
 };
 use crate::entangling_schedule::schedule_entangling_layers;
 #[cfg(feature = "solver")]
@@ -199,11 +199,8 @@ fn schedule_expanded(
                 kind: ScheduleDependencyKind::Barrier,
             });
         }
-        let compact_opts = CompactionOptions {
-            arch: None,
-            legality: None,
-            greedy: true,
-        };
+        let compact_opts =
+            crate::compaction::order_only_compaction_options(na.interaction.min_rydberg_spacing_um);
         let stage_started = Instant::now();
         let compacted = compact_schedule(req.clone(), &deps, &compact_opts)?;
         compaction_us = Some(elapsed_us(stage_started));
@@ -745,6 +742,7 @@ fn all_physical_atoms(expanded: &ExpandedWorkload) -> Vec<PhysicalAtomId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compaction::CompactionOptions;
     use crate::schedule::LocalGateKind;
     use quon_qec::{LogicalBasis, SourceFamily, WorkloadBuilder};
 
@@ -1171,6 +1169,7 @@ mod tests {
             arch: None,
             legality: None,
             greedy: true,
+            entangle_isolation_um: None,
         };
         let without = compact_schedule(synthetic.clone(), &[], &opts).expect("without cuts");
         let mut with_deps = Vec::new();

@@ -9,8 +9,8 @@ use quon_na::{
     LogicalQubitId, MeasurementBasis, MovementGroup, NeutralAtomAction, NeutralAtomLayout,
     Position, ScheduleDependency, ScheduleDependencyKind, ScheduleLayer, SiteId, TransferDirection,
     TrapBinding, TrapTransfer, ZoneKind, asap_schedule_layers, compact_schedule,
-    feed_forward_dependencies, force_merge_layers, infer_atom_dependencies, schedule_from_graph,
-    toy_zoned_architecture,
+    feed_forward_dependencies, force_merge_layers, infer_atom_dependencies,
+    order_only_compaction_options, schedule_from_graph, toy_zoned_architecture,
 };
 
 /// Placeholder AOD ref emitted by #107 `schedule_zoned` (all zeros).
@@ -632,6 +632,7 @@ fn zoned_entangle_only_passthrough() {
         greedy: true,
         arch: Some(arch),
         legality: Some(default_legality()),
+        entangle_isolation_um: None,
     };
     let result = compact_schedule(req, &[], &opts).expect("compact");
     assert_eq!(result.compacted_makespan_cycles, 1);
@@ -991,3 +992,116 @@ fn classify_merge_still_forbids_global_ry_layers() {
          (got {result:?})"
     );
 }
+
+/// Two gates already sit on entanglement pairs 15.62 µm apart, inside the
+/// 18.75 µm isolation spacing, so a weighted stage split keeps them in
+/// separate entangle cycles. Order-only compaction must not merge those
+/// cycles. Pairs 200 µm apart still merge.
+#[test]
+fn order_only_compaction_keeps_isolated_stage_split() {
+    let isolation_um = 18.75;
+    let diagonal_um = (12.0_f64 * 12.0 + 10.0 * 10.0).sqrt();
+    assert!(diagonal_um <= isolation_um);
+    let opts = order_only_compaction_options(isolation_um);
+
+    let close = parked_pair_schedule(0.0, 310.0, 12.0, 320.0);
+    let close_deps = infer_atom_dependencies(&close.layers);
+    let close_result = compact_schedule(close, &close_deps, &opts).expect("compact close");
+    let close_cycles = entangle_cycles(&close_result.request.layers);
+    assert_eq!(
+        close_cycles.len(),
+        2,
+        "stage split inside isolation must stay two entangle cycles, got {close_cycles:?}"
+    );
+    assert_ne!(close_cycles[0], close_cycles[1]);
+    assert_verified(&close_result.request);
+
+    let far = parked_pair_schedule(0.0, 310.0, 200.0, 310.0);
+    let far_deps = infer_atom_dependencies(&far.layers);
+    let far_result = compact_schedule(far, &far_deps, &opts).expect("compact far");
+    let far_cycles = entangle_cycles(&far_result.request.layers);
+    assert_eq!(
+        far_cycles.len(),
+        1,
+        "pairs outside isolation may share an entangle cycle, got {far_cycles:?}"
+    );
+    assert_verified(&far_result.request);
+
+    fn parked_pair_schedule(x0: f64, y0: f64, x1: f64, y1: f64) -> GraphScheduleRequest {
+        let sites = vec![
+            site(0, x0, y0),
+            site(1, x0 + 2.0, y0),
+            site(2, x1, y1),
+            site(3, x1 + 2.0, y1),
+        ];
+        let bindings = (0..4)
+            .map(|atom| AtomBinding {
+                atom: AtomId(atom),
+                trap: TrapBinding::Slm { site: SiteId(atom) },
+            })
+            .collect();
+        let mut req = empty_req(4);
+        req.layers = vec![
+            layer(0, vec![entangle(0, 1)]),
+            layer(1, vec![entangle(2, 3)]),
+        ];
+        req.layout = Some(NeutralAtomLayout {
+            sites,
+            initial_bindings: bindings,
+            declared_initial_bindings: Vec::new(),
+        });
+        req
+    }
+
+    fn site(id: u32, x_um: f64, y_um: f64) -> AtomSite {
+        AtomSite {
+            id: SiteId(id),
+            position: Position { x_um, y_um },
+        }
+    }
+
+    fn entangle_cycles(layers: &[ScheduleLayer]) -> Vec<u32> {
+        layers
+            .iter()
+            .filter(|layer| {
+                layer
+                    .actions
+                    .iter()
+                    .any(|action| matches!(action, NeutralAtomAction::Entangle2 { .. }))
+            })
+            .map(|layer| layer.cycle)
+            .collect()
+    }
+}
+
+#[cfg(feature = "mlir")]
+fn assert_verified(request: &GraphScheduleRequest) {
+    use quon_na::{
+        DeclaredArchitecture, ScheduleLowerParams, lower_schedule, verify_emitted_schedule,
+    };
+    let layout = request.layout.as_ref().expect("layout");
+    let spec = lower_schedule(
+        request,
+        &ScheduleLowerParams {
+            target_id: "stage-split-isolation".into(),
+            rydberg_range_um: 7.5,
+            min_rydberg_spacing_um: 18.75,
+            aod_min_separation_um: 2.0,
+        },
+    )
+    .expect("lower");
+    let declared = DeclaredArchitecture {
+        sites: layout.sites.clone(),
+        initial_bindings: layout.initial_bindings.clone(),
+        zones: Vec::new(),
+        check_zones: false,
+        require_readout_zone: false,
+        rydberg_range_um: 7.5,
+        min_rydberg_spacing_um: 18.75,
+        aod_min_separation_um: 2.0,
+    };
+    verify_emitted_schedule(&spec, &declared).expect("verified schedule");
+}
+
+#[cfg(not(feature = "mlir"))]
+fn assert_verified(_request: &GraphScheduleRequest) {}

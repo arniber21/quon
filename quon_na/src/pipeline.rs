@@ -19,6 +19,7 @@ use thiserror::Error;
 
 use crate::compaction::{
     CompactionError, CompactionOptions, LegalityLimits, compact_schedule, infer_atom_dependencies,
+    order_only_compaction_options,
 };
 use crate::entangling_schedule::schedule_entangling_layers;
 use crate::graph::{InteractionGraph, LogicalQubitId};
@@ -300,6 +301,7 @@ pub fn compaction_options(na: &NeutralAtomTarget, greedy: bool) -> CompactionOpt
             aod_min_separation_um: na.movement.min_row_col_separation_um,
         }),
         greedy,
+        entangle_isolation_um: Some(na.interaction.min_rydberg_spacing_um),
     }
 }
 
@@ -703,14 +705,11 @@ fn finish_pipeline(
     let mut compaction_us = None;
     if opts.compact && !req.layers.is_empty() {
         let deps = infer_atom_dependencies(&req.layers);
-        // After movement, layout bindings are final occupancy — static R2/R3
-        // against that layout is not meaningful for earlier layers. Order-only
-        // compaction still fail-closes on software/dependency errors.
-        let compact_opts = CompactionOptions {
-            arch: None,
-            legality: None,
-            greedy: true,
-        };
+        // Final occupancy is not the position at an earlier entangle cycle, so
+        // static R2/R3 stays off. Isolation is checked by replaying moves up
+        // to that cycle; a merge that would put non-partners inside it is
+        // refused and the stage split stays.
+        let compact_opts = order_only_compaction_options(na.interaction.min_rydberg_spacing_um);
         let stage_started = Instant::now();
         let compacted = compact_schedule(req.clone(), &deps, &compact_opts)?;
         compaction_us = Some(elapsed_us(stage_started));
