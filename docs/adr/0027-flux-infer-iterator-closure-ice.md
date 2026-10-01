@@ -12,15 +12,18 @@ The panic occurs in `flux-infer::projections` with the message
 
 ## Affected functions
 
-Two functions in `quon_qec/src/experiment.rs` retain
+These functions in `quon_qec` retain
 `#[cfg_attr(feature = "flux", flux_rs::trusted)]` because of this ICE:
 
 1. **`emit_stim_single_block_memory`** — uses `.iter().filter().collect()`
    and `.iter().find()` chains.
 2. **`emit_stim_lattice_surgery_cx`** — uses `.iter()`, `.find()`,
-   `.filter()`, `.map()` chains.
+   `.filter()`, `.map()` chains in the header and observable tail.
+3. **`stim_emit::emit_memory_round`** — the lattice-surgery memory-round
+   impl moved out of (2); it still uses `.filter_map()`, `.find()`, and
+   `.position()` closures.
 
-Neither function carries flux refinement specs, so marking them `trusted`
+None of these functions carry flux refinement specs, so marking them `trusted`
 skips their bodies entirely — no verification coverage is lost.
 
 ## Reproduction
@@ -35,7 +38,7 @@ closure-based iterator adapters.
 
 ## Workaround
 
-Keep `#[cfg_attr(feature = "flux", flux_rs::trusted)]` on these two
+Keep `#[cfg_attr(feature = "flux", flux_rs::trusted)]` on these
 functions with a comment referencing this document. Remove once the
 upstream bug is fixed.
 
