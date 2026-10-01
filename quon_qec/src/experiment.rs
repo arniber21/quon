@@ -594,16 +594,12 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
         }
     }
 
-    out.push_str("OBSERVABLE_INCLUDE(0)");
     let obs_atoms = logical_observable_atoms(block, measure_basis);
-    for atom in &obs_atoms {
-        let pos = data_atoms
-            .iter()
-            .position(|a| a.0 == *atom)
-            .ok_or(ExperimentError::MissingDataMeasurement { atom: *atom })?;
-        let rec = -(d - pos as i32);
-        out.push_str(&format!(" rec[{rec}]"));
+    let mut data_ids = Vec::with_capacity(data_atoms.len());
+    for atom in &data_atoms {
+        data_ids.push(atom.0);
     }
+    stim_emit::emit_observable_include(&mut out, 0, &data_ids, &obs_atoms)?;
     out.push('\n');
 
     Ok(out)
@@ -676,8 +672,9 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
     stim_emit::emit_reset_tick(&mut out, &all_atoms);
 
     // Round kinds append through [`stim_emit::StimRoundEmitter`]. Byproduct
-    // handles and deferred measure-logical rounds come back out for observable
-    // assembly below.
+    // handles and deferred measure-logical rounds come back out so the
+    // builder can write measure lines and frame records around
+    // [`stim_emit::emit_observable_include`].
     let mut ctx = stim_emit::LatticeSurgeryCtx::new(expanded, control, target, ancilla, out);
     for round in &expanded.rounds {
         stim_emit::lattice_round_emitter(round.kind).emit(&mut ctx, round)?;
@@ -718,16 +715,7 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
                 block_count: expanded.blocks.len(),
             })?;
         let obs_atoms = logical_observable_atoms(block, LogicalBasis::Z);
-        let d = data_atoms.len() as i32;
-        out.push_str(&format!("OBSERVABLE_INCLUDE({obs_id})"));
-        for atom in &obs_atoms {
-            let pos = data_atoms
-                .iter()
-                .position(|a| a == atom)
-                .ok_or(ExperimentError::MissingDataMeasurement { atom: *atom })?;
-            let rec = -(d - pos as i32);
-            out.push_str(&format!(" rec[{rec}]"));
-        }
+        stim_emit::emit_observable_include(&mut out, obs_id, &data_atoms, &obs_atoms)?;
         // Horsman on Z readout: X-frame byproducts flip Z (include m_zz, m_a on
         // target). Z-frame byproducts (smooth/ancilla → Z on control) commute
         // with Z and are listed below as OBSERVABLE_INCLUDE frame witnesses so

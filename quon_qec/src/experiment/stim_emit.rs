@@ -9,8 +9,10 @@
 //! [`StimRoundEmitter::emit_single_block`] on the same registry. A new round
 //! kind is a new impl plus one arm in [`lattice_round_emitter`].
 //!
-//! Both builders share [`emit_reset_tick`] for the prepare-`R` / `TICK` line.
-//! Headers and observable assembly stay in the builders.
+//! Both builders share [`emit_reset_tick`] for the prepare-`R` / `TICK` line
+//! and [`emit_observable_include`] for `OBSERVABLE_INCLUDE` record offsets.
+//! Headers stay in the builders. Lattice surgery still appends frame-byproduct
+//! records after the shared observable line.
 
 use std::collections::HashMap;
 
@@ -34,10 +36,41 @@ pub(crate) fn emit_reset_tick(out: &mut String, atom_ids: &[u32]) {
     out.push_str("\nTICK\n");
 }
 
+/// Write `OBSERVABLE_INCLUDE({obs_id})` and one `rec[-(d - pos)]` per
+/// observable atom.
+///
+/// `data_atoms` is the final measurement window in Stim order. Each
+/// `obs_atoms` id must appear in that window; the first match wins. The
+/// trailing newline is left to the caller so lattice surgery can append
+/// frame-byproduct `rec` targets on the same line.
+pub(crate) fn emit_observable_include(
+    out: &mut String,
+    obs_id: u32,
+    data_atoms: &[u32],
+    obs_atoms: &[u32],
+) -> Result<(), ExperimentError> {
+    let d = data_atoms.len() as i32;
+    out.push_str(&format!("OBSERVABLE_INCLUDE({obs_id})"));
+    for atom in obs_atoms {
+        let mut found = None;
+        for (pos, id) in data_atoms.iter().enumerate() {
+            if id == atom {
+                found = Some(pos);
+                break;
+            }
+        }
+        let pos = found.ok_or(ExperimentError::MissingDataMeasurement { atom: *atom })?;
+        let rec = -(d - pos as i32);
+        out.push_str(&format!(" rec[{rec}]"));
+    }
+    Ok(())
+}
+
 /// Shared Stim state for one lattice-surgery circuit.
 ///
-/// Round impls append instructions and record byproduct handles. Observable
-/// assembly after the schedule still lives in the circuit builder.
+/// Round impls append instructions and record byproduct handles. Measure
+/// lines, frame-byproduct records, and frame comments stay in the builder.
+/// [`emit_observable_include`] writes the shared observable prefix.
 pub(crate) struct LatticeSurgeryCtx<'a> {
     pub(crate) expanded: &'a ExpandedWorkload,
     pub(crate) control: &'a ExpandedBlock,
@@ -76,8 +109,9 @@ impl<'a> LatticeSurgeryCtx<'a> {
 
 /// Stim state for one single-block memory circuit.
 ///
-/// The builder still writes the header, reset, and final observable. Round
-/// impls append construct locals, memory rounds, and the measure-logical record.
+/// The builder still writes the header, the final measure line, and closing
+/// detectors. Round impls append construct locals, memory rounds, and the
+/// measure-logical record. [`emit_observable_include`] writes the observable.
 pub(crate) struct SingleBlockCtx<'a> {
     pub(crate) out: String,
     pub(crate) n_checks: usize,
@@ -695,5 +729,25 @@ mod tests {
         let mut empty = String::new();
         emit_reset_tick(&mut empty, &[]);
         assert_eq!(empty, "R\nTICK\n");
+    }
+
+    #[test]
+    fn observable_include_writes_record_offsets() {
+        let mut out = String::new();
+        emit_observable_include(&mut out, 0, &[10, 20, 30], &[30, 10]).expect("present");
+        assert_eq!(out, "OBSERVABLE_INCLUDE(0) rec[-1] rec[-3]");
+        let mut numbered = String::new();
+        emit_observable_include(&mut numbered, 1, &[7], &[7]).expect("present");
+        assert_eq!(numbered, "OBSERVABLE_INCLUDE(1) rec[-1]");
+    }
+
+    #[test]
+    fn observable_include_missing_atom_errors() {
+        let mut out = String::new();
+        let err = emit_observable_include(&mut out, 1, &[10], &[99]).expect_err("missing");
+        assert!(matches!(
+            err,
+            ExperimentError::MissingDataMeasurement { atom: 99 }
+        ));
     }
 }
