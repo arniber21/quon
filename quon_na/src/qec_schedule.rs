@@ -255,6 +255,7 @@ fn schedule_expanded(
             placement_strategy: stage_acc.placement_strategy,
             compaction: compaction_config,
             objective: opts.objective,
+            cost_model: stage_acc.cost_model,
         },
         stage_timings_us: StageTimingsUs {
             extract_us: None,

@@ -807,6 +807,7 @@ fn finish_pipeline(
             placement_strategy,
             compaction: compaction_config,
             objective: opts.objective,
+            cost_model: backend_info.cost_model,
         },
         stage_timings_us: StageTimingsUs {
             extract_us: None,
