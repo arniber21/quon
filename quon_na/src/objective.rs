@@ -1270,4 +1270,219 @@ mod tests {
             (spec, movement_time_us, objective)
         }
     }
+
+    #[cfg(feature = "mlir")]
+    #[test]
+    fn movement_time_weight_selects_a_different_verified_schedule() {
+        use crate::entangling_schedule::schedule_entangling_layers;
+        use crate::geometry::{SpeedModel, SpeedModelKind, movement_duration_for_model};
+        use crate::graph::{
+            DEFAULT_GAMMA, Interaction, InteractionGraph, InteractionId, InteractionSegment,
+            LogicalQubitId, SegmentKind,
+        };
+        use crate::layout::{AtomBinding, AtomId, NeutralAtomLayout, SiteId, TrapBinding};
+        use crate::lower::{ScheduleLowerParams, lower_schedule};
+        use crate::replay::{DeclaredArchitecture, verify_emitted_schedule};
+        use crate::schedule::NeutralAtomAction;
+        use crate::schedule_entry::schedule_from_graph;
+        use crate::zoned::{
+            AwareSearchParams, PlacementCostModel, PlacerMode, ZoneKind, ZoneSpec,
+            ZonedArchitecture, schedule_zoned_with_aware_params,
+        };
+
+        // Same pair as the idle-weight fixture. The one-atom orientation is
+        // a few microseconds longer and leaves the partner idle. The two-atom
+        // orientation is shorter and spends two extra transfers. With idle
+        // and transfer both at 1, the partner's idle swamps those two
+        // transfers, so the shorter move wins at every non-negative movement
+        // weight. The fixed transfer weight sits just above that idle cost.
+        // Stage, idle, and transfer then stay fixed while movement weight
+        // crosses the longer move.
+        let storage_x_um = -200.0;
+        let pair_left_um = 0.0;
+        let pair_gap_um = 6.0;
+        let arch = ZonedArchitecture {
+            zones: vec![
+                ZoneSpec {
+                    zone_id: 0,
+                    kind: ZoneKind::Storage,
+                    rows: 2,
+                    cols: 2,
+                    origin_um: (storage_x_um, 0.0),
+                    site_pitch_um: (4.0, 4.0),
+                    pair_gap_um: None,
+                },
+                ZoneSpec {
+                    zone_id: 1,
+                    kind: ZoneKind::Entanglement,
+                    rows: 1,
+                    cols: 2,
+                    origin_um: (pair_left_um, 0.0),
+                    site_pitch_um: (12.0, 10.0),
+                    pair_gap_um: Some(pair_gap_um),
+                },
+            ],
+            speed_model: SpeedModel {
+                kind: SpeedModelKind::Sqrt,
+                acceleration_m_s2: 2750.0,
+                jerk_m_s3: 0.0,
+                max_velocity_m_s: 0.0,
+            },
+            trap_transfer_us: 15,
+            require_readout_zone: false,
+            rydberg_range_um: 7.5,
+            min_rydberg_spacing_um: 18.75,
+            aod_min_separation_um: 2.0,
+        };
+        let stage_weight = 1.0;
+        let idle_weight = 1.0;
+        let one_atom_um = pair_left_um + pair_gap_um - storage_x_um;
+        let two_atom_um = pair_left_um - storage_x_um;
+        let t_one = movement_duration_for_model(one_atom_um, &arch.speed_model) as f64;
+        let t_two = movement_duration_for_model(two_atom_um, &arch.speed_model) as f64;
+        let trap_us = arch.trap_transfer_us as f64;
+        let idle_one = t_one + 2.0 * trap_us;
+        let movement_gap = t_one - t_two;
+        assert!(movement_gap > 0.0);
+        let transfer_weight = (idle_weight * idle_one / 2.0).floor() + 1.0;
+        let transfer_savings = transfer_weight * 2.0 - idle_weight * idle_one;
+        assert!(
+            transfer_savings > 0.0,
+            "fixed transfer weight must outweigh the stationary partner's idle"
+        );
+        let movement_crossover = transfer_savings / movement_gap;
+        let movement_below = movement_crossover / 2.0;
+        let movement_above = movement_crossover * 2.0;
+        assert!(movement_below > 0.0);
+        assert!(movement_below < movement_crossover && movement_crossover < movement_above);
+        let below = weights(stage_weight, movement_below, transfer_weight, idle_weight);
+        let above = weights(stage_weight, movement_above, transfer_weight, idle_weight);
+
+        let (long_spec, _, long_obj) = scheduled(&arch, below);
+        let (short_spec, _, short_obj) = scheduled(&arch, above);
+        assert_eq!(long_obj.rydberg_stages, 1);
+        assert_eq!(short_obj.rydberg_stages, 1);
+        assert_eq!(long_obj.trap_transfers, 2);
+        assert_eq!(short_obj.trap_transfers, 4);
+        assert_eq!(long_obj.movement_time_us as f64, t_one);
+        assert_eq!(short_obj.movement_time_us as f64, t_two);
+        assert_eq!(long_obj.idle_time_us as f64, idle_one);
+        assert_eq!(short_obj.idle_time_us, 0);
+        assert_eq!(
+            long_obj.rydberg_stage_weight,
+            short_obj.rydberg_stage_weight
+        );
+        assert_eq!(
+            long_obj.trap_transfer_weight,
+            short_obj.trap_transfer_weight
+        );
+        assert_eq!(long_obj.idle_time_weight, short_obj.idle_time_weight);
+        assert!(long_obj.rydberg_stage_weight > 0.0);
+        assert!(long_obj.trap_transfer_weight > 0.0);
+        assert!(long_obj.idle_time_weight > 0.0);
+        assert_ne!(
+            long_obj.movement_time_weight,
+            short_obj.movement_time_weight
+        );
+        let measured_gap = long_obj.movement_time_us as f64 - short_obj.movement_time_us as f64;
+        let measured_savings = transfer_weight
+            * (short_obj.trap_transfers as f64 - long_obj.trap_transfers as f64)
+            - idle_weight * (long_obj.idle_time_us as f64 - short_obj.idle_time_us as f64);
+        assert_eq!(measured_savings / measured_gap, movement_crossover);
+        assert!(movement_below < movement_crossover && movement_crossover < movement_above);
+
+        let long_under_high =
+            objective_from_verified_schedule(&long_spec, &above).expect("rescore");
+        let short_under_low =
+            objective_from_verified_schedule(&short_spec, &below).expect("rescore");
+        assert!(long_obj.total < short_under_low.total);
+        assert!(short_obj.total < long_under_high.total);
+
+        fn scheduled(
+            arch: &ZonedArchitecture,
+            weights: NeutralAtomCostModel,
+        ) -> (crate::dialect::ScheduleSpec, u64, ScheduleObjective) {
+            let id = InteractionId(0);
+            let graph = InteractionGraph::from_interactions(
+                vec![LogicalQubitId(0), LogicalQubitId(1)],
+                vec![Interaction {
+                    id,
+                    qubits: vec![LogicalQubitId(0), LogicalQubitId(1)],
+                    gate_name: "CZ".into(),
+                    dag_layer: 0,
+                    on_critical_path: false,
+                }],
+                vec![InteractionSegment {
+                    kind: SegmentKind::CommutationGroup,
+                    interactions: vec![id],
+                }],
+                DEFAULT_GAMMA,
+            )
+            .expect("graph");
+            let mut request =
+                schedule_entangling_layers(schedule_from_graph(graph).expect("request"), 340)
+                    .expect("layers")
+                    .request;
+            request.layout = Some(NeutralAtomLayout {
+                sites: Vec::new(),
+                initial_bindings: vec![
+                    AtomBinding {
+                        atom: AtomId(0),
+                        trap: TrapBinding::Slm { site: SiteId(4) },
+                    },
+                    AtomBinding {
+                        atom: AtomId(1),
+                        trap: TrapBinding::Slm { site: SiteId(0) },
+                    },
+                ],
+                declared_initial_bindings: Vec::new(),
+            });
+            let result = schedule_zoned_with_aware_params(
+                request,
+                arch,
+                PlacerMode::RoutingAgnostic,
+                AwareSearchParams::default(),
+                PlacementCostModel::Weighted {
+                    weights,
+                    speed_model: arch.speed_model,
+                    trap_transfer_us: arch.trap_transfer_us,
+                },
+            )
+            .expect("zoned");
+            let layout = result.request.layout.as_ref().expect("layout");
+            let spec = lower_schedule(
+                &result.request,
+                &ScheduleLowerParams {
+                    target_id: "movement-weight".into(),
+                    rydberg_range_um: arch.rydberg_range_um,
+                    min_rydberg_spacing_um: arch.min_rydberg_spacing_um,
+                    aod_min_separation_um: arch.aod_min_separation_um,
+                },
+            )
+            .expect("lower");
+            let declared = DeclaredArchitecture {
+                sites: layout.sites.clone(),
+                initial_bindings: layout.declared_initial_bindings.clone(),
+                zones: arch.zones.clone(),
+                check_zones: true,
+                require_readout_zone: false,
+                rydberg_range_um: arch.rydberg_range_um,
+                min_rydberg_spacing_um: arch.min_rydberg_spacing_um,
+                aod_min_separation_um: arch.aod_min_separation_um,
+            };
+            verify_emitted_schedule(&spec, &declared).expect("verified schedule");
+            let objective = objective_from_verified_schedule(&spec, &weights).expect("objective");
+            let movement_time_us = result
+                .request
+                .layers
+                .iter()
+                .flat_map(|layer| &layer.actions)
+                .filter_map(|action| match action {
+                    NeutralAtomAction::Move(group) => Some(group.duration_us),
+                    _ => None,
+                })
+                .sum();
+            (spec, movement_time_us, objective)
+        }
+    }
 }
