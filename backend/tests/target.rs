@@ -698,6 +698,64 @@ fn neutral_atom_all_zero_cost_weights_are_rejected() {
 }
 
 #[test]
+fn omitted_optional_cost_weights_keep_documented_defaults() {
+    let placeholder = backend::NeutralAtomCostModel::PLACEHOLDER;
+    let sample = json::from_str(&neutral_sample_json()).expect("checked-in target");
+    let sample_cost = sample
+        .neutral_atom_target()
+        .expect("neutral atom")
+        .cost_model;
+    assert_eq!(
+        sample_cost, placeholder,
+        "generic_rna_v0.json is the documented placeholder vector"
+    );
+
+    let mut partial = neutral_sample_value();
+    let model = partial
+        .get_mut("cost_model")
+        .and_then(|v| v.as_object_mut())
+        .expect("cost_model object");
+    model.insert("rydberg_stage_weight".into(), serde_json::json!(4.0));
+    model.remove("movement_time_weight");
+    model.remove("trap_transfer_weight");
+    model.remove("idle_time_weight");
+    let loaded = json::from_str(&partial.to_string()).expect("omitted weights load");
+    let cost = loaded
+        .neutral_atom_target()
+        .expect("neutral atom")
+        .cost_model;
+    assert_eq!(cost.rydberg_stage_weight, 4.0);
+    assert_eq!(cost.movement_time_weight, placeholder.movement_time_weight);
+    assert_eq!(cost.trap_transfer_weight, placeholder.trap_transfer_weight);
+    assert_eq!(cost.idle_time_weight, placeholder.idle_time_weight);
+
+    let mut empty = neutral_sample_value();
+    empty["cost_model"] = serde_json::json!({});
+    let loaded = json::from_str(&empty.to_string()).expect("empty cost_model loads");
+    assert_eq!(
+        loaded
+            .neutral_atom_target()
+            .expect("neutral atom")
+            .cost_model,
+        placeholder
+    );
+
+    let mut missing = neutral_sample_value();
+    missing
+        .as_object_mut()
+        .expect("object")
+        .remove("cost_model");
+    let loaded = json::from_str(&missing.to_string()).expect("omitted cost_model loads");
+    assert_eq!(
+        loaded
+            .neutral_atom_target()
+            .expect("neutral atom")
+            .cost_model,
+        placeholder
+    );
+}
+
+#[test]
 fn neutral_atom_error_model_rejects_negative_probability() {
     let src = with_error_model_mutated(|m| {
         m.insert("measurement".into(), serde_json::json!(-0.01));
