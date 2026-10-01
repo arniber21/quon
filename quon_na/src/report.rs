@@ -13,7 +13,10 @@
 //! are **analytic** (ADR-0020) and distinct from `error_budget` — see
 //! [`ResourceReport::with_fidelity_estimate`].
 
-use backend::{BackendError, NeutralAtomErrorModel, NeutralAtomFidelity, NeutralAtomLossModel};
+use backend::{
+    BackendError, NeutralAtomErrorModel, NeutralAtomFidelity, NeutralAtomLossModel,
+    NeutralAtomTarget,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -376,13 +379,14 @@ pub struct ResourceReport {
     // `None` until [`ResourceReport::with_fidelity_estimate`] is called with a
     // target's [`NeutralAtomFidelity`] — the same "None until overlaid"
     // convention `error_budget` uses (ADR-0017 §11.4), not a per-field schema
-    // migration marker. In production, `quon_na::pipeline::finish_pipeline`
-    // and `quon_na::qec_schedule::schedule_expanded` always call the overlay
-    // when a `NeutralAtomTarget` is available (its `fidelity` field is
-    // mandatory, unlike the optional `error_model`), so both fields are
-    // `Some` on every `--emit-resource-report` output; only reports built
-    // directly from `ResourceReport::from_layers` / `build_resource_report`
-    // without that overlay (library use, most unit tests) leave them unset.
+    // migration marker. In production, `overlay_target_report` always applies
+    // the fidelity overlay when a `NeutralAtomTarget` is available (its
+    // `fidelity` field is mandatory, unlike the optional `error_model`). The
+    // bare pipeline and the hybrid QEC schedule both call that function, so
+    // both fields are `Some` on every `--emit-resource-report` output; only
+    // reports built directly from `ResourceReport::from_layers` /
+    // `build_resource_report` without that overlay (library use, most unit
+    // tests) leave them unset.
     //
     // **Analytic estimate, not a logical error rate or threshold claim**
     // (ADR-0020) — same discipline as `error_budget`, kept as a visibly
@@ -423,10 +427,10 @@ pub struct ResourceReport {
     // `None` until [`ResourceReport::with_atom_loss_budget`] is overlaid with
     // a target's [`NeutralAtomLossModel`] — the same "None until overlaid"
     // convention `error_budget` uses (ADR-0017 §11.4). In production,
-    // `quon_na::pipeline::finish_pipeline` and
-    // `quon_na::qec_schedule::schedule_expanded` attach it whenever the
-    // target carries `atom_loss_model` (its presence is optional, unlike the
-    // mandatory `fidelity`); reports built directly from `from_layers` /
+    // `overlay_target_report` attaches it whenever the target carries
+    // `atom_loss_model` (its presence is optional, unlike the mandatory
+    // `fidelity`). The bare pipeline and the hybrid QEC schedule both call
+    // that function; reports built directly from `from_layers` /
     // `build_resource_report` without that overlay leave it `None`.
     //
     // **Analytic, not Monte Carlo** (ADR-0020): a per-atom `heating → loss`
@@ -1142,6 +1146,74 @@ pub fn attach_qec_error_budget(
     Ok(report.with_error_budget(model))
 }
 
+/// Borrowed inputs for [`overlay_target_report`].
+///
+/// The schedule layers and layout are the ones [`build_resource_report`]
+/// already counted. Path-specific diagnostics are optional: the bare
+/// pipeline fills `aware_search`; both pipelines may fill the placer
+/// mechanism and schedule-optimality label. QEC workload counts
+/// (`memory_rounds`, `t_count`, and the magic-state counters) are not
+/// inputs — the hybrid caller sets those on the report before this overlay.
+#[derive(Clone, Copy, Debug)]
+pub struct TargetReportOverlay<'a> {
+    /// Compiled schedule the report was built from.
+    pub layers: &'a [ScheduleLayer],
+    /// Zoned site map. `None` zero-fills an atom-loss budget when a loss
+    /// model is present, matching the previous per-path overlay.
+    pub layout: Option<&'a NeutralAtomLayout>,
+    /// Target whose fidelity, error model, and atom-loss model drive the
+    /// analytic sections.
+    pub target: &'a NeutralAtomTarget,
+    /// Routing-aware search counts. `None` leaves the aware-search fields
+    /// untouched (the hybrid QEC path never sets them).
+    pub aware_search: Option<(u64, u64)>,
+    /// Routing-agnostic placer label. Always written, including `None`.
+    pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
+    /// Exact-vs-heuristic label. `None` leaves the field untouched.
+    pub schedule_optimality: Option<ScheduleOptimality>,
+}
+
+/// Shared production report-overlay stage.
+///
+/// Both the bare pipeline (`finish_pipeline`) and the hybrid QEC schedule
+/// (`schedule_expanded`) call this after [`build_resource_report`]. One
+/// place applies the analytic sections those paths used to duplicate:
+///
+/// 1. aware-search status, when `aware_search` is `Some`
+/// 2. schedule-optimality label, when `schedule_optimality` is `Some`
+/// 3. routing-agnostic placer mechanism (always, including `None`)
+/// 4. physical error budget, when the target carries `error_model`
+/// 5. end-to-end fidelity estimate (`fidelity` is mandatory on the target)
+/// 6. atom-loss budget, when the target carries `atom_loss_model`
+///
+/// Those writes touch disjoint fields, so this order yields the same report
+/// as either previous inline chain. Workload counts set on `report` before
+/// the call are left in place.
+pub fn overlay_target_report(
+    report: ResourceReport,
+    overlay: &TargetReportOverlay<'_>,
+) -> Result<ResourceReport, ReportError> {
+    let report = match overlay.aware_search {
+        Some((completed, fell_back)) => report.with_aware_search_status(completed, fell_back),
+        None => report,
+    };
+    let report = match overlay.schedule_optimality {
+        Some(optimality) => report.with_schedule_optimality(optimality),
+        None => report,
+    };
+    let report = report.with_agnostic_placer_mechanism(overlay.agnostic_placer_mechanism);
+    let report = match overlay.target.error_model.as_ref() {
+        Some(model) => attach_qec_error_budget(report, Some(model))?,
+        None => report,
+    };
+    let report = report.with_fidelity_estimate(overlay.layers, &overlay.target.fidelity);
+    let report = match overlay.target.atom_loss_model.as_ref() {
+        Some(model) => report.with_atom_loss_budget(overlay.layers, overlay.layout, model),
+        None => report,
+    };
+    Ok(report)
+}
+
 /// Resolve a target's error model for QEC error artifacts.
 ///
 /// Maps [`BackendError::MissingErrorModel`] only — call sites match that
@@ -1485,7 +1557,10 @@ pub fn resource_report_to_markdown(report: &ResourceReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    use backend::{BackendError, NeutralAtomErrorModel, NeutralAtomFidelity, NeutralAtomLossModel};
+    use backend::{
+        BackendError, NeutralAtomErrorModel, NeutralAtomFidelity, NeutralAtomLossModel,
+        NeutralAtomTarget,
+    };
     use serde_json::json;
 
     use super::*;
@@ -2946,5 +3021,122 @@ mod tests {
         let md = resource_report_to_markdown(&report);
         insta::assert_snapshot!("atom_loss_budget_section_json", json);
         insta::assert_snapshot!("atom_loss_budget_section_md", md);
+    }
+
+    fn load_generic_rna() -> NeutralAtomTarget {
+        let path = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../targets/neutral_atom/generic_rna_v0.json"
+        ));
+        let loaded = backend::json::load(path).expect("load target");
+        loaded.neutral_atom_target().expect("na target").clone()
+    }
+
+    /// The shared overlay matches the bare pipeline's previous inline order
+    /// and the hybrid QEC schedule's previous inline order. Those orders
+    /// differed; the fields they write do not overlap.
+    #[test]
+    fn overlay_target_report_matches_both_previous_chains() {
+        let mut na = load_generic_rna();
+        na.atom_loss_model = Some(example_loss_model());
+        let layout = loss_layout();
+        let layers = vec![
+            move_layer(atom(0), site(0), site(1)),
+            move_layer(atom(1), site(2), site(3)),
+        ];
+        let mut base = ResourceReport::from_layers(&layers);
+        base.memory_rounds = Some(3);
+        base.t_count = Some(1);
+        base.tdag_count = Some(2);
+        base.ccz_count = Some(0);
+        base.magic_state_demand = Some(1);
+
+        let shared = overlay_target_report(
+            base.clone(),
+            &TargetReportOverlay {
+                layers: &layers,
+                layout: Some(&layout),
+                target: &na,
+                aware_search: Some((4, 1)),
+                agnostic_placer_mechanism: Some(AgnosticPlacerMechanism::Matching),
+                schedule_optimality: Some(ScheduleOptimality::Heuristic),
+            },
+        )
+        .expect("overlay");
+
+        // Bare pipeline order: diagnostics, then error budget, fidelity, loss.
+        let bare = {
+            let report = base
+                .clone()
+                .with_aware_search_status(4, 1)
+                .with_schedule_optimality(ScheduleOptimality::Heuristic)
+                .with_agnostic_placer_mechanism(Some(AgnosticPlacerMechanism::Matching));
+            let report = attach_qec_error_budget(report, na.error_model.as_ref()).expect("budget");
+            let report = report.with_fidelity_estimate(&layers, &na.fidelity);
+            let model = na.atom_loss_model.as_ref().expect("loss model");
+            report.with_atom_loss_budget(&layers, Some(&layout), model)
+        };
+        assert_eq!(shared, bare);
+
+        // Hybrid QEC order: error budget, fidelity, loss, then diagnostics.
+        // Aware-search stays unset on that path.
+        let qec = {
+            let report =
+                attach_qec_error_budget(base.clone(), na.error_model.as_ref()).expect("budget");
+            let report = report.with_fidelity_estimate(&layers, &na.fidelity);
+            let model = na.atom_loss_model.as_ref().expect("loss model");
+            report
+                .with_atom_loss_budget(&layers, Some(&layout), model)
+                .with_agnostic_placer_mechanism(Some(AgnosticPlacerMechanism::Matching))
+                .with_schedule_optimality(ScheduleOptimality::Heuristic)
+        };
+        let qec_shared = overlay_target_report(
+            base,
+            &TargetReportOverlay {
+                layers: &layers,
+                layout: Some(&layout),
+                target: &na,
+                aware_search: None,
+                agnostic_placer_mechanism: Some(AgnosticPlacerMechanism::Matching),
+                schedule_optimality: Some(ScheduleOptimality::Heuristic),
+            },
+        )
+        .expect("qec overlay");
+        assert_eq!(qec_shared, qec);
+        assert_eq!(qec_shared.memory_rounds, Some(3));
+        assert_eq!(qec_shared.t_count, Some(1));
+        assert_eq!(qec_shared.magic_state_demand, Some(1));
+        assert_eq!(qec_shared.aware_search_completed_layers, None);
+        assert!(qec_shared.error_budget.is_some());
+        assert!(qec_shared.gate_fidelity_product.is_some());
+        assert!(qec_shared.estimated_fidelity.is_some());
+        let loss = qec_shared.atom_loss_budget.expect("loss section");
+        assert!(loss.expected_atoms_lost > 0.0);
+    }
+
+    #[test]
+    fn overlay_target_report_omits_optional_sections_without_models() {
+        let mut na = load_generic_rna();
+        na.error_model = None;
+        na.atom_loss_model = None;
+        let layers = toy_layers();
+        let report = overlay_target_report(
+            ResourceReport::from_layers(&layers),
+            &TargetReportOverlay {
+                layers: &layers,
+                layout: None,
+                target: &na,
+                aware_search: None,
+                agnostic_placer_mechanism: None,
+                schedule_optimality: None,
+            },
+        )
+        .expect("overlay");
+        assert!(report.error_budget.is_none());
+        assert!(report.atom_loss_budget.is_none());
+        assert!(report.gate_fidelity_product.is_some());
+        assert!(report.estimated_fidelity.is_some());
+        assert!(report.agnostic_placer_mechanism.is_none());
+        assert!(report.schedule_optimality.is_none());
     }
 }

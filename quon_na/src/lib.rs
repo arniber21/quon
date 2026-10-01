@@ -114,9 +114,9 @@ pub use qec_schedule::{round_barrier_cuts, run_from_qec_workload};
 pub use report::{
     AtomLossBudget, BottleneckKind, ErrorBudgetContributions, RESOURCE_REPORT_EVIDENCE_DISCLAIMER,
     RESOURCE_REPORT_EVIDENCE_KIND, ReportError, ResourceReport, ScheduleOptimality,
-    TemporalAtomMetrics, attach_qec_error_budget, build_resource_report,
-    require_target_error_model, resource_report_to_json, resource_report_to_markdown,
-    simultaneous_layer_time,
+    TargetReportOverlay, TemporalAtomMetrics, attach_qec_error_budget, build_resource_report,
+    overlay_target_report, require_target_error_model, resource_report_to_json,
+    resource_report_to_markdown, simultaneous_layer_time,
 };
 pub use schedule::{
     AtomMove, EntanglingAction, LocalGateKind, MeasurementBasis, MovementGroup, NeutralAtomAction,
