@@ -18,8 +18,8 @@
 use std::path::PathBuf;
 
 use quon_na::{
-    NaBackendKind, NaScheduleOptions, NaStats, PlacementStrategy, PlacerMode,
-    cubic_commutation_graph, na_stats_to_json, run_from_graph,
+    CostModelWeights, NaBackendKind, NaObjective, NaScheduleOptions, NaStats, PlacementStrategy,
+    PlacerMode, cubic_commutation_graph, na_stats_to_json, run_from_graph,
 };
 use serde_json::Value;
 
@@ -188,6 +188,10 @@ fn flat_aod_stats_shape() {
         stats.config.placement_strategy,
         Some(PlacementStrategy::RowMajor)
     );
+    assert!(
+        stats.config.cost_model.is_none(),
+        "flat AOD does not score with cost_model weights"
+    );
     // Aware-search concept doesn't apply to flat AOD.
     assert_eq!(stats.search.aware_search_completed_layers, None);
     assert_eq!(stats.search.aware_search_node_expansions, None);
@@ -221,6 +225,58 @@ fn no_compact_flag_reflects_requested_not_applied() {
     assert!(!stats.config.compaction.requested);
     assert!(!stats.config.compaction.applied);
     assert!(stats.stage_timings_us.compaction_us.is_none());
+}
+
+/// Zoned stats echo the §9 weights the placer scored with, not only the
+/// `Time` / `ErrorBudget` mode name.
+#[test]
+fn stats_echo_scored_cost_weights_not_only_the_mode() {
+    let mut na = na_target();
+    let weights = backend::NeutralAtomCostModel {
+        rydberg_stage_weight: 7.0,
+        movement_time_weight: 0.25,
+        trap_transfer_weight: 3.0,
+        idle_time_weight: 0.5,
+    };
+    na.cost_model = weights;
+    assert!(
+        na.error_model.is_some(),
+        "error-budget mode needs the target error_model"
+    );
+
+    for objective in [NaObjective::Time, NaObjective::ErrorBudget] {
+        let artifacts = run_from_graph(
+            cubic_commutation_graph(4).expect("cubic"),
+            &na,
+            NaScheduleOptions {
+                backend: NaBackendKind::Zoned,
+                placer: PlacerMode::RoutingAgnostic,
+                objective,
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("schedule");
+        let stats = artifacts
+            .stats
+            .expect("run_from_graph always populates stats");
+        assert_eq!(stats.config.objective, objective);
+        assert_eq!(
+            stats.config.cost_model,
+            Some(CostModelWeights::from(weights)),
+            "echoed weights must be the vector the zoned placer scored with"
+        );
+
+        let json = na_stats_to_json(&stats).expect("serialize NaStats");
+        let value: Value = serde_json::from_str(&json).expect("parse NaStats JSON");
+        let mode = serde_json::to_value(objective).expect("mode name");
+        assert_eq!(value["config"]["objective"], mode);
+        let echoed = &value["config"]["cost_model"];
+        assert_eq!(echoed["rydberg_stage_weight"], 7.0);
+        assert_eq!(echoed["movement_time_weight"], 0.25);
+        assert_eq!(echoed["trap_transfer_weight"], 3.0);
+        assert_eq!(echoed["idle_time_weight"], 0.5);
+    }
 }
 
 /// A stats JSON with only the fields present in schema v1 must still

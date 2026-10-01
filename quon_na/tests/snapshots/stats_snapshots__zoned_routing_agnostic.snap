@@ -11,6 +11,12 @@ expression: redact_timings(&json)
       "legality_checked": false,
       "requested": true
     },
+    "cost_model": {
+      "idle_time_weight": 1e-6,
+      "movement_time_weight": 1.0,
+      "rydberg_stage_weight": 1.0,
+      "trap_transfer_weight": 1.0
+    },
     "objective": "time",
     "placer_mode": "routing_agnostic"
   },

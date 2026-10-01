@@ -186,6 +186,35 @@ pub struct CompactionConfig {
     pub legality_checked: bool,
 }
 
+/// §9 `cost_model` weights the zoned placer scored with.
+///
+/// Copied from the [`crate::zoned::PlacementCostModel::Weighted`] vector
+/// passed to `schedule_zoned_with_aware_params`. Flat AOD does not score
+/// with these weights, so the echo stays absent there.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CostModelWeights {
+    #[serde(default)]
+    pub rydberg_stage_weight: f64,
+    #[serde(default)]
+    pub movement_time_weight: f64,
+    #[serde(default)]
+    pub trap_transfer_weight: f64,
+    #[serde(default)]
+    pub idle_time_weight: f64,
+}
+
+impl From<backend::NeutralAtomCostModel> for CostModelWeights {
+    fn from(weights: backend::NeutralAtomCostModel) -> Self {
+        Self {
+            rydberg_stage_weight: weights.rydberg_stage_weight,
+            movement_time_weight: weights.movement_time_weight,
+            trap_transfer_weight: weights.trap_transfer_weight,
+            idle_time_weight: weights.idle_time_weight,
+        }
+    }
+}
+
 /// Effective (as-run, not merely as-requested) pipeline configuration.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -202,10 +231,14 @@ pub struct EffectiveConfig {
     pub placement_strategy: Option<PlacementStrategy>,
     #[serde(default)]
     pub compaction: CompactionConfig,
-    /// Placement/routing objective (issue #309): `Time` (default) or
-    /// `ErrorBudget`. Mirrors the `--na-objective` CLI knob.
+    /// Placement/routing objective mode: `Time` (default) or `ErrorBudget`.
+    /// Mirrors the `--na-objective` CLI knob. The weights that mode scored
+    /// with are [`Self::cost_model`].
     #[serde(default)]
     pub objective: NaObjective,
+    /// §9 weights the zoned optimizer scored with. `None` for flat AOD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_model: Option<CostModelWeights>,
 }
 
 /// Tool/target identifiers so a stats file is self-describing without a

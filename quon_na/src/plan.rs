@@ -26,7 +26,7 @@ use crate::pipeline::{
 };
 use crate::placement::{PlacementStrategy, place};
 use crate::schedule_entry::GraphScheduleRequest;
-use crate::stats::SearchDiagnostics;
+use crate::stats::{CostModelWeights, SearchDiagnostics};
 use crate::zoned::{
     AgnosticPlacerMechanism, PlacementCostModel, PlacerMode, schedule_zoned_with_aware_params,
 };
@@ -65,6 +65,9 @@ pub struct BackendStageInfo {
     /// `Some(ScheduleOptimality::Exact)` when z3 proved optimality;
     /// `Some(ScheduleOptimality::Heuristic)` on timeout/fallback.
     pub schedule_optimality: Option<crate::report::ScheduleOptimality>,
+    /// §9 weights passed to the zoned placer. `None` for flat AOD, which
+    /// does not score with `cost_model`.
+    pub cost_model: Option<CostModelWeights>,
 }
 
 /// Run the place → AOD movement (or zoned routing) backend on a
@@ -129,6 +132,12 @@ pub fn plan_backend<V: VertexId>(
                         arch.trap_transfer_us,
                     )
                 }
+            };
+            info.cost_model = match cost_model {
+                PlacementCostModel::Weighted { weights, .. } => {
+                    Some(CostModelWeights::from(weights))
+                }
+                PlacementCostModel::Time | PlacementCostModel::ErrorBudget { .. } => None,
             };
             let stage_started = Instant::now();
             let zoned = schedule_zoned_with_aware_params(
@@ -271,6 +280,8 @@ pub struct QecStageAccumulator {
     pub aware_search_status: Option<(u64, u64)>,
     pub agnostic_placer_mechanism: Option<AgnosticPlacerMechanism>,
     pub schedule_optimality: Option<crate::report::ScheduleOptimality>,
+    /// §9 weights the zoned placer scored with. Same across phases.
+    pub cost_model: Option<crate::stats::CostModelWeights>,
     /// Per-phase exact state-prep solver outcome, aggregated across CNOT
     /// phases (issue #397). `None` when the heuristic scheduler ran (default
     /// `state_prep` mode, or a per-phase empty CNOT list). `Timeout` is
@@ -304,6 +315,9 @@ impl QecStageAccumulator {
         }
         if self.placement_strategy.is_none() {
             self.placement_strategy = backend.placement_strategy;
+        }
+        if self.cost_model.is_none() {
+            self.cost_model = backend.cost_model;
         }
         // search_diagnostics: accumulate sums.
         let acc = &mut self.search_diagnostics;
@@ -441,9 +455,16 @@ mod tests {
     #[test]
     fn accumulator_accumulates() {
         let mut acc = QecStageAccumulator::default();
+        let weights = CostModelWeights {
+            rydberg_stage_weight: 7.0,
+            movement_time_weight: 0.25,
+            trap_transfer_weight: 3.0,
+            idle_time_weight: 0.5,
+        };
         let backend = BackendStageInfo {
             placement_us: Some(10),
             movement_us: Some(20),
+            cost_model: Some(weights),
             ..Default::default()
         };
         acc.accumulate_phase(5, 8, &backend);
@@ -451,6 +472,7 @@ mod tests {
         assert_eq!(acc.entangling_layers_us, 8);
         assert_eq!(acc.placement_us, Some(10));
         assert_eq!(acc.movement_us, Some(20));
+        assert_eq!(acc.cost_model, Some(weights));
 
         let backend2 = BackendStageInfo {
             movement_us: Some(30),

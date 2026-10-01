@@ -130,8 +130,8 @@ pub use schedule_view::{
     ScheduleViewZone,
 };
 pub use stats::{
-    CompactionConfig, EffectiveConfig, NA_STATS_KIND, NA_STATS_SCHEMA_VERSION, NaStats,
-    SearchDiagnostics, StageTimingsUs, VersionInfo, na_stats_to_json,
+    CompactionConfig, CostModelWeights, EffectiveConfig, NA_STATS_KIND, NA_STATS_SCHEMA_VERSION,
+    NaStats, SearchDiagnostics, StageTimingsUs, VersionInfo, na_stats_to_json,
 };
 pub use zoned::{
     AWARE_NODE_BUDGET, AgnosticPlacerMechanism, AwareSearchOutcome, AwareSearchParams,
