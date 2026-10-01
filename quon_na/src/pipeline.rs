@@ -8,7 +8,7 @@
 //! 2. **`schedule_from_graph`** → **`schedule_entangling_layers`**
 //! 3. **Zoned** (`schedule_zoned`) **or** flat AOD (`place` + `plan_aod_movement`)
 //! 4. **Optional compaction** ([`compact_schedule`], fail-closed)
-//! 5. **Resource report** ([`build_resource_report`])
+//! 5. **Resource report** ([`build_resource_report`], then [`overlay_target_report`])
 //!
 //! Fixed (OpenQASM) physical passes live in `mlir_bridge::pipeline`.
 
@@ -25,7 +25,9 @@ use crate::graph::{InteractionGraph, LogicalQubitId};
 use crate::layout::AtomId;
 use crate::movement::MovementParams;
 use crate::placement::PlacementStrategy;
-use crate::report::{ResourceReport, attach_qec_error_budget, build_resource_report};
+use crate::report::{
+    ResourceReport, TargetReportOverlay, build_resource_report, overlay_target_report,
+};
 use crate::schedule::{MeasurementBasis, NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
 use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, StageTimingsUs};
@@ -782,38 +784,20 @@ fn finish_pipeline(
 
     let stage_started = Instant::now();
     let report = build_resource_report(&req.layers, None, Some(logical_qubits.max(1)))?;
-    let report = match aware_search_status {
-        Some((completed, fell_back)) => report.with_aware_search_status(completed, fell_back),
-        None => report,
-    };
-    let report = match schedule_optimality {
-        Some(optimality) => report.with_schedule_optimality(optimality),
-        None => report,
-    };
-    let report = report.with_agnostic_placer_mechanism(agnostic_placer_mechanism);
-    // Production path: attach analytic error_budget whenever the target carries
-    // an error_model (ADR-0017). `--emit-resource-report` in quonc additionally
-    // hard-requires the model so missing budgets fail at emit time.
-    let report = match na.error_model.as_ref() {
-        Some(model) => attach_qec_error_budget(report, Some(model))?,
-        None => report,
-    };
-    // Analytic end-to-end fidelity estimate (Enola Eq. (1), issue #305).
-    // Unlike `error_model`, `NeutralAtomTarget::fidelity` is a mandatory
-    // field, so this overlay always applies once a target is available —
-    // `gate_fidelity_product`/`estimated_fidelity` are `Some` on every
-    // production report from this pipeline.
-    let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
-    // Analytic per-atom movement-heating / atom-loss budget (issue #310,
-    // \[Atomique\] Eqs. (1)–(2)). Optional like `error_model`: attached only
-    // when the target carries `atom_loss_model`, else the section is omitted.
-    // Distance is measured against the zoned schedule's layout (the real
-    // √-law travel); `req.layout` is `None` only for non-zoned hand-built
-    // schedules, in which case the budget is emitted zeroed (observable).
-    let report = match na.atom_loss_model.as_ref() {
-        Some(model) => report.with_atom_loss_budget(&req.layers, req.layout.as_ref(), model),
-        None => report,
-    };
+    // Shared with `qec_schedule::schedule_expanded` (issue #468): error
+    // budget, fidelity, atom-loss, and the diagnostic labels. Emit-time
+    // `--emit-resource-report` still hard-requires `error_model` separately.
+    let report = overlay_target_report(
+        report,
+        &TargetReportOverlay {
+            layers: &req.layers,
+            layout: req.layout.as_ref(),
+            target: na,
+            aware_search: aware_search_status,
+            agnostic_placer_mechanism,
+            schedule_optimality,
+        },
+    )?;
     let resource_report_us = elapsed_us(stage_started);
 
     let stats = NaStats {

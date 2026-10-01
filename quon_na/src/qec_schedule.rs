@@ -6,7 +6,8 @@
 //! 2. Per round: Misra–Gries entangling → place→move (or zoned) → terminals
 //! 3. Append a durable [`NeutralAtomAction::Wait`] after each memory round
 //! 4. Concatenate rounds; compact with Barrier cuts at Wait markers (fail-closed)
-//! 5. Resource report sized from code blocks + memory-round metadata
+//! 5. Resource report sized from code blocks + memory-round metadata, then
+//!    [`crate::report::overlay_target_report`]
 
 use std::time::Instant;
 
@@ -35,7 +36,7 @@ use crate::plan::{QecStageAccumulator, plan_backend};
 use crate::qec::code_blocks_from_expanded;
 #[cfg(feature = "solver")]
 use crate::report::ScheduleOptimality;
-use crate::report::{attach_qec_error_budget, build_resource_report};
+use crate::report::{TargetReportOverlay, build_resource_report, overlay_target_report};
 use crate::schedule::{LocalGateKind, MeasurementBasis, NeutralAtomAction, ScheduleLayer};
 use crate::schedule_entry::{GraphScheduleRequest, schedule_from_graph};
 use crate::stats::{CompactionConfig, EffectiveConfig, NaStats, StageTimingsUs};
@@ -222,33 +223,24 @@ fn schedule_expanded(
     let mut report = build_resource_report(&req.layers, Some(&code_blocks), None)?;
     // Distance ownership: `with_code_blocks` via `CodeFamily::distance()`.
     report.memory_rounds = Some(expanded.memory_round_count() as u64);
-    // Magic-state-consuming logical operation counts (issue #283).
+    // Magic-state-consuming logical operation counts (issue #283). These
+    // stay here: the flat pipeline has no workload to size them from.
     report.t_count = Some(expanded.t_count() as u64);
     report.tdag_count = Some(expanded.tdag_count() as u64);
     report.ccz_count = Some(expanded.ccz_count() as u64);
     report.magic_state_demand = Some(expanded.magic_state_demand() as u64);
-    let report = match na.error_model.as_ref() {
-        Some(model) => attach_qec_error_budget(report, Some(model))?,
-        None => report,
-    };
-    // Analytic end-to-end fidelity estimate (Enola Eq. (1), issue #305) —
-    // same unconditional overlay as the flat/zoned pipeline
-    // (`pipeline::finish_pipeline`); `NeutralAtomTarget::fidelity` is
-    // mandatory, so this always applies once a target is available.
-    let report = report.with_fidelity_estimate(&req.layers, &na.fidelity);
-    // Analytic per-atom movement-heating / atom-loss budget (issue #310,
-    // \[Atomique\] Eqs. (1)–(2)). Optional like `error_model`: attached only
-    // when the target carries `atom_loss_model`; distance measured against
-    // the zoned schedule's layout (real √-law travel), else zeroed/omitted.
-    let report = match na.atom_loss_model.as_ref() {
-        Some(model) => report.with_atom_loss_budget(&req.layers, req.layout.as_ref(), model),
-        None => report,
-    };
-    let report = report.with_agnostic_placer_mechanism(stage_acc.agnostic_placer_mechanism);
-    let report = match stage_acc.schedule_optimality {
-        Some(optimality) => report.with_schedule_optimality(optimality),
-        None => report,
-    };
+    // Shared with `pipeline::finish_pipeline` (issue #468).
+    let report = overlay_target_report(
+        report,
+        &TargetReportOverlay {
+            layers: &req.layers,
+            layout: req.layout.as_ref(),
+            target: na,
+            aware_search: None,
+            agnostic_placer_mechanism: stage_acc.agnostic_placer_mechanism,
+            schedule_optimality: stage_acc.schedule_optimality,
+        },
+    )?;
     let resource_report_us = elapsed_us(stage_started);
 
     let req = project_request_to_logical(req);
