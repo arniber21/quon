@@ -641,4 +641,194 @@ mod tests {
             (spec, trap_transfers, movement_time_us, objective)
         }
     }
+
+    #[cfg(feature = "mlir")]
+    #[test]
+    fn rydberg_stage_weight_selects_a_different_verified_schedule() {
+        use crate::entangling_schedule::schedule_entangling_layers;
+        use crate::geometry::{SpeedModel, SpeedModelKind};
+        use crate::graph::{
+            DEFAULT_GAMMA, Interaction, InteractionGraph, InteractionId, InteractionSegment,
+            LogicalQubitId, SegmentKind,
+        };
+        use crate::layout::{AtomBinding, AtomId, NeutralAtomLayout, SiteId, TrapBinding};
+        use crate::lower::{ScheduleLowerParams, lower_schedule};
+        use crate::replay::{DeclaredArchitecture, verify_emitted_schedule};
+        use crate::schedule::NeutralAtomAction;
+        use crate::schedule_entry::schedule_from_graph;
+        use crate::zoned::{
+            AwareSearchParams, PlacementCostModel, PlacerMode, ZoneKind, ZoneSpec,
+            ZonedArchitecture, schedule_zoned_with_aware_params,
+        };
+
+        // Two CZ gates already sit on adjacent entanglement pairs. The pairs
+        // are 10 µm apart, inside the 18.75 µm isolation spacing, so they
+        // cannot fire together. The other column is 400 µm away and does not
+        // conflict. One stage pays for that long move. Two stages reuse both
+        // home pairs and pay for a second Rydberg stage.
+        let arch = ZonedArchitecture {
+            zones: vec![
+                ZoneSpec {
+                    zone_id: 0,
+                    kind: ZoneKind::Storage,
+                    rows: 2,
+                    cols: 2,
+                    origin_um: (-100.0, -100.0),
+                    site_pitch_um: (4.0, 4.0),
+                    pair_gap_um: None,
+                },
+                ZoneSpec {
+                    zone_id: 1,
+                    kind: ZoneKind::Entanglement,
+                    rows: 2,
+                    cols: 2,
+                    origin_um: (0.0, 0.0),
+                    site_pitch_um: (400.0, 10.0),
+                    pair_gap_um: Some(6.0),
+                },
+            ],
+            speed_model: SpeedModel {
+                kind: SpeedModelKind::Sqrt,
+                acceleration_m_s2: 2750.0,
+                jerk_m_s3: 0.0,
+                max_velocity_m_s: 0.0,
+            },
+            trap_transfer_us: 15,
+            require_readout_zone: false,
+            rydberg_range_um: 7.5,
+            min_rydberg_spacing_um: 18.75,
+            aod_min_separation_um: 2.0,
+        };
+        let prefer_fewer_stages = weights(1.0, 0.0, 0.0, 0.0);
+        let prefer_less_movement = weights(0.0, 1.0, 0.0, 0.0);
+
+        let (stage_spec, stage_movement, stage_obj) = scheduled(&arch, prefer_fewer_stages);
+        let (move_spec, move_movement, move_obj) = scheduled(&arch, prefer_less_movement);
+        assert_eq!(stage_obj.rydberg_stages, 1);
+        assert_eq!(move_obj.rydberg_stages, 2);
+        assert!(
+            move_movement < stage_movement,
+            "stage weight keeps one stage and the long move ({stage_movement} µs); movement weight spends a second stage ({move_movement} µs)"
+        );
+        assert!(stage_movement > 0);
+
+        let stage_under_movement =
+            objective_from_verified_schedule(&stage_spec, &prefer_less_movement).expect("rescore");
+        let movement_under_stage =
+            objective_from_verified_schedule(&move_spec, &prefer_fewer_stages).expect("rescore");
+        assert!(stage_obj.total < movement_under_stage.total);
+        assert!(move_obj.total < stage_under_movement.total);
+
+        fn scheduled(
+            arch: &ZonedArchitecture,
+            weights: NeutralAtomCostModel,
+        ) -> (crate::dialect::ScheduleSpec, u64, ScheduleObjective) {
+            let left = InteractionId(0);
+            let right = InteractionId(1);
+            let graph = InteractionGraph::from_interactions(
+                vec![
+                    LogicalQubitId(0),
+                    LogicalQubitId(1),
+                    LogicalQubitId(2),
+                    LogicalQubitId(3),
+                ],
+                vec![
+                    Interaction {
+                        id: left,
+                        qubits: vec![LogicalQubitId(0), LogicalQubitId(1)],
+                        gate_name: "CZ".into(),
+                        dag_layer: 0,
+                        on_critical_path: false,
+                    },
+                    Interaction {
+                        id: right,
+                        qubits: vec![LogicalQubitId(2), LogicalQubitId(3)],
+                        gate_name: "CZ".into(),
+                        dag_layer: 0,
+                        on_critical_path: false,
+                    },
+                ],
+                vec![InteractionSegment {
+                    kind: SegmentKind::CommutationGroup,
+                    interactions: vec![left, right],
+                }],
+                DEFAULT_GAMMA,
+            )
+            .expect("graph");
+            let mut request =
+                schedule_entangling_layers(schedule_from_graph(graph).expect("request"), 340)
+                    .expect("layers")
+                    .request;
+            // Storage is sites 0..4. Entanglement pairs are generated row-major:
+            // (4,5) at y=0, (6,7) at x=400, (8,9) at y=10 beside the first pair.
+            request.layout = Some(NeutralAtomLayout {
+                sites: Vec::new(),
+                initial_bindings: vec![
+                    AtomBinding {
+                        atom: AtomId(0),
+                        trap: TrapBinding::Slm { site: SiteId(4) },
+                    },
+                    AtomBinding {
+                        atom: AtomId(1),
+                        trap: TrapBinding::Slm { site: SiteId(5) },
+                    },
+                    AtomBinding {
+                        atom: AtomId(2),
+                        trap: TrapBinding::Slm { site: SiteId(8) },
+                    },
+                    AtomBinding {
+                        atom: AtomId(3),
+                        trap: TrapBinding::Slm { site: SiteId(9) },
+                    },
+                ],
+                declared_initial_bindings: Vec::new(),
+            });
+            let result = schedule_zoned_with_aware_params(
+                request,
+                arch,
+                PlacerMode::RoutingAgnostic,
+                AwareSearchParams::default(),
+                PlacementCostModel::Weighted {
+                    weights,
+                    speed_model: arch.speed_model,
+                    trap_transfer_us: arch.trap_transfer_us,
+                },
+            )
+            .expect("zoned");
+            let layout = result.request.layout.as_ref().expect("layout");
+            let spec = lower_schedule(
+                &result.request,
+                &ScheduleLowerParams {
+                    target_id: "stage-weight".into(),
+                    rydberg_range_um: arch.rydberg_range_um,
+                    min_rydberg_spacing_um: arch.min_rydberg_spacing_um,
+                    aod_min_separation_um: arch.aod_min_separation_um,
+                },
+            )
+            .expect("lower");
+            let declared = DeclaredArchitecture {
+                sites: layout.sites.clone(),
+                initial_bindings: layout.declared_initial_bindings.clone(),
+                zones: arch.zones.clone(),
+                check_zones: true,
+                require_readout_zone: false,
+                rydberg_range_um: arch.rydberg_range_um,
+                min_rydberg_spacing_um: arch.min_rydberg_spacing_um,
+                aod_min_separation_um: arch.aod_min_separation_um,
+            };
+            verify_emitted_schedule(&spec, &declared).expect("verified schedule");
+            let objective = objective_from_verified_schedule(&spec, &weights).expect("objective");
+            let movement_time_us = result
+                .request
+                .layers
+                .iter()
+                .flat_map(|layer| &layer.actions)
+                .filter_map(|action| match action {
+                    NeutralAtomAction::Move(group) => Some(group.duration_us),
+                    _ => None,
+                })
+                .sum();
+            (spec, movement_time_us, objective)
+        }
+    }
 }
