@@ -1,12 +1,13 @@
-//! Lattice-surgery Stim round emitters.
+//! Stim round emitters.
 //!
 //! [`StimRoundEmitter`] is the extension point for a scheduled [`RoundKind`].
-//! [`lattice_round_emitter`] is the only match that selects an impl. The
-//! circuit builder walks the schedule and calls [`StimRoundEmitter::emit`];
-//! it does not branch on the round kind.
+//! [`lattice_round_emitter`] is the only match that selects an impl. Each
+//! circuit builder walks the schedule and calls the impl; it does not branch
+//! on the round kind.
 //!
-//! A new round kind is a new impl plus one arm in [`lattice_round_emitter`].
-//! Single-block memory Stim stays in `experiment.rs` for a later slice.
+//! Lattice surgery calls [`StimRoundEmitter::emit`]. Single-block memory calls
+//! [`StimRoundEmitter::emit_single_block`] on the same registry. A new round
+//! kind is a new impl plus one arm in [`lattice_round_emitter`].
 
 use std::collections::HashMap;
 
@@ -58,18 +59,57 @@ impl<'a> LatticeSurgeryCtx<'a> {
     }
 }
 
-/// Stim instructions for one lattice-surgery round kind.
+/// Stim state for one single-block memory circuit.
+///
+/// The builder still writes the header, reset, and final observable. Round
+/// impls append construct locals, memory rounds, and the measure-logical record.
+pub(crate) struct SingleBlockCtx<'a> {
+    pub(crate) out: String,
+    pub(crate) n_checks: usize,
+    pub(crate) first_round_detectors: Vec<usize>,
+    pub(crate) memory_round_i: usize,
+    /// First construct wins, matching the previous `.find()` emitter.
+    pub(crate) construct_done: bool,
+    pub(crate) measure_logical: Option<&'a PhysicalRound>,
+}
+
+impl<'a> SingleBlockCtx<'a> {
+    pub(crate) fn new(out: String, n_checks: usize, first_round_detectors: Vec<usize>) -> Self {
+        Self {
+            out,
+            n_checks,
+            first_round_detectors,
+            memory_round_i: 0,
+            construct_done: false,
+            measure_logical: None,
+        }
+    }
+}
+
+/// Stim instructions for one round kind.
 pub(crate) trait StimRoundEmitter {
     /// Stable registry name. Tests lock [`lattice_round_emitter`] against it.
     #[cfg(test)]
     fn label(&self) -> &'static str;
 
-    /// Append this round's structure Stim to `ctx`.
+    /// Append this round's lattice-surgery Stim to `ctx`.
     fn emit<'a>(
         &self,
         ctx: &mut LatticeSurgeryCtx<'a>,
         round: &'a PhysicalRound,
     ) -> Result<(), ExperimentError>;
+
+    /// Append this round's single-block memory Stim to `ctx`.
+    ///
+    /// Surgery-only kinds leave the circuit unchanged: the single-block builder
+    /// used to ignore them.
+    fn emit_single_block<'a>(
+        &self,
+        _ctx: &mut SingleBlockCtx<'a>,
+        _round: &'a PhysicalRound,
+    ) -> Result<(), ExperimentError> {
+        Ok(())
+    }
 }
 
 /// Select the impl for `kind`.
@@ -119,6 +159,21 @@ impl StimRoundEmitter for ConstructEmit {
         emit_local_ops(&mut ctx.out, &round.local_before);
         Ok(())
     }
+
+    fn emit_single_block<'a>(
+        &self,
+        ctx: &mut SingleBlockCtx<'a>,
+        round: &'a PhysicalRound,
+    ) -> Result<(), ExperimentError> {
+        // The builder may call this once before the schedule walk so locals
+        // stay ahead of memory rounds. A later construct in the walk is a no-op.
+        if ctx.construct_done {
+            return Ok(());
+        }
+        ctx.construct_done = true;
+        emit_local_ops(&mut ctx.out, &round.local_before);
+        Ok(())
+    }
 }
 
 struct MemoryRoundEmit;
@@ -136,6 +191,14 @@ impl StimRoundEmitter for MemoryRoundEmit {
     ) -> Result<(), ExperimentError> {
         emit_memory_round(ctx, round)
     }
+
+    fn emit_single_block<'a>(
+        &self,
+        ctx: &mut SingleBlockCtx<'a>,
+        round: &'a PhysicalRound,
+    ) -> Result<(), ExperimentError> {
+        emit_single_block_memory_round(ctx, round)
+    }
 }
 
 struct MeasureLogicalEmit;
@@ -152,6 +215,17 @@ impl StimRoundEmitter for MeasureLogicalEmit {
         round: &'a PhysicalRound,
     ) -> Result<(), ExperimentError> {
         ctx.measure_logical_rounds.push(round);
+        Ok(())
+    }
+
+    fn emit_single_block<'a>(
+        &self,
+        ctx: &mut SingleBlockCtx<'a>,
+        round: &'a PhysicalRound,
+    ) -> Result<(), ExperimentError> {
+        if ctx.measure_logical.is_none() {
+            ctx.measure_logical = Some(round);
+        }
         Ok(())
     }
 }
@@ -366,10 +440,47 @@ fn emit_memory_round<'a>(
     Ok(())
 }
 
+fn emit_single_block_memory_round(
+    ctx: &mut SingleBlockCtx<'_>,
+    round: &PhysicalRound,
+) -> Result<(), ExperimentError> {
+    let round_i = ctx.memory_round_i;
+    let n_checks = ctx.n_checks;
+    emit_round_body(&mut ctx.out, round)?;
+    ctx.out.push_str("MR");
+    for term in &round.terminal {
+        if let RoundTerminal::Measure { atom, .. } = term {
+            ctx.out.push_str(&format!(" {}", atom.0));
+        }
+    }
+    ctx.out.push('\n');
+
+    let detector_indices: Vec<usize> = if round_i == 0 {
+        ctx.first_round_detectors.clone()
+    } else {
+        (0..n_checks).collect()
+    };
+    for &c in &detector_indices {
+        let cur = -(n_checks as i32 - c as i32);
+        if round_i == 0 {
+            ctx.out
+                .push_str(&format!("DETECTOR({c}, {round_i}) rec[{cur}]\n"));
+        } else {
+            let prev = cur - n_checks as i32;
+            ctx.out.push_str(&format!(
+                "DETECTOR({c}, {round_i}) rec[{cur}] rec[{prev}]\n"
+            ));
+        }
+    }
+    ctx.out.push_str("TICK\n");
+    ctx.memory_round_i += 1;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expand::PhysicalRound;
+    use crate::expand::{PhysicalAtomId, PhysicalRound, RoundLocalOp, RoundTerminal};
     use crate::family::{CodeFamily, SourceFamily};
     use crate::workload::{LogicalBasis, LogicalQubitId};
 
@@ -488,5 +599,76 @@ mod tests {
         MarkerEmit.emit(&mut ctx, &round).expect("custom emitter");
         assert_eq!(ctx.out, "# plugged-in\n");
         assert!(ctx.measure_logical_rounds.is_empty());
+    }
+
+    fn single_block_ctx<'a>() -> SingleBlockCtx<'a> {
+        SingleBlockCtx::new(String::new(), 2, vec![0])
+    }
+
+    #[test]
+    fn single_block_construct_emits_once() {
+        let atom = PhysicalAtomId(0);
+        let mut round = PhysicalRound::bare(RoundKind::Construct, LogicalQubitId(0));
+        round.local_before = vec![RoundLocalOp::H { atom }];
+        let mut ctx = single_block_ctx();
+        lattice_round_emitter(RoundKind::Construct)
+            .emit_single_block(&mut ctx, &round)
+            .expect("construct");
+        assert_eq!(ctx.out, "H 0\nTICK\n");
+        ctx.out.clear();
+        lattice_round_emitter(RoundKind::Construct)
+            .emit_single_block(&mut ctx, &round)
+            .expect("second construct");
+        assert_eq!(ctx.out, "");
+    }
+
+    #[test]
+    fn single_block_memory_round_writes_mr_and_first_detectors() {
+        let mut round = PhysicalRound::bare(RoundKind::MemoryRound, LogicalQubitId(0));
+        round.terminal = vec![RoundTerminal::Measure {
+            atom: PhysicalAtomId(1),
+            basis: LogicalBasis::Z,
+        }];
+        let mut ctx = single_block_ctx();
+        lattice_round_emitter(RoundKind::MemoryRound)
+            .emit_single_block(&mut ctx, &round)
+            .expect("memory");
+        assert_eq!(ctx.out, "MR 1\nDETECTOR(0, 0) rec[-2]\nTICK\n");
+        assert_eq!(ctx.memory_round_i, 1);
+    }
+
+    #[test]
+    fn single_block_measure_logical_is_recorded_not_emitted() {
+        let round = PhysicalRound::bare(RoundKind::MeasureLogical, LogicalQubitId(0));
+        let mut ctx = single_block_ctx();
+        lattice_round_emitter(RoundKind::MeasureLogical)
+            .emit_single_block(&mut ctx, &round)
+            .expect("measure");
+        assert_eq!(ctx.out, "");
+        assert!(ctx.measure_logical.is_some());
+        lattice_round_emitter(RoundKind::MeasureLogical)
+            .emit_single_block(&mut ctx, &round)
+            .expect("second measure");
+        assert!(std::ptr::eq(ctx.measure_logical.expect("first"), &round));
+    }
+
+    #[test]
+    fn surgery_kinds_leave_single_block_stim_unchanged() {
+        let round = PhysicalRound::bare(RoundKind::Split(MergeBoundary::Rough), LogicalQubitId(0));
+        let mut ctx = single_block_ctx();
+        for kind in [
+            RoundKind::Split(MergeBoundary::Rough),
+            RoundKind::Merge(MergeBoundary::Smooth),
+            RoundKind::MagicT,
+            RoundKind::FrameUpdate,
+            RoundKind::MeasureAncilla,
+        ] {
+            lattice_round_emitter(kind)
+                .emit_single_block(&mut ctx, &round)
+                .expect("silent");
+        }
+        assert_eq!(ctx.out, "");
+        assert!(ctx.measure_logical.is_none());
+        assert_eq!(ctx.memory_round_i, 0);
     }
 }

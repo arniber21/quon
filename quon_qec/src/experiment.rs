@@ -499,22 +499,6 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
     }
     out.push_str("\nTICK\n");
 
-    let construct = expanded
-        .rounds
-        .iter()
-        .find(|r| r.kind == RoundKind::Construct);
-    if let Some(c) = construct {
-        emit_local_ops(&mut out, &c.local_before);
-    } else if block.init_basis == LogicalBasis::X {
-        // Fallback if construct round missing locals but metadata says X.
-        let prep: Vec<_> = block
-            .data_atoms
-            .iter()
-            .map(|&atom| crate::expand::RoundLocalOp::H { atom })
-            .collect();
-        emit_local_ops(&mut out, &prep);
-    }
-
     let z_check_indices: Vec<usize> = block
         .stabilizers
         .iter()
@@ -536,34 +520,32 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
         LogicalBasis::X => x_check_indices.clone(),
     };
 
-    for (round_i, round) in memory_rounds.iter().enumerate() {
-        emit_round_body(&mut out, round)?;
-        out.push_str("MR");
-        for term in &round.terminal {
-            if let RoundTerminal::Measure { atom, .. } = term {
-                out.push_str(&format!(" {}", atom.0));
-            }
-        }
-        out.push('\n');
-
-        let detector_indices: Vec<usize> = if round_i == 0 {
-            first_round_detectors.clone()
-        } else {
-            (0..n_checks).collect()
-        };
-        for &c in &detector_indices {
-            let cur = -(n_checks as i32 - c as i32);
-            if round_i == 0 {
-                out.push_str(&format!("DETECTOR({c}, {round_i}) rec[{cur}]\n"));
-            } else {
-                let prev = cur - n_checks as i32;
-                out.push_str(&format!(
-                    "DETECTOR({c}, {round_i}) rec[{cur}] rec[{prev}]\n"
-                ));
-            }
-        }
-        out.push_str("TICK\n");
+    // Construct locals stay ahead of memory rounds. The schedule walk uses the
+    // same registry as lattice surgery; a repeated construct is a no-op.
+    let mut ctx = stim_emit::SingleBlockCtx::new(out, n_checks, first_round_detectors);
+    if let Some(c) = expanded
+        .rounds
+        .iter()
+        .find(|r| r.kind == RoundKind::Construct)
+    {
+        stim_emit::lattice_round_emitter(c.kind).emit_single_block(&mut ctx, c)?;
+    } else if block.init_basis == LogicalBasis::X {
+        // Fallback if construct round missing locals but metadata says X.
+        let prep: Vec<_> = block
+            .data_atoms
+            .iter()
+            .map(|&atom| crate::expand::RoundLocalOp::H { atom })
+            .collect();
+        emit_local_ops(&mut ctx.out, &prep);
     }
+    for round in &expanded.rounds {
+        stim_emit::lattice_round_emitter(round.kind).emit_single_block(&mut ctx, round)?;
+    }
+    let stim_emit::SingleBlockCtx {
+        mut out,
+        measure_logical,
+        ..
+    } = ctx;
 
     let data_atoms: Vec<PhysicalAtomId> = if let Some(mz) = measure_logical {
         mz.terminal
