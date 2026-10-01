@@ -1,0 +1,14 @@
+-- Benchmark: non-Clifford logical T on a surface-code block.
+-- One surface-code block, one memory round, magic-state-consuming logical T,
+-- then a second memory round and logical Z measurement.
+-- Tests the magic-state-consuming T resource-report path (t_count).
+-- Compiler model of magic-state consumption — not a distillation factory or
+-- threshold claim.
+
+fn surface_d3_t_bench(): Q<Bit> = run {
+        a <- surface_code<3>()
+        a <- memory_round(a)
+        a <- logical_t(a)
+        a <- memory_round(a)
+        measure_logical_z(a)
+}

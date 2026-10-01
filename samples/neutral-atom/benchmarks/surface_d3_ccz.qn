@@ -1,0 +1,19 @@
+-- Benchmark: non-Clifford logical CCZ on three surface-code blocks.
+-- Three surface-code blocks, one memory round each, magic-state-consuming
+-- logical CCZ, then logical Z measurement of all three blocks.
+-- Tests the magic-state-consuming CCZ resource-report path (ccz_count).
+-- Compiler model of magic-state consumption — not a distillation factory or
+-- threshold claim.
+
+fn surface_d3_ccz_bench(): Q<Bit> = run {
+        a <- surface_code<3>()
+        b <- surface_code<3>()
+        c <- surface_code<3>()
+        a <- memory_round(a)
+        b <- memory_round(b)
+        c <- memory_round(c)
+        (a, b, c) <- logical_ccz(a, b, c)
+        _ <- measure_logical_z(a)
+        _ <- measure_logical_z(b)
+        measure_logical_z(c)
+}
