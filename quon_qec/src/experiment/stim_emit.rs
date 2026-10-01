@@ -8,6 +8,9 @@
 //! Lattice surgery calls [`StimRoundEmitter::emit`]. Single-block memory calls
 //! [`StimRoundEmitter::emit_single_block`] on the same registry. A new round
 //! kind is a new impl plus one arm in [`lattice_round_emitter`].
+//!
+//! Both builders share [`emit_reset_tick`] for the prepare-`R` / `TICK` line.
+//! Headers and observable assembly stay in the builders.
 
 use std::collections::HashMap;
 
@@ -18,6 +21,18 @@ use crate::expand::{
 use crate::workload::LogicalBasis;
 
 use super::{ExperimentError, emit_local_ops, emit_round_body, logical_observable_atoms};
+
+/// Write `R <ids>\nTICK\n` in caller order.
+///
+/// Single-block memory passes layout order. Lattice surgery passes the sorted
+/// unique id list. This function does not reorder.
+pub(crate) fn emit_reset_tick(out: &mut String, atom_ids: &[u32]) {
+    out.push('R');
+    for id in atom_ids {
+        out.push_str(&format!(" {id}"));
+    }
+    out.push_str("\nTICK\n");
+}
 
 /// Shared Stim state for one lattice-surgery circuit.
 ///
@@ -670,5 +685,15 @@ mod tests {
         assert_eq!(ctx.out, "");
         assert!(ctx.measure_logical.is_none());
         assert_eq!(ctx.memory_round_i, 0);
+    }
+
+    #[test]
+    fn reset_tick_keeps_caller_order() {
+        let mut out = String::new();
+        emit_reset_tick(&mut out, &[4, 0, 4]);
+        assert_eq!(out, "R 4 0 4\nTICK\n");
+        let mut empty = String::new();
+        emit_reset_tick(&mut empty, &[]);
+        assert_eq!(empty, "R\nTICK\n");
     }
 }
