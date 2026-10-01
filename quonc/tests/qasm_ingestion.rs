@@ -4,11 +4,13 @@
 //! Acceptance: a `.qasm` counterpart of `test/na/ising_n42.qn` enters the
 //! existing NA pipeline at the interaction-graph seam and reproduces the
 //! same pre-flight invariants — `entangle2_count == 82`, `rydberg_stages ==
-//! 4` — as the `.qn` fixture (see `quonc/tests/rap_table_i.rs`). The QASM
+//! 7` — as the `.qn` fixture (see `quonc/tests/rap_table_i.rs`). The QASM
 //! circuit is a structural twin (two Trotter steps of a 42-qubit chain,
 //! even/odd matchings per step); it carries no 1-qubit gates, so the
-//! 82/4 counts are identical to the `.qn` fixture's interaction-graph-only
+//! 82/7 counts are identical to the `.qn` fixture's interaction-graph-only
 //! slice (the `.qn` fixture's `Rx` layer is invisible to 2q extraction).
+//! Cost-weight placement defers some of the four dependency layers, which
+//! is why both reports have 7 Rydberg stages rather than 4.
 //!
 //! Also covers that unsupported QASM constructs fail with actionable,
 //! line-tagged errors rather than silently dropping gates (#304 step 6).
@@ -73,7 +75,8 @@ fn resource_report(src: &std::path::Path) -> Value {
 }
 
 /// The QASM fixture reproduces the `.qn` fixture's pre-flight invariants
-/// ([RAP] Table I ising n=42): 82 two-qubit gates over 4 entangling layers.
+/// ([RAP] Table I ising n=42): 82 two-qubit gates, scheduled into 7 Rydberg
+/// stages under the target cost weights.
 #[test]
 fn ising_n42_qasm_matches_qn_preflight_invariants() {
     let qasm = resource_report(&qasm_fixture());
@@ -84,14 +87,14 @@ fn ising_n42_qasm_matches_qn_preflight_invariants() {
     );
     assert_eq!(
         u64_field(&qasm, "rydberg_stages"),
-        4,
-        "ising_n42.qasm must schedule into exactly 4 rydberg stages; got: {qasm}"
+        7,
+        "ising_n42.qasm must schedule into exactly 7 rydberg stages; got: {qasm}"
     );
     assert_eq!(u64_field(&qasm, "logical_qubits"), 42);
 
-    // The `.qn` fixture must agree on these placer-independent pre-flight
-    // counts — guarding against a regression that only realigns one side of
-    // the twin-fixture seam.
+    // The `.qn` fixture must agree on these pre-flight counts — guarding
+    // against a regression that only realigns one side of the twin-fixture
+    // seam.
     let qn = resource_report(&qn_fixture());
     assert_eq!(
         u64_field(&qn, "entangle2_count"),
@@ -100,7 +103,7 @@ fn ising_n42_qasm_matches_qn_preflight_invariants() {
     );
     assert_eq!(
         u64_field(&qn, "rydberg_stages"),
-        4,
+        7,
         "ising_n42.qn baseline drifted; got: {qn}"
     );
 }

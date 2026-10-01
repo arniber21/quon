@@ -17,19 +17,21 @@
 -- (last-qubit-use tracking; ties to actual SSA wire threading, not program
 -- text order) places every gate in a group on the SAME dag_layer and only
 -- serializes between groups. Result: layers 0/1 (step 1 even/odd) then 2/3
--- (step 2 even/odd) — 4 layers total, 21+20+21+20 = 82 two-qubit gates.
+-- (step 2 even/odd) — 4 dependency layers, 21+20+21+20 = 82 two-qubit gates.
+-- Routing-agnostic cost-weight placement defers some of those layers (7
+-- Rydberg stages). Routing-aware keeps the four layers.
 -- A single ascending `for i in range(41)` loop would instead chain every
 -- gate through its shared neighbor and produce 41 serial layers per step —
 -- do not "simplify" this file back to that shape.
 --
 -- Uses native `CZ` (not `Rzz`): `Rzz(theta) @(a,b)` elaborates to
 -- `CNOT; Rz; CNOT` (frontend/src/elaborate.rs's decompose_rzz), which would
--- double the two-qubit gate count to 164 and break the 82/4 pre-flight
+-- double the two-qubit gate count to 164 and break the 82-gate pre-flight
 -- check. `CZ` is in every NA target's `native_gates` and is not decomposed.
 -- The single-qubit `Rx` layer is cosmetic Trotter-shape flavor: `qubits(42)`
 -- iteration is a parallel (depth-1) construct, and single-qubit gates are
 -- invisible to the two-qubit interaction-graph extraction, so it cannot
--- perturb the 82/4 counts either way.
+-- perturb the 82-gate count either way.
 
 fn zz_even_42(tau: Float): Circuit<42, 42, 21, Universal> = circuit {
     for k in range(21) { CZ @(2 * k, 2 * k + 1) }

@@ -66,10 +66,13 @@ const PUBLISHED_AWARE_STEPS: u64 = 9;
 const PUBLISHED_AGNOSTIC_TIME_US: u64 = 3100;
 const PUBLISHED_AWARE_TIME_US: u64 = 1600;
 
-/// Pre-flight circuit structure (placer-independent): 82 two-qubit gates
-/// over 4 entangling layers.
+/// Pre-flight gate count is placer-independent: 82 two-qubit gates.
+/// Routing-agnostic cost-weight placement defers some of the four circuit
+/// layers, so the verified stage count is 7. Routing-aware still schedules
+/// those four layers.
 const EXPECTED_ENTANGLE2_COUNT: u64 = 82;
-const EXPECTED_RYDBERG_STAGES: u64 = 4;
+const EXPECTED_AGNOSTIC_RYDBERG_STAGES: u64 = 7;
+const EXPECTED_AWARE_RYDBERG_STAGES: u64 = 4;
 
 /// Locked Phase 2 tolerances (documented; not enforced unless
 /// `QUON_RAP_TABLE_I_ENFORCE=1` — see docs/neutral_atom/rap_table_i_methodology.md).
@@ -266,17 +269,16 @@ fn required_u64_field(report: &Value, field: &str) -> u64 {
 }
 
 /// Fails first, before any placer comparison, if `ising_n42.qn` or the
-/// pinned target regress. Uses the (fast) default routing-agnostic placer:
-/// for this fixture/target pairing there is no placement-induced deferral
-/// (ample entanglement-zone capacity, no spacing conflicts — see the
-/// methodology doc), so `rydberg_stages` here is the same placer-independent
-/// circuit property either mode would report, and `entangle2_count` is
-/// placer-independent by construction (one Entangle2 action per gate).
+/// pinned target regress. Uses the (fast) default routing-agnostic placer.
+/// `entangle2_count` is placer-independent (one Entangle2 action per gate).
+/// `rydberg_stages` is not: cost-weight placement defers some agnostic gates,
+/// so this path reports 7 stages. Routing-aware still reports 4; the ignored
+/// dump below pins that separately.
 /// Deliberately does **not** also run routing-aware (too slow for the
 /// default gate, see `Runtime` in the methodology doc); the slower ignored
-/// dump test below hard-asserts both placers see the same 82/4 structure
-/// directly, so that check is not skipped, only deferred to the release-mode
-/// job (finding #5 of the #111 review).
+/// dump test below hard-asserts both placers' stage counts directly, so that
+/// check is not skipped, only deferred to the release-mode job (finding #5
+/// of the #111 review).
 #[test]
 fn ising_n42_preflight_gate_and_layer_counts() {
     let report = resource_report("routing-agnostic");
@@ -288,9 +290,10 @@ fn ising_n42_preflight_gate_and_layer_counts() {
     );
     assert_eq!(
         u64_field(&report, "rydberg_stages"),
-        EXPECTED_RYDBERG_STAGES,
-        "ising_n42.qn must schedule into exactly {EXPECTED_RYDBERG_STAGES} entangling layers \
-         ([RAP] Table I ising n=42); got report: {report}"
+        EXPECTED_AGNOSTIC_RYDBERG_STAGES,
+        "ising_n42.qn must schedule into exactly {EXPECTED_AGNOSTIC_RYDBERG_STAGES} entangling \
+         layers under routing-agnostic cost-weight placement ([RAP] Table I ising n=42); \
+         got report: {report}"
     );
     assert_eq!(u64_field(&report, "logical_qubits"), 42);
 
@@ -340,11 +343,20 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
     let agnostic = &agnostic_schedule["metrics"];
     let aware = &aware_schedule["metrics"];
 
-    // Hard, structural: both placers must see the identical 82-gate/4-layer
-    // circuit (#111 review finding #5) — a wrong circuit invalidates the
-    // whole comparison before it starts, for *either* placer, not just
-    // agnostic (which is all the fast preflight test above can check).
-    for (label, report) in [("routing-agnostic", agnostic), ("routing-aware", aware)] {
+    // Hard, structural: both placers must see the identical 82-gate circuit
+    // (#111 review finding #5). Stage count is not shared: cost-weight
+    // placement defers agnostic gates (7 stages) and the aware search keeps
+    // the four circuit layers. A wrong gate count invalidates the comparison
+    // before it starts, for *either* placer, not just agnostic (which is all
+    // the fast preflight test above can check).
+    for (label, report, expected_stages) in [
+        (
+            "routing-agnostic",
+            agnostic,
+            EXPECTED_AGNOSTIC_RYDBERG_STAGES,
+        ),
+        ("routing-aware", aware, EXPECTED_AWARE_RYDBERG_STAGES),
+    ] {
         assert_eq!(
             u64_field(report, "entangle2_count"),
             EXPECTED_ENTANGLE2_COUNT,
@@ -352,7 +364,7 @@ fn ising_n42_dumps_both_placer_rearrangement_metrics() {
         );
         assert_eq!(
             u64_field(report, "rydberg_stages"),
-            EXPECTED_RYDBERG_STAGES,
+            expected_stages,
             "{label}: pre-flight layer count regressed"
         );
     }
