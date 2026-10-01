@@ -206,6 +206,10 @@ pub enum TypeError {
     /// `start + i` is bounds-checked, and elaboration only shifts `Expr::Int`.
     /// A symbolic start would leave every arm on `start` and skip the width check.
     NonLiteralControlledStart { span: SimpleSpan },
+    /// A `par` arm under `controlled` is a multi-qubit gate. Elaboration's
+    /// `controlled_named_gate` rejects that shape; the checker reports the same
+    /// diagnostic so the program does not typecheck and then fail later.
+    ControlledMultiQubitGate { span: SimpleSpan },
     /// A construct that belongs to the linear/quantum fragment (issues #10–#15) was
     /// encountered while type-checking the classical fragment.
     Unsupported {
@@ -256,6 +260,7 @@ impl TypeError {
             | TypeError::QecCtorRequiresDistance { span, .. }
             | TypeError::NonLiteralQecDistance { span }
             | TypeError::NonLiteralControlledStart { span }
+            | TypeError::ControlledMultiQubitGate { span }
             | TypeError::Unsupported { span, .. } => *span,
         }
     }
@@ -303,6 +308,7 @@ impl TypeError {
             TypeError::QecCtorRequiresDistance { .. } => DiagnosticCode::QEC_CTOR_REQUIRES_DISTANCE,
             TypeError::NonLiteralQecDistance { .. } => DiagnosticCode::QEC_NON_LITERAL_DISTANCE,
             TypeError::NonLiteralControlledStart { .. } => DiagnosticCode::CIRCUIT_GATE_TARGET,
+            TypeError::ControlledMultiQubitGate { .. } => DiagnosticCode::UNSUPPORTED_QUANTUM,
             TypeError::Unsupported { .. } => DiagnosticCode::UNSUPPORTED_QUANTUM,
         }
     }
@@ -533,6 +539,11 @@ impl fmt::Display for TypeError {
             TypeError::NonLiteralControlledStart { .. } => write!(
                 f,
                 "controlled(par) @(control, start) requires a non-negative literal start index"
+            ),
+            // Same wording as `ElabError` for `controlled_named_gate`'s tuple target.
+            TypeError::ControlledMultiQubitGate { .. } => write!(
+                f,
+                "elaboration is not implemented for `controlled() of a multi-qubit gate`"
             ),
             TypeError::Unsupported { construct, .. } => write!(
                 f,

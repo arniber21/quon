@@ -217,6 +217,8 @@ fn controlled_par_nested_targets_lower() {
 
 #[test]
 fn controlled_par_multiqubit_arm_does_not_lower() {
+    // Rejected at typecheck with the same diagnostic `controlled_named_gate`
+    // uses, so lowering never sees the multi-qubit arm.
     let src = "\
 fn f(): Circuit<3, 3, 2, Clifford> = circuit {
     controlled(par { CNOT @(0, 1) }) @(0, (1, 2))
@@ -230,8 +232,8 @@ fn f(): Circuit<3, 3, 2, Clifford> = circuit {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        text.contains("multi-qubit"),
-        "expected a multi-qubit elaboration failure, got {text}"
+        text.contains("controlled() of a multi-qubit gate"),
+        "expected the controlled_named_gate diagnostic, got {text}"
     );
 }
 

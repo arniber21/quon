@@ -198,6 +198,87 @@ fn controlled_placement<'a>(
     }))
 }
 
+/// A multi-qubit gate inside a `par` arm of `controlled`.
+///
+/// `controlled_named_gate` rejects a tuple target with
+/// `controlled() of a multi-qubit gate`. Width-1 arms (`H @0`) are not
+/// reported here.
+fn par_arm_multiqubit_gate(expr: &Sp<Expr>) -> Option<SimpleSpan> {
+    match &expr.0 {
+        Expr::Par(body, _) => multiqubit_gate(body),
+        Expr::ParN(elems) => elems.iter().find_map(multiqubit_gate),
+        Expr::Compose(lhs, rhs) => {
+            par_arm_multiqubit_gate(lhs).or_else(|| par_arm_multiqubit_gate(rhs))
+        }
+        Expr::Adjoint(inner) => par_arm_multiqubit_gate(inner),
+        Expr::CircuitBlock(stmts) => stmts.iter().find_map(|stmt| match &stmt.0 {
+            Stmt::Expr(e) | Stmt::Let { rhs: e, .. } | Stmt::Bind { rhs: e, .. } => {
+                par_arm_multiqubit_gate(e)
+            }
+        }),
+        Expr::Let { rhs, body, .. } => {
+            par_arm_multiqubit_gate(rhs).or_else(|| par_arm_multiqubit_gate(body))
+        }
+        _ => None,
+    }
+}
+
+/// A surface gate that occupies more than one qubit, or a placement whose
+/// target list does.
+fn multiqubit_gate(expr: &Sp<Expr>) -> Option<SimpleSpan> {
+    match &expr.0 {
+        Expr::GateApp { gate, qubits } => {
+            let targets = match &qubits.0 {
+                Expr::Tuple(items) => items.len(),
+                _ => 1,
+            };
+            if gate_surface_arity(gate) > 1 || targets > 1 {
+                Some(qubits.1)
+            } else {
+                None
+            }
+        }
+        Expr::Var(name) => {
+            surface_gate(name).and_then(|info| if info.arity > 1 { Some(expr.1) } else { None })
+        }
+        Expr::App(f, x) => {
+            let (head, _) = flatten_app(f, x);
+            match &head.0 {
+                Expr::Var(name) if surface_gate(name).is_some_and(|info| info.arity > 1) => {
+                    Some(expr.1)
+                }
+                _ => None,
+            }
+        }
+        Expr::Compose(lhs, rhs) => multiqubit_gate(lhs).or_else(|| multiqubit_gate(rhs)),
+        Expr::Adjoint(inner) | Expr::Controlled(inner) => multiqubit_gate(inner),
+        Expr::Par(body, _) => multiqubit_gate(body),
+        Expr::ParN(elems) => elems.iter().find_map(multiqubit_gate),
+        Expr::CircuitBlock(stmts) => stmts.iter().find_map(|stmt| match &stmt.0 {
+            Stmt::Expr(e) | Stmt::Let { rhs: e, .. } | Stmt::Bind { rhs: e, .. } => {
+                multiqubit_gate(e)
+            }
+        }),
+        Expr::Let { rhs, body, .. } => multiqubit_gate(rhs).or_else(|| multiqubit_gate(body)),
+        _ => None,
+    }
+}
+
+fn gate_surface_arity(gate: &Sp<Expr>) -> usize {
+    let name = match &gate.0 {
+        Expr::Var(name) => name.as_str(),
+        Expr::App(f, x) => {
+            let (head, _) = flatten_app(f, x);
+            let Expr::Var(name) = &head.0 else {
+                return 1;
+            };
+            name.as_str()
+        }
+        _ => return 1,
+    };
+    surface_gate(name).map(|info| info.arity).unwrap_or(1)
+}
+
 impl super::TypeChecker {
     /// View `ty` as a circuit, returning its four indices.
     fn as_circuit(
@@ -567,6 +648,12 @@ impl super::TypeChecker {
         c: &Sp<Expr>,
     ) -> Result<Ty, TypeError> {
         let ct = self.synth(env, delta, c)?;
+        // A multi-qubit gate in a `par` arm (`CNOT @(0, 1)`) has a matching wire
+        // count, so placement succeeds, then `controlled_named_gate` rejects the
+        // tuple target. Report that error here.
+        if let Some(span) = par_arm_multiqubit_gate(c) {
+            return Err(TypeError::ControlledMultiQubitGate { span });
+        }
         let (n, m, d, cl) = self.as_circuit(&ct, c.1)?;
         Ok(Ty::Circuit {
             n: n.seq(DepthExpr::Nat(1)),
