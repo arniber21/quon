@@ -88,12 +88,11 @@ pub enum StatePrepMode {
 
 /// Placement/routing objective (issue #309).
 ///
-/// `Time` (default) minimizes the time-shaped RAP Eq. (1) cost `Σ √(d_max)`.
-/// `ErrorBudget` minimizes analytic error-model contributions instead —
-/// `rate × count` (ADR-0017/0020), not logical error rates or thresholds.
-///
-/// Requesting `ErrorBudget` on a target without an `error_model` is a hard
-/// error (fail-closed, mirroring `--emit-resource-report` discipline).
+/// `Time` (default) and `ErrorBudget` both score with the target's
+/// `cost_model` weights. `ErrorBudget` still requires an `error_model` and
+/// fails closed without one (mirroring `--emit-resource-report` discipline).
+/// The analytic `error_model` rates stay on the resource report; they are
+/// not the placement score.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NaObjective {
@@ -120,10 +119,9 @@ pub struct NaScheduleOptions {
     /// `Exact` uses the z3-backed exact state-prep scheduler when the
     /// `solver` feature is enabled, falling back to heuristic on timeout.
     pub state_prep: StatePrepMode,
-    /// Placement/routing objective (issue #309): `Time` (default) minimizes
-    /// the RAP Eq. (1) time-shaped cost; `ErrorBudget` minimizes analytic
-    /// error-model contributions instead (ADR-0017/0020). Requires the
-    /// target's `error_model` — requesting it without one is a hard error.
+    /// Placement/routing objective. `Time` (default) and `ErrorBudget` both
+    /// score with the target's `cost_model` weights. `ErrorBudget` requires
+    /// the target's `error_model` — requesting it without one is a hard error.
     pub objective: NaObjective,
 }
 impl Default for NaScheduleOptions {

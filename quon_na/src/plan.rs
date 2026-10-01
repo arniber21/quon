@@ -110,25 +110,24 @@ pub fn plan_backend<V: VertexId>(
                 );
             }
             let arch = zoned_architecture(na);
-            // Issue #309: construct the placement cost model from the
-            // objective and target's error_model. Fail-closed if
-            // ErrorBudget is requested without an error_model (mirrors
-            // --emit-resource-report discipline, ADR-0017).
+            // Both objectives score with the target's `cost_model` weights.
+            // ErrorBudget still fails closed without an `error_model`
+            // (mirrors --emit-resource-report discipline, ADR-0017).
             let cost_model = match opts.objective {
-                crate::pipeline::NaObjective::Time => placement_cost_for_time_objective(
+                crate::pipeline::NaObjective::Time => placement_cost_from_target_weights(
                     &na.cost_model,
                     arch.speed_model,
                     arch.trap_transfer_us,
                 ),
                 crate::pipeline::NaObjective::ErrorBudget => {
-                    let model = na
-                        .error_model
-                        .as_ref()
-                        .ok_or(NaPipelineError::MissingErrorModelForObjective)?;
-                    PlacementCostModel::ErrorBudget {
-                        model: *model,
-                        speed_model: arch.speed_model,
+                    if na.error_model.is_none() {
+                        return Err(NaPipelineError::MissingErrorModelForObjective);
                     }
+                    placement_cost_from_target_weights(
+                        &na.cost_model,
+                        arch.speed_model,
+                        arch.trap_transfer_us,
+                    )
                 }
             };
             let stage_started = Instant::now();
@@ -384,22 +383,20 @@ impl QecStageAccumulator {
     }
 }
 
-/// Time-objective placer. The checked-in placeholder weights keep the
-/// hard-coded RAP time choice. Any other `cost_model` vector is scored with
-/// the §9 weights.
-fn placement_cost_for_time_objective(
+/// Placement score for the time objective and for error-budget mode.
+///
+/// Both read the target's `cost_model`, including the checked-in placeholder
+/// vector. That vector is a weight setting, not a switch back to the RAP
+/// time cost.
+fn placement_cost_from_target_weights(
     weights: &backend::NeutralAtomCostModel,
     speed_model: crate::geometry::SpeedModel,
     trap_transfer_us: u64,
 ) -> PlacementCostModel {
-    if *weights == crate::objective::PLACEHOLDER_COST_WEIGHTS {
-        PlacementCostModel::Time
-    } else {
-        PlacementCostModel::Weighted {
-            weights: *weights,
-            speed_model,
-            trap_transfer_us,
-        }
+    PlacementCostModel::Weighted {
+        weights: *weights,
+        speed_model,
+        trap_transfer_us,
     }
 }
 
@@ -408,16 +405,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn time_objective_reads_non_placeholder_cost_weights() {
+    fn time_and_error_budget_dispatch_reads_cost_weights() {
         let speed = crate::geometry::SpeedModel::default();
-        assert_eq!(
-            placement_cost_for_time_objective(&crate::PLACEHOLDER_COST_WEIGHTS, speed, 15),
-            PlacementCostModel::Time
-        );
+        let placeholder =
+            placement_cost_from_target_weights(&crate::PLACEHOLDER_COST_WEIGHTS, speed, 15);
+        assert!(matches!(
+            placeholder,
+            PlacementCostModel::Weighted { weights, trap_transfer_us: 15, .. }
+                if weights == crate::PLACEHOLDER_COST_WEIGHTS
+        ));
         let mut weights = crate::PLACEHOLDER_COST_WEIGHTS;
         weights.trap_transfer_weight = 10.0;
         assert!(matches!(
-            placement_cost_for_time_objective(&weights, speed, 15),
+            placement_cost_from_target_weights(&weights, speed, 15),
             PlacementCostModel::Weighted { weights: got, trap_transfer_us: 15, .. } if got == weights
         ));
     }

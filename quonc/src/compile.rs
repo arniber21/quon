@@ -68,8 +68,9 @@ pub struct CompileRequest {
     /// State-preparation scheduling mode (issue #302): `Heuristic` (default)
     /// or `Exact` (SMT-optimal, requires `solver` feature).
     pub na_state_prep: quon_na::pipeline::StatePrepMode,
-    /// Placement/routing objective (issue #309): `Time` (default) or
-    /// `ErrorBudget` (requires target `error_model`; fail-closed otherwise).
+    /// Placement/routing objective: `Time` (default) or `ErrorBudget`. Both
+    /// score with the target `cost_model` weights. `ErrorBudget` requires
+    /// the target `error_model` and fails closed without one.
     pub na_objective: quon_na::pipeline::NaObjective,
     /// Parse the source as OpenQASM 2/3 (#304) instead of Quon (`.qn`).
     /// Set by the CLI when the input is `.qasm` or `--from-qasm` is passed;

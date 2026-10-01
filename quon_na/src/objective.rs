@@ -27,9 +27,8 @@ use crate::geometry::{SpeedModel, movement_duration_for_model};
 /// Placeholder weights shipped on the checked-in neutral-atom targets.
 ///
 /// architecture_model.md §8.6 / §9: these are tuning knobs, not measurements.
-/// The time-shaped placer keeps its existing choice when a target still
-/// carries exactly this vector. Any other vector is scored with the formula
-/// above.
+/// The time objective and error-budget mode both score with the target's
+/// `cost_model`, including when that vector is exactly this placeholder.
 pub const PLACEHOLDER_COST_WEIGHTS: NeutralAtomCostModel = NeutralAtomCostModel {
     rydberg_stage_weight: 1.0,
     movement_time_weight: 1.0,
@@ -1483,6 +1482,206 @@ mod tests {
                 })
                 .sum();
             (spec, movement_time_us, objective)
+        }
+    }
+
+    /// The time objective and error-budget mode both read `cost_model`.
+    /// Movement, transfer, and idle stay fixed and positive. Only the stage
+    /// weight changes, and each verified total is lower under the weights
+    /// that chose it. The error model stays the loaded target's model.
+    #[cfg(feature = "mlir")]
+    #[test]
+    fn time_and_error_budget_objectives_read_stage_weight() {
+        use std::path::Path;
+
+        use crate::entangling_schedule::schedule_entangling_layers;
+        use crate::geometry::movement_duration_for_model;
+        use crate::graph::{
+            DEFAULT_GAMMA, Interaction, InteractionGraph, InteractionId, InteractionSegment,
+            LogicalQubitId, SegmentKind,
+        };
+        use crate::layout::{AtomBinding, AtomId, NeutralAtomLayout, SiteId, TrapBinding};
+        use crate::lower::{ScheduleLowerParams, lower_schedule};
+        use crate::pipeline::{NaObjective, NaScheduleOptions, zoned_architecture};
+        use crate::plan::plan_backend;
+        use crate::replay::{DeclaredArchitecture, verify_emitted_schedule};
+        use crate::schedule_entry::schedule_from_graph;
+        use backend::{NeutralAtomZone, ZoneKind};
+
+        let column_pitch_um = 400.0_f64;
+        let row_pitch_um = 10.0_f64;
+        let movement_weight = 1.0;
+        let transfer_weight = 1.0;
+        let idle_weight = 1.0;
+        let probe = fixture_target(weights(1.0, movement_weight, transfer_weight, idle_weight));
+        let arch = zoned_architecture(&probe);
+        let travel_um = (column_pitch_um * column_pitch_um + row_pitch_um * row_pitch_um).sqrt();
+        let movement_us = movement_duration_for_model(travel_um, &arch.speed_model) as f64;
+        let trap_us = arch.trap_transfer_us as f64;
+        let transfers = 4.0;
+        let stationary_idle_us = 2.0 * (movement_us + 2.0 * trap_us);
+        let placer_long_move = movement_weight * movement_us
+            + transfer_weight * transfers
+            + idle_weight * stationary_idle_us;
+        let verified_long_move = placer_long_move - idle_weight * 4.0;
+        let stage_below = verified_long_move - 1.0;
+        let stage_above = placer_long_move + 1.0;
+        assert!(stage_below > 0.0);
+        let below = weights(stage_below, movement_weight, transfer_weight, idle_weight);
+        let above = weights(stage_above, movement_weight, transfer_weight, idle_weight);
+
+        for objective in [NaObjective::Time, NaObjective::ErrorBudget] {
+            let (split_spec, split_obj) = scheduled(objective, below);
+            let (kept_spec, kept_obj) = scheduled(objective, above);
+            assert_eq!(split_obj.rydberg_stages, 2, "{objective:?}");
+            assert_eq!(kept_obj.rydberg_stages, 1, "{objective:?}");
+            assert_eq!(split_obj.movement_time_us, 0);
+            assert_eq!(kept_obj.movement_time_us as f64, movement_us);
+            assert_eq!(
+                split_obj.movement_time_weight,
+                kept_obj.movement_time_weight
+            );
+            assert_eq!(
+                split_obj.trap_transfer_weight,
+                kept_obj.trap_transfer_weight
+            );
+            assert_eq!(split_obj.idle_time_weight, kept_obj.idle_time_weight);
+            assert!(split_obj.movement_time_weight > 0.0);
+            assert!(split_obj.trap_transfer_weight > 0.0);
+            assert!(split_obj.idle_time_weight > 0.0);
+            let kept_under_low =
+                objective_from_verified_schedule(&kept_spec, &below).expect("rescore");
+            let split_under_high =
+                objective_from_verified_schedule(&split_spec, &above).expect("rescore");
+            assert!(split_obj.total < kept_under_low.total);
+            assert!(kept_obj.total < split_under_high.total);
+        }
+
+        fn fixture_target(cost: NeutralAtomCostModel) -> backend::NeutralAtomTarget {
+            let path = Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../targets/neutral_atom/generic_rna_v0.json"
+            ));
+            let loaded = backend::json::load(path).expect("load target");
+            let mut na = loaded.neutral_atom_target().expect("na target").clone();
+            assert!(na.error_model.is_some());
+            na.zones = vec![
+                NeutralAtomZone {
+                    zone_id: 0,
+                    kind: ZoneKind::Storage,
+                    rows: 2,
+                    cols: 2,
+                    origin_um: (-100.0, -100.0),
+                    site_pitch_um: (4.0, 4.0),
+                    pair_gap_um: None,
+                },
+                NeutralAtomZone {
+                    zone_id: 1,
+                    kind: ZoneKind::Entanglement,
+                    rows: 2,
+                    cols: 2,
+                    origin_um: (0.0, 0.0),
+                    site_pitch_um: (400.0, 10.0),
+                    pair_gap_um: Some(6.0),
+                },
+            ];
+            na.cost_model = cost;
+            na
+        }
+
+        fn scheduled(
+            objective: NaObjective,
+            cost: NeutralAtomCostModel,
+        ) -> (crate::dialect::ScheduleSpec, ScheduleObjective) {
+            let na = fixture_target(cost);
+            let arch = zoned_architecture(&na);
+            let left = InteractionId(0);
+            let right = InteractionId(1);
+            let graph = InteractionGraph::from_interactions(
+                vec![
+                    LogicalQubitId(0),
+                    LogicalQubitId(1),
+                    LogicalQubitId(2),
+                    LogicalQubitId(3),
+                ],
+                vec![
+                    Interaction {
+                        id: left,
+                        qubits: vec![LogicalQubitId(0), LogicalQubitId(1)],
+                        gate_name: "CZ".into(),
+                        dag_layer: 0,
+                        on_critical_path: false,
+                    },
+                    Interaction {
+                        id: right,
+                        qubits: vec![LogicalQubitId(2), LogicalQubitId(3)],
+                        gate_name: "CZ".into(),
+                        dag_layer: 0,
+                        on_critical_path: false,
+                    },
+                ],
+                vec![InteractionSegment {
+                    kind: SegmentKind::CommutationGroup,
+                    interactions: vec![left, right],
+                }],
+                DEFAULT_GAMMA,
+            )
+            .expect("graph");
+            let mut request =
+                schedule_entangling_layers(schedule_from_graph(graph).expect("request"), 340)
+                    .expect("layers")
+                    .request;
+            request.layout = Some(NeutralAtomLayout {
+                sites: Vec::new(),
+                initial_bindings: vec![
+                    AtomBinding {
+                        atom: AtomId(0),
+                        trap: TrapBinding::Slm { site: SiteId(4) },
+                    },
+                    AtomBinding {
+                        atom: AtomId(1),
+                        trap: TrapBinding::Slm { site: SiteId(5) },
+                    },
+                    AtomBinding {
+                        atom: AtomId(2),
+                        trap: TrapBinding::Slm { site: SiteId(8) },
+                    },
+                    AtomBinding {
+                        atom: AtomId(3),
+                        trap: TrapBinding::Slm { site: SiteId(9) },
+                    },
+                ],
+                declared_initial_bindings: Vec::new(),
+            });
+            let opts = NaScheduleOptions {
+                objective,
+                ..NaScheduleOptions::default()
+            };
+            let (scheduled, _) = plan_backend(request, &na, opts).expect("plan");
+            let layout = scheduled.layout.as_ref().expect("layout");
+            let spec = lower_schedule(
+                &scheduled,
+                &ScheduleLowerParams {
+                    target_id: "objective-weights".into(),
+                    rydberg_range_um: arch.rydberg_range_um,
+                    min_rydberg_spacing_um: arch.min_rydberg_spacing_um,
+                    aod_min_separation_um: arch.aod_min_separation_um,
+                },
+            )
+            .expect("lower");
+            let declared = DeclaredArchitecture {
+                sites: layout.sites.clone(),
+                initial_bindings: layout.declared_initial_bindings.clone(),
+                zones: arch.zones.clone(),
+                check_zones: true,
+                require_readout_zone: false,
+                rydberg_range_um: arch.rydberg_range_um,
+                min_rydberg_spacing_um: arch.min_rydberg_spacing_um,
+                aod_min_separation_um: arch.aod_min_separation_um,
+            };
+            verify_emitted_schedule(&spec, &declared).expect("verified schedule");
+            let objective = objective_from_verified_schedule(&spec, &cost).expect("objective");
+            (spec, objective)
         }
     }
 }

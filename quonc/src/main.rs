@@ -283,9 +283,9 @@ struct Cli {
         value_parser = parse_state_prep_mode
     )]
     na_state_prep: StatePrepMode,
-    /// Placement objective: time (default, minimizes Σ √(d_max)) or
-    /// error-budget (minimizes analytic error_model contributions —
-    /// requires the target's error_model; ADR-0017/0020, not logical rates)
+    /// Placement objective: time (default) or error-budget. Both score with
+    /// the target cost_model weights. error-budget requires the target's
+    /// error_model.
     #[arg(
         long,
         value_name = "OBJECTIVE",
