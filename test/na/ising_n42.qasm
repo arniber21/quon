@@ -8,12 +8,14 @@
 // qubit last-use tracking, identical to the `.qn` extraction path) places
 // every gate in a matching on the SAME dag_layer and serializes between
 // matchings. Result: layers 0/1 (step 1 even/odd) then 2/3 (step 2
-// even/odd) — 4 rydberg stages, 21+20+21+20 = 82 two-qubit gates.
+// even/odd) — 4 dependency layers, 21+20+21+20 = 82 two-qubit gates.
+// Routing-agnostic cost-weight placement defers some of those layers, so
+// the resource report has 7 Rydberg stages.
 //
 // Uses native `cz` (not `cx`/`rzz`): every NA target's `native_gates` lists
 // `cz`, and the NA entangling scheduler models each ≥2-qubit gate as one
 // symmetric Entangle2 (undirected interaction edge), so `cz` keeps the
-// 82/4 pre-flight counts intact — a `cx` would be an equally valid single
+// 82-gate pre-flight count intact — a `cx` would be an equally valid single
 // Entangle2 here, but `cz` matches the `.qn` fixture verbatim. Do not
 // "simplify" this file into one ascending loop over `range(41)` (that
 // chains every gate through its shared neighbor and yields 41 serial layers
@@ -21,7 +23,7 @@
 //
 // Acceptance: `quonc test/na/ising_n42.qasm --target
 // targets/neutral_atom/rap_table_i.json --emit-resource-report -` reports
-// `entangle2_count == 82` and `rydberg_stages == 4` — the same pre-flight
+// `entangle2_count == 82` and `rydberg_stages == 7` — the same pre-flight
 // invariants as the `.qn` fixture.
 OPENQASM 2.0;
 include "qelib1.inc";

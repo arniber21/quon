@@ -284,28 +284,24 @@ fn placer_headline_numbers_match_readme() {
     // `measurement_rounds` was 0 and the ~1500us readout never entered
     // `total_time_us`. That fix is the pre-residency baseline. `generic_rna_v0`
     // declares a readout zone, so the zoned backend now shuttles those atoms
-    // before the measure. `qaoa_graph.qn` measures 4 atoms: agnostic needs
-    // three AOD groups (81/8/22/3186 -> 90/11/30/3887) and aware needs one
-    // (84/9/24/3242 -> 87/10/32/3473). `ising.qn` measures 6 atoms that share
+    // before the measure. `qaoa_graph.qn` measures 4 atoms. With the target
+    // cost_model weights, both placers land on 92 cycles, 11 rearrangement
+    // steps, 30 transfers, and 3693 µs. `ising.qn` measures 6 atoms that share
     // one group on both placers (49/9/20/3717 -> 52/10/32/3956).
     let m = &qaoa_agnostic["metrics"];
-    assert_eq!(m["estimated_cycles"], 90, "qaoa agnostic: {qaoa_agnostic}");
+    assert_eq!(m["estimated_cycles"], 92, "qaoa agnostic: {qaoa_agnostic}");
     assert_eq!(
         m["rearrangement_steps"], 11,
         "qaoa agnostic: {qaoa_agnostic}"
     );
     assert_eq!(m["trap_transfers"], 30, "qaoa agnostic: {qaoa_agnostic}");
-    assert_eq!(m["total_time_us"], 3887, "qaoa agnostic: {qaoa_agnostic}");
+    assert_eq!(m["total_time_us"], 3693, "qaoa agnostic: {qaoa_agnostic}");
 
     let m = &qaoa_aware["metrics"];
-    assert_eq!(m["estimated_cycles"], 87, "qaoa aware: {qaoa_aware}");
-    assert_eq!(m["rearrangement_steps"], 10, "qaoa aware: {qaoa_aware}");
-    assert_eq!(m["trap_transfers"], 32, "qaoa aware: {qaoa_aware}");
-    // 1764 -> 1742 under #297 (same step/transfer counts, corrected
-    // grouped-cost search finds a lower-travel-distance placement), then
-    // +1500us for the terminal-measurement fix, then +231us for the one
-    // 4-atom readout grab above.
-    assert_eq!(m["total_time_us"], 3473, "qaoa aware: {qaoa_aware}");
+    assert_eq!(m["estimated_cycles"], 92, "qaoa aware: {qaoa_aware}");
+    assert_eq!(m["rearrangement_steps"], 11, "qaoa aware: {qaoa_aware}");
+    assert_eq!(m["trap_transfers"], 30, "qaoa aware: {qaoa_aware}");
+    assert_eq!(m["total_time_us"], 3693, "qaoa aware: {qaoa_aware}");
 
     let agnostic_m = &ising_agnostic["metrics"];
     let aware_m = &ising_aware["metrics"];
@@ -398,8 +394,9 @@ fn repetition_d3_memory_schedule_is_genuinely_mid_circuit() {
     assert_eq!(m["measurement_rounds"], 3, "{schedule}");
     assert_eq!(m["reset_rounds"], 2, "{schedule}");
     // 37 -> 49: readout-zone shuttles around the measure and reset layers.
+    // 49 -> 52: time and error-budget scoring use the target cost weights.
     // The three counts above do not move.
-    assert_eq!(m["estimated_cycles"], 49, "{schedule}");
+    assert_eq!(m["estimated_cycles"], 52, "{schedule}");
 
     let layers = schedule["layers"]
         .as_array()
