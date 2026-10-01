@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn rydberg_stage_weight_selects_a_different_verified_schedule() {
         use crate::entangling_schedule::schedule_entangling_layers;
-        use crate::geometry::{SpeedModel, SpeedModelKind};
+        use crate::geometry::{SpeedModel, SpeedModelKind, movement_duration_for_model};
         use crate::graph::{
             DEFAULT_GAMMA, Interaction, InteractionGraph, InteractionId, InteractionSegment,
             LogicalQubitId, SegmentKind,
@@ -666,6 +666,8 @@ mod tests {
         // cannot fire together. The other column is 400 µm away and does not
         // conflict. One stage pays for that long move. Two stages reuse both
         // home pairs and pay for a second Rydberg stage.
+        let column_pitch_um = 400.0;
+        let row_pitch_um = 10.0;
         let arch = ZonedArchitecture {
             zones: vec![
                 ZoneSpec {
@@ -683,7 +685,7 @@ mod tests {
                     rows: 2,
                     cols: 2,
                     origin_um: (0.0, 0.0),
-                    site_pitch_um: (400.0, 10.0),
+                    site_pitch_um: (column_pitch_um, row_pitch_um),
                     pair_gap_um: Some(6.0),
                 },
             ],
@@ -699,25 +701,67 @@ mod tests {
             min_rydberg_spacing_um: 18.75,
             aod_min_separation_um: 2.0,
         };
-        let prefer_fewer_stages = weights(1.0, 0.0, 0.0, 0.0);
-        let prefer_less_movement = weights(0.0, 1.0, 0.0, 0.0);
+        // Movement, transfer, and idle stay fixed and positive. Only the
+        // stage weight changes. The conflicting gate's first legal pair is
+        // the far column, so both atoms travel hypot(column, row). That is
+        // one movement group, four trap transfers, and two stationary atoms
+        // idle for the load, the move, and the store. The verified total
+        // also charges 1 µs of idle per atom on the extra entangle layer, so
+        // the low weight sits below that smaller crossover and the high
+        // weight sits above the placer's cost.
+        let movement_weight = 1.0;
+        let transfer_weight = 1.0;
+        let idle_weight = 1.0;
+        let travel_um = (column_pitch_um * column_pitch_um + row_pitch_um * row_pitch_um).sqrt();
+        let movement_us = movement_duration_for_model(travel_um, &arch.speed_model) as f64;
+        let trap_us = arch.trap_transfer_us as f64;
+        let transfers = 4.0;
+        let stationary_idle_us = 2.0 * (movement_us + 2.0 * trap_us);
+        let placer_long_move = movement_weight * movement_us
+            + transfer_weight * transfers
+            + idle_weight * stationary_idle_us;
+        let verified_long_move = placer_long_move - idle_weight * 4.0;
+        let stage_below = verified_long_move - 1.0;
+        let stage_above = placer_long_move + 1.0;
+        assert!(stage_below > 0.0);
+        assert!(stage_below < verified_long_move && verified_long_move < placer_long_move);
+        assert!(placer_long_move < stage_above);
+        let below_long_move = weights(stage_below, movement_weight, transfer_weight, idle_weight);
+        let above_long_move = weights(stage_above, movement_weight, transfer_weight, idle_weight);
 
-        let (stage_spec, stage_movement, stage_obj) = scheduled(&arch, prefer_fewer_stages);
-        let (move_spec, move_movement, move_obj) = scheduled(&arch, prefer_less_movement);
-        assert_eq!(stage_obj.rydberg_stages, 1);
-        assert_eq!(move_obj.rydberg_stages, 2);
-        assert!(
-            move_movement < stage_movement,
-            "stage weight keeps one stage and the long move ({stage_movement} µs); movement weight spends a second stage ({move_movement} µs)"
+        let (split_spec, _, split_obj) = scheduled(&arch, below_long_move);
+        let (kept_spec, _, kept_obj) = scheduled(&arch, above_long_move);
+        assert_eq!(split_obj.rydberg_stages, 2);
+        assert_eq!(kept_obj.rydberg_stages, 1);
+        assert_eq!(kept_obj.movement_time_us as f64, movement_us);
+        assert_eq!(kept_obj.trap_transfers, transfers as u64);
+        assert_eq!(split_obj.movement_time_us, 0);
+        assert_eq!(split_obj.trap_transfers, 0);
+        assert_eq!(
+            split_obj.movement_time_weight,
+            kept_obj.movement_time_weight
         );
-        assert!(stage_movement > 0);
+        assert_eq!(
+            split_obj.trap_transfer_weight,
+            kept_obj.trap_transfer_weight
+        );
+        assert_eq!(split_obj.idle_time_weight, kept_obj.idle_time_weight);
+        assert!(split_obj.movement_time_weight > 0.0);
+        assert!(split_obj.trap_transfer_weight > 0.0);
+        assert!(split_obj.idle_time_weight > 0.0);
+        let measured_long_move = movement_weight
+            * (kept_obj.movement_time_us as f64 - split_obj.movement_time_us as f64)
+            + transfer_weight * (kept_obj.trap_transfers as f64 - split_obj.trap_transfers as f64)
+            + idle_weight * (kept_obj.idle_time_us as f64 - split_obj.idle_time_us as f64);
+        assert_eq!(measured_long_move, verified_long_move);
+        assert!(stage_below < measured_long_move && measured_long_move < stage_above);
 
-        let stage_under_movement =
-            objective_from_verified_schedule(&stage_spec, &prefer_less_movement).expect("rescore");
-        let movement_under_stage =
-            objective_from_verified_schedule(&move_spec, &prefer_fewer_stages).expect("rescore");
-        assert!(stage_obj.total < movement_under_stage.total);
-        assert!(move_obj.total < stage_under_movement.total);
+        let kept_under_low =
+            objective_from_verified_schedule(&kept_spec, &below_long_move).expect("rescore");
+        let split_under_high =
+            objective_from_verified_schedule(&split_spec, &above_long_move).expect("rescore");
+        assert!(split_obj.total < kept_under_low.total);
+        assert!(kept_obj.total < split_under_high.total);
 
         fn scheduled(
             arch: &ZonedArchitecture,
