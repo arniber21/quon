@@ -10,16 +10,17 @@
 //! kind is a new impl plus one arm in [`lattice_round_emitter`].
 //!
 //! Both builders share [`emit_reset_tick`] for the prepare-`R` / `TICK` line,
-//! [`emit_single_block_header`] / [`emit_lattice_surgery_header`] for the
-//! comment preamble, and [`emit_observable_include`] for `OBSERVABLE_INCLUDE`
-//! record offsets. `QUBIT_COORDS` stay in the builders. Lattice surgery still
-//! appends frame-byproduct records after the shared observable line.
+//! [`emit_qubit_coords`] for `QUBIT_COORDS`, [`emit_single_block_header`] /
+//! [`emit_lattice_surgery_header`] for the comment preamble, and
+//! [`emit_observable_include`] for `OBSERVABLE_INCLUDE` record offsets.
+//! Measure lines and closing detectors stay in the builders. Lattice surgery
+//! still appends frame-byproduct records after the shared observable line.
 
 use std::collections::HashMap;
 
 use crate::expand::{
-    ExpandedBlock, ExpandedWorkload, MergeBoundary, PauliFrameUpdate, PhysicalRound, RoundKind,
-    RoundTerminal,
+    ExpandedBlock, ExpandedWorkload, MergeBoundary, PauliFrameUpdate, PhysicalAtomId,
+    PhysicalRound, RoundKind, RoundTerminal,
 };
 use crate::workload::LogicalBasis;
 
@@ -83,6 +84,16 @@ pub(crate) fn emit_single_block_header(
          # family={family} distance={distance} memory_rounds={memory_rounds} measure_basis={measure_basis}\n\
          # Note: surface uses serial Z-then-X expand (not Stim 4-layer FT schedule).\n",
     ));
+}
+
+/// Write `QUBIT_COORDS(x, y) id` in caller order.
+///
+/// Single-block memory passes one block. Lattice surgery calls this once per
+/// block, in workload order. Pairs stop at the shorter slice, matching `zip`.
+pub(crate) fn emit_qubit_coords(out: &mut String, atoms: &[PhysicalAtomId], coords: &[(i32, i32)]) {
+    for (atom, &(x, y)) in atoms.iter().zip(coords.iter()) {
+        out.push_str(&format!("QUBIT_COORDS({x}, {y}) {}\n", atom.0));
+    }
 }
 
 /// Write the lattice-surgery CX comment preamble.
@@ -792,6 +803,20 @@ mod tests {
              # family=repetition distance=3 memory_rounds=2 measure_basis=z\n\
              # Note: surface uses serial Z-then-X expand (not Stim 4-layer FT schedule).\n"
         );
+    }
+
+    #[test]
+    fn qubit_coords_keep_caller_order() {
+        let mut out = String::new();
+        emit_qubit_coords(
+            &mut out,
+            &[PhysicalAtomId(4), PhysicalAtomId(0)],
+            &[(1, 2), (3, 4)],
+        );
+        assert_eq!(out, "QUBIT_COORDS(1, 2) 4\nQUBIT_COORDS(3, 4) 0\n");
+        let mut short = String::new();
+        emit_qubit_coords(&mut short, &[PhysicalAtomId(1)], &[(0, 0), (9, 9)]);
+        assert_eq!(short, "QUBIT_COORDS(0, 0) 1\n");
     }
 
     #[test]
