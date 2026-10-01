@@ -10,11 +10,12 @@
 //! kind is a new impl plus one arm in [`lattice_round_emitter`].
 //!
 //! Both builders share [`emit_reset_tick`] for the prepare-`R` / `TICK` line,
-//! [`emit_qubit_coords`] for `QUBIT_COORDS`, [`emit_single_block_header`] /
+//! [`emit_qubit_coords`] for `QUBIT_COORDS`, [`emit_measure_line`] for the
+//! final `MZ` / `MX` line, [`emit_single_block_header`] /
 //! [`emit_lattice_surgery_header`] for the comment preamble, and
 //! [`emit_observable_include`] for `OBSERVABLE_INCLUDE` record offsets.
-//! Measure lines and closing detectors stay in the builders. Lattice surgery
-//! still appends frame-byproduct records after the shared observable line.
+//! Closing detectors stay in the single-block builder. Lattice surgery still
+//! appends frame-byproduct records after the shared observable line.
 
 use std::collections::HashMap;
 
@@ -36,6 +37,19 @@ pub(crate) fn emit_reset_tick(out: &mut String, atom_ids: &[u32]) {
         out.push_str(&format!(" {id}"));
     }
     out.push_str("\nTICK\n");
+}
+
+/// Write `{op} <ids>\n` in caller order.
+///
+/// Single-block memory passes `MZ` or `MX`. Lattice surgery passes `MZ` and
+/// keeps its own record counter. This function does not reorder or skip an
+/// empty id list: an empty list is `{op}\n`.
+pub(crate) fn emit_measure_line(out: &mut String, op: &str, atom_ids: &[u32]) {
+    out.push_str(op);
+    for id in atom_ids {
+        out.push_str(&format!(" {id}"));
+    }
+    out.push('\n');
 }
 
 /// Write `OBSERVABLE_INCLUDE({obs_id})` and one `rec[-(d - pos)]` per
@@ -150,10 +164,11 @@ impl<'a> LatticeSurgeryCtx<'a> {
 
 /// Stim state for one single-block memory circuit.
 ///
-/// The builder still writes the final measure line and closing detectors.
-/// [`emit_single_block_header`] writes the comment preamble before this
-/// context exists. Round impls append construct locals, memory rounds, and
-/// the measure-logical record. [`emit_observable_include`] writes the observable.
+/// The builder still writes closing detectors. [`emit_single_block_header`]
+/// writes the comment preamble before this context exists. Round impls append
+/// construct locals, memory rounds, and the measure-logical record.
+/// [`emit_measure_line`] writes the final measure line.
+/// [`emit_observable_include`] writes the observable.
 pub(crate) struct SingleBlockCtx<'a> {
     pub(crate) out: String,
     pub(crate) n_checks: usize,
@@ -803,6 +818,16 @@ mod tests {
              # family=repetition distance=3 memory_rounds=2 measure_basis=z\n\
              # Note: surface uses serial Z-then-X expand (not Stim 4-layer FT schedule).\n"
         );
+    }
+
+    #[test]
+    fn measure_line_keeps_caller_order() {
+        let mut out = String::new();
+        emit_measure_line(&mut out, "MZ", &[4, 0, 4]);
+        assert_eq!(out, "MZ 4 0 4\n");
+        let mut empty = String::new();
+        emit_measure_line(&mut empty, "MX", &[]);
+        assert_eq!(empty, "MX\n");
     }
 
     #[test]
