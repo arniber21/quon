@@ -277,7 +277,7 @@ Units: lengths in µm, times in µs, fidelities as probabilities in [0, 1].
 | `timing` | object | Operation durations (§8.5) | Schedule makespan, decoherence-weighted cost |
 | `fidelity` | object | Operation fidelities + coherence time (§8.5) | Deferred fidelity estimate (future; not #110 — see §11) |
 | `error_model` | object, optional | Explicit physical error probabilities for QEC (ADR-0017; §8.5) | Resource-report `error_budget` (`--emit-resource-report`); `--emit-qec-experiment` (#255). Hard-fail when those emits are requested and the object is absent — never derived as `1 − fidelity`. Experiment JSON schema: [`qec_experiment_schema.md`](./qec_experiment_schema.md). |
-| `cost_model` | object | Linear cost weights (§9) | Scheduler objective, resource report |
+| `cost_model` | object, optional | Four §9 weights. An omitted object or an omitted field uses the §8.6 placeholder | Zoned placement score and the verified `schedule_objective` total |
 
 ### 8.2 Zone
 
@@ -376,7 +376,10 @@ labeled placeholders.
 | `fidelity.coherence_time_us` | 1.5e6 | cited | [OLSQ-DPQA] Sec. 4; [Enola] Sec. 2; [QMAP-docs] (`T: 1.5e6`) |
 | Zone geometry (storage 73 × 101 @ 4 µm pitch; entanglement 10 × 34 pairs, pair gap 2 µm, pair pitch 12 × 10 µm; AOD 100 × 100) | — | cited (as a published artifact, not a physics claim) | [QMAP-repo] `eval/na/zoned/square_architecture.json`, the reference architecture shipped with the [RAP] compiler |
 | `max_parallel_entangling_pairs` | 340 | derived | Entanglement-zone pair capacity of the geometry above |
-| `cost_model` weights | see §9 | **placeholder** | Weights are tuning knobs, not measurements |
+| `cost_model.rydberg_stage_weight` | 1 | **placeholder** | Per Rydberg stage. Default when the field is omitted (§9) |
+| `cost_model.movement_time_weight` | 1 | **placeholder** | Per µs of summed move duration. Default when omitted (§9) |
+| `cost_model.trap_transfer_weight` | 1 | **placeholder** | Per trap transfer. Default when omitted (§9) |
+| `cost_model.idle_time_weight` | 0.000001 | **placeholder** | Per µs of summed idle. Default when omitted (§9) |
 | `error_model.rydberg` | 0.002 | **placeholder** | Illustrative QEC rate; deliberately ≠ `1 − fidelity.cz` (0.005). ADR-0017. |
 | `error_model.measurement` | 0.003 | **placeholder** | Illustrative; not a literature claim. |
 | `error_model.reset` | 0.004 | **placeholder** | Illustrative; not a literature claim. |
@@ -386,37 +389,82 @@ labeled placeholders.
 
 ## 9. Cost model
 
-The v0 cost model is a simple linear functional over a compiled schedule,
-reported by the resource estimator (#110) and minimized greedily by the
-schedulers:
+The v0 `cost_model` is four finite weights. The zoned placer scores with
+them, and the resource report recomputes the same dot product from the
+verified `quantum.na` schedule (`schedule_objective.total` in JSON, and the
+"Schedule objective (verified quantum.na)" table in Markdown). `w_stage`,
+`w_move`, `w_xfer`, and `w_idle` are names for those four fields, in that
+order. That product is the objective expression.
 
 ```
-cost(schedule) = w_stage · n_rydberg_stages
-              + w_move  · Σ_steps t_move(d_max(step))
-              + w_xfer  · n_trap_transfers
-              + w_idle  · Σ_atoms t_idle(atom)
+total = rydberg_stage_weight · rydberg_stages
+      + movement_time_weight · movement_time_us
+      + trap_transfer_weight · trap_transfers
+      + idle_time_weight · idle_time_us
 ```
 
-Rationale per term, each grounded separately:
+`weighted_total` in `quon_na/src/objective.rs` is that product. After
+verification, `objective_from_verified_schedule` reads the four counts off
+the emitted `ScheduleSpec`, not off planner-internal counters:
 
-- `n_rydberg_stages`: the flat-array objective; every stage exposes all
-  illuminated atoms to Rydberg error ([Enola] Secs. 2–3, R4).
-- `Σ √(d_max)` per movement group: the [RAP] Eq. (1) placement cost — duration
-  of a rearrangement step is set by its longest move under the √-law.
-- Transfer count: each transfer is a fidelity-bearing action ([Enola] Sec. 2:
-  99.9% per transfer, 4 per gate; [RAP] reuse analysis exists precisely to
-  save transfers).
-- Idle time: linear decoherence proxy, 1 − t/T ([Enola] Eq. (1) decoherence
-  factor).
+| Weight | Count it multiplies | Unit of the count |
+| --- | --- | --- |
+| `rydberg_stage_weight` | `rydberg_stages`: layers that contain an entangle | count, per stage |
+| `movement_time_weight` | `movement_time_us`: sum of move `duration_us` already stamped on the schedule | µs |
+| `trap_transfer_weight` | `trap_transfers`: number of transfer actions | count, per transfer |
+| `idle_time_weight` | `idle_time_us`: sum over atoms of wall-clock time outside layers that name that atom. A global `ry` layer names every atom | µs |
 
-The **weights are illustrative placeholders** (Section 8.6): the literature
-optimizes these terms directly rather than a weighted sum, so any particular
-weighting is ours. The shape (which terms exist) is cited; the weights are not.
-Snapshot tests may pin them for regression purposes but must not present them
-as published values.
+The weights are dimensionless multipliers. The total is not a time and not a
+fidelity. Move durations are stamped by the target speed model (§5) before
+this product runs; the total does not recompute them. Under the sqrt speed
+model that stamp is the √-law duration, which is the same quantity [RAP]
+Eq. (1) uses for one movement group, but the objective multiplies the
+stamped microseconds.
 
-The resource estimator emits JSON and Markdown reports whose field names and
-table shape are specified in §11.
+Why these counts exist, each grounded separately: a Rydberg stage exposes
+illuminated atoms to Rydberg error ([Enola] Secs. 2–3, R4); each transfer is
+a fidelity-bearing action ([Enola] Sec. 2; [RAP] reuse analysis exists to
+save transfers); idle time is a linear decoherence proxy, 1 − t/T ([Enola]
+Eq. (1)). The literature optimizes those terms directly rather than as a
+weighted sum, so the weights are ours.
+
+The **placeholder vector** is `NeutralAtomCostModel::PLACEHOLDER` and the
+`cost_model` object in `targets/neutral_atom/generic_rna_v0.json` and
+`targets/neutral_atom/rap_table_i.json`: stage 1, movement 1, transfer 1,
+idle `0.000001` (§8.6). Snapshot tests may pin a schedule that was chosen
+under those weights, but must not present the weights as published values.
+
+### 9.1 Schema
+
+There is no `cost_model` schema-version integer. This section is the v0
+object: these four keys and no others (`deny_unknown_fields`). The target
+`id` (`generic_reconfigurable_neutral_atom_v0` on the checked-in file) names
+the descriptor, not a separate weight-schema counter.
+
+- Omitting `cost_model`, or omitting any weight, fills the §8.6 placeholder
+  for each missing field.
+- An explicit finite weight ≥ 0 is kept, including 0.
+- A vector with every weight exactly 0 is rejected when the target is loaded
+  and again when zoned scheduling starts. Every schedule would score the
+  same, so placement would ignore the vector.
+- A non-finite or negative weight is rejected at load.
+- Adding another optional weight later, with a documented default, keeps
+  existing files loading. Renaming a field, removing one, or changing a
+  placeholder default is a breaking change to this v0 object.
+
+### 9.2 CLI modes
+
+`quonc --na-objective time` (the default) and
+`quonc --na-objective error-budget` (`error_budget` and `budget` name the
+same mode) both hand the loaded `cost_model` to the zoned placer as this
+weighted score. `error-budget` still requires `error_model` and fails closed
+when it is absent. Those rates stay on the resource report as `error_budget`
+(`rate × schedule count`). The flat AOD backend leaves placement on its own
+path and does not score with `cost_model`.
+
+The resource estimator's other JSON and Markdown sections are specified in
+§11. The verified objective section is emitted only after `quantum.na`
+verification has run.
 
 ## 10. Code families and overhead formulas
 

@@ -111,7 +111,10 @@ gate.
 
 The reconfigurable neutral-atom descriptor models a DPQA/zoned array: zones,
 array geometry, AOD movement, Rydberg interaction, timing, fidelity, and a cost
-model. All fields except `error_model` and `atom_loss_model` are **required**.
+model. `error_model`, `atom_loss_model`, and `cost_model` may be omitted.
+An omitted `cost_model` weight loads the placeholder in the
+[architecture model §9](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/architecture_model.md).
+Every other field below is **required**.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
@@ -126,7 +129,7 @@ model. All fields except `error_model` and `atom_loss_model` are **required**.
 | `fidelity` | object | yes | `cz`, `single_qubit`, `atom_transfer`, `coherence_time_us` |
 | `error_model` | object | optional | Explicit physical error probabilities for QEC (sibling to `fidelity`) |
 | `atom_loss_model` | object | optional | Movement-induced heating/loss parameters |
-| `cost_model` | object | yes | Linear cost weights |
+| `cost_model` | object | optional | Four §9 weights. Omitted fields use the placeholder defaults |
 
 A **Zone** declares a region's capability:
 

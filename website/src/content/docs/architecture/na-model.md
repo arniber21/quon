@@ -205,7 +205,7 @@ The top level ties the pieces together:
 | `timing` | object | Operation durations |
 | `fidelity` | object | Operation fidelities + coherence time |
 | `error_model` | object, optional | Explicit physical error probabilities for QEC (never derived as `1 − fidelity`) |
-| `cost_model` | object | Linear cost weights |
+| `cost_model` | object, optional | Four weights. Omitted fields use the placeholder defaults in the source document §9 |
 
 A **Zone** declares a region's capability. A flat-array target is expressed as a
 single `entanglement` zone covering the whole grid, so the zone constraints
@@ -253,22 +253,21 @@ accounting. Per ADR-0017, you must never convert rates as `1 − fidelity.*`.
 
 ### Cost model
 
-The v0 cost model is a simple linear functional over a compiled schedule,
-reported by the resource estimator and minimized greedily by the schedulers:
+The v0 `cost_model` is one dot product. The zoned placer scores with it, and
+the verified resource report recomputes the same total. Field names, units,
+placeholder defaults, schema rules, and the `time` / `error-budget` CLI modes
+are in the [source document §9](https://github.com/arniber21/quon/blob/main/docs/neutral_atom/architecture_model.md).
 
 ```
-cost(schedule) = w_stage · n_rydberg_stages
-              + w_move  · Σ_steps t_move(d_max(step))
-              + w_xfer  · n_trap_transfers
-              + w_idle  · Σ_atoms t_idle(atom)
+total = rydberg_stage_weight · rydberg_stages
+      + movement_time_weight · movement_time_us
+      + trap_transfer_weight · trap_transfers
+      + idle_time_weight · idle_time_us
 ```
 
-Each term is grounded separately: Rydberg stages expose all illuminated atoms to
-error (the flat-array objective); $\sum\sqrt{d_{max}}$ per group is the [RAP]
-placement cost; transfers are fidelity-bearing actions the reuse optimization
-exists to save; idle time is a linear decoherence proxy. The *shape* of the cost
-(which terms exist) is cited; the *weights* are illustrative placeholders, not
-published values.
+`rydberg_stages` and `trap_transfers` are counts. `movement_time_us` and
+`idle_time_us` are microseconds already stamped on the verified schedule. The
+weights are dimensionless placeholders, not published measurements.
 
 ## QEC overlay
 
