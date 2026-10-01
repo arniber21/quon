@@ -394,8 +394,9 @@ fn repetition_d3_memory_schedule_is_genuinely_mid_circuit() {
     assert_eq!(m["measurement_rounds"], 3, "{schedule}");
     assert_eq!(m["reset_rounds"], 2, "{schedule}");
     // 37 -> 49: readout-zone shuttles around the measure and reset layers.
+    // 49 -> 52: time and error-budget scoring use the target cost weights.
     // The three counts above do not move.
-    assert_eq!(m["estimated_cycles"], 49, "{schedule}");
+    assert_eq!(m["estimated_cycles"], 52, "{schedule}");
 
     let layers = schedule["layers"]
         .as_array()
