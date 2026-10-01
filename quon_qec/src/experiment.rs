@@ -555,15 +555,15 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
         block.data_atoms.clone()
     };
 
+    let mut data_ids = Vec::with_capacity(data_atoms.len());
+    for atom in &data_atoms {
+        data_ids.push(atom.0);
+    }
     let measure_op = match measure_basis {
         LogicalBasis::Z => "MZ",
         LogicalBasis::X => "MX",
     };
-    out.push_str(measure_op);
-    for atom in &data_atoms {
-        out.push_str(&format!(" {}", atom.0));
-    }
-    out.push('\n');
+    stim_emit::emit_measure_line(&mut out, measure_op, &data_ids);
 
     // Close detectors in the measure basis against final data measurements.
     let closing_indices: Vec<usize> = match measure_basis {
@@ -591,10 +591,6 @@ fn emit_stim_single_block_memory(expanded: &ExpandedWorkload) -> Result<String, 
     }
 
     let obs_atoms = logical_observable_atoms(block, measure_basis);
-    let mut data_ids = Vec::with_capacity(data_atoms.len());
-    for atom in &data_atoms {
-        data_ids.push(atom.0);
-    }
     stim_emit::emit_observable_include(&mut out, 0, &data_ids, &obs_atoms)?;
     out.push('\n');
 
@@ -659,8 +655,8 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
 
     // Round kinds append through [`stim_emit::StimRoundEmitter`]. Byproduct
     // handles and deferred measure-logical rounds come back out so the
-    // builder can write measure lines and frame records around
-    // [`stim_emit::emit_observable_include`].
+    // builder can count records and append frame targets around
+    // [`stim_emit::emit_measure_line`] and [`stim_emit::emit_observable_include`].
     let mut ctx = stim_emit::LatticeSurgeryCtx::new(expanded, control, target, ancilla, out);
     for round in &expanded.rounds {
         stim_emit::lattice_round_emitter(round.kind).emit(&mut ctx, round)?;
@@ -687,12 +683,8 @@ fn emit_stim_lattice_surgery_cx(expanded: &ExpandedWorkload) -> Result<String, E
         if data_atoms.is_empty() {
             continue;
         }
-        out.push_str("MZ");
-        for id in &data_atoms {
-            out.push_str(&format!(" {id}"));
-            rec_count += 1;
-        }
-        out.push('\n');
+        stim_emit::emit_measure_line(&mut out, "MZ", &data_atoms);
+        rec_count += data_atoms.len() as i32;
         let block = expanded
             .blocks
             .iter()
