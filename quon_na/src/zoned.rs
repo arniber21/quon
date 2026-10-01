@@ -575,6 +575,11 @@ pub enum ZonedScheduleError {
     EmptySchedule,
     #[error("schedule layer conflict: {0}")]
     Conflict(String),
+    /// Every schedule scores 0, so the placer's strict comparisons never move.
+    #[error(
+        "cost_model weights are all zero (rydberg_stage_weight, movement_time_weight, trap_transfer_weight, idle_time_weight); at least one must be positive so the objective can select a schedule"
+    )]
+    AllZeroCostWeights,
 }
 
 /// √(d_max / a) duration contribution for one movement group (\[RAP\] Eq. (1)).
@@ -978,6 +983,11 @@ pub fn schedule_zoned_with_aware_params<V: VertexId>(
     aware_search: AwareSearchParams,
     cost_model: PlacementCostModel,
 ) -> Result<ZonedScheduleResult<V>, ZonedScheduleError> {
+    if let PlacementCostModel::Weighted { weights, .. } = cost_model {
+        if crate::objective::cost_weights_are_all_zero(&weights) {
+            return Err(ZonedScheduleError::AllZeroCostWeights);
+        }
+    }
     arch.validate()?;
     if req.layers.is_empty() {
         // Synthesize one layer per commutation/ ASAP is caller's job; allow
@@ -3443,6 +3453,63 @@ mod tests {
     #[test]
     fn toy_arch_validates() {
         toy_zoned_architecture().validate().expect("ok");
+    }
+
+    fn weighted_cost(stage: f64, movement: f64, transfer: f64, idle: f64) -> PlacementCostModel {
+        let arch = toy_zoned_architecture();
+        PlacementCostModel::Weighted {
+            weights: backend::NeutralAtomCostModel {
+                rydberg_stage_weight: stage,
+                movement_time_weight: movement,
+                trap_transfer_weight: transfer,
+                idle_time_weight: idle,
+            },
+            speed_model: arch.speed_model,
+            trap_transfer_us: arch.trap_transfer_us,
+        }
+    }
+
+    fn entangling_request() -> crate::schedule_entry::GraphScheduleRequest<LogicalQubitId> {
+        let graph = matching_graph(2);
+        let req = schedule_from_graph(graph).expect("stub");
+        schedule_entangling_layers(req, 340)
+            .expect("layers")
+            .request
+    }
+
+    #[test]
+    fn all_zero_cost_weights_fail_and_a_positive_weight_still_schedules() {
+        let arch = toy_zoned_architecture();
+        let err = schedule_zoned_with_aware_params(
+            entangling_request(),
+            &arch,
+            PlacerMode::RoutingAgnostic,
+            AwareSearchParams::default(),
+            weighted_cost(0.0, 0.0, 0.0, 0.0),
+        )
+        .expect_err("all-zero weights");
+        let msg = err.to_string();
+        assert!(msg.contains("all zero"), "{msg}");
+        assert!(msg.contains("rydberg_stage_weight"), "{msg}");
+        assert!(msg.contains("movement_time_weight"), "{msg}");
+        assert!(msg.contains("trap_transfer_weight"), "{msg}");
+        assert!(msg.contains("idle_time_weight"), "{msg}");
+        assert!(msg.contains("at least one must be positive"), "{msg}");
+
+        let result = schedule_zoned_with_aware_params(
+            entangling_request(),
+            &arch,
+            PlacerMode::RoutingAgnostic,
+            AwareSearchParams::default(),
+            weighted_cost(1.0, 0.0, 0.0, 0.0),
+        )
+        .expect("a positive stage weight still selects a schedule");
+        assert!(result.request.layers.iter().any(|layer| {
+            layer
+                .actions
+                .iter()
+                .any(|action| matches!(action, NeutralAtomAction::Entangle2 { .. }))
+        }));
     }
 
     #[test]

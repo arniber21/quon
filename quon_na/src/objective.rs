@@ -59,6 +59,12 @@ pub enum ObjectiveError {
         "cost_model weights must be finite and non-negative (rydberg_stage_weight, movement_time_weight, trap_transfer_weight, idle_time_weight)"
     )]
     InvalidWeights,
+    /// Every schedule scores 0, so strict cost comparisons never move and the
+    /// vector does not select a schedule.
+    #[error(
+        "cost_model weights are all zero (rydberg_stage_weight, movement_time_weight, trap_transfer_weight, idle_time_weight); at least one must be positive so the objective can select a schedule"
+    )]
+    AllZeroWeights,
 }
 
 /// Movement, transfer, and idle cost of one gate orientation.
@@ -132,6 +138,9 @@ pub fn weighted_total(
     if !weights_usable(weights) {
         return Err(ObjectiveError::InvalidWeights);
     }
+    if cost_weights_are_all_zero(weights) {
+        return Err(ObjectiveError::AllZeroWeights);
+    }
     Ok(weights.rydberg_stage_weight * rydberg_stages as f64
         + weights.movement_time_weight * movement_time_us as f64
         + weights.trap_transfer_weight * trap_transfers as f64
@@ -147,6 +156,18 @@ fn weights_usable(weights: &NeutralAtomCostModel) -> bool {
     ]
     .into_iter()
     .all(|weight| weight.is_finite() && weight >= 0.0)
+}
+
+/// True when every §9 weight is exactly zero.
+///
+/// Non-finite and negative values are a separate check ([`weights_usable`]).
+/// An all-zero vector is finite and non-negative, but every schedule has the
+/// same cost, so placement comparisons ignore it.
+pub(crate) fn cost_weights_are_all_zero(weights: &NeutralAtomCostModel) -> bool {
+    weights.rydberg_stage_weight == 0.0
+        && weights.movement_time_weight == 0.0
+        && weights.trap_transfer_weight == 0.0
+        && weights.idle_time_weight == 0.0
 }
 
 /// Objective of a schedule that has already passed verification.
@@ -340,6 +361,21 @@ mod tests {
         assert_eq!(err, ObjectiveError::InvalidWeights);
         let err = weighted_total(0, 0, 0, 0, &weights(-1.0, 1.0, 1.0, 0.0)).expect_err("neg");
         assert_eq!(err, ObjectiveError::InvalidWeights);
+    }
+
+    #[test]
+    fn all_zero_weights_are_rejected() {
+        let err = weighted_total(1, 1, 1, 1, &weights(0.0, 0.0, 0.0, 0.0)).expect_err("zero");
+        assert_eq!(err, ObjectiveError::AllZeroWeights);
+        let msg = err.to_string();
+        assert!(msg.contains("all zero"), "{msg}");
+        assert!(msg.contains("rydberg_stage_weight"), "{msg}");
+        assert!(msg.contains("movement_time_weight"), "{msg}");
+        assert!(msg.contains("trap_transfer_weight"), "{msg}");
+        assert!(msg.contains("idle_time_weight"), "{msg}");
+        assert!(msg.contains("at least one must be positive"), "{msg}");
+        let total = weighted_total(2, 10, 4, 100, &weights(0.0, 0.0, 0.0, 1.0)).expect("idle");
+        assert_eq!(total, 100.0);
     }
 
     #[cfg(feature = "mlir")]

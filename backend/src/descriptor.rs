@@ -465,24 +465,7 @@ fn neutral_atom_from_descriptor(
             .atom_loss_model
             .map(loss_model_from_descriptor)
             .transpose()?,
-        cost_model: NeutralAtomCostModel {
-            rydberg_stage_weight: non_negative_f64(
-                "cost_model.rydberg_stage_weight",
-                d.cost_model.rydberg_stage_weight,
-            )?,
-            movement_time_weight: non_negative_f64(
-                "cost_model.movement_time_weight",
-                d.cost_model.movement_time_weight,
-            )?,
-            trap_transfer_weight: non_negative_f64(
-                "cost_model.trap_transfer_weight",
-                d.cost_model.trap_transfer_weight,
-            )?,
-            idle_time_weight: non_negative_f64(
-                "cost_model.idle_time_weight",
-                d.cost_model.idle_time_weight,
-            )?,
-        },
+        cost_model: cost_model_from_descriptor(d.cost_model)?,
     };
 
     let entanglement_capacity = target.zone_capacity(ZoneKind::Entanglement);
@@ -493,6 +476,35 @@ fn neutral_atom_from_descriptor(
     }
 
     Ok(BackendTarget::neutral_atom_reconfigurable(d.id, target))
+}
+
+fn cost_model_from_descriptor(
+    d: NeutralAtomCostModelDescriptor,
+) -> Result<NeutralAtomCostModel, BackendError> {
+    let rydberg_stage_weight =
+        non_negative_f64("cost_model.rydberg_stage_weight", d.rydberg_stage_weight)?;
+    let movement_time_weight =
+        non_negative_f64("cost_model.movement_time_weight", d.movement_time_weight)?;
+    let trap_transfer_weight =
+        non_negative_f64("cost_model.trap_transfer_weight", d.trap_transfer_weight)?;
+    let idle_time_weight = non_negative_f64("cost_model.idle_time_weight", d.idle_time_weight)?;
+    // Finite and non-negative is not enough: an all-zero vector scores every
+    // schedule the same, so placement ignores it.
+    if rydberg_stage_weight == 0.0
+        && movement_time_weight == 0.0
+        && trap_transfer_weight == 0.0
+        && idle_time_weight == 0.0
+    {
+        return invalid_config(
+            "cost_model weights are all zero (rydberg_stage_weight, movement_time_weight, trap_transfer_weight, idle_time_weight); at least one must be positive so the objective can select a schedule",
+        );
+    }
+    Ok(NeutralAtomCostModel {
+        rydberg_stage_weight,
+        movement_time_weight,
+        trap_transfer_weight,
+        idle_time_weight,
+    })
 }
 
 fn zone_from_descriptor(d: NeutralAtomZoneDescriptor) -> Result<NeutralAtomZone, BackendError> {
