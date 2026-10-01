@@ -29,12 +29,7 @@ use crate::geometry::{SpeedModel, movement_duration_for_model};
 /// architecture_model.md §8.6 / §9: these are tuning knobs, not measurements.
 /// The time objective and error-budget mode both score with the target's
 /// `cost_model`, including when that vector is exactly this placeholder.
-pub const PLACEHOLDER_COST_WEIGHTS: NeutralAtomCostModel = NeutralAtomCostModel {
-    rydberg_stage_weight: 1.0,
-    movement_time_weight: 1.0,
-    trap_transfer_weight: 1.0,
-    idle_time_weight: 0.000001,
-};
+pub const PLACEHOLDER_COST_WEIGHTS: NeutralAtomCostModel = NeutralAtomCostModel::PLACEHOLDER;
 
 /// One weighted objective, with every term that went into the total.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -133,6 +133,8 @@ pub struct NeutralAtomTargetDescriptor {
     /// still load and the report simply skips the `atom_loss_budget` section.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub atom_loss_model: Option<NeutralAtomLossModelDescriptor>,
+    /// Linear §9 weights. Omitted fields use [`NeutralAtomCostModel::PLACEHOLDER`].
+    #[serde(default)]
     pub cost_model: NeutralAtomCostModelDescriptor,
 }
 
@@ -252,13 +254,45 @@ pub struct NeutralAtomLossModelDescriptor {
     pub loss_coeff: f64,
 }
 
+fn default_rydberg_stage_weight() -> f64 {
+    NeutralAtomCostModel::PLACEHOLDER.rydberg_stage_weight
+}
+
+fn default_movement_time_weight() -> f64 {
+    NeutralAtomCostModel::PLACEHOLDER.movement_time_weight
+}
+
+fn default_trap_transfer_weight() -> f64 {
+    NeutralAtomCostModel::PLACEHOLDER.trap_transfer_weight
+}
+
+fn default_idle_time_weight() -> f64 {
+    NeutralAtomCostModel::PLACEHOLDER.idle_time_weight
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NeutralAtomCostModelDescriptor {
+    #[serde(default = "default_rydberg_stage_weight")]
     pub rydberg_stage_weight: f64,
+    #[serde(default = "default_movement_time_weight")]
     pub movement_time_weight: f64,
+    #[serde(default = "default_trap_transfer_weight")]
     pub trap_transfer_weight: f64,
+    #[serde(default = "default_idle_time_weight")]
     pub idle_time_weight: f64,
+}
+
+impl Default for NeutralAtomCostModelDescriptor {
+    fn default() -> Self {
+        let weights = NeutralAtomCostModel::PLACEHOLDER;
+        Self {
+            rydberg_stage_weight: weights.rydberg_stage_weight,
+            movement_time_weight: weights.movement_time_weight,
+            trap_transfer_weight: weights.trap_transfer_weight,
+            idle_time_weight: weights.idle_time_weight,
+        }
+    }
 }
 
 impl TryFrom<TargetDescriptor> for BackendTarget {

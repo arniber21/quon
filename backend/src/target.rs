@@ -670,6 +670,19 @@ pub struct NeutralAtomCostModel {
     pub idle_time_weight: f64,
 }
 
+impl NeutralAtomCostModel {
+    /// Placeholder §9 weights from architecture_model.md §8.6 / §9.
+    ///
+    /// These match `targets/neutral_atom/generic_rna_v0.json`. An omitted
+    /// `cost_model` weight loads as the corresponding field here.
+    pub const PLACEHOLDER: Self = Self {
+        rydberg_stage_weight: 1.0,
+        movement_time_weight: 1.0,
+        trap_transfer_weight: 1.0,
+        idle_time_weight: 0.000001,
+    };
+}
+
 /// True iff `q` is a valid qubit index for a device with `n` qubits.
 ///
 /// Refinement-typed: Flux proves the boolean result equals `q < n`, anchoring
